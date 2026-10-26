@@ -1,0 +1,25 @@
+[workspace]
+members = [
+    "crates/openstory-assets",
+    "crates/openstory-client",
+    "crates/openstory-core",
+    "crates/openstory-protocol",
+    "crates/openstory-render",
+]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "AGPL-3.0-or-later"
+rust-version = "1.87"
+
+[workspace.dependencies]
+openstory-assets = { path = "crates/openstory-assets" }
+openstory-core = { path = "crates/openstory-core" }
+openstory-protocol = { path = "crates/openstory-protocol" }
+openstory-render = { path = "crates/openstory-render" }
+bytemuck = "1.24"
+lz4_flex = "0.11"
+aes = "0.8.4"
+fontdue = "0.9.5"

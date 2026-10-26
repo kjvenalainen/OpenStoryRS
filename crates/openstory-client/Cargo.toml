@@ -1,0 +1,25 @@
+[package]
+name = "openstory-client"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "OpenStoryRS"
+path = "src/main.rs"
+
+[dependencies]
+openstory-assets.workspace = true
+openstory-core.workspace = true
+openstory-protocol.workspace = true
+openstory-render.workspace = true
+fontdue.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+pollster = "0.4"
+rodio = { version = "0.22.2", default-features = false, features = ["playback", "mp3"] }
+winit = { version = "0.30.13", default-features = false, features = ["rwh_06"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+winit = { version = "0.30.13", default-features = false, features = ["rwh_06"] }
