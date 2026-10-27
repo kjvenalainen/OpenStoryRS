@@ -1,0 +1,1401 @@
+fn render_chat_panel(
+    font: &fontdue::Font,
+    lines: &VecDeque<ChatLine>,
+    input: &str,
+    open: bool,
+    target: ChatTarget,
+    composer_label: Option<&str>,
+) -> Vec<u8> {
+    let width = CHAT_WIDTH as usize;
+    let height = CHAT_HEIGHT as usize;
+    let mut pixels = vec![0; width * height * 4];
+    fill_dialogue_rect(
+        &mut pixels,
+        width,
+        height,
+        0,
+        0,
+        width,
+        height,
+        [16, 14, 12, 205],
+    );
+    fill_dialogue_rect(
+        &mut pixels,
+        width,
+        height,
+        0,
+        0,
+        width,
+        2,
+        [112, 96, 72, 230],
+    );
+    fill_dialogue_rect(
+        &mut pixels,
+        width,
+        height,
+        0,
+        height - 2,
+        width,
+        2,
+        [112, 96, 72, 230],
+    );
+    fill_dialogue_rect(
+        &mut pixels,
+        width,
+        height,
+        0,
+        0,
+        2,
+        height,
+        [112, 96, 72, 230],
+    );
+    fill_dialogue_rect(
+        &mut pixels,
+        width,
+        height,
+        width - 2,
+        0,
+        2,
+        height,
+        [112, 96, 72, 230],
+    );
+    let heading = format!("{} Chat", target.label());
+    draw_dialogue_text(
+        font,
+        &mut pixels,
+        width,
+        height,
+        &heading,
+        12,
+        7,
+        12.0,
+        width - 24,
+        16,
+        [226, 205, 158],
+    );
+    let first = lines.len().saturating_sub(6);
+    for (row, line) in lines.iter().skip(first).enumerate() {
+        draw_dialogue_text(
+            font,
+            &mut pixels,
+            width,
+            height,
+            &line.text,
+            12,
+            27 + row as i32 * 17,
+            12.0,
+            width - 24,
+            16,
+            line.color,
+        );
+    }
+    fill_dialogue_rect(
+        &mut pixels,
+        width,
+        height,
+        10,
+        height - 30,
+        width - 20,
+        1,
+        [84, 76, 62, 220],
+    );
+    let prompt = if open {
+        format!("[{}] >", composer_label.unwrap_or_else(|| target.label()))
+    } else {
+        "> Press Enter to chat".to_owned()
+    };
+    let input_x = 12 + dialogue_text_width(font, &prompt, 12.0).ceil() as i32 + 5;
+    draw_dialogue_text(
+        font,
+        &mut pixels,
+        width,
+        height,
+        &prompt,
+        12,
+        height as i32 - 23,
+        12.0,
+        width - 24,
+        16,
+        [205, 194, 168],
+    );
+    if !input.is_empty() {
+        draw_dialogue_text(
+            font,
+            &mut pixels,
+            width,
+            height,
+            input,
+            input_x,
+            height as i32 - 23,
+            12.0,
+            (width as i32 - input_x - 12).max(1) as usize,
+            16,
+            [255, 255, 255],
+        );
+    }
+    pixels
+}
+
+fn render_whisper_panel(
+    font: &fontdue::Font,
+    conversation: &WhisperConversation,
+    input_focused: bool,
+    target_focused: bool,
+) -> Vec<u8> {
+    let width = WHISPER_PANEL_WIDTH as usize;
+    let height = WHISPER_PANEL_HEIGHT as usize;
+    let mut pixels = vec![0; width * height * 4];
+    fill_dialogue_rect(
+        &mut pixels,
+        width,
+        height,
+        0,
+        0,
+        width,
+        height,
+        [18, 16, 14, 238],
+    );
+    fill_dialogue_rect(
+        &mut pixels,
+        width,
+        height,
+        0,
+        0,
+        width,
+        34,
+        [80, 61, 39, 255],
+    );
+    for (x, y, rect_width, rect_height) in [
+        (0, 0, width, 2),
+        (0, height - 2, width, 2),
+        (0, 0, 2, height),
+        (width - 2, 0, 2, height),
+    ] {
+        fill_dialogue_rect(
+            &mut pixels,
+            width,
+            height,
+            x,
+            y,
+            rect_width,
+            rect_height,
+            [202, 177, 126, 255],
+        );
+    }
+    let title = if conversation.target.is_empty() {
+        "New Whisper".to_owned()
+    } else {
+        format!("Whisper with {}", conversation.target)
+    };
+    draw_dialogue_text(
+        font,
+        &mut pixels,
+        width,
+        height,
+        &title,
+        12,
+        9,
+        14.0,
+        width - 54,
+        20,
+        [236, 223, 192],
+    );
+    fill_dialogue_rect(
+        &mut pixels,
+        width,
+        height,
+        width - 31,
+        6,
+        22,
+        22,
+        [105, 62, 48, 255],
+    );
+    draw_dialogue_text(
+        font,
+        &mut pixels,
+        width,
+        height,
+        "×",
+        width as i32 - 24,
+        8,
+        16.0,
+        15,
+        18,
+        [255, 237, 217],
+    );
+
+    let recipient = if conversation.target.is_empty() {
+        "To: enter a character name".to_owned()
+    } else {
+        format!("To: {}", conversation.target)
+    };
+    fill_dialogue_rect(
+        &mut pixels,
+        width,
+        height,
+        10,
+        37,
+        width - 20,
+        24,
+        if target_focused {
+            [64, 57, 47, 255]
+        } else {
+            [34, 30, 25, 255]
+        },
+    );
+    draw_dialogue_text(
+        font,
+        &mut pixels,
+        width,
+        height,
+        &recipient,
+        16,
+        41,
+        12.0,
+        width - 32,
+        18,
+        if target_focused {
+            [255, 255, 255]
+        } else {
+            [205, 194, 168]
+        },
+    );
+
+    let visible_lines = 9;
+    let first = conversation.lines.len().saturating_sub(visible_lines);
+    for (row, line) in conversation.lines.iter().skip(first).enumerate() {
+        let wrapped = wrap_speech_text(font, &line.text, 12.0, width - 24, 1);
+        if let Some(text) = wrapped.first() {
+            draw_dialogue_text(
+                font,
+                &mut pixels,
+                width,
+                height,
+                text,
+                12,
+                66 + row as i32 * 18,
+                12.0,
+                width - 24,
+                16,
+                line.color,
+            );
+        }
+    }
+    fill_dialogue_rect(
+        &mut pixels,
+        width,
+        height,
+        10,
+        height - 34,
+        width - 20,
+        1,
+        [104, 91, 72, 240],
+    );
+    let input = conversation.input.trim_end();
+    let input_width = width - 24;
+    let mut visible_input = input.to_owned();
+    let full_input_width = dialogue_text_width(font, &format!("> {input}"), 12.0);
+    if full_input_width > input_width as f32 {
+        while !visible_input.is_empty()
+            && dialogue_text_width(font, &format!("…{visible_input}"), 12.0) > input_width as f32
+        {
+            visible_input.remove(0);
+        }
+        visible_input.insert(0, '…');
+    } else if !input_focused || target_focused {
+        visible_input.clear();
+    } else {
+        visible_input.insert_str(0, "> ");
+    }
+    let prompt = if input_focused && !target_focused {
+        visible_input
+    } else if input_focused {
+        "Type a name · Tab to message".to_owned()
+    } else {
+        "Click to type · Esc hides input".to_owned()
+    };
+    draw_dialogue_text(
+        font,
+        &mut pixels,
+        width,
+        height,
+        &prompt,
+        12,
+        height as i32 - 26,
+        12.0,
+        input_width,
+        18,
+        [205, 194, 168],
+    );
+    pixels
+}
+
+fn render_party_panel(
+    font: &fontdue::Font,
+    party: Option<&openstory_protocol::PartySnapshot>,
+    invite: Option<&(i32, String)>,
+    local_id: Option<i32>,
+) -> Vec<u8> {
+    let width = PARTY_PANEL_WIDTH as usize;
+    let height = PARTY_PANEL_HEIGHT as usize;
+    let mut pixels = vec![0; width * height * 4];
+    fill_dialogue_rect(
+        &mut pixels,
+        width,
+        height,
+        0,
+        0,
+        width,
+        height,
+        [16, 14, 12, 225],
+    );
+    fill_dialogue_rect(
+        &mut pixels,
+        width,
+        height,
+        0,
+        0,
+        width,
+        2,
+        [112, 96, 72, 255],
+    );
+    fill_dialogue_rect(
+        &mut pixels,
+        width,
+        height,
+        0,
+        height - 2,
+        width,
+        2,
+        [112, 96, 72, 255],
+    );
+    fill_dialogue_rect(
+        &mut pixels,
+        width,
+        height,
+        0,
+        0,
+        2,
+        height,
+        [112, 96, 72, 255],
+    );
+    fill_dialogue_rect(
+        &mut pixels,
+        width,
+        height,
+        width - 2,
+        0,
+        2,
+        height,
+        [112, 96, 72, 255],
+    );
+    draw_dialogue_text(
+        font,
+        &mut pixels,
+        width,
+        height,
+        "Party",
+        12,
+        7,
+        15.0,
+        width - 24,
+        18,
+        [226, 205, 158],
+    );
+    if let Some(party) = party {
+        let leader = party
+            .members
+            .iter()
+            .find(|member| member.character_id == party.leader_id)
+            .map(|member| member.name.as_str())
+            .unwrap_or("Unknown");
+        draw_dialogue_text(
+            font,
+            &mut pixels,
+            width,
+            height,
+            &format!("ID {} · Leader {leader}", party.party_id),
+            12,
+            28,
+            11.0,
+            width - 24,
+            16,
+            [195, 195, 195],
+        );
+        if party.members.is_empty() {
+            draw_dialogue_text(
+                font,
+                &mut pixels,
+                width,
+                height,
+                "Waiting for member details…",
+                12,
+                63,
+                12.0,
+                width - 24,
+                18,
+                [210, 210, 210],
+            );
+        }
+        for (index, member) in party.members.iter().take(6).enumerate() {
+            let y = 51 + index as i32 * 25;
+            let leader_mark = if member.character_id == party.leader_id {
+                "★ "
+            } else {
+                "  "
+            };
+            let local_mark = if local_id == Some(member.character_id) {
+                " (You)"
+            } else {
+                ""
+            };
+            let channel = if member.channel < 0 {
+                "Offline".to_owned()
+            } else {
+                format!("Ch {}", member.channel.saturating_add(1))
+            };
+            let line = format!(
+                "{leader_mark}{} Lv.{}  {channel}{local_mark}",
+                member.name, member.level
+            );
+            draw_dialogue_text(
+                font,
+                &mut pixels,
+                width,
+                height,
+                &line,
+                12,
+                y,
+                11.0,
+                width - 24,
+                16,
+                if member.channel < 0 {
+                    [150, 150, 150]
+                } else {
+                    [225, 225, 225]
+                },
+            );
+            if let Some((hp, max_hp)) = member.hp.filter(|(_, max_hp)| *max_hp > 0) {
+                let bar_width = (width - 26) * hp.clamp(0, max_hp) as usize / max_hp as usize;
+                fill_dialogue_rect(
+                    &mut pixels,
+                    width,
+                    height,
+                    14,
+                    (y + 16) as usize,
+                    width - 28,
+                    3,
+                    [60, 48, 42, 255],
+                );
+                fill_dialogue_rect(
+                    &mut pixels,
+                    width,
+                    height,
+                    14,
+                    (y + 16) as usize,
+                    bar_width,
+                    3,
+                    [80, 190, 95, 255],
+                );
+            }
+        }
+    } else {
+        draw_dialogue_text(
+            font,
+            &mut pixels,
+            width,
+            height,
+            "You are not in a party.",
+            12,
+            36,
+            12.0,
+            width - 24,
+            18,
+            [210, 210, 210],
+        );
+    }
+    if let Some((party_id, inviter)) = invite {
+        let display_name = inviter.strip_prefix("PS: ").unwrap_or(inviter);
+        fill_dialogue_rect(
+            &mut pixels,
+            width,
+            height,
+            10,
+            height - 42,
+            width - 20,
+            1,
+            [84, 76, 62, 255],
+        );
+        draw_dialogue_text(
+            font,
+            &mut pixels,
+            width,
+            height,
+            &format!("Invite from {display_name} (#{party_id})"),
+            12,
+            height as i32 - 36,
+            11.0,
+            width - 24,
+            16,
+            [255, 222, 112],
+        );
+        draw_dialogue_text(
+            font,
+            &mut pixels,
+            width,
+            height,
+            "/party accept  ·  /party deny",
+            12,
+            height as i32 - 20,
+            10.0,
+            width - 24,
+            14,
+            [205, 194, 168],
+        );
+    } else {
+        draw_dialogue_text(
+            font,
+            &mut pixels,
+            width,
+            height,
+            "O toggles this panel · /party controls",
+            12,
+            height as i32 - 19,
+            10.0,
+            width - 24,
+            14,
+            [170, 164, 148],
+        );
+    }
+    pixels
+}
+
+fn render_owl_panel(
+    font: &fontdue::Font,
+    owl: &OwlSearchUi,
+    string_archive: &NxArchive,
+    name_cache: &mut HashMap<i32, Option<String>>,
+) -> Vec<u8> {
+    let width = OWL_PANEL_WIDTH as usize;
+    let height = OWL_PANEL_HEIGHT as usize;
+    let mut pixels = vec![0; width * height * 4];
+    fill_dialogue_rect(
+        &mut pixels,
+        width,
+        height,
+        0,
+        0,
+        width,
+        height,
+        [25, 23, 20, 246],
+    );
+    fill_dialogue_rect(
+        &mut pixels,
+        width,
+        height,
+        0,
+        0,
+        width,
+        36,
+        [88, 68, 42, 255],
+    );
+    fill_dialogue_rect(
+        &mut pixels,
+        width,
+        height,
+        0,
+        0,
+        width,
+        2,
+        [206, 174, 112, 255],
+    );
+    fill_dialogue_rect(
+        &mut pixels,
+        width,
+        height,
+        0,
+        height - 2,
+        width,
+        2,
+        [206, 174, 112, 255],
+    );
+    fill_dialogue_rect(
+        &mut pixels,
+        width,
+        height,
+        0,
+        0,
+        2,
+        height,
+        [206, 174, 112, 255],
+    );
+    fill_dialogue_rect(
+        &mut pixels,
+        width,
+        height,
+        width - 2,
+        0,
+        2,
+        height,
+        [206, 174, 112, 255],
+    );
+    draw_dialogue_text(
+        font,
+        &mut pixels,
+        width,
+        height,
+        "Owl of Minerva",
+        16,
+        8,
+        16.0,
+        width - 72,
+        22,
+        [255, 229, 174],
+    );
+    draw_dialogue_text(
+        font,
+        &mut pixels,
+        width,
+        height,
+        "X",
+        width as i32 - 28,
+        8,
+        15.0,
+        16,
+        20,
+        [255, 238, 218],
+    );
+
+    if owl.result_item_id.is_none() {
+        draw_dialogue_text(
+            font,
+            &mut pixels,
+            width,
+            height,
+            "Search by item name or ID. Select a popular item below, or type a query.",
+            16,
+            44,
+            11.5,
+            width - 32,
+            30,
+            [211, 202, 184],
+        );
+        fill_dialogue_rect(
+            &mut pixels,
+            width,
+            height,
+            16,
+            78,
+            326,
+            32,
+            [10, 10, 10, 255],
+        );
+        fill_dialogue_rect(
+            &mut pixels,
+            width,
+            height,
+            16,
+            78,
+            326,
+            1,
+            [142, 128, 105, 255],
+        );
+        fill_dialogue_rect(
+            &mut pixels,
+            width,
+            height,
+            16,
+            109,
+            326,
+            1,
+            [142, 128, 105, 255],
+        );
+        draw_dialogue_text(
+            font,
+            &mut pixels,
+            width,
+            height,
+            if owl.query.is_empty() {
+                "Type an item name or ID…"
+            } else {
+                &owl.query
+            },
+            25,
+            84,
+            13.0,
+            306,
+            20,
+            if owl.query.is_empty() {
+                [145, 140, 129]
+            } else {
+                [250, 244, 232]
+            },
+        );
+        fill_dialogue_rect(
+            &mut pixels,
+            width,
+            height,
+            354,
+            78,
+            94,
+            32,
+            [103, 75, 37, 255],
+        );
+        draw_dialogue_text(
+            font,
+            &mut pixels,
+            width,
+            height,
+            "Search",
+            374,
+            84,
+            13.0,
+            62,
+            20,
+            [255, 233, 190],
+        );
+        draw_dialogue_text(
+            font,
+            &mut pixels,
+            width,
+            height,
+            "Most searched items",
+            16,
+            123,
+            13.0,
+            width - 32,
+            20,
+            [229, 206, 160],
+        );
+        for (index, item_id) in owl.top_item_ids.iter().take(10).enumerate() {
+            let y = 151 + index as i32 * 24;
+            if index % 2 == 0 {
+                fill_dialogue_rect(
+                    &mut pixels,
+                    width,
+                    height,
+                    12,
+                    y as usize,
+                    width - 24,
+                    23,
+                    [46, 42, 35, 230],
+                );
+            }
+            let name = item_name(*item_id, string_archive, name_cache);
+            draw_dialogue_text(
+                font,
+                &mut pixels,
+                width,
+                height,
+                &format!("{}. {name}", index + 1),
+                22,
+                y + 3,
+                12.0,
+                width - 44,
+                18,
+                [220, 217, 207],
+            );
+        }
+        if owl.top_item_ids.is_empty() {
+            draw_dialogue_text(
+                font,
+                &mut pixels,
+                width,
+                height,
+                if owl.top_items_loaded {
+                    "No popular searches are available."
+                } else {
+                    "Loading popular searches…"
+                },
+                22,
+                158,
+                12.0,
+                width - 44,
+                18,
+                [180, 176, 165],
+            );
+        }
+    } else {
+        let searched_name = item_name(
+            owl.result_item_id.unwrap_or_default(),
+            string_archive,
+            name_cache,
+        );
+        let start = if owl.results.is_empty() {
+            0
+        } else {
+            owl.result_offset.min(owl.results.len() - 1) + 1
+        };
+        let end = (owl.result_offset + 8).min(owl.results.len());
+        draw_dialogue_text(
+            font,
+            &mut pixels,
+            width,
+            height,
+            &format!(
+                "Listings for {searched_name} · {start}–{end} / {}",
+                owl.results.len()
+            ),
+            16,
+            47,
+            13.0,
+            width - 32,
+            22,
+            [229, 206, 160],
+        );
+        if owl.results.is_empty() {
+            draw_dialogue_text(
+                font,
+                &mut pixels,
+                width,
+                height,
+                "No open shops were found for this item.",
+                20,
+                90,
+                12.0,
+                width - 40,
+                20,
+                [210, 204, 190],
+            );
+        }
+        for (visible_index, result) in owl
+            .results
+            .iter()
+            .enumerate()
+            .skip(owl.result_offset)
+            .take(8)
+        {
+            let y = 78 + (visible_index - owl.result_offset) as i32 * 39;
+            let selected = owl.selected_result == Some(visible_index);
+            fill_dialogue_rect(
+                &mut pixels,
+                width,
+                height,
+                12,
+                y as usize,
+                width - 24,
+                37,
+                if selected {
+                    [102, 75, 38, 255]
+                } else if visible_index % 2 == 0 {
+                    [45, 42, 36, 238]
+                } else {
+                    [34, 32, 28, 238]
+                },
+            );
+            let units = i64::from(result.bundles).saturating_mul(i64::from(result.per_bundle));
+            draw_dialogue_text(
+                font,
+                &mut pixels,
+                width,
+                height,
+                &format!(
+                    "{} · Ch {} · {} each · {} units",
+                    result.owner,
+                    i16::from(result.channel).saturating_add(1),
+                    result.price.max(0),
+                    units.max(0)
+                ),
+                20,
+                y + 3,
+                11.5,
+                width - 40,
+                17,
+                [245, 240, 226],
+            );
+            draw_dialogue_text(
+                font,
+                &mut pixels,
+                width,
+                height,
+                &format!("{} · Map {}", result.description, result.map_id),
+                20,
+                y + 20,
+                10.5,
+                width - 40,
+                15,
+                [181, 177, 167],
+            );
+        }
+        fill_dialogue_rect(
+            &mut pixels,
+            width,
+            height,
+            12,
+            410,
+            126,
+            30,
+            [69, 62, 49, 255],
+        );
+        draw_dialogue_text(
+            font,
+            &mut pixels,
+            width,
+            height,
+            "Back",
+            58,
+            417,
+            11.5,
+            50,
+            17,
+            [238, 229, 207],
+        );
+        fill_dialogue_rect(
+            &mut pixels,
+            width,
+            height,
+            146,
+            410,
+            74,
+            30,
+            [69, 62, 49, 255],
+        );
+        draw_dialogue_text(
+            font,
+            &mut pixels,
+            width,
+            height,
+            "‹ Prev",
+            157,
+            417,
+            11.5,
+            58,
+            17,
+            [238, 229, 207],
+        );
+        fill_dialogue_rect(
+            &mut pixels,
+            width,
+            height,
+            232,
+            410,
+            74,
+            30,
+            [69, 62, 49, 255],
+        );
+        draw_dialogue_text(
+            font,
+            &mut pixels,
+            width,
+            height,
+            "Next ›",
+            247,
+            417,
+            11.5,
+            58,
+            17,
+            [238, 229, 207],
+        );
+        fill_dialogue_rect(
+            &mut pixels,
+            width,
+            height,
+            318,
+            410,
+            132,
+            30,
+            [103, 75, 37, 255],
+        );
+        draw_dialogue_text(
+            font,
+            &mut pixels,
+            width,
+            height,
+            "Go to shop",
+            342,
+            417,
+            11.5,
+            98,
+            17,
+            [255, 233, 190],
+        );
+    }
+    if let Some(notice) = owl.notice.as_deref() {
+        draw_dialogue_text(
+            font,
+            &mut pixels,
+            width,
+            height,
+            notice,
+            16,
+            height as i32 - 19,
+            10.5,
+            width - 32,
+            18,
+            [248, 185, 130],
+        );
+    }
+    pixels
+}
+
+fn render_buddy_panel(
+    font: &fontdue::Font,
+    buddies: &[openstory_protocol::BuddyEntry],
+    capacity: u8,
+    total_buddies: usize,
+    group_filter: Option<&str>,
+    invite: Option<&(i32, String)>,
+    scroll: usize,
+) -> Vec<u8> {
+    let width = BUDDY_PANEL_WIDTH as usize;
+    let height = BUDDY_PANEL_HEIGHT as usize;
+    let mut pixels = vec![0; width * height * 4];
+    fill_dialogue_rect(
+        &mut pixels,
+        width,
+        height,
+        0,
+        0,
+        width,
+        height,
+        [16, 14, 12, 225],
+    );
+    fill_dialogue_rect(
+        &mut pixels,
+        width,
+        height,
+        0,
+        0,
+        width,
+        2,
+        [112, 96, 72, 255],
+    );
+    fill_dialogue_rect(
+        &mut pixels,
+        width,
+        height,
+        0,
+        height - 2,
+        width,
+        2,
+        [112, 96, 72, 255],
+    );
+    fill_dialogue_rect(
+        &mut pixels,
+        width,
+        height,
+        0,
+        0,
+        2,
+        height,
+        [112, 96, 72, 255],
+    );
+    fill_dialogue_rect(
+        &mut pixels,
+        width,
+        height,
+        width - 2,
+        0,
+        2,
+        height,
+        [112, 96, 72, 255],
+    );
+    let online = buddies.iter().filter(|buddy| buddy.channel >= 0).count();
+    let title = if let Some(group) = group_filter {
+        format!("Buddy List · {group}  {online}/{} online", buddies.len())
+    } else {
+        format!("Buddy List  {online}/{} online", buddies.len())
+    };
+    draw_dialogue_text(
+        font,
+        &mut pixels,
+        width,
+        height,
+        &title,
+        12,
+        7,
+        14.0,
+        width - 24,
+        18,
+        [226, 205, 158],
+    );
+    draw_dialogue_text(
+        font,
+        &mut pixels,
+        width,
+        height,
+        &format!("Capacity: {total_buddies}/{capacity}"),
+        12,
+        28,
+        10.0,
+        width - 24,
+        14,
+        [185, 185, 185],
+    );
+    let row_limit = if invite.is_some() { 5 } else { 7 };
+    if buddies.is_empty() {
+        draw_dialogue_text(
+            font,
+            &mut pixels,
+            width,
+            height,
+            if group_filter.is_some() {
+                "No buddies in this group."
+            } else {
+                "No buddies yet. Use /buddy add <name>."
+            },
+            12,
+            56,
+            11.0,
+            width - 24,
+            30,
+            [210, 210, 210],
+        );
+    }
+    for (row, buddy) in buddies.iter().skip(scroll).take(row_limit).enumerate() {
+        let y = 50 + row as i32 * 29;
+        let status = if buddy.channel < 0 {
+            "Offline".to_owned()
+        } else {
+            format!("Channel {}", buddy.channel.saturating_add(1))
+        };
+        draw_dialogue_text(
+            font,
+            &mut pixels,
+            width,
+            height,
+            &buddy.name,
+            12,
+            y,
+            11.0,
+            150,
+            15,
+            if buddy.channel < 0 {
+                [160, 160, 160]
+            } else {
+                [225, 240, 215]
+            },
+        );
+        draw_dialogue_text(
+            font,
+            &mut pixels,
+            width,
+            height,
+            &status,
+            width as i32 - 112,
+            y,
+            10.0,
+            100,
+            15,
+            [190, 205, 180],
+        );
+        draw_dialogue_text(
+            font,
+            &mut pixels,
+            width,
+            height,
+            &buddy.group,
+            20,
+            y + 13,
+            9.0,
+            width - 36,
+            13,
+            [165, 158, 142],
+        );
+    }
+    if let Some((character_id, name)) = invite {
+        fill_dialogue_rect(
+            &mut pixels,
+            width,
+            height,
+            10,
+            height - 58,
+            width - 20,
+            1,
+            [84, 76, 62, 255],
+        );
+        draw_dialogue_text(
+            font,
+            &mut pixels,
+            width,
+            height,
+            &format!("{name} invited you (#{character_id})"),
+            12,
+            height as i32 - 51,
+            10.0,
+            width - 24,
+            14,
+            [255, 222, 112],
+        );
+        draw_dialogue_text(
+            font,
+            &mut pixels,
+            width,
+            height,
+            "/buddy accept  ·  /buddy dismiss",
+            12,
+            height as i32 - 35,
+            10.0,
+            width - 24,
+            14,
+            [205, 194, 168],
+        );
+    } else {
+        draw_dialogue_text(
+            font,
+            &mut pixels,
+            width,
+            height,
+            "B · /buddy add/group · /buddy filter all|group",
+            12,
+            height as i32 - 20,
+            9.0,
+            width - 24,
+            13,
+            [170, 164, 148],
+        );
+    }
+    pixels
+}
+
+fn load_guild_mark_catalog(
+    archive: &NxArchive,
+) -> Result<(Vec<GuildMarkChoice>, Vec<GuildMarkChoice>), String> {
+    fn child_colors(node: &NxNode) -> Result<Vec<i8>, String> {
+        let mut colors = Vec::new();
+        for child in node.children().map_err(|error| error.to_string())? {
+            let Ok(color) = child
+                .name()
+                .map_err(|error| error.to_string())?
+                .parse::<i8>()
+            else {
+                continue;
+            };
+            if child.bitmap().map_err(|error| error.to_string())?.is_some() {
+                colors.push(color);
+            }
+        }
+        colors.sort_unstable();
+        colors.dedup();
+        Ok(colors)
+    }
+
+    fn display_name(node: &NxNode, fallback: String) -> Result<String, String> {
+        let Some(name) = node.child("name").map_err(|error| error.to_string())? else {
+            return Ok(fallback);
+        };
+        match name.value().map_err(|error| error.to_string())? {
+            NodeValue::String(value) if !value.is_empty() => Ok(value),
+            _ => Ok(fallback),
+        }
+    }
+
+    let root = archive.root();
+    let backgrounds_root = root
+        .resolve("GuildMark.img/BackGround")
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "GuildMark.img/BackGround was not found".to_owned())?;
+    let marks_root = root
+        .resolve("GuildMark.img/Mark")
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "GuildMark.img/Mark was not found".to_owned())?;
+
+    let mut backgrounds = vec![GuildMarkChoice {
+        id: 0,
+        category: "BackGround".to_owned(),
+        label: "None".to_owned(),
+        colors: vec![0],
+    }];
+    for node in backgrounds_root
+        .children()
+        .map_err(|error| error.to_string())?
+    {
+        let name = node.name().map_err(|error| error.to_string())?;
+        let Ok(id) = name.parse::<i16>() else {
+            continue;
+        };
+        let colors = child_colors(&node)?;
+        if colors.is_empty() {
+            continue;
+        }
+        backgrounds.push(GuildMarkChoice {
+            id,
+            category: "BackGround".to_owned(),
+            label: display_name(&node, format!("Background {id}"))
+                .unwrap_or_else(|_| format!("Background {id}")),
+            colors,
+        });
+    }
+
+    let mut marks = vec![GuildMarkChoice {
+        id: 0,
+        category: "".to_owned(),
+        label: "None".to_owned(),
+        colors: vec![0],
+    }];
+    for category_name in ["Animal", "Etc", "Letter", "Pattern", "Plant"] {
+        let Some(category) = marks_root
+            .child(category_name)
+            .map_err(|error| error.to_string())?
+        else {
+            continue;
+        };
+        for node in category.children().map_err(|error| error.to_string())? {
+            let name = node.name().map_err(|error| error.to_string())?;
+            let Ok(id) = name.parse::<i16>() else {
+                continue;
+            };
+            let colors = child_colors(&node)?;
+            if colors.is_empty() {
+                continue;
+            }
+            marks.push(GuildMarkChoice {
+                id,
+                category: category_name.to_owned(),
+                label: display_name(&node, format!("{category_name} {id}"))
+                    .unwrap_or_else(|_| format!("{category_name} {id}")),
+                colors,
+            });
+        }
+    }
+    if backgrounds.len() <= 1 || marks.len() <= 1 {
+        return Err("GuildMark.img did not contain usable background and mark choices".into());
+    }
+    Ok((backgrounds, marks))
+}
+
+fn step_guild_mark_id(choices: &[GuildMarkChoice], current: i16, delta: i16) -> i16 {
+    let Some(last) = choices.len().checked_sub(1) else {
+        return current;
+    };
+    let Some(index) = choices.iter().position(|choice| choice.id == current) else {
+        return if delta < 0 {
+            choices[last].id
+        } else {
+            choices[0].id
+        };
+    };
+    choices[index.saturating_add_signed(delta as isize).min(last)].id
+}
+
+fn nearest_guild_mark_color(choices: &[GuildMarkChoice], id: i16, current: i8) -> i8 {
+    choices
+        .iter()
+        .find(|choice| choice.id == id)
+        .and_then(|choice| {
+            choice
+                .colors
+                .iter()
+                .copied()
+                .find(|color| *color == current)
+                .or_else(|| choice.colors.first().copied())
+        })
+        .unwrap_or(current)
+}
+
+fn step_guild_mark_color(choices: &[GuildMarkChoice], id: i16, current: i8, delta: i16) -> i8 {
+    let Some(choice) = choices.iter().find(|choice| choice.id == id) else {
+        return current;
+    };
+    let Some(last) = choice.colors.len().checked_sub(1) else {
+        return current;
+    };
+    let Some(index) = choice.colors.iter().position(|color| *color == current) else {
+        return if delta < 0 {
+            choice.colors[last]
+        } else {
+            choice.colors[0]
+        };
+    };
+    choice.colors[index.saturating_add_signed(delta as isize).min(last)]
+}

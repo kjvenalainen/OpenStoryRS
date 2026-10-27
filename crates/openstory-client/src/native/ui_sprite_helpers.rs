@@ -1,0 +1,531 @@
+fn append_login_button(
+    sprites: &mut Vec<DecodedSprite>,
+    actions: &mut Vec<LoginActionRegion>,
+    buttons: &mut Vec<LoginButtonAsset>,
+    archive: &NxArchive,
+    button_name: &str,
+    anchor_x: f32,
+    anchor_y: f32,
+    action: Option<LoginAction>,
+) -> Result<(), String> {
+    let normal_draw = sprites.len();
+    append_sprite(
+        sprites,
+        archive,
+        &format!("Login.img/Title/{button_name}/normal/0"),
+        anchor_x,
+        anchor_y,
+        1.0,
+    )?;
+    let hit_rect = sprites[normal_draw].rect;
+    if let Some(action) = action {
+        actions.push(LoginActionRegion {
+            rect: hit_rect,
+            action,
+        });
+    }
+    let mut append_state = |state: &str| -> Result<Option<usize>, String> {
+        let path = format!("Login.img/Title/{button_name}/{state}/0");
+        let index = sprites.len();
+        append_optional_sprite(sprites, archive, &path, anchor_x, anchor_y, 1.0)?;
+        Ok((sprites.len() > index).then_some(index))
+    };
+    let mouse_over_draw = append_state("mouseOver")?;
+    let pressed_draw = append_state("pressed")?;
+    let disabled_draw = append_state("disabled")?;
+    let key_focused_draw = append_state("keyFocused")?;
+    buttons.push(LoginButtonAsset {
+        hit_rect,
+        action,
+        normal_draw,
+        mouse_over_draw,
+        pressed_draw,
+        disabled_draw,
+        key_focused_draw,
+    });
+    Ok(())
+}
+
+fn append_sprite(
+    sprites: &mut Vec<DecodedSprite>,
+    archive: &NxArchive,
+    path: &str,
+    anchor_x: f32,
+    anchor_y: f32,
+    scale: f32,
+) -> Result<(), String> {
+    let node = archive
+        .root()
+        .resolve(path)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| format!("NX node {path:?} was not found"))?;
+    append_node_sprite(sprites, &node, path, anchor_x, anchor_y, scale)
+}
+
+fn append_optional_sprite(
+    sprites: &mut Vec<DecodedSprite>,
+    archive: &NxArchive,
+    path: &str,
+    anchor_x: f32,
+    anchor_y: f32,
+    scale: f32,
+) -> Result<Option<SpriteRect>, String> {
+    let node = archive
+        .root()
+        .resolve(path)
+        .map_err(|error| error.to_string())?;
+    let Some(node) = node else {
+        return Ok(None);
+    };
+    let index = sprites.len();
+    append_node_sprite(sprites, &node, path, anchor_x, anchor_y, scale)?;
+    Ok(Some(sprites[index].rect))
+}
+
+fn append_scaled_ui_animation(
+    sprites: &mut Vec<DecodedSprite>,
+    archive: &NxArchive,
+    path: &str,
+    anchor_x: f32,
+    anchor_y: f32,
+    scale: f32,
+) -> Result<Option<MapArtAnimationAsset>, String> {
+    let Some(source) = archive
+        .root()
+        .resolve(path)
+        .map_err(|error| error.to_string())?
+    else {
+        return Ok(None);
+    };
+    let mut frame_nodes = numeric_children(&source)?;
+    if frame_nodes.is_empty() {
+        frame_nodes.push(source);
+    }
+    let mut frames = Vec::new();
+    for frame_node in frame_nodes {
+        let frame_name = frame_node.name().map_err(|error| error.to_string())?;
+        let frame_path = format!("{path}/{frame_name}");
+        let first_sprite = sprites.len();
+        if append_optional_sprite(sprites, archive, &frame_path, anchor_x, anchor_y, scale)?
+            .is_none()
+        {
+            continue;
+        }
+        let delay_ms = integer_property(&frame_node, "delay")
+            .and_then(|delay| u16::try_from(delay).ok())
+            .filter(|delay| *delay > 0)
+            .unwrap_or(100);
+        frames.push(SpriteFrameAsset {
+            delay_ms,
+            sprites: first_sprite..sprites.len(),
+        });
+    }
+    Ok((frames.len() > 1).then_some(MapArtAnimationAsset {
+        frames,
+        environment_name: None,
+        hold_last: false,
+    }))
+}
+
+fn append_optional_sprite_at_top_left(
+    sprites: &mut Vec<DecodedSprite>,
+    archive: &NxArchive,
+    path: &str,
+    left: f32,
+    top: f32,
+    scale: f32,
+) -> Result<Option<SpriteRect>, String> {
+    let node = archive
+        .root()
+        .resolve(path)
+        .map_err(|error| error.to_string())?;
+    let Some(node) = node else {
+        return Ok(None);
+    };
+    let origin = match node
+        .child("origin")
+        .map_err(|error| error.to_string())?
+        .map(|origin| origin.value())
+        .transpose()
+        .map_err(|error| error.to_string())?
+    {
+        Some(NodeValue::Vector { x, y }) => (x as f32, y as f32),
+        Some(_) => return Err(format!("NX sprite {path:?} has a malformed origin")),
+        None => (0.0, 0.0),
+    };
+    let index = sprites.len();
+    append_node_sprite(
+        sprites,
+        &node,
+        path,
+        left + origin.0 * scale,
+        top + origin.1 * scale,
+        scale,
+    )?;
+    Ok(Some(sprites[index].rect))
+}
+
+fn build_quit_confirmation_sprites(
+    archive: &NxArchive,
+) -> Result<(Vec<DecodedSprite>, [SpriteRect; 2]), String> {
+    // Prefer the v83 login modal. The larger v83 frame uses different
+    // proportions than the modern login modal, so center its text and
+    // button group from their actual NX dimensions instead of reusing the
+    // modern panel's fixed 17/70/130 offsets.
+    let background_path = "Login.img/Notice/backgrnd/0";
+    let background = archive
+        .root()
+        .resolve(background_path)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| format!("missing native quit-dialog asset {background_path:?}"))?;
+    let bitmap = background
+        .bitmap()
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| format!("native quit-dialog asset {background_path:?} is not a bitmap"))?;
+    let panel_width = f32::from(bitmap.width());
+    let panel_height = f32::from(bitmap.height());
+    let left = (1024.0 - panel_width) / 2.0;
+    let top = (768.0 - panel_height) / 2.0;
+    let mut sprites = Vec::with_capacity(4);
+    let mut append_required = |path: &str, x, y| {
+        append_optional_sprite_at_top_left(&mut sprites, archive, path, x, y, 1.0)?
+            .ok_or_else(|| format!("missing native quit-dialog asset {path:?}"))
+    };
+    append_required(background_path, left, top)?;
+
+    let text_path = "Login.img/Notice/text/53";
+    let text_node = archive
+        .root()
+        .resolve(text_path)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| format!("missing native quit-dialog asset {text_path:?}"))?;
+    let text_bitmap = text_node
+        .bitmap()
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| format!("native quit-dialog asset {text_path:?} is not a bitmap"))?;
+    let text_width = f32::from(text_bitmap.width());
+    let text_left = left + (panel_width - text_width) / 2.0;
+    append_required(text_path, text_left, top + 13.0)?;
+
+    let yes_path = "Login.img/Notice/BtYes/normal/0";
+    let no_path = "Login.img/Notice/BtNo/normal/0";
+    let button_width = |path: &str| -> Result<f32, String> {
+        let node = archive
+            .root()
+            .resolve(path)
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| format!("missing native quit-dialog asset {path:?}"))?;
+        let bitmap = node
+            .bitmap()
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| format!("native quit-dialog asset {path:?} is not a bitmap"))?;
+        Ok(f32::from(bitmap.width()))
+    };
+    let yes_width = button_width(yes_path)?;
+    let no_width = button_width(no_path)?;
+    let gap = 8.0_f32;
+    let group_width = yes_width + gap + no_width;
+    let buttons_left = left + (panel_width - group_width) / 2.0;
+    let button_y = top + panel_height - 56.0;
+    let yes = append_required(yes_path, buttons_left, button_y)?;
+    let no = append_required(no_path, buttons_left + yes_width + gap, button_y)?;
+    Ok((sprites, [yes, no]))
+}
+
+fn centered_text_x(font: &fontdue::Font, text: &str, font_size: f32) -> f32 {
+    512.0 - measured_text_width(font, text, font_size) / 2.0
+}
+
+fn measured_text_width(font: &fontdue::Font, text: &str, font_size: f32) -> f32 {
+    let mut advance = 0.0_f32;
+    let mut previous = None;
+    for character in text.chars() {
+        if let Some(previous) = previous {
+            advance += font
+                .horizontal_kern(previous, character, font_size)
+                .unwrap_or(0.0);
+        }
+        let (metrics, _) = rasterize_ui_glyph(font, character, font_size);
+        advance += metrics.advance_width;
+        previous = Some(character);
+    }
+    advance
+}
+
+fn append_text_sprite(
+    sprites: &mut Vec<DecodedSprite>,
+    font: &fontdue::Font,
+    text: &str,
+    x: f32,
+    y: f32,
+    font_size: f32,
+) {
+    let width = 360_u32;
+    let height = 28_u32;
+    let pixels = rasterize_label(font, text, font_size, width, height);
+    sprites.push(DecodedSprite {
+        texture_key: format!("label:{font_size}:{text}"),
+        rect: SpriteRect {
+            x,
+            y,
+            width: width as f32,
+            height: height as f32,
+            blend_mode: BlendMode::Alpha,
+        },
+        depth_order: 0,
+        texture_width: width,
+        texture_height: height,
+        pixels: pixels.into(),
+    });
+}
+
+fn rasterize_label(
+    font: &fontdue::Font,
+    text: &str,
+    font_size: f32,
+    width: u32,
+    height: u32,
+) -> Vec<u8> {
+    let mut pixels = vec![0; width as usize * height as usize * 4];
+    let mut pen_x = 0.0_f32;
+    let baseline = font_size.ceil() as i32 + 2;
+    let mut previous = None;
+    for character in text.chars() {
+        if let Some(previous) = previous {
+            pen_x += font
+                .horizontal_kern(previous, character, font_size)
+                .unwrap_or(0.0);
+        }
+        let (metrics, coverage) = rasterize_ui_glyph(font, character, font_size);
+        let left = pen_x.round() as i32 + metrics.xmin;
+        let top = baseline - metrics.ymin - metrics.height as i32;
+        for row in 0..metrics.height {
+            for column in 0..metrics.width {
+                let x = left + column as i32;
+                let y = top + row as i32;
+                if x < 0 || y < 0 || x >= width as i32 || y >= height as i32 {
+                    continue;
+                }
+                let src = row * metrics.width + column;
+                let dst = (y as usize * width as usize + x as usize) * 4;
+                pixels[dst..dst + 4].copy_from_slice(&[255, 255, 255, coverage[src]]);
+            }
+        }
+        pen_x += metrics.advance_width;
+        if pen_x >= width as f32 {
+            break;
+        }
+        previous = Some(character);
+    }
+    pixels
+}
+
+fn append_tiled_background(
+    sprites: &mut Vec<DecodedSprite>,
+    archive: &NxArchive,
+    path: &str,
+    width: u32,
+    height: u32,
+    scale: f32,
+) -> Result<(), String> {
+    let node = archive
+        .root()
+        .resolve(path)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| format!("NX node {path:?} was not found"))?;
+    let bitmap = node
+        .bitmap()
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| format!("NX node {path:?} is not a bitmap"))?;
+    let source = bitmap
+        .decode_bgra_shared()
+        .map_err(|error| error.to_string())?;
+    let source_width = usize::from(bitmap.width());
+    let source_height = usize::from(bitmap.height());
+    let mut pixels = vec![0; width as usize * height as usize * 4];
+    for y in 0..height as usize {
+        let source_y = ((y as f32 / scale).floor() as usize).min(source_height - 1);
+        for x in 0..width as usize {
+            let tile_width = (source_width as f32 * scale).max(1.0);
+            let source_x = ((x as f32 % tile_width) / scale).floor() as usize;
+            let source_x = source_x.min(source_width - 1);
+            let src = (source_y * source_width + source_x) * 4;
+            let dst = (y * width as usize + x) * 4;
+            pixels[dst..dst + 4].copy_from_slice(&source[src..src + 4]);
+        }
+    }
+    sprites.push(DecodedSprite {
+        texture_key: format!("tiled:{path}:{width}x{height}:{scale}"),
+        rect: SpriteRect {
+            x: 0.0,
+            y: 0.0,
+            width: width as f32,
+            height: height as f32,
+            blend_mode: BlendMode::Alpha,
+        },
+        depth_order: 0,
+        texture_width: width,
+        texture_height: height,
+        pixels: pixels.into(),
+    });
+    Ok(())
+}
+
+fn append_node_sprite(
+    sprites: &mut Vec<DecodedSprite>,
+    node: &openstory_assets::NxNode,
+    path: &str,
+    anchor_x: f32,
+    anchor_y: f32,
+    scale: f32,
+) -> Result<(), String> {
+    let bitmap: Bitmap = node
+        .bitmap()
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| format!("NX node {path:?} is not a bitmap"))?;
+    let origin = match node
+        .child("origin")
+        .map_err(|error| error.to_string())?
+        .map(|origin| origin.value())
+        .transpose()
+        .map_err(|error| error.to_string())?
+    {
+        Some(NodeValue::Vector { x, y }) => (x as f32, y as f32),
+        Some(_) => return Err(format!("NX sprite {path:?} has a malformed origin")),
+        None => (0.0, 0.0),
+    };
+    let width = f32::from(bitmap.width()) * scale;
+    let height = f32::from(bitmap.height()) * scale;
+    let pixels = bitmap
+        .decode_bgra_shared()
+        .map_err(|error| error.to_string())?;
+    sprites.push(DecodedSprite {
+        texture_key: path.to_owned(),
+        rect: SpriteRect {
+            x: anchor_x - origin.0 * scale,
+            y: anchor_y - origin.1 * scale,
+            width,
+            height,
+            blend_mode: BlendMode::Alpha,
+        },
+        depth_order: 0,
+        texture_width: u32::from(bitmap.width()),
+        texture_height: u32::from(bitmap.height()),
+        pixels: pixels.into(),
+    });
+    Ok(())
+}
+
+fn load_damage_glyph_atlas(
+    archive: &NxArchive,
+    renderer: &GpuRenderer,
+) -> Result<(GpuTexture, Vec<DamageGlyph>), String> {
+    struct DecodedGlyph {
+        width: u32,
+        height: u32,
+        origin_x: f32,
+        origin_y: f32,
+        pixels: Arc<[u8]>,
+    }
+
+    let load_glyph = |path: String| -> Result<DecodedGlyph, String> {
+        let node = archive
+            .root()
+            .resolve(&path)
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| format!("NX damage glyph {path:?} is missing"))?;
+        let bitmap = node
+            .bitmap()
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| format!("NX damage glyph {path:?} is not a bitmap"))?;
+        let (width, height) = (u32::from(bitmap.width()), u32::from(bitmap.height()));
+        if width == 0 || height == 0 || width > 128 || height > 128 {
+            return Err(format!(
+                "NX damage glyph {path:?} has unsupported dimensions {width}x{height}"
+            ));
+        }
+        let origin = match node
+            .child("origin")
+            .map_err(|error| error.to_string())?
+            .map(|origin| origin.value())
+            .transpose()
+            .map_err(|error| error.to_string())?
+        {
+            Some(NodeValue::Vector { x, y }) => (x as f32, y as f32),
+            Some(_) => return Err(format!("NX damage glyph {path:?} has invalid origin")),
+            None => (0.0, 0.0),
+        };
+        Ok(DecodedGlyph {
+            width,
+            height,
+            origin_x: origin.0,
+            origin_y: origin.1,
+            pixels: bitmap
+                .decode_bgra_shared()
+                .map_err(|error| error.to_string())?,
+        })
+    };
+
+    let mut decoded = Vec::with_capacity(81);
+    for state in [
+        "NoRed1",
+        "NoRed0",
+        "NoCri1",
+        "NoCri0",
+        "NoBlue1",
+        "NoBlue0",
+        "NoViolet1",
+        "NoViolet0",
+    ] {
+        for digit in 0..10 {
+            let path = format!("BasicEff.img/{state}/{digit}");
+            decoded.push(load_glyph(path)?);
+        }
+    }
+    decoded.push(load_glyph("BasicEff.img/NoRed0/Miss".to_owned())?);
+
+    let cell_width = decoded.iter().map(|glyph| glyph.width).max().unwrap_or(0) + 2;
+    let cell_height = decoded.iter().map(|glyph| glyph.height).max().unwrap_or(0) + 2;
+    let atlas_width = cell_width * 5;
+    let atlas_rows = u32::try_from(decoded.len().div_ceil(5))
+        .map_err(|_| "NX damage number atlas row count overflow".to_owned())?;
+    let atlas_height = cell_height * atlas_rows;
+    let pixel_length = usize::try_from(atlas_width)
+        .ok()
+        .and_then(|width| {
+            usize::try_from(atlas_height)
+                .ok()
+                .and_then(|height| width.checked_mul(height))
+        })
+        .and_then(|pixels| pixels.checked_mul(4))
+        .ok_or_else(|| "NX damage number atlas dimensions overflow".to_owned())?;
+    let mut atlas = vec![0; pixel_length];
+    let mut glyphs = Vec::with_capacity(decoded.len());
+    for (index, glyph) in decoded.into_iter().enumerate() {
+        let x = (index as u32 % 5) * cell_width + 1;
+        let y = (index as u32 / 5) * cell_height + 1;
+        for row in 0..glyph.height as usize {
+            let source = row * glyph.width as usize * 4;
+            let destination = ((y as usize + row) * atlas_width as usize + x as usize) * 4;
+            let length = glyph.width as usize * 4;
+            atlas[destination..destination + length]
+                .copy_from_slice(&glyph.pixels[source..source + length]);
+        }
+        glyphs.push(DamageGlyph {
+            uv: [
+                (x as f32 + 0.5) / atlas_width as f32,
+                (y as f32 + 0.5) / atlas_height as f32,
+                (x as f32 + glyph.width as f32 - 0.5) / atlas_width as f32,
+                (y as f32 + glyph.height as f32 - 0.5) / atlas_height as f32,
+            ],
+            width: glyph.width as f32,
+            height: glyph.height as f32,
+            origin_x: glyph.origin_x,
+            origin_y: glyph.origin_y,
+        });
+    }
+    let texture = renderer
+        .upload_bgra(atlas_width, atlas_height, &atlas)
+        .map_err(|error| error.to_string())?;
+    Ok((texture, glyphs))
+}
