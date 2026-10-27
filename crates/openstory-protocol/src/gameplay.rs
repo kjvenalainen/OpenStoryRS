@@ -4,7 +4,11 @@ use crate::login::{expect_opcode, read_character_look};
 use crate::{CharacterLook, PacketError, PacketReader, PacketWriter};
 
 pub const OPCODE_MOVE_PLAYER: u16 = 41;
+/// Requests a channel change; the response is a channel transfer packet (opcode 16).
+pub const OPCODE_CHANGE_CHANNEL: u16 = 39;
 pub const OPCODE_FIELD_EFFECT: u16 = 138;
+pub const OPCODE_BLOW_WEATHER: u16 = 142;
+pub const OPCODE_SHOW_ITEM_GAIN_INCHAT: u16 = 206;
 pub const OPCODE_GENERAL_CHAT: u16 = 49;
 pub const OPCODE_SPEND_ABILITY_POINT: u16 = 87;
 pub const OPCODE_HEAL_OVER_TIME: u16 = 89;
@@ -14,6 +18,87 @@ pub const OPCODE_PARTY_OPERATION: u16 = 62;
 pub const OPCODE_BUDDY_LIST: u16 = 63;
 pub const OPCODE_MULTI_CHAT_RECEIVED: u16 = 134;
 pub const OPCODE_WHISPER_RECEIVED: u16 = 135;
+pub const OPCODE_SEND_TV: u16 = 341;
+pub const OPCODE_REMOVE_TV: u16 = 342;
+pub const OPCODE_ENABLE_TV: u16 = 343;
+
+const MAPLE_TV_LINE_COUNT: usize = 5;
+const MAX_MAPLE_TV_LINE_BYTES: usize = 256;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MapleTvBroadcast {
+    pub has_partner: bool,
+    pub type_id: u8,
+    pub sender_look: CharacterLook,
+    pub partner_look: Option<CharacterLook>,
+    pub lines: Vec<String>,
+    pub remaining_ms: u32,
+}
+
+/// Parses the v83 world-wide Maple TV broadcast packet. The packet carries one
+/// character look (and a second for partnered broadcasts), exactly five message
+/// strings, and an optional signed remaining-time value in milliseconds.
+pub fn parse_send_tv(bytes: &[u8]) -> Result<MapleTvBroadcast, PacketError> {
+    let mut packet = PacketReader::new(bytes);
+    expect_opcode(&mut packet, OPCODE_SEND_TV)?;
+    let has_partner = packet.read_u8()? == 3;
+    let type_id = packet.read_u8()?;
+    let sender_look = read_character_look(&mut packet)?;
+    let partner_look = if has_partner {
+        Some(read_character_look(&mut packet)?)
+    } else {
+        None
+    };
+
+    let mut lines = Vec::with_capacity(MAPLE_TV_LINE_COUNT);
+    for _ in 0..MAPLE_TV_LINE_COUNT {
+        let line = packet.read_string()?;
+        if line.len() > MAX_MAPLE_TV_LINE_BYTES {
+            return Err(PacketError::StringTooLong(line.len()));
+        }
+        lines.push(line);
+    }
+
+    let remaining_ms = if packet.remaining() >= 4 {
+        u32::try_from(packet.read_i32()?.max(0)).unwrap_or(0)
+    } else {
+        15_000
+    };
+    Ok(MapleTvBroadcast {
+        has_partner,
+        type_id,
+        sender_look,
+        partner_look,
+        lines,
+        remaining_ms: if remaining_ms == 0 {
+            15_000
+        } else {
+            remaining_ms
+        },
+    })
+}
+
+pub fn parse_remove_tv(bytes: &[u8]) -> Result<(), PacketError> {
+    let mut packet = PacketReader::new(bytes);
+    expect_opcode(&mut packet, OPCODE_REMOVE_TV)
+}
+
+/// The v83 client currently has no visual action for ENABLE_TV, but consumes
+/// its full payload so malformed/truncated packets are still detected.
+pub fn parse_enable_tv(bytes: &[u8]) -> Result<(i32, u8), PacketError> {
+    let mut packet = PacketReader::new(bytes);
+    expect_opcode(&mut packet, OPCODE_ENABLE_TV)?;
+    Ok((packet.read_i32()?, packet.read_u8()?))
+}
+
+/// Builds the v83 in-game channel switch request: `channel: u8`, `tick: i32`.
+/// The legacy client sends a zero tick for this transition.
+pub fn change_channel_packet(channel: u8) -> Vec<u8> {
+    let mut packet = PacketWriter::new(OPCODE_CHANGE_CHANNEL);
+    packet.write_u8(channel);
+    packet.write_i32(0);
+    packet.into_bytes()
+}
 const MAX_PET_SLOTS: u8 = 3;
 const MAX_CHARACTER_INFO_PETS: usize = 3;
 const MAX_CHARACTER_WISHLIST: usize = 10;
@@ -59,15 +144,23 @@ pub const OPCODE_CHAT_RECEIVED: u16 = 162;
 pub const OPCODE_CHARACTER_MOVED: u16 = 185;
 pub const OPCODE_GIVE_BUFF: u16 = 32;
 pub const OPCODE_CANCEL_BUFF: u16 = 33;
+pub const OPCODE_GIVE_FOREIGN_BUFF: u16 = 199;
+pub const OPCODE_CANCEL_FOREIGN_BUFF: u16 = 200;
 pub const OPCODE_DAMAGE_PLAYER: u16 = 192;
 pub const OPCODE_TAKE_DAMAGE: u16 = 48;
 pub const OPCODE_ATTACKED_CLOSE: u16 = 186;
 pub const OPCODE_ATTACKED_RANGED: u16 = 187;
 pub const OPCODE_ATTACKED_MAGIC: u16 = 188;
 pub const OPCODE_UPDATE_CHARACTER_LOOK: u16 = 197;
+pub const OPCODE_SHOW_ITEM_EFFECT: u16 = 194;
 pub const OPCODE_UPDATE_CHARACTER_BOX: u16 = 165;
 pub const OPCODE_CHARACTER_INFO: u16 = 61;
 pub const OPCODE_CHARACTER_INFO_REQUEST: u16 = 97;
+pub const OPCODE_FAME_RESPONSE: u16 = 38;
+pub const OPCODE_GIVE_FAME: u16 = 95;
+pub const OPCODE_SKILL_LEARN_ITEM_RESULT: u16 = 51;
+pub const OPCODE_FORCED_STAT_SET: u16 = 34;
+pub const OPCODE_RECALCULATE_STATS: u16 = 35;
 pub const OPCODE_FACIAL_EXPRESSION: u16 = 193;
 pub const OPCODE_FACE_EXPRESSION: u16 = 51;
 pub const OPCODE_SHOW_FOREIGN_EFFECT: u16 = 198;
@@ -153,7 +246,8 @@ pub struct PlayerAttackPacket {
     pub display: u8,
     pub to_left: bool,
     pub stance: u8,
-    pub speed: u8,
+    /// Signed attack-speed modifier encoded as one byte by the v83 protocol.
+    pub speed: i8,
     pub targets: Vec<AttackDamageTarget>,
 }
 
@@ -164,6 +258,7 @@ pub struct RemoteCharacterSpawn {
     pub level: u8,
     pub job: u16,
     pub look: CharacterLook,
+    pub item_effect_id: i32,
     pub x: i16,
     pub y: i16,
     pub stance: u8,
@@ -183,6 +278,13 @@ pub struct CharacterMiniRoom {
 pub struct RemoteCharacterMiniRoomUpdate {
     pub character_id: i32,
     pub mini_room: Option<CharacterMiniRoom>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RemoteCharacterItemEffect {
+    pub character_id: i32,
+    /// Zero clears the persistent `Effect.nx/ItemEff.img` aura.
+    pub item_id: i32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -231,6 +333,46 @@ pub struct CharacterInfoReply {
     pub wishlist: Vec<i32>,
     pub monster_book: CharacterMonsterBookInfo,
     pub medal: Option<CharacterMedalInfo>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FameResponse {
+    Success {
+        character_name: String,
+        raised: bool,
+        fame: i16,
+    },
+    CannotFameSelf,
+    AlreadyFamed,
+    TargetLevelTooLow,
+    PlayerLevelTooLow,
+    Unknown(u8),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SkillLearnItemResult {
+    pub character_id: i32,
+    pub marker: u8,
+    pub skill_id: i32,
+    pub max_level: i32,
+    pub can_use: bool,
+    pub success: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ForcedStatSet {
+    pub strength: Option<u16>,
+    pub dexterity: Option<u16>,
+    pub intelligence: Option<u16>,
+    pub luck: Option<u16>,
+    pub weapon_attack: Option<i16>,
+    pub weapon_defense: Option<i16>,
+    pub magic_attack: Option<i16>,
+    pub magic_defense: Option<i16>,
+    pub accuracy: Option<i16>,
+    pub avoidability: Option<i16>,
+    pub speed: Option<u8>,
+    pub jump: Option<u8>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -462,7 +604,7 @@ pub struct RemoteCharacterAttack {
     pub display: u8,
     pub to_left: bool,
     pub stance: u8,
-    pub speed: u8,
+    pub speed: i8,
     pub bullet_id: i32,
     pub targets: Vec<RemoteAttackTarget>,
 }
@@ -473,7 +615,7 @@ pub struct ForeignSkillEffect {
     pub skill_id: i32,
     pub level: i8,
     pub flags: i8,
-    pub speed: u8,
+    pub speed: i8,
     pub direction: i8,
 }
 
@@ -481,9 +623,20 @@ pub struct ForeignSkillEffect {
 pub struct ForeignCharacterEffect {
     pub character_id: i32,
     pub effect_type: i8,
+    /// Maker result: zero is success, nonzero is failure. Other effects use zero.
+    pub variant: i8,
+    /// Positive recovery amount for foreign character effect type 10.
+    pub heal_amount: Option<i8>,
     pub skill_id: Option<i32>,
     pub level: i8,
     pub direction: i8,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ItemGainInChat {
+    Item { item_id: i32, quantity: i32 },
+    MonsterBookCard,
+    SkillUse { skill_id: i32 },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -607,6 +760,15 @@ pub enum FieldEffect {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BlowWeatherUpdate {
+    /// v83 uses 0 to clear weather, 1 for snow, and 2 for rain.
+    pub kind: i8,
+    /// Cash weather item ID. Zero means there is no weather item.
+    pub item_id: i32,
+    pub message: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CharacterStatChange {
     Skin(u8),
     Face(i32),
@@ -666,6 +828,75 @@ pub struct CharacterBuffUpdate {
 pub struct CharacterBuffCancel {
     pub first_mask: u64,
     pub second_mask: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ForeignMobDiseaseEffect {
+    pub character_id: i32,
+    pub skill_type: u16,
+    pub skill_level: u16,
+}
+
+/// Reads the mob-skill identity from a disease-only `GIVE_FOREIGN_BUFF`.
+/// Cosmic encodes the disease source as two shorts (mob skill type, level);
+/// Poison also carries its damage value first. Its special persisted Slow
+/// packet uses the legacy first-mask bit instead of Disease::SLOW's usual bit.
+/// Other foreign buffs have different payload layouts, so they return `None`.
+pub fn parse_foreign_mob_disease_effect(
+    bytes: &[u8],
+) -> Result<Option<ForeignMobDiseaseEffect>, PacketError> {
+    let mut packet = PacketReader::new(bytes);
+    expect_opcode(&mut packet, OPCODE_GIVE_FOREIGN_BUFF)?;
+    let character_id = packet.read_i32()?;
+    let first_mask = packet.read_u64()?;
+    let second_mask = packet.read_u64()?;
+
+    let slow_first_mask = 0x0000_0800_0000_0000;
+    let slow_first_only = first_mask == slow_first_mask && second_mask == 0;
+    let disease_mask = 0xC01E_0000_0008_4081_u64;
+    if !slow_first_only && (first_mask != 0 || second_mask == 0 || second_mask & !disease_mask != 0)
+    {
+        return Ok(None);
+    }
+
+    let mut mask = if slow_first_only { 1 } else { second_mask };
+    let mut effect = None;
+    while mask != 0 {
+        let flag = 1_u64 << mask.trailing_zeros();
+        mask &= !flag;
+
+        // Disease::POISON (0x4000000000000) serializes one extra short value.
+        if !slow_first_only && flag == 0x0004_0000_0000_0000 {
+            let _damage = packet.read_i16()?;
+        }
+        let skill_type = packet.read_u16()?;
+        let skill_level = packet.read_u16()?;
+        let expected_skill_type = match flag {
+            0x0000_0000_0000_0001 => 126, // Slow.
+            0x0000_0000_0000_0080 => 128, // Seduce.
+            0x0000_0000_0000_4000 => 133, // Zombify/Undead.
+            0x0000_0000_0008_0000 => 132, // Confuse.
+            0x0002_0000_0000_0000 => 123, // Stun.
+            0x0004_0000_0000_0000 => 125, // Poison.
+            0x0008_0000_0000_0000 => 120, // Seal.
+            0x0010_0000_0000_0000 => 121, // Darkness.
+            0x4000_0000_0000_0000 => 122, // Weaken.
+            0x8000_0000_0000_0000 => 124, // Curse.
+            _ if slow_first_only => 126,
+            _ => 0,
+        };
+        if skill_type == expected_skill_type && skill_level != 0 {
+            effect = Some(ForeignMobDiseaseEffect {
+                character_id,
+                skill_type,
+                skill_level,
+            });
+        }
+    }
+    if packet.remaining() != 4 || packet.read_i16()? != 0 || packet.read_i16()? != 900 {
+        return Ok(None);
+    }
+    Ok(effect)
 }
 
 pub fn parse_character_buff_update(bytes: &[u8]) -> Result<CharacterBuffUpdate, PacketError> {
@@ -841,8 +1072,15 @@ pub struct MobMovementResponse {
     pub skill_level: i8,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum MobStatusMaskGroup {
+    First,
+    Second,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MobStatusEntry {
+    pub group: MobStatusMaskGroup,
     pub flag: u32,
     pub value: i16,
     pub skill_id: i32,
@@ -1497,8 +1735,18 @@ pub fn parse_mob_status(bytes: &[u8]) -> Result<MobStatusUpdate, PacketError> {
     let second_mask = packet.read_u32()?;
     let mut entries =
         Vec::with_capacity(first_mask.count_ones() as usize + second_mask.count_ones() as usize);
-    read_status_entries(&mut packet, first_mask, &mut entries)?;
-    read_status_entries(&mut packet, second_mask, &mut entries)?;
+    read_status_entries(
+        &mut packet,
+        MobStatusMaskGroup::First,
+        first_mask,
+        &mut entries,
+    )?;
+    read_status_entries(
+        &mut packet,
+        MobStatusMaskGroup::Second,
+        second_mask,
+        &mut entries,
+    )?;
     Ok(MobStatusUpdate {
         object_id,
         first_mask,
@@ -1521,6 +1769,7 @@ pub fn parse_mob_status_cancel(bytes: &[u8]) -> Result<MobStatusCancel, PacketEr
 
 fn read_status_entries(
     packet: &mut PacketReader<'_>,
+    group: MobStatusMaskGroup,
     mask: u32,
     entries: &mut Vec<MobStatusEntry>,
 ) -> Result<(), PacketError> {
@@ -1528,6 +1777,7 @@ fn read_status_entries(
         let flag = 1_u32 << bit;
         if mask & flag != 0 {
             entries.push(MobStatusEntry {
+                group,
                 flag,
                 value: packet.read_i16()?,
                 skill_id: packet.read_i32()?,
@@ -1956,6 +2206,49 @@ pub fn parse_npc_scriptable(bytes: &[u8]) -> Result<Vec<i32>, PacketError> {
     Ok(npc_ids)
 }
 
+/// Parses a v83 `FIELD_EFFECT` event. Type 1 only announces a boss HP bar and
+/// has no client payload; unsupported effect types are safely ignored.
+pub fn parse_field_effect(bytes: &[u8]) -> Result<Option<FieldEffect>, PacketError> {
+    let mut packet = PacketReader::new(bytes);
+    expect_opcode(&mut packet, OPCODE_FIELD_EFFECT)?;
+    if packet.is_empty() {
+        return Ok(None);
+    }
+    let effect_type = packet.read_i8()?;
+    let effect = match effect_type {
+        0 | 2 | 3 => Some(FieldEffect::ScreenAnimation(packet.read_string()?)),
+        4 => Some(FieldEffect::Sound(packet.read_string()?)),
+        6 => Some(FieldEffect::Music(packet.read_string()?)),
+        _ => None,
+    };
+    packet.skip(packet.remaining())?;
+    Ok(effect)
+}
+
+/// Parses the v83 `BLOW_WEATHER` packet. The final message is optional.
+pub fn parse_blow_weather(bytes: &[u8]) -> Result<BlowWeatherUpdate, PacketError> {
+    const MAX_WEATHER_MESSAGE_BYTES: usize = 512;
+    let mut packet = PacketReader::new(bytes);
+    expect_opcode(&mut packet, OPCODE_BLOW_WEATHER)?;
+    let kind = packet.read_i8()?;
+    let item_id = packet.read_i32()?;
+    let message = if packet.is_empty() {
+        String::new()
+    } else {
+        let message = packet.read_string()?;
+        if message.len() > MAX_WEATHER_MESSAGE_BYTES {
+            return Err(PacketError::StringTooLong(message.len()));
+        }
+        message
+    };
+    packet.skip(packet.remaining())?;
+    Ok(BlowWeatherUpdate {
+        kind,
+        item_id,
+        message,
+    })
+}
+
 pub fn parse_field_obstacle_one(bytes: &[u8]) -> Result<FieldObstacleToggle, PacketError> {
     let mut packet = PacketReader::new(bytes);
     expect_opcode(&mut packet, OPCODE_FIELD_OBSTACLE_ONE)?;
@@ -2107,7 +2400,9 @@ pub fn parse_remote_character_spawn(bytes: &[u8]) -> Result<RemoteCharacterSpawn
 
     let job = packet.read_i16()? as u16;
     let look = read_character_look(&mut packet)?;
-    packet.skip(12)?; // Item count, item effect, and chair.
+    packet.read_i32()?; // Count of item 5110000.
+    let item_effect_id = packet.read_i32()?;
+    packet.read_i32()?; // Chair.
     let (x, y) = packet.read_point_i16()?;
     let stance = packet.read_u8()?;
     packet.skip(3)?; // Pet list marker padding.
@@ -2136,11 +2431,23 @@ pub fn parse_remote_character_spawn(bytes: &[u8]) -> Result<RemoteCharacterSpawn
         level,
         job,
         look,
+        item_effect_id,
         x,
         y,
         stance,
         pets,
         mini_room,
+    })
+}
+
+pub fn parse_remote_character_item_effect(
+    bytes: &[u8],
+) -> Result<RemoteCharacterItemEffect, PacketError> {
+    let mut packet = PacketReader::new(bytes);
+    expect_opcode(&mut packet, OPCODE_SHOW_ITEM_EFFECT)?;
+    Ok(RemoteCharacterItemEffect {
+        character_id: packet.read_i32()?,
+        item_id: packet.read_i32()?,
     })
 }
 
@@ -2198,6 +2505,111 @@ pub fn character_info_request_packet(character_id: i32) -> Option<Vec<u8>> {
     packet.write_i32(nonce as i32);
     packet.write_i32(character_id);
     Some(packet.into_bytes())
+}
+
+/// Builds the v83 fame request for a visible character.
+pub fn give_fame_packet(character_id: i32, raise: bool) -> Option<Vec<u8>> {
+    if character_id <= 0 {
+        return None;
+    }
+    let mut packet = PacketWriter::new(OPCODE_GIVE_FAME);
+    packet.write_i32(character_id);
+    packet.write_u8(u8::from(raise));
+    Some(packet.into_bytes())
+}
+
+/// Parses the v83 fame response, including the updated target fame on success.
+pub fn parse_fame_response(bytes: &[u8]) -> Result<FameResponse, PacketError> {
+    let mut packet = PacketReader::new(bytes);
+    expect_opcode(&mut packet, OPCODE_FAME_RESPONSE)?;
+    let response = match packet.read_u8()? {
+        0 => {
+            let character_name = packet.read_string()?;
+            let raised = packet.read_u8()? != 0;
+            let fame = if packet.remaining() >= 2 {
+                packet.read_i16()?
+            } else {
+                0
+            };
+            if !packet.is_empty() {
+                packet.read_i16()?; // Legacy padding.
+            }
+            FameResponse::Success {
+                character_name,
+                raised,
+                fame,
+            }
+        }
+        1 => FameResponse::CannotFameSelf,
+        2 => FameResponse::AlreadyFamed,
+        3 => FameResponse::TargetLevelTooLow,
+        5 => FameResponse::PlayerLevelTooLow,
+        mode => FameResponse::Unknown(mode),
+    };
+    Ok(response)
+}
+
+/// Parses the v83 result sent after using a skill book or mastery book.
+pub fn parse_skill_learn_item_result(bytes: &[u8]) -> Result<SkillLearnItemResult, PacketError> {
+    let mut packet = PacketReader::new(bytes);
+    expect_opcode(&mut packet, OPCODE_SKILL_LEARN_ITEM_RESULT)?;
+    Ok(SkillLearnItemResult {
+        character_id: packet.read_i32()?,
+        marker: packet.read_u8()?,
+        skill_id: packet.read_i32()?,
+        max_level: packet.read_i32()?,
+        can_use: packet.read_u8()? != 0,
+        success: packet.read_u8()? != 0,
+    })
+}
+
+/// Parses the v83 forced-stat bitmask used for server-provided character totals.
+pub fn parse_forced_stat_set(bytes: &[u8]) -> Result<ForcedStatSet, PacketError> {
+    let mut packet = PacketReader::new(bytes);
+    expect_opcode(&mut packet, OPCODE_FORCED_STAT_SET)?;
+    let mask = packet.read_u32()?;
+    if mask & !0x0fff != 0 {
+        return Err(PacketError::InvalidForcedStatMask(mask));
+    }
+
+    let mut stats = ForcedStatSet::default();
+    if mask & (1 << 0) != 0 {
+        stats.strength = Some(packet.read_i16()? as u16);
+    }
+    if mask & (1 << 1) != 0 {
+        stats.dexterity = Some(packet.read_i16()? as u16);
+    }
+    if mask & (1 << 2) != 0 {
+        stats.intelligence = Some(packet.read_i16()? as u16);
+    }
+    if mask & (1 << 3) != 0 {
+        stats.luck = Some(packet.read_i16()? as u16);
+    }
+    if mask & (1 << 4) != 0 {
+        stats.weapon_attack = Some(packet.read_i16()?);
+    }
+    if mask & (1 << 5) != 0 {
+        stats.weapon_defense = Some(packet.read_i16()?);
+    }
+    if mask & (1 << 6) != 0 {
+        stats.magic_attack = Some(packet.read_i16()?);
+    }
+    if mask & (1 << 7) != 0 {
+        stats.magic_defense = Some(packet.read_i16()?);
+    }
+    if mask & (1 << 8) != 0 {
+        stats.accuracy = Some(packet.read_i16()?);
+    }
+    if mask & (1 << 9) != 0 {
+        stats.avoidability = Some(packet.read_i16()?);
+    }
+    if mask & (1 << 10) != 0 {
+        stats.speed = Some(packet.read_u8()?);
+    }
+    if mask & (1 << 11) != 0 {
+        stats.jump = Some(packet.read_u8()?);
+    }
+    Ok(stats)
 }
 
 /// Parses the bounded v83 character-info response used by the map character window.
@@ -2446,7 +2858,7 @@ pub fn parse_foreign_skill_effect(bytes: &[u8]) -> Result<ForeignSkillEffect, Pa
         skill_id: packet.read_i32()?,
         level: packet.read_i8()?,
         flags: packet.read_i8()?,
-        speed: packet.read_u8()?,
+        speed: packet.read_i8()?,
         direction: packet.read_i8()?,
     };
     packet.skip(packet.remaining())?;
@@ -2465,6 +2877,50 @@ pub fn parse_show_foreign_effect(
         0 | 13 => Some(ForeignCharacterEffect {
             character_id,
             effect_type,
+            variant: 0,
+            heal_amount: None,
+            skill_id: None,
+            level: 0,
+            direction: -1,
+        }),
+        // Job-change and quest-clear effects carry an optional legacy marker
+        // byte. Their presentation is determined by effect_type.
+        6 | 7 => Some(ForeignCharacterEffect {
+            character_id,
+            effect_type,
+            variant: 0,
+            heal_amount: None,
+            skill_id: None,
+            level: 0,
+            direction: -1,
+        }),
+        // Cosmic's v83 server IDs: job change, quest clear, and successful
+        // scroll feedback are sent as plain effect bytes.
+        8 | 9 | 15 => Some(ForeignCharacterEffect {
+            character_id,
+            effect_type,
+            variant: 0,
+            heal_amount: None,
+            skill_id: None,
+            level: 0,
+            direction: -1,
+        }),
+        // Cosmic sends a 32-bit 0/1 result for foreign Maker effects.
+        16 => Some(ForeignCharacterEffect {
+            character_id,
+            effect_type,
+            variant: i8::from(packet.read_i32()? != 0),
+            heal_amount: None,
+            skill_id: None,
+            level: 0,
+            direction: -1,
+        }),
+        // Cosmic's recovery broadcast carries the signed HP amount as one byte.
+        10 => Some(ForeignCharacterEffect {
+            character_id,
+            effect_type,
+            variant: 0,
+            heal_amount: Some(packet.read_i8()?),
             skill_id: None,
             level: 0,
             direction: -1,
@@ -2482,11 +2938,41 @@ pub fn parse_show_foreign_effect(
             Some(ForeignCharacterEffect {
                 character_id,
                 effect_type,
+                variant: 0,
+                heal_amount: None,
                 skill_id: Some(skill_id),
                 level,
                 direction,
             })
         }
+        _ => None,
+    };
+    packet.skip(packet.remaining())?;
+    Ok(effect)
+}
+
+/// Parses the supported v83 item-gain notifications. Other legacy feedback
+/// modes are safely consumed and ignored until their presentation is ported.
+pub fn parse_item_gain_in_chat(bytes: &[u8]) -> Result<Option<ItemGainInChat>, PacketError> {
+    let mut packet = PacketReader::new(bytes);
+    expect_opcode(&mut packet, OPCODE_SHOW_ITEM_GAIN_INCHAT)?;
+    let mode = packet.read_i8()?;
+    let effect = match mode {
+        1 => {
+            let skill_id = packet.read_i32()?;
+            (skill_id > 0).then_some(ItemGainInChat::SkillUse { skill_id })
+        }
+        3 => {
+            let subtype = packet.read_i8()?;
+            if subtype == 1 {
+                let item_id = packet.read_i32()?;
+                let quantity = packet.read_i32()?;
+                (item_id > 0).then_some(ItemGainInChat::Item { item_id, quantity })
+            } else {
+                None
+            }
+        }
+        13 => Some(ItemGainInChat::MonsterBookCard),
         _ => None,
     };
     packet.skip(packet.remaining())?;
@@ -2569,7 +3055,7 @@ pub fn build_player_attack_packet(attack: &PlayerAttackPacket) -> Result<Vec<u8>
     packet.write_bool(attack.to_left);
     packet.write_u8(attack.stance);
     packet.write_u8(0);
-    packet.write_u8(attack.speed);
+    packet.write_i8(attack.speed);
 
     if attack.attack_type == AttackType::Ranged {
         packet.write_u8(0);
@@ -2637,7 +3123,7 @@ pub fn parse_remote_character_attack(bytes: &[u8]) -> Result<RemoteCharacterAtta
     let display = packet.read_u8()?;
     let to_left = packet.read_bool()?;
     let stance = packet.read_u8()?;
-    let speed = packet.read_u8()?;
+    let speed = packet.read_i8()?;
     packet.skip(1)?;
     let bullet_id = packet.read_i32()?;
     let target_count = usize::from(counts >> 4);

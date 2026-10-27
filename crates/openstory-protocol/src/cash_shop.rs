@@ -8,6 +8,7 @@ pub const OPCODE_SET_CASH_SHOP: u16 = 127;
 pub const OPCODE_QUERY_CASH_RESULT: u16 = 324;
 pub const OPCODE_CASH_SHOP_OPERATION: u16 = 325;
 pub const OPCODE_BUY_CASH_ITEM: u16 = 229;
+pub const OPCODE_COUPON_CODE: u16 = 230;
 
 const MAX_CASH_SHOP_LOCKER_ITEMS: usize = 256;
 
@@ -35,6 +36,9 @@ pub enum CashShopOperation {
     },
     PurchaseDenied(u8),
     CouponRedeemed,
+    /// Cash Shop message code returned for failed shop operations, including
+    /// coupon validation failures.
+    CashShopMessage(u8),
     Unknown(u8),
 }
 
@@ -89,6 +93,9 @@ pub fn parse_cash_shop_operation(body: &[u8]) -> Result<CashShopOperation, Packe
         }
         0x4C => Ok(CashShopOperation::PurchaseDenied(packet.read_u8()?)),
         0x59 => Ok(CashShopOperation::CouponRedeemed),
+        // Cosmic/HeavenMS encode Cash Shop messages as a one-byte code;
+        // coupon failures include invalid, expired, and already-used codes.
+        0x5C => Ok(CashShopOperation::CashShopMessage(packet.read_u8()?)),
         operation => Ok(CashShopOperation::Unknown(operation)),
     }
 }
@@ -118,6 +125,12 @@ pub fn withdraw_cash_item_packet(instance_id: i64) -> Vec<u8> {
     packet.write_u8(0x0D);
     packet.write_i64(instance_id);
     packet.into_bytes()
+}
+
+pub fn cash_shop_coupon_packet(code: &str) -> Result<Vec<u8>, PacketError> {
+    let mut packet = PacketWriter::new(OPCODE_COUPON_CODE);
+    packet.write_string(code)?;
+    Ok(packet.into_bytes())
 }
 
 fn read_cash_shop_item(packet: &mut PacketReader<'_>) -> Result<CashShopItem, PacketError> {

@@ -15,14 +15,19 @@ The login background's six light beams animate independently using their NX fram
 login buttons use their NX disabled, mouse-over, and pressed art. Keyboard focus uses NX
 focus art when available and a gold outline otherwise. Tab cycles through the account field,
 password field, and enabled actions; arrows move among actions, and Enter or Space activates
-the focused action. Login and Guest stay disabled until the server connection is ready, and
-Login also requires valid account/password lengths.
-The selection screen pages through all characters returned by the server, ten at a time.
-Character selection supports PIC registration, verification, and the disabled-PIC path;
+the focused action. Login and Guest are enabled while the session connects; clicking either
+queues the request until the Maple handshake and login-start packet complete. Login also
+requires an account of 1–12 characters and a password of 5–12 characters.
+The selection screen follows the legacy three-slot layout and pages through all characters returned by the server.
+Click a character's avatar or the Start sign to enter; Enter also selects the highlighted character. Character
+selection supports PIC registration, verification, and the disabled-PIC path;
 PIC entry is masked and accepts 6–16 letters or numbers from the keyboard. Each row
 also has a Delete action with confirmation and optional PIC verification. Set
-`OPENSTORY_MACS` and `OPENSTORY_HWID` to attach legacy selection hardware strings; both
-default to empty, and the client does not collect hardware identifiers automatically.
+`OPENSTORY_MACS` and `OPENSTORY_HWID` to override the legacy selection hardware strings.
+On macOS, when either override is absent, the client supplies the v83-compatible MAC/HWID
+format from the primary network interface and the platform UUID, matching the legacy
+client's character-selection packets. These values are sent only as part of character
+selection and PIC requests to the configured Maple server.
 When a character slot is free, Create Character opens Explorer, Cygnus Knight, and Aran
 class choices. The customization screen reads gender-specific face, hair, color, skin,
 clothing, shoe, and weapon pools from `Etc.nx`, previews the selected avatar, checks
@@ -30,10 +35,13 @@ forbidden names locally, and uses the v83 name-check/create packets. The server'
 character entry is added to the current selection list.
 
 Set `OPENSTORY_FONT_PATH` to select a TrueType font; macOS, Windows, and Linux
-system-font locations are used as fallbacks. To connect, run with
-`--connect HOST:PORT`. The client completes the Maple handshake and sends the
-login-start packet. The login button submits the fields. Set `OPENSTORY_ACCOUNT` and
-`OPENSTORY_PASSWORD` to prefill them, or set `OPENSTORY_AUTO_LOGIN=1` to submit them
+system-font locations are used as fallbacks. The client connects to
+`127.0.0.1:8484` by default so the packaged app can reach a local v83 server without
+command-line arguments. Set `OPENSTORY_SERVER=HOST:PORT` to choose another default, or
+use `--connect HOST:PORT` to override it. The client completes the Maple handshake and
+sends the login-start packet before any queued login request. The login button submits the
+fields. Set `OPENSTORY_ACCOUNT` and `OPENSTORY_PASSWORD` to prefill them, or set
+`OPENSTORY_AUTO_LOGIN=1` to submit them
 after the handshake. The Save Login ID checkbox remembers the account name only; the
 password is never written to settings. `OPENSTORY_MACHINE_ID` optionally supplies the legacy machine
 serial as hexadecimal and defaults to zero.
@@ -64,11 +72,38 @@ The first `SET_FIELD` transition
 uses the selected character's map and portal from the character list. The map scene shows
 the selected character's body, head, face, hair, and equipped items. Character selection
 shows a compact equipped-avatar preview beside each character row. Use Left/Right or A/D
-to walk; left or right Option jumps; Space talks to the nearest nearby NPC. Up or W
-activates map portals. The avatar uses NX-authored one-handed or two-handed
+to walk; left or right Option jumps; Space talks to the nearest nearby NPC. Movement
+acceleration and jump force use equipped and buffed SPEED/JUMP with the legacy stat caps;
+Up or W activates map portals. The avatar uses NX-authored one-handed or two-handed
 stand/walk frames and jump frames, including the legacy body arm and hand z layers.
 Press F1–F7 to play and broadcast the matching facial expression; NX-authored face
 frames animate locally and for other visible players.
+Press Backslash to open the key bindings panel. The client loads the v83 server key map,
+uses bound skills, items, and gameplay actions, and lets you rebind 40 built-in menu,
+gameplay, and face actions. It also lists learned active skills and usable inventory items
+by their localized names; stale skill/item bindings stay visible so they can be cleared.
+Click an action or press 1–8 to choose it, then press the replacement key; Backspace clears
+its binding and the mouse wheel scrolls the list. The panel shows the eight quick-slot keys
+supplied by the server; click a slot and press a key to rebind it. Local quick-slot edits use
+the legacy `QuickSlotKeys` setting and override the server's login-time layout. Skill macro
+editor opens from the Skills window. It edits the three server-backed macros, their shout
+setting, and ordered learned-skill slots; a bound macro key shouts its name when enabled and
+queues its skills through the normal skill-use path. The Quick Slots action opens the
+eight-slot bar above the HUD; it shows bound skill, item, cash, macro, and action icons with
+the configured key labels. Click a filled slot to run its binding, or drag a Use, Setup, or
+Cash inventory item onto a slot to update that key on the server. The minimap
+loads its map bitmap and portals from `Map.nx`, shows the player,
+NPCs, mobs, and other characters, and cycles through collapsed, normal, and expanded views.
+Town maps open expanded, and the max-size button is disabled at its limit. It can also open
+the World Map. Messenger handles
+server invitations, three v83 room slots, chat, invite/decline, and dragging the window.
+The server-requested World Map opens its NX-backed regional panel, shows the current-map
+marker, and lets you navigate regional links. The search field filters regional markers
+by map name, description, or ID as you type. It also searches the localized map catalog
+across regions, ranks exact and prefix name matches first, and shows a scrollable list of
+results. Selecting a result opens its regional map and highlights the matching marker;
+this is map browsing, not character travel. Hovered markers show their map details and
+optional NX route image. Automatic travel remains open work.
 The client sends v83 movement snapshots when position, prior position, foothold, or
 stance changes. Remote spawn, removal, movement, and look updates now drive visible
 characters using NX body, face, hair, and equipped item art, aligned through attachment
@@ -85,6 +120,18 @@ play NX-authored skill-use effects, update remote facing and attack stance, and 
 legacy teleport effect for supported teleport skills. `SHOW_FOREIGN_EFFECT` level-up and
 monster-card events play their matching `Effect.nx/BasicEff.img` animations over the local
 or remote character.
+`FIELD_EFFECT` packets play the legacy map and screen animation paths from `Map.nx`, switch
+background music, or resolve field sounds through the `Sound.nx` category fallbacks.
+Supported `SHOW_ITEM_GAIN_INCHAT` item-gain notifications now display the localized item
+name and signed quantity in blue chat, skill/buff echoes show their NX effect without
+duplicating a just-rendered local cast, and MonsterBook card notifications play the local
+card effect.
+The Monster Book window uses the server's card updates, with category filters, card details,
+name search, and a set-effect page that shows collected-card progress and set bonuses from
+the legacy client data. Monster details include NX-backed drop icons and stats; scroll over
+the drop grid to browse longer reward lists. Click the monster sprite to cycle through stand,
+move, and die animations; the client follows NX frame delays, opacity, and scale, and the die
+animation returns to stand when it finishes.
 `DROP_LOOT` and `REMOVE_LOOT` update map drops with item or meso icons from the existing
 NX archives. Drops animate while falling, float after landing, and fade or move to a looter
 when collected; meso icons animate from their NX frame data. Press Z near a drop to send
@@ -96,7 +143,8 @@ animation when approached. Holding Up inside a portal requests a server map chan
 same-map portals move the player to their named destination after the legacy cooldown.
 Click a scriptable NPC to request dialogue; the dialogue panel handles
 selection lists, yes/no and accept/decline prompts, text and number input, and page
-navigation. Press Space or click to reveal a line as it types; press Space again to advance
+navigation. Long dialogue pages scroll inside their panel with the mouse wheel or Page Up/Down.
+Press Space or click to reveal a line as it types; press Space again to advance
 or accept the current choice. On text-entry prompts, Space reveals the prompt first and then
 remains available for spaces in the answer; Enter submits it. Up/Down moves the selection
 highlight through long lists, which also scroll with the mouse wheel. Space submits number
@@ -105,11 +153,14 @@ legacy interaction range; both Option keys jump. When the server opens an NPC sh
 Buy and Sell views use NX item names and
 icons; sell rows show the legacy NX unit price and exclude items marked `notSale` using
 the correct item archive. Quantity controls send v83 buy/sell requests, rechargeable
-stock sends the recharge request, and inventory updates remain server-authoritative. A bottom HUD displays
-character level, live HP and MP bars, experience, and
-mesos when the server sends a `CHANGE_STATS` update. HP updates display a two-second
-bar, and positive HP deltas float the legacy blue healing digits from `Effect.nx` above
-the character. Stun, freeze, and shadow-web hold mobs in their stand animation until the server
+stock sends the recharge request, and inventory updates remain server-authoritative. The
+bottom HUD uses the stock v83 `StatusBar.img` background, gauge, and toolbar sprites, with
+live HP, MP, and EXP fills plus character level, name, job, and resource values. HP updates
+display a two-second bar, and positive HP deltas float the legacy blue healing digits from
+`Effect.nx` above the character. The native toolbar opens Status, Use/Equip inventory,
+Skills, key settings, quick slots, Cash Shop, Options, and a menu for quests, social panels,
+the Monster Book, and World Map. Its Trade button opens the `/trade` composer. Stun, freeze,
+and shadow-web hold mobs in their stand animation until the server
 cancels those statuses. `DAMAGE_MONSTER` packets float the legacy digits
 from `Effect.nx` above the mob with a 1.5-second rise and fade. Controlled mobs use the
 shared foothold physics and v83 `MOVE_MONSTER` updates, while remote movement remains
@@ -130,7 +181,8 @@ effect sliders, or use Tab and the arrow keys; Save or Enter persists them. Canc
 Escape restores the saved values. On macOS, settings are stored in
 `~/Library/Application Support/OpenStoryRS/settings.ini`. The file also stores the Save
 Login ID choice and account name. Saving audio options preserves these values and removes
-any legacy saved-password entry.
+any legacy saved-password entry. Missing or invalid volume settings default to the legacy
+50 percent for music and sound effects.
 Incoming group chat, whisper delivery errors, and find replies appear in the colored HUD
 history. Incoming whispers also open a dedicated conversation window. Press H to start a
 new whisper, type a character name, press Tab to enter a message, and press Enter to send;
@@ -147,7 +199,9 @@ Dismissing hides the pending invite locally, matching the legacy client behavior
 drag inventory stacks onto your offer grid, enter a quantity when prompted, set a meso offer,
 chat, and confirm or cancel. Server updates control both sides of the trade and the final result.
 Click a visible character to request their v83 character-info panel; Escape or its close button
-dismisses the panel. Its Party, Trade, and Guild buttons send the corresponding invites.
+dismisses the panel. Its Party, Trade, and Guild buttons send the corresponding invites. The
+Raise Fame and Lower Fame buttons send v83 fame requests, enforce the level-15 requirement,
+show server rejection reasons, and update the open panel when the server confirms a change.
 Clicking a visible personal-shop owner opens their shop.
 Press G to open the scrollable guild roster and accept or decline pending guild invites
 with Y or N. When not in a guild, click **Create Guild**, enter a 3–12 letter name, and
@@ -165,7 +219,11 @@ threads, and delete selected posts. Press U for the alliance panel; `/alliance i
 `/alliance ranks <r1>|<r2>|<r3>|<r4>|<r5>` manage alliance settings. `/alliance accept` and
 `/alliance deny` answer invitations, and Y/N also works for pending alliance invitations. The panel uses server-sent alliance roster
 broadcasts and shows the local alliance ID while a roster is unavailable; rank-title and
-alliance-member updates are consumed from the server. Press Left Control to
+alliance-member updates are consumed from the server. Assign **Family** in the key bindings
+panel to open the server-backed family window and pedigree list. The panel shows reputation,
+motto and junior capacity; click the motto to edit it, invite a junior by name, use the selected
+family ability, or leave with confirmation. Click a family-tree row to view that member; Y/N
+answers incoming family-join and summon prompts. Press Left Control to
 send a one-hit regular attack; the client
 uses the equipped weapon data, plays its NX stance, and targets the nearest mob ahead.
 Bow, crossbow, claw, and gun attacks select a compatible projectile stack, add any NX
@@ -201,6 +259,8 @@ level and weapon-hand variants. Projectile skills load their root or per-level `
 from `Skill.nx` for local and remote attacks, and fly toward each reported target; ordinary
 ranged attacks continue to use the equipped ammo art. Teleport uses its learned NX range and stops at
 foothold walls or large floor changes; Flash Jump applies its aerial movement locally.
+Using a skill or mastery book now parses the v83 result and shows a success or failure
+message; learned skill levels still come from the server's skill update.
 Press J to open the available/active/completed quest log; its state
 comes from the initial character packet and server quest updates, while names, eligibility,
 and descriptions come from `Quest.nx`. The available tab can start quests and ready active
@@ -213,7 +273,8 @@ scripted v83 action and the existing server-driven NPC dialogue. A quest must be
 play the completion sound and NX light-pillar effect. Learned weapon mastery, Angel's Blessing, and Berserk contribute
 their NX values to local attacks. `GIVE_BUFF` and `CANCEL_BUFF` use bounded v83 mask
 decoding, retain timed statuses, and apply Maple Warrior, Weapon Attack, Accuracy, and
-Hyper Body HP/MP effects to local combat and HUD values. Player ailments now show in the
+Hyper Body HP/MP effects to local combat and HUD values. Booster combines with equipped
+weapon speed for local attacks and remote attack animations. Player ailments now show in the
 HUD; stun blocks movement and attacks, confusion reverses horizontal input, slow reduces
 movement acceleration, seal blocks skill use, and Darkness halves local attack accuracy.
 Poison HP changes remain server-driven.
@@ -226,7 +287,7 @@ those frames exist in the mob assets. When the server grants a controlled mob a 
 client sends its matching indexed action. Mob skill-effect visuals and expressions remain
 open.
 Music, UI, movement, portal, attack, mob, and skill-use sounds now play through the native
-audio mixer with world-distance attenuation and a 64 MiB FIFO cache; a browser audio backend
+audio mixer with world-distance attenuation and a 64 MiB least-recently-used cache; a browser audio backend
 remains future work.
 
 Initial character entry now parses the legacy meso amount, inventory slot capacities,
@@ -237,7 +298,9 @@ slot grid, cached NX icons, stack counts, meso, and slot capacity. Ordinary Use 
 the legacy `USE_ITEM` request and play their one-shot `Effect.nx/ItemEff.img` animation when
 one exists; item consumption and effects on character stats remain server-authoritative.
 Pet food sends the v83 `PET_FOOD` request so the server feeds the hungriest summoned pet.
-Activating a Cash pet sends the v83 `SPAWN_PET` toggle request. Pet spawn/removal and
+Key-bound Use, Setup, and Cash items share the inventory activation path, including
+pet-food handling, chair sit/stand, and special cash actions. Activating a Cash pet sends
+the v83 `SPAWN_PET` toggle request. Pet spawn/removal and
 movement packets update map pets using their NX stance art and name labels. Local pets follow
 with foothold physics and use the legacy pet AI cadence to send `PET_LOOT` requests for nearby
 drops. Server pet-chat packets display timed speech bubbles above the correct pet, while pet
@@ -255,9 +318,15 @@ require confirmation. Hovering an occupied slot shows its String.nx name, descri
 required level, and NX equipment bonuses. Gather merges compatible stacks and closes gaps;
 Sort applies the v83 server ordering for the active bag. Supported cash megaphones, Maple TV,
 avatar megaphones, and pet name tags open the chat composer and send their v83
-`USE_CASH_ITEM` payloads. Item megaphones currently omit the optional attached item; Maple TV
-leaves the recipient name empty, and Maple TV and avatar megaphone accept one line and pad the
-remaining rows. A 514 store permit prompts for a shop name and sends the legacy personal-shop
+`USE_CASH_ITEM` payloads. Item megaphones accept an optional inventory attachment: enter a
+message, press Enter, click an inventory item, then press Enter to send. Click the selected item
+again to clear it, or press Enter on a blank line to send without an attachment. Press I to reopen
+the inventory while choosing an attachment. On megaphone types that support the whisper flag, Tab
+toggles it. Maple TV items with the legacy target control prompt for an optional recipient name
+(up to 12 characters).
+The composer accepts up to three triple-megaphone lines,
+five Maple TV lines, and four avatar-megaphone lines; an empty submission sends the lines
+already entered. A 514 store permit prompts for a shop name and sends the legacy personal-shop
 creation packet. A 523 Owl of Minerva opens a search panel with the server's popular items,
 item-name or ID search, paged shop listings, and a warp action. A 503 hired-merchant permit
 requests the server's deployment check, then prompts for a name and sends the merchant-room
@@ -280,17 +349,23 @@ names, level and fullness alongside pet gear in the Equip inventory. Use a gear 
 the intended pet is summoned; the server inventory update remains authoritative.
 Press `C` in the field to open Character Stats. Spend AP with the `+` buttons or use Auto
 to confirm allocation to the character's primary stat; each point is sent to the server and
-the panel waits for the authoritative stat update. Press the grave accent key to enter the
+the panel waits for the authoritative stat update. Server `FORCED_STAT_SET` updates also
+apply to combat and movement totals, appear in the stats panel, and are cleared by the
+server's `RECALCULATE_STATS` packet. Press the grave accent key to enter the
 rebuilt Cash Shop. Its resizable catalog reads only
 on-sale products with a valid commodity SN from `Etc.nx/Commodity.img`; it supports search,
 category filters, item details and icon preview, currency balances, purchase confirmation,
-and the server-backed locker and withdrawal flow.
+and the server-backed locker and withdrawal flow. Server responses show reason-specific
+notices for purchase failures and stock availability. The catalog's coupon field sends the
+legacy v83 coupon request and reports invalid, expired, used, and wrong-server responses.
+Resizing the window
+recomputes the logical pointer position so clicks stay aligned with the 1024×768 canvas.
 
 To inspect a decoded field without connecting to a server, run
 `OpenStoryRS --data-dir /path/to/wz --inspect-map 100000000`. The renderer culls
 off-canvas sprites, supports atlas UV regions with per-sprite tint and opacity, and
-batches adjacent draws that share a texture. Runtime map-art pixels are cached up to
-128 MiB and 16,384 entries; decoded NX bitmap pixels are shared through a separate
-16 MiB/4,096-entry FIFO cache per archive. GPU textures are reused for the active scene. To inspect the
-stand, walk, and jump frames for a base appearance, run
+batches adjacent draws that share a texture. Runtime map-art pixels use a least-recently-used
+cache bounded to 128 MiB and 16,384 entries; decoded NX string bytes and bitmap pixels
+use separate bounded least-recently-used caches per archive. GPU textures are reused for
+the active scene. To inspect the stand, walk, and jump frames for a base appearance, run
 `OpenStoryRS --data-dir /path/to/wz --inspect-avatar 0 20000 30000`.

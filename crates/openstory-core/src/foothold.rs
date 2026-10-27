@@ -80,10 +80,17 @@ impl Foothold {
         if self.is_wall() || x < f64::from(self.left()) || x > f64::from(self.right()) {
             return None;
         }
+        Some(self.ground_y_extrapolated(x))
+    }
+
+    /// Evaluates the foothold's line without checking its horizontal extent.
+    /// Legacy physics calls `Foothold::ground_below` directly, which extrapolates
+    /// the segment at both endpoints during movement and foothold transitions.
+    pub(crate) fn ground_y_extrapolated(self, x: f64) -> f64 {
         if self.is_floor() {
-            return Some(f64::from(self.y1));
+            return f64::from(self.y1);
         }
-        Some(self.slope() * (x - f64::from(self.x1)) + f64::from(self.y1))
+        self.slope() * (x - f64::from(self.x1)) + f64::from(self.y1)
     }
 
     fn blocks_vertical_range(self, top: i16, bottom: i16) -> bool {
@@ -183,7 +190,8 @@ impl FootholdTree {
     }
 
     /// Finds the closest floor at or below a point in Maple's downward-positive
-    /// coordinate system. Ties retain source order, matching legacy map iteration.
+    /// coordinate system. Equal-height matches select the last source candidate,
+    /// matching the legacy lookup's overwrite-on-equal behavior.
     pub fn find_below(&self, x: f64, y: f64) -> Option<(u16, f64)> {
         if !x.is_finite() || !y.is_finite() || x < f64::from(i16::MIN) || x > f64::from(i16::MAX) {
             return None;
@@ -196,7 +204,7 @@ impl FootholdTree {
             let Some(ground_y) = foothold.ground_y(x) else {
                 continue;
             };
-            if ground_y >= y && nearest.is_none_or(|(_, best_ground_y)| ground_y < best_ground_y) {
+            if ground_y >= y && nearest.is_none_or(|(_, best_ground_y)| ground_y <= best_ground_y) {
                 nearest = Some((foothold.id, ground_y));
             }
         }
@@ -204,7 +212,7 @@ impl FootholdTree {
     }
 
     /// Finds the closest floor at or above a point in Maple's downward-positive
-    /// coordinate system. Ties retain source order, matching `find_below`.
+    /// coordinate system. Equal-height matches retain the first source candidate.
     pub fn find_above(&self, x: f64, y: f64) -> Option<(u16, f64)> {
         if !x.is_finite() || !y.is_finite() || x < f64::from(i16::MIN) || x > f64::from(i16::MAX) {
             return None;

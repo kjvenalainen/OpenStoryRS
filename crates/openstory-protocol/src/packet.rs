@@ -33,6 +33,7 @@ pub enum PacketError {
         actual: usize,
     },
     InvalidAttackDamage(i32),
+    InvalidForcedStatMask(u32),
     TooManyChatRecipients(usize),
     InvalidBuddyGroupLength(usize),
     InvalidInventoryType(i8),
@@ -44,6 +45,16 @@ pub enum PacketError {
     TooManyInventoryModifications(usize),
     InvalidSkillCount(i16),
     TooManySkillEntries(usize),
+    TooManySkillMacros(usize),
+    SkillMacroNameTooLong(usize),
+    InvalidSkillMacroSkillId(i32),
+    InvalidQuickSlotFlag(u8),
+    InvalidKeyMapFlag(u8),
+    InvalidQuickSlotKey(i32),
+    DuplicateQuickSlotKey(i32),
+    InvalidKeyMapKey(u8),
+    DuplicateKeyMapKey(u8),
+    TooManyKeyMapUpdates(usize),
     InvalidQuestCount(i16),
     TooManyQuestEntries(usize),
     TooManyCooldowns(usize),
@@ -86,6 +97,10 @@ pub enum PacketError {
     InvalidTradeCount(i16),
     InvalidTradeMeso(i32),
     InvalidCharacterInfoCount {
+        section: &'static str,
+        count: i32,
+    },
+    InvalidFamilyCount {
         section: &'static str,
         count: i32,
     },
@@ -147,6 +162,12 @@ impl fmt::Display for PacketError {
             Self::InvalidAttackDamage(damage) => {
                 write!(f, "attack damage cannot be negative: {damage}")
             }
+            Self::InvalidForcedStatMask(mask) => {
+                write!(
+                    f,
+                    "forced-stat packet contains unsupported mask {mask:#010x}"
+                )
+            }
             Self::TooManyChatRecipients(count) => {
                 write!(
                     f,
@@ -183,6 +204,42 @@ impl fmt::Display for PacketError {
             }
             Self::TooManySkillEntries(maximum) => {
                 write!(f, "skill packet exceeds {maximum} entries")
+            }
+            Self::TooManySkillMacros(count) => {
+                write!(
+                    f,
+                    "skill-macro packet contains {count} entries; maximum is 3"
+                )
+            }
+            Self::SkillMacroNameTooLong(length) => {
+                write!(f, "skill-macro name has {length} characters; maximum is 13")
+            }
+            Self::InvalidSkillMacroSkillId(skill_id) => {
+                write!(f, "skill-macro contains invalid skill id {skill_id}")
+            }
+            Self::InvalidQuickSlotFlag(flag) => {
+                write!(f, "invalid quick-slot init flag {flag}; expected 0 or 1")
+            }
+            Self::InvalidKeyMapFlag(flag) => {
+                write!(
+                    f,
+                    "invalid key-map enable-actions flag {flag}; expected 0 or 1"
+                )
+            }
+            Self::InvalidQuickSlotKey(key) => {
+                write!(f, "invalid quick-slot Maple key index {key}")
+            }
+            Self::DuplicateQuickSlotKey(key) => {
+                write!(f, "quick-slot layout repeats Maple key index {key}")
+            }
+            Self::InvalidKeyMapKey(key) => {
+                write!(f, "invalid Maple key index {key}; expected 0 through 89")
+            }
+            Self::DuplicateKeyMapKey(key) => {
+                write!(f, "key-map update repeats Maple key index {key}")
+            }
+            Self::TooManyKeyMapUpdates(count) => {
+                write!(f, "key-map update has {count} entries; maximum is 90")
             }
             Self::InvalidQuestCount(count) => {
                 write!(f, "quest packet contains a negative entry count: {count}")
@@ -313,6 +370,9 @@ impl fmt::Display for PacketError {
             }
             Self::InvalidCharacterInfoCount { section, count } => {
                 write!(f, "character info {section} count {count} is invalid")
+            }
+            Self::InvalidFamilyCount { section, count } => {
+                write!(f, "family {section} count {count} is invalid")
             }
         }
     }

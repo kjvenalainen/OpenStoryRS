@@ -61,6 +61,10 @@ pub enum GuildEvent {
         name: String,
         expelled: bool,
     },
+    GuildDisbanded {
+        guild_id: i32,
+        marker: i8,
+    },
     CapacityChanged {
         guild_id: i32,
         capacity: i32,
@@ -161,9 +165,14 @@ pub fn parse_guild_operation(bytes: &[u8]) -> Result<Option<GuildEvent>, PacketE
             name: packet.read_string()?,
             expelled: operation == 0x2f,
         }),
+        0x32 => Some(GuildEvent::GuildDisbanded {
+            guild_id: packet.read_i32()?,
+            marker: packet.read_i8()?,
+        }),
         0x3a => Some(GuildEvent::CapacityChanged {
             guild_id: packet.read_i32()?,
-            capacity: i32::from(packet.read_u8()?),
+            // The legacy handler reads this wire byte as int8_t.
+            capacity: i32::from(packet.read_i8()?),
         }),
         0x3c => Some(GuildEvent::MemberStatsChanged {
             guild_id: packet.read_i32()?,
@@ -183,7 +192,8 @@ pub fn parse_guild_operation(bytes: &[u8]) -> Result<Option<GuildEvent>, PacketE
         0x40 => Some(GuildEvent::MemberRankChanged {
             guild_id: packet.read_i32()?,
             character_id: packet.read_i32()?,
-            rank: i32::from(packet.read_u8()?),
+            // The legacy handler reads this wire byte as int8_t.
+            rank: i32::from(packet.read_i8()?),
         }),
         0x42 => Some(GuildEvent::EmblemChanged {
             guild_id: packet.read_i32()?,

@@ -116,6 +116,7 @@ pub struct TradeRoom {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TradeItemUpdate {
     pub player: u8,
+    /// Zero-based local slot; the v83 wire slot is one-based.
     pub slot: u8,
     pub item_id: i32,
     pub quantity: i16,
@@ -384,13 +385,15 @@ pub fn parse_player_interaction_room_reply(
         }
         15 if active_room_type == Some(3) => {
             let player = packet.read_u8()?;
-            let slot = packet.read_u8()?;
+            let wire_slot = packet.read_u8()?;
             if player > 1 {
                 return Err(PacketError::InvalidTradePlayer(player));
             }
-            if usize::from(slot) >= MAX_TRADE_ITEMS {
-                return Err(PacketError::InvalidTradeSlot(slot));
+            if !(1..=MAX_TRADE_ITEMS as u8).contains(&wire_slot) {
+                return Err(PacketError::InvalidTradeSlot(wire_slot));
             }
+            // TradeSetItemPacket sends slots 1..=9; the UI stores them as 0..=8.
+            let slot = wire_slot - 1;
             let (item_id, quantity) = read_shop_item_data(&mut packet)?;
             return Ok(PlayerInteractionRoomReply::TradeItem(TradeItemUpdate {
                 player,
@@ -542,7 +545,7 @@ pub fn parse_player_interaction_room_reply(
     if my_slot == 0 {
         packet.read_i16()?;
         packet.read_i16()?;
-        first_time = packet.read_bool()?;
+        first_time = packet.read_u8()? != 0;
         let sold_count = bounded_merchant_count(i16::from(packet.read_i8()?), MAX_MERCHANT_ITEMS)?;
         for _ in 0..sold_count {
             packet.read_i32()?;

@@ -611,14 +611,24 @@ pub fn use_item_packet(slot: i16, item_id: i32, client_tick: i32) -> Vec<u8> {
 }
 
 /// Builds the v83 cash-megaphone request for regular, super, item, and triple
-/// megaphones. Item megaphones are sent without an attached inventory item.
+/// megaphones. Item megaphones may reference an attached inventory item.
 pub fn use_megaphone_packet(
     slot: i16,
     item_id: i32,
     lines: &[String],
     whisper: bool,
+    attached_item: Option<(InventoryType, u16)>,
 ) -> Option<Vec<u8>> {
-    if slot <= 0 || item_id / 10_000 != 507 || lines.is_empty() || lines.len() > 3 {
+    let subtype = (item_id / 1_000) % 10;
+    if slot <= 0
+        || item_id / 10_000 != 507
+        || lines.is_empty()
+        || lines.len() > 3
+        || (subtype != 6 && attached_item.is_some())
+        || attached_item.is_some_and(|(inventory_type, source_slot)| {
+            inventory_type == InventoryType::Equipped || source_slot == 0
+        })
+    {
         return None;
     }
     if lines.iter().any(|line| {
@@ -627,7 +637,6 @@ pub fn use_megaphone_packet(
         return None;
     }
 
-    let subtype = (item_id / 1_000) % 10;
     let mut packet = PacketWriter::new(OPCODE_USE_CASH_ITEM);
     packet.write_i16(slot);
     packet.write_i32(item_id);
@@ -637,7 +646,12 @@ pub fn use_megaphone_packet(
         2 if lines.len() == 1 => packet.write_bool(whisper),
         6 if lines.len() == 1 => {
             packet.write_bool(whisper);
-            packet.write_bool(false); // No inventory item attached.
+            packet.write_bool(attached_item.is_some());
+            if let Some((inventory_type, source_slot)) = attached_item {
+                // Cosmic's USE_CASH_ITEM handler reads both source fields as ints.
+                packet.write_i32(i32::from(inventory_type as u8));
+                packet.write_i32(i32::from(source_slot));
+            }
         }
         7 => {
             packet.write_u8(lines.len() as u8);
@@ -682,17 +696,20 @@ pub fn use_avatar_megaphone_packet(
     Some(packet.into_bytes())
 }
 
-/// Builds the v83 Maple TV request with up to five message rows and no named
-/// recipient. Missing rows are padded with empty strings.
+/// Builds the v83 Maple TV request with an optional named recipient and up to
+/// five message rows. Missing rows are padded with empty strings.
 pub fn use_maple_tv_packet(
     slot: i16,
     item_id: i32,
+    recipient: &str,
     lines: &[String],
     megassenger: bool,
 ) -> Option<Vec<u8>> {
     if slot <= 0
         || item_id / 10_000 != 507
         || (item_id / 1_000) % 10 != 5
+        || recipient.chars().count() > 12
+        || recipient.chars().any(char::is_control)
         || lines.is_empty()
         || lines.len() > 5
         || lines
@@ -705,7 +722,7 @@ pub fn use_maple_tv_packet(
     let mut packet = PacketWriter::new(OPCODE_USE_CASH_ITEM);
     packet.write_i16(slot);
     packet.write_i32(item_id);
-    packet.write_string("").ok()?; // No victim/recipient name.
+    packet.write_string(recipient).ok()?;
     for index in 0..5 {
         packet
             .write_string(lines.get(index).map_or("", String::as_str))

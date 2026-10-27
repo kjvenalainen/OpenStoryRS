@@ -14,6 +14,8 @@ pub const OPCODE_RECOMMENDED_WORLDS: u16 = 27;
 pub const OPCODE_CHARLIST_RESULT: u16 = 11;
 pub const OPCODE_SERVERSTATUS_RESULT: u16 = 3;
 pub const OPCODE_SERVER_IP: u16 = 12;
+/// In-game channel-transfer response carrying the destination IPv4 address and port.
+pub const OPCODE_CHANNEL_TRANSFER: u16 = 16;
 pub const OPCODE_SELECT_CHARACTER: u16 = 19;
 pub const OPCODE_REGISTER_PIC: u16 = 29;
 pub const OPCODE_SELECT_CHARACTER_PIC: u16 = 30;
@@ -152,6 +154,12 @@ pub struct ServerRedirect {
     pub address: std::net::Ipv4Addr,
     pub port: u16,
     pub character_id: i32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ChannelTransfer {
+    pub address: std::net::Ipv4Addr,
+    pub port: u16,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -358,6 +366,22 @@ pub fn parse_server_redirect(body: &[u8]) -> Result<ServerRedirect, PacketError>
     })
 }
 
+/// Parses the v83 in-game channel-transfer response. After the opcode the
+/// server sends one reserved byte, four IPv4 octets, and a little-endian port.
+pub fn parse_channel_transfer(body: &[u8]) -> Result<ChannelTransfer, PacketError> {
+    let mut packet = PacketReader::new(body);
+    expect_opcode(&mut packet, OPCODE_CHANNEL_TRANSFER)?;
+    packet.skip(1)?; // reserved byte consumed by the legacy client
+    let octets: [u8; 4] = packet
+        .read_bytes(4)?
+        .try_into()
+        .expect("length checked by packet reader");
+    Ok(ChannelTransfer {
+        address: std::net::Ipv4Addr::from(octets),
+        port: packet.read_u16()?,
+    })
+}
+
 /// Parses the map-change and initial character-entry headers from `SET_FIELD`.
 /// The initial form carries more inventory state after the character stats; this
 /// parser consumes the bounded stats prefix needed to identify the actual map.
@@ -530,9 +554,9 @@ fn read_equipment_slots(packet: &mut PacketReader<'_>) -> Result<Vec<(i8, i32)>,
 
 fn movement_sign(value: i32) -> i8 {
     match value.cmp(&0) {
-        std::cmp::Ordering::Less => -1,
-        std::cmp::Ordering::Equal => 0,
-        std::cmp::Ordering::Greater => 1,
+        std::cmp::Ordering::Less => b'-' as i8,
+        std::cmp::Ordering::Equal => b'=' as i8,
+        std::cmp::Ordering::Greater => b'+' as i8,
     }
 }
 

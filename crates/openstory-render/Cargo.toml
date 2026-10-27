@@ -9,8 +9,20 @@ rust-version.workspace = true
 bytemuck.workspace = true
 openstory-core.workspace = true
 
+[target.'cfg(target_os = "macos")'.dependencies]
+# Metal is macOS's native backend. GLES is not enabled here because wgpu's
+# macOS OpenGL path requires an external ANGLE translation layer.
+wgpu = { version = "30.0.1", default-features = false, features = ["std", "metal", "wgsl"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+# Prefer DX12 while keeping Vulkan available as a native fallback.
+wgpu = { version = "30.0.1", default-features = false, features = ["std", "dx12", "vulkan", "wgsl"] }
+
+[target.'cfg(all(not(target_arch = "wasm32"), not(any(target_os = "macos", target_os = "windows"))))'.dependencies]
+# Preserve a useful backend set for other native targets such as Linux.
+wgpu = { version = "30.0.1", default-features = false, features = ["std", "vulkan", "gles", "wgsl"] }
+
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-wgpu = { version = "30.0.1", default-features = false, features = ["std", "metal", "dx12", "gles", "wgsl"] }
 winit = { version = "0.30.13", default-features = false, features = ["rwh_06"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]

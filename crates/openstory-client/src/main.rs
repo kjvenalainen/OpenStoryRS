@@ -6,7 +6,19 @@ mod session;
 #[cfg(not(target_arch = "wasm32"))]
 mod native {
     mod audio;
+    mod cash_shop_ui;
+    mod channel_switch;
+    mod hardware_info;
+    mod item_megaphone;
+    mod messenger;
+    mod minimap;
+    mod monster_book;
+    mod party_search;
     mod settings;
+    mod skill_macros;
+    mod ui_preview;
+    mod weather;
+    mod world_map;
 
     use super::session;
 
@@ -18,7 +30,23 @@ mod native {
     use std::sync::{Arc, LazyLock, Mutex};
     use std::time::{Duration, Instant};
 
-    use settings::{AudioSettings, LoginPreferences};
+    use settings::{
+        AudioSettings, GameplaySettings, LoginPreferences, load_quickslot_keys,
+        save as save_settings, save_quickslot_keys,
+    };
+
+    fn character_selection_hardware_info() -> (String, String) {
+        let configured_macs = std::env::var("OPENSTORY_MACS").ok();
+        let configured_hwid = std::env::var("OPENSTORY_HWID").ok();
+        if let (Some(macs), Some(hwid)) = (configured_macs.as_ref(), configured_hwid.as_ref()) {
+            return (macs.clone(), hwid.clone());
+        }
+        let defaults = hardware_info::legacy_hardware_info();
+        (
+            configured_macs.unwrap_or(defaults.macs),
+            configured_hwid.unwrap_or(defaults.hwid),
+        )
+    }
 
     use openstory_assets::{
         AssetDirectory, Bitmap, NodeValue, NxArchive, NxNode, REQUIRED_NX_FILES,
@@ -36,13 +64,17 @@ mod native {
 
     const FIELD_WIDTH: u32 = 150;
     const FIELD_HEIGHT: u32 = 45;
+    // Keep the player in the lower third of the field so platforms and
+    // footholds below the camera target do not dominate the view.
+    const GAMEPLAY_CAMERA_CENTER_Y: f32 = 640.0;
+    const LOGIN_CARET_BLINK_INTERVAL: Duration = Duration::from_millis(530);
     const FIELD_X: f32 = 567.0;
     const ACCOUNT_Y: f32 = 319.0;
     const PASSWORD_Y: f32 = 349.0;
     const PIC_DIALOG_WIDTH: u32 = 520;
     const PIC_DIALOG_HEIGHT: u32 = 190;
-    const CHARACTER_PAGE_SIZE: usize = 10;
-    const CASH_SHOP_PAGE_SIZE: usize = 6;
+    const CHARACTER_PAGE_SIZE: usize = 3;
+    const CASH_SHOP_PAGE_SIZE: usize = cash_shop_ui::CATALOG_PAGE_SIZE;
     const OWL_PANEL_WIDTH: u32 = 464;
     const OWL_PANEL_HEIGHT: u32 = 460;
     const OWL_PANEL_X: f32 = 280.0;
@@ -56,11 +88,13 @@ mod native {
     const TRADE_PANEL_X: f32 = 152.0;
     const TRADE_PANEL_Y: f32 = 84.0;
     const CHARACTER_INFO_PANEL_WIDTH: u32 = 392;
-    const CHARACTER_INFO_PANEL_HEIGHT: u32 = 454;
+    const CHARACTER_INFO_PANEL_HEIGHT: u32 = 492;
     const CHARACTER_INFO_PANEL_X: f32 = 316.0;
     const CHARACTER_INFO_PANEL_Y: f32 = 157.0;
     const CHAT_WIDTH: u32 = 470;
     const CHAT_HEIGHT: u32 = 166;
+    const ITEM_MEGAPHONE_X: f32 = (1024.0 - item_megaphone::WIDTH as f32) * 0.5;
+    const ITEM_MEGAPHONE_Y: f32 = (768.0 - item_megaphone::HEIGHT as f32) * 0.5;
     const WHISPER_PANEL_WIDTH: u32 = 368;
     const WHISPER_PANEL_HEIGHT: u32 = 284;
     const WHISPER_PANEL_X: f32 = 644.0;
@@ -72,6 +106,10 @@ mod native {
     const PARTY_PANEL_HEIGHT: u32 = 238;
     const GUILD_PANEL_WIDTH: u32 = 336;
     const GUILD_PANEL_HEIGHT: u32 = 420;
+    const FAMILY_PANEL_WIDTH: u32 = 274;
+    const FAMILY_PANEL_HEIGHT: u32 = 439;
+    const FAMILY_TREE_PANEL_WIDTH: u32 = 578;
+    const FAMILY_TREE_PANEL_HEIGHT: u32 = 386;
     const ALLIANCE_PANEL_WIDTH: u32 = 420;
     const ALLIANCE_PANEL_HEIGHT: u32 = 386;
     const GUILD_BBS_PANEL_WIDTH: u32 = 824;
@@ -85,18 +123,71 @@ mod native {
     const SETTINGS_PANEL_Y: f32 = 219.0;
     const SETTINGS_PANEL_WIDTH: u32 = 480;
     const SETTINGS_PANEL_HEIGHT: u32 = 330;
-    const STATUS_PANEL_WIDTH: u32 = 356;
-    const STATUS_PANEL_HEIGHT: u32 = 444;
-    const STATUS_PANEL_X: f32 = 334.0;
-    const STATUS_PANEL_Y: f32 = 162.0;
+    const STATUS_PANEL_WIDTH: u32 = 212;
+    const STATUS_PANEL_HEIGHT: u32 = 318;
+    const STATUS_PANEL_X: f32 = 212.0;
+    const STATUS_PANEL_Y: f32 = 20.0;
+    const INVENTORY_PANEL_X: f32 = 172.0;
+    const INVENTORY_PANEL_Y: f32 = 20.0;
+    const INVENTORY_PANEL_WIDTH: u32 = 175;
+    const INVENTORY_PANEL_HEIGHT: u32 = 289;
+    const INVENTORY_SLOT_COLUMNS: usize = 4;
+    const INVENTORY_SLOT_ROWS: usize = 6;
+    const INVENTORY_SLOT_X: usize = 10;
+    const INVENTORY_SLOT_Y: usize = 51;
+    const INVENTORY_SLOT_STEP_X: usize = 36;
+    const INVENTORY_SLOT_STEP_Y: usize = 35;
+    const QUEST_LOG_PANEL_X: f32 = 280.0;
+    const QUEST_LOG_PANEL_Y: f32 = 20.0;
+    const QUEST_LOG_PANEL_WIDTH: u32 = 598;
+    const QUEST_LOG_PANEL_HEIGHT: u32 = 396;
+    const QUEST_LOG_DETAIL_X: usize = 293;
+    const QUEST_LOG_VISIBLE_ROWS: usize = 8;
+    const KEY_CONFIG_PANEL_WIDTH: u32 = 424;
+    const KEY_CONFIG_PANEL_HEIGHT: u32 = 456;
+    const KEY_CONFIG_PANEL_X: f32 = 300.0;
+    const KEY_CONFIG_PANEL_Y: f32 = 176.0;
+    const DEFAULT_QUICKSLOT_KEYS: [u8; 8] = [42, 82, 71, 73, 29, 83, 79, 81];
+    const KEY_CONFIG_VISIBLE_ROWS: usize = 8;
+    const KEY_CONFIG_ROW_TOP: i32 = 80;
+    const KEY_CONFIG_ROW_HEIGHT: i32 = 32;
     const MAX_CHAT_MESSAGE_CHARS: usize = 100;
+    const STATUS_BAR_TOP: f32 = 697.0;
+    const STATUS_MENU_WIDTH: u32 = 126;
+    const STATUS_MENU_ROW_HEIGHT: usize = 18;
+    const STATUS_MENU_ROWS: [&str; 12] = [
+        "Stats",
+        "Skills",
+        "Quests",
+        "Inventory",
+        "Equipment",
+        "Party",
+        "Buddy List",
+        "Guild",
+        "Monster Book",
+        "World Map",
+        "Key Settings",
+        "Options",
+    ];
+    const STATUS_MENU_HEIGHT: u32 =
+        STATUS_MENU_ROWS.len() as u32 * STATUS_MENU_ROW_HEIGHT as u32 + 8;
+    const STATUS_MENU_X: f32 = 794.0;
+    const STATUS_MENU_Y: f32 = STATUS_BAR_TOP - STATUS_MENU_HEIGHT as f32;
     const SPEECH_BUBBLE_WIDTH: u32 = 360;
     const SPEECH_BUBBLE_HEIGHT: u32 = 132;
     const SPEECH_BUBBLE_ANCHOR: (i32, i32) = (180, 110);
     const SPEECH_BUBBLE_DURATION: Duration = Duration::from_secs(4);
+    // Mob.cpp advances opacity by 0.025 per 8 ms client update, which is a
+    // 40-step (320 ms) full-opacity transition on the fixed simulation clock.
+    const MOB_FADE_DURATION: Duration = Duration::from_millis(320);
     const STATUS_SLOW: u64 = 0x0000_0000_0000_0001;
     const STATUS_SEDUCE: u64 = 0x0000_0000_0000_0080;
+    // v83 aliases Zombify disease and the Puppet buff on this mask. Disease
+    // packets carry a mob-skill type that distinguishes Zombify from Puppet.
     const STATUS_ZOMBIFY: u64 = 0x0000_0000_0000_4000;
+    const MOB_SKILL_TYPE_UNDEAD: u16 = 133;
+    const SKILL_HEAL: i32 = 2_301_002;
+    const ZOMBIFY_HEAL_FEEDBACK_WINDOW: Duration = Duration::from_millis(1_500);
     const STATUS_CONFUSE: u64 = 0x0000_0000_0008_0000;
     const STATUS_STUN: u64 = 0x0002_0000_0000_0000;
     const STATUS_POISON: u64 = 0x0004_0000_0000_0000;
@@ -105,6 +196,18 @@ mod native {
     const STATUS_WEAKEN: u64 = 0x4000_0000_0000_0000;
     const STATUS_CURSE: u64 = 0x8000_0000_0000_0000;
     const STATUS_DARKSIGHT: u64 = 0x0000_0400_0000_0000;
+    fn mob_disease_skill_parts(encoded_skill_id: i32) -> Option<(u16, u16)> {
+        let encoded = encoded_skill_id as u32;
+        let skill_type = encoded as u16;
+        let skill_level = (encoded >> 16) as u16;
+        let is_disease = matches!(
+            skill_type,
+            120 | 121 | 122 | 123 | 124 | 125 | 126 | 128 | 132 | 133
+        );
+        (is_disease && skill_level != 0).then_some((skill_type, skill_level))
+    }
+
+    const NPC_DIALOGUE_SCROLL_STEP: usize = 16;
     const CASH_SHOP_CATEGORIES: [&str; 9] = [
         "All items",
         "Equipment",
@@ -130,13 +233,16 @@ mod native {
         let mut inspect_node: Option<(PathBuf, String)> = None;
         let mut inspect_map: Option<i32> = None;
         let mut inspect_avatar: Option<(u8, i32, i32)> = None;
+        let mut ui_preview_screen: Option<String> = None;
+        let mut ui_preview_output = PathBuf::from("target/ui-previews");
+        let mut ui_preview_hitboxes = false;
         let mut connect_to: Option<String> = None;
 
         while let Some(arg) = args.next() {
             match arg.to_str() {
                 Some("--help" | "-h") => {
                     println!(
-                        "OpenStoryRS\n\nOptions:\n  --data-dir PATH        Use an existing folder of NX files\n  --list-assets          Validate and list required NX files\n  --inspect-nx FILE PATH  Inspect an NX node and decode it if it is a bitmap\n  --inspect-map ID       Decode and summarize a map scene without opening a window\n  --inspect-avatar SKIN FACE HAIR  Resolve and decode a base character appearance\n  --connect HOST:PORT    Connect to a v83 server and start the login session\n  --help                 Show this help"
+                        "OpenStoryRS\n\nOptions:\n  --data-dir PATH        Use an existing folder of NX files\n  --list-assets          Validate and list required NX files\n  --inspect-nx FILE PATH  Inspect an NX node and decode it if it is a bitmap\n  --inspect-map ID       Decode and summarize a map scene without opening a window\n  --inspect-avatar SKIN FACE HAIR  Resolve and decode a base character appearance\n  --ui-preview SCREEN    Render an offline UI preview (or 'all')\n  --out DIR              Write UI previews under DIR (default: target/ui-previews)\n  --ui-hitboxes          Also write screen hitbox overlays\n  Preview screens: login, login-active, world-select, character-select-empty, character-select-populated, character-create-class, character-create-explorer, native-keybindings, native-quickslots, native-skill-macros, native-items, native-equipment, native-skills, native-pet-equipment, native-minimap-collapsed, native-minimap-normal, native-minimap-expanded, native-npc-store, native-cash-shop, native-cash-shop-locker, native-cash-shop-coupon, native-cash-shop-confirmation, native-monster-book, native-monster-book-detail, native-monster-book-detail-move, native-monster-book-detail-die, native-status, native-status-bar, native-quit-confirmation, native-quest-log, native-quest-log-detail, native-chat, native-party, native-buddy, native-guild, native-alliance, native-character-info, native-world-map, native-world-map-link, native-world-map-search, native-world-map-marker, native-world-map-result, native-options, native-audio-settings\n  --connect HOST:PORT    Connect to a v83 server (default: OPENSTORY_SERVER or 127.0.0.1:8484)\n  --help                 Show this help"
                     );
                     return Ok(());
                 }
@@ -174,6 +280,19 @@ mod native {
                             .map_err(|error| format!("invalid hair id: {error}"))?,
                     ));
                 }
+                Some("--ui-preview") => {
+                    let Some(screen) = args.next() else {
+                        return Err("--ui-preview requires a screen name or 'all'".to_owned());
+                    };
+                    ui_preview_screen = Some(screen.to_string_lossy().into_owned());
+                }
+                Some("--out") => {
+                    let Some(path) = args.next() else {
+                        return Err("--out requires an output directory".to_owned());
+                    };
+                    ui_preview_output = PathBuf::from(path);
+                }
+                Some("--ui-hitboxes") => ui_preview_hitboxes = true,
                 Some("--connect") => {
                     let Some(address) = args.next() else {
                         return Err("--connect requires HOST:PORT".to_owned());
@@ -198,6 +317,13 @@ mod native {
                 Some(other) => return Err(format!("unknown option {other:?}; use --help")),
                 None => return Err("arguments must be valid UTF-8".to_owned()),
             }
+        }
+
+        if connect_to.is_none() {
+            connect_to = std::env::var("OPENSTORY_SERVER")
+                .ok()
+                .filter(|address| !address.trim().is_empty())
+                .or_else(|| Some("127.0.0.1:8484".to_owned()));
         }
 
         let directory = AssetDirectory::resolve_and_validate(explicit_data_dir.as_deref())
@@ -354,8 +480,26 @@ mod native {
             NxArchive::open(directory.root().join("Etc.nx")).map_err(|error| error.to_string())?;
         let sound_archive = NxArchive::open(directory.root().join("Sound.nx"))
             .map_err(|error| error.to_string())?;
-        let login_scene = load_login_scene(&map_archive, &legacy_ui_archive)?;
         let font = load_system_font()?;
+        if let Some(screen) = ui_preview_screen {
+            return ui_preview::run(
+                &screen,
+                &ui_preview_output,
+                ui_preview_hitboxes,
+                &map_archive,
+                &legacy_ui_archive,
+                &ui_archive,
+                &character_archive,
+                &skill_archive,
+                &etc_archive,
+                &item_archive,
+                &mob_archive,
+                &quest_archive,
+                &string_archive,
+                &font,
+            );
+        }
+        let login_scene = load_login_scene(&map_archive, &legacy_ui_archive)?;
         debug_ui_stage("assets loaded; creating Winit event loop");
         let event_loop = EventLoop::new().map_err(|error| error.to_string())?;
         debug_ui_stage("event loop created; initializing client state");
@@ -404,25 +548,37 @@ mod native {
         remote_art_cache: MapArtCache,
         projectile_frames_cache: HashMap<i32, Vec<ProjectileFrameRuntime>>,
         item_use_effect_cache: HashMap<i32, Option<Vec<ProjectileFrameRuntime>>>,
+        item_aura_frames_cache: HashMap<i32, PersistentItemAuraFrames>,
         summon_frames_cache: HashMap<i32, Vec<ProjectileFrameRuntime>>,
         pet_frames_cache: HashMap<i32, HashMap<u8, Vec<ProjectileFrameRuntime>>>,
         pet_interaction_frames_cache:
             HashMap<(i32, bool, u8, bool), Option<Vec<ProjectileFrameRuntime>>>,
         skill_projectile_cache: HashMap<(i32, u8), Option<Vec<ProjectileFrameRuntime>>>,
         skill_effect_cache: HashMap<(i32, u8, u8, bool), Vec<CharacterSkillEffectAnimation>>,
-        character_effect_cache: HashMap<i8, Vec<CharacterSkillEffectAnimation>>,
+        mob_disease_effect_cache: HashMap<(u16, u16), Vec<CharacterSkillEffectAnimation>>,
+        character_effect_cache: HashMap<(i8, i8), Vec<CharacterSkillEffectAnimation>>,
+        field_effect_cache: HashMap<String, Vec<ProjectileFrameRuntime>>,
+        weather_overlay: weather::WeatherOverlay,
+        weather_texture: Option<GpuTexture>,
+        scrolling_notice: Option<ScrollingNoticeState>,
         skill_hit_effect_cache: HashMap<(i32, u8, u8, bool), Vec<SkillHitEffectAnimation>>,
         face_expression_cache: HashMap<(i32, u8), Option<Vec<FaceExpressionFrameRuntime>>>,
         last_face_expression_at: Option<Instant>,
         teleport_effect_frames: Option<Vec<ProjectileFrameRuntime>>,
         login_actions: Vec<LoginActionRegion>,
         cursor: Option<Point>,
+        cursor_physical: Option<(f64, f64)>,
         field_textures: Vec<GpuTexture>,
         account_text: String,
         password_text: String,
         focused_field: LoginField,
+        login_caret_visible: bool,
+        next_login_caret_toggle: Instant,
         focused_login_button: Option<usize>,
+        character_action_focus: Option<usize>,
         suppress_login_ime_space: bool,
+        login_key_text_for_ime_dedup: Option<String>,
+        character_creation_key_text_for_ime_dedup: Option<String>,
         save_account_id: bool,
         save_id_indicator_draws: Option<(usize, SpriteRect, usize, SpriteRect)>,
         pic_entry: Option<PicEntry>,
@@ -436,16 +592,44 @@ mod native {
         death_notice_texture: Option<GpuTexture>,
         settings_texture: Option<GpuTexture>,
         status_texture: Option<GpuTexture>,
+        key_config_texture: Option<GpuTexture>,
+        skill_macro_texture: Option<GpuTexture>,
         pet_equipment_texture: Option<GpuTexture>,
         cash_shop_texture: Option<GpuTexture>,
+        cash_shop_hit_regions: Vec<cash_shop_ui::HitRegion>,
         owl_texture: Option<GpuTexture>,
         skill_book_texture: Option<GpuTexture>,
         quest_log_texture: Option<GpuTexture>,
+        monster_book: monster_book::State,
+        monster_book_animation_texture: Option<GpuTexture>,
+        world_map: world_map::State,
+        world_map_key_text_for_ime_dedup: Option<String>,
+        channel_switch_open: bool,
+        channel_switch_texture: Option<GpuTexture>,
+        channel_switch_actions: Vec<channel_switch::ActionHit>,
+        channel_switch_selected: u8,
+        messenger: Option<messenger::State>,
+        messenger_texture: Option<GpuTexture>,
+        messenger_actions: Vec<messenger::ActionHit>,
+        messenger_bounds: Option<messenger::HitRect>,
+        messenger_chat_focused: bool,
+        messenger_drag_offset: Option<(f32, f32)>,
+        minimap_ui_assets: Option<Result<minimap::UiAssets, String>>,
+        minimap_texture: Option<GpuTexture>,
+        minimap_bounds: Option<minimap::HitRect>,
+        minimap_hit_regions: Vec<minimap::HitRegion>,
+        next_minimap_refresh: Instant,
+        party_search: Option<party_search::State>,
+        party_search_texture: Option<GpuTexture>,
+        party_search_actions: Vec<party_search::ActionHit>,
         chat_texture: Option<GpuTexture>,
+        item_megaphone_texture: Option<GpuTexture>,
         whisper_texture: Option<GpuTexture>,
         party_texture: Option<GpuTexture>,
         buddy_texture: Option<GpuTexture>,
         guild_texture: Option<GpuTexture>,
+        family_texture: Option<GpuTexture>,
+        family_tree_texture: Option<GpuTexture>,
         alliance_texture: Option<GpuTexture>,
         guild_bbs_texture: Option<GpuTexture>,
         chat_lines: VecDeque<ChatLine>,
@@ -467,6 +651,11 @@ mod native {
         show_party_panel: bool,
         guild_info: Option<openstory_protocol::GuildInfo>,
         show_guild_panel: bool,
+        family_ui: FamilyUiState,
+        show_family_panel: bool,
+        show_family_tree: bool,
+        pending_family_join: Option<(i32, String)>,
+        pending_family_summon: Option<(String, String)>,
         guild_panel_mode: GuildPanelMode,
         guild_scroll: usize,
         pending_guild_invite: Option<(i32, String)>,
@@ -489,14 +678,35 @@ mod native {
         show_inventory: bool,
         show_settings: bool,
         show_status: bool,
+        show_key_config: bool,
+        key_config_capture: Option<usize>,
+        quickslot_key_capture: Option<usize>,
+        key_config_scroll_row: usize,
+        key_config_actions: Vec<KeyConfigAction>,
+        key_config_actions_dirty: bool,
+        server_keymap: Option<Vec<openstory_protocol::KeyBinding>>,
+        quickslot_keys: [u8; 8],
+        quickslot_keys_customized: bool,
+        show_quickslots: bool,
+        quickslot_texture: Option<GpuTexture>,
+        quickslot_icon_cache: HashMap<(u8, i32), Option<(u32, u32, Arc<[u8]>)>>,
+        show_status_menu: bool,
+        status_menu_texture: Option<GpuTexture>,
+        skill_macro_editor: skill_macros::State,
+        skill_macros: Vec<openstory_protocol::SkillMacro>,
+        pending_macro_skills: VecDeque<i32>,
+        next_macro_skill_at: Instant,
         status_auto_confirmation: bool,
         status_waiting_for_stats: bool,
-        settings_dragging: Option<AudioSettingSlider>,
-        settings_selected_slider: AudioSettingSlider,
+        settings_dragging: Option<OptionSlider>,
+        settings_selected_slider: OptionSlider,
         settings: AudioSettings,
         settings_original: AudioSettings,
+        gameplay_settings: GameplaySettings,
+        gameplay_settings_original: GameplaySettings,
         settings_notice: Option<String>,
         show_pet_equipment: bool,
+        pet_equipment_scroll_row: usize,
         show_skill_book: bool,
         show_quest_log: bool,
         skill_book_tab: u8,
@@ -504,6 +714,7 @@ mod native {
         skills: HashMap<i32, openstory_protocol::SkillEntry>,
         skill_book_entries: Vec<SkillUiEntry>,
         active_buffs: HashMap<openstory_protocol::BuffStatKey, ActiveCharacterBuff>,
+        forced_equipment_stats: ForcedEquipmentStats,
         inventory_tab: openstory_protocol::InventoryType,
         inventory_scroll_row: u16,
         inventory_hover_slot: Option<u16>,
@@ -514,6 +725,8 @@ mod native {
         death_respawn_pending: bool,
         font: fontdue::Font,
         session: Option<Box<dyn openstory_protocol::SessionTransport>>,
+        server_address: String,
+        pending_login_packet: Option<Vec<u8>>,
         login_server_connected: bool,
         channel_connected: bool,
         debug_event_loop_logged: bool,
@@ -536,7 +749,16 @@ mod native {
         owl_name_index: Option<Vec<(String, i32)>>,
         damage_glyph_texture: Option<GpuTexture>,
         damage_glyphs: Vec<DamageGlyph>,
+        maple_tv_assets_loaded: bool,
+        maple_tv_base_pixels: Option<Arc<[u8]>>,
+        maple_tv_idle_texture: Option<GpuTexture>,
+        maple_tv_ad_animations: Vec<MapleTvAnimation>,
+        maple_tv_ad_index: usize,
+        maple_tv_theme_animations: [MapleTvAnimation; 2],
+        maple_tv_text_texture: Option<GpuTexture>,
+        maple_tv_broadcast: Option<MapleTvBroadcastRuntime>,
         npc_dialogue: Option<NpcDialogueUi>,
+        npc_dialogue_scroll_dragging: bool,
         npc_shop: Option<NpcShopUi>,
         hired_merchant_room: Option<HiredMerchantRoomUi>,
         trade_room: Option<TradeRoomUi>,
@@ -546,6 +768,14 @@ mod native {
         cash_shop: Option<CashShopUi>,
         cash_products: Vec<CashShopProduct>,
         map_hud_texture: Option<GpuTexture>,
+        status_bar_draw_indices: Vec<(usize, SpriteRect)>,
+        status_bar_gauges: [Option<StatusBarGauge>; 3],
+        status_bar_number_font: Option<StatusBarNumberFont>,
+        status_bar_layout: StatusBarLayout,
+        quit_confirmation: bool,
+        quit_confirmation_draws: Vec<(usize, SpriteRect)>,
+        quit_confirmation_buttons: [Option<SpriteRect>; 2],
+        quit_requested: bool,
         scriptable_npc_ids: HashSet<i32>,
         worlds: Vec<openstory_protocol::WorldInfo>,
         preferred_world: Option<u8>,
@@ -553,6 +783,8 @@ mod native {
         selected_channel: u8,
         character_list: Option<openstory_protocol::CharacterList>,
         character_page: usize,
+        selected_character_index: usize,
+        character_selection_status: Option<String>,
         character_creation: Option<CharacterCreationState>,
         active_character: Option<openstory_protocol::CharacterInfo>,
         inventory: Option<openstory_protocol::InventorySnapshot>,
@@ -568,6 +800,8 @@ mod native {
         show_login_fields: bool,
         map_scene: Option<MapSceneRuntime>,
         last_npc_talk_at: Option<Instant>,
+        last_local_skill_cast: Option<(i32, Instant)>,
+        pending_zombify_heal_feedback_until: Option<Instant>,
         gameplay_input: GameplayInput,
         simulation_clock: FixedStepClock,
         client_started_at: Instant,
@@ -582,12 +816,21 @@ mod native {
         down: bool,
         sit: bool,
         jump_buffer: u8,
+        jump_down_ticks: u8,
+    }
+
+    struct ScrollingNoticeState {
+        texture: GpuTexture,
+        width: f32,
+        x: f32,
     }
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    enum AudioSettingSlider {
+    enum OptionSlider {
         Music,
         Effects,
+        HpWarning,
+        MpWarning,
     }
 
     #[derive(Clone, Debug)]
@@ -617,25 +860,108 @@ mod native {
         requirements: Vec<(i32, i32)>,
     }
 
+    #[derive(Clone, Debug)]
+    struct KeyConfigAction {
+        label: String,
+        kind: u8,
+        action: i32,
+        assignable: bool,
+    }
+
     #[derive(Clone, Copy)]
     struct ActiveCharacterBuff {
         value: i16,
+        skill_id: i32,
         expires_at: Option<Instant>,
+    }
+
+    #[derive(Clone, Copy, Debug, Default)]
+    struct ForcedEquipmentStats {
+        weapon_attack: Option<i16>,
+        weapon_defense: Option<i16>,
+        magic_attack: Option<i16>,
+        magic_defense: Option<i16>,
+        accuracy: Option<i16>,
+        avoidability: Option<i16>,
+        speed: Option<u8>,
+        jump: Option<u8>,
     }
 
     struct MapSceneData {
         map_id: i32,
         footholds: Option<FootholdTree>,
         spawn: (f64, f64),
+        camera_offset: (f32, f32),
+        camera_bounds: Option<MapCameraBounds>,
         seats: Vec<(i16, i16)>,
+        ladders: Vec<MapLadder>,
         world_draw_indices: Vec<usize>,
         map_backgrounds: Vec<MapBackgroundAsset>,
+        layer_insert_indices: [usize; 8],
         foreground_start_index: usize,
         map_art_animations: Vec<MapArtAnimationAsset>,
         avatar_frames: Vec<AvatarFrameAsset>,
+        minimap: Option<minimap::MiniMapData>,
         portals: Vec<MapPortalAsset>,
         regular_portal_frames: Vec<SpriteFrameAsset>,
         hidden_portal_frames: Vec<SpriteFrameAsset>,
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    struct MapCameraBounds {
+        left: f32,
+        right: f32,
+        top: f32,
+        bottom: f32,
+    }
+
+    impl MapCameraBounds {
+        fn offset_for(self, world_x: f64, world_y: f64) -> (f32, f32) {
+            let mut x = 512.0 - world_x as f32;
+            let mut y = GAMEPLAY_CAMERA_CENTER_Y - world_y as f32;
+            let width = 1024.0;
+            let height = 768.0;
+            if self.right - self.left < width {
+                x = -self.left;
+            } else {
+                x = x.clamp(width - self.right, -self.left);
+            }
+            if self.bottom - self.top < height {
+                y = height - self.bottom;
+            } else {
+                y = y.clamp(height - self.bottom, -self.top);
+            }
+            (x, y)
+        }
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    struct MapLadder {
+        x: i16,
+        y1: i16,
+        y2: i16,
+        is_ladder: bool,
+    }
+
+    impl MapLadder {
+        fn in_range(self, x: i16, y: i16, upwards: bool) -> bool {
+            let vertical = if upwards {
+                y.saturating_sub(5)
+            } else {
+                y.saturating_add(5)
+            };
+            (i32::from(x) - i32::from(self.x)).abs() <= 10
+                && (self.y1..=self.y2).contains(&vertical)
+        }
+
+        fn fell_off(self, y: i16, downwards: bool) -> bool {
+            let beyond_end = if downwards {
+                y.saturating_add(5) > self.y2
+            } else {
+                y.saturating_sub(5) > self.y2
+            };
+            beyond_end || y.saturating_add(5) < self.y1
+        }
     }
 
     struct MapPortalAsset {
@@ -655,6 +981,7 @@ mod native {
     struct MapArtAnimationAsset {
         frames: Vec<SpriteFrameAsset>,
         environment_name: Option<String>,
+        hold_last: bool,
     }
 
     struct MapBackgroundAsset {
@@ -664,6 +991,8 @@ mod native {
         vertical_tiled: bool,
         tile_width: f32,
         tile_height: f32,
+        tile_count_x: usize,
+        tile_count_y: usize,
         horizontal_mobile: bool,
         vertical_mobile: bool,
         horizontal_speed: f32,
@@ -676,7 +1005,10 @@ mod native {
     enum AvatarMotion {
         Stand,
         Walk,
+        Crouch,
         Jump,
+        Ladder,
+        Rope,
         Sit,
         Attack(u8),
     }
@@ -718,13 +1050,12 @@ mod native {
     }
 
     fn avatar_motion_for_stance(stance: u8) -> AvatarMotion {
-        if (stance & !1) == 20 {
-            return AvatarMotion::Sit;
-        }
-        if matches!(stance, 8 | 10..=13 | 15..=20 | 23..=33) {
-            return AvatarMotion::Attack(stance);
-        }
         match stance & !1 {
+            14 => AvatarMotion::Ladder,
+            16 => AvatarMotion::Rope,
+            20 => AvatarMotion::Sit,
+            10 => AvatarMotion::Crouch,
+            _ if matches!(stance, 8 | 11..=13 | 15..=19 | 23..=33) => AvatarMotion::Attack(stance),
             2 => AvatarMotion::Walk,
             6 => AvatarMotion::Jump,
             _ => AvatarMotion::Stand,
@@ -739,7 +1070,11 @@ mod native {
                 let fallback = match motion {
                     AvatarMotion::Stand => AvatarMotion::Walk,
                     AvatarMotion::Sit => AvatarMotion::Stand,
-                    AvatarMotion::Walk | AvatarMotion::Jump => AvatarMotion::Stand,
+                    AvatarMotion::Crouch => AvatarMotion::Stand,
+                    AvatarMotion::Walk
+                    | AvatarMotion::Jump
+                    | AvatarMotion::Ladder
+                    | AvatarMotion::Rope => AvatarMotion::Stand,
                     AvatarMotion::Attack(_) => AvatarMotion::Stand,
                 };
                 frames.iter().position(|frame| frame.motion == fallback)
@@ -1008,8 +1343,15 @@ mod native {
 
     struct MapSceneRuntime {
         map_id: i32,
+        camera_offset: (f32, f32),
+        camera_bounds: Option<MapCameraBounds>,
+        minimap: Option<minimap::MiniMapData>,
+        minimap_presentation: minimap::Presentation,
         footholds: Option<FootholdTree>,
         map_seats: Vec<(i16, i16)>,
+        map_ladders: Vec<MapLadder>,
+        local_ladder: Option<MapLadder>,
+        climb_cooldown: u8,
         player: PhysicsBody,
         world_draw_indices: Vec<usize>,
         map_backgrounds: Vec<MapBackgroundRuntime>,
@@ -1029,6 +1371,7 @@ mod native {
         facing_right: bool,
         last_movement: Option<openstory_protocol::PlayerMovement>,
         remote_players: HashMap<i32, RemotePlayerState>,
+        local_item_aura: Option<PersistentItemAuraRuntime>,
         local_face_expression: Option<FaceExpressionRuntime>,
         local_speech_bubble_remaining: Option<Duration>,
         npcs: HashMap<i32, MapNpcRuntime>,
@@ -1041,6 +1384,7 @@ mod native {
         pets: HashMap<(i32, u8), MapPetRuntime>,
         pet_loot_cooldown: u8,
         character_effects: Vec<MapCharacterSkillEffect>,
+        screen_effect: Option<MapScreenEffect>,
         reactors: HashMap<i32, MapReactorRuntime>,
         portals: Vec<MapPortalRuntime>,
         regular_portal_frames: Vec<PortalFrameRuntime>,
@@ -1061,6 +1405,7 @@ mod native {
         damage_numbers: Vec<MobDamageNumber>,
         quest_clear_effect: Option<QuestClearEffectRuntime>,
         projectiles: Vec<MapProjectileRuntime>,
+        layer_insert_indices: [usize; 8],
         foreground_start_index: usize,
     }
 
@@ -1073,6 +1418,7 @@ mod native {
     struct MapArtAnimationRuntime {
         frames: Vec<SpriteFrameAsset>,
         environment_name: Option<String>,
+        hold_last: bool,
         frame_index: usize,
         elapsed: Duration,
     }
@@ -1097,6 +1443,7 @@ mod native {
                 Some(MapArtAnimationRuntime {
                     frames: animation.frames,
                     environment_name: animation.environment_name,
+                    hold_last: animation.hold_last,
                     frame_index: 0,
                     elapsed: Duration::ZERO,
                 })
@@ -1113,6 +1460,8 @@ mod native {
         vertical_tiled: bool,
         tile_width: f32,
         tile_height: f32,
+        tile_count_x: usize,
+        tile_count_y: usize,
         horizontal_mobile: bool,
         vertical_mobile: bool,
         horizontal_speed: f32,
@@ -1156,6 +1505,12 @@ mod native {
         elapsed: Duration,
     }
 
+    struct MapScreenEffect {
+        frames: Vec<ProjectileFrameRuntime>,
+        frame_index: usize,
+        elapsed: Duration,
+    }
+
     struct MapMobHitEffect {
         z: i8,
         flip_x: bool,
@@ -1181,6 +1536,83 @@ mod native {
     struct ProjectileFrameRuntime {
         delay: Duration,
         sprites: Vec<(usize, SpriteRect)>,
+    }
+
+    #[derive(Clone, Default)]
+    struct PersistentItemAuraFrames {
+        back: Vec<ProjectileFrameRuntime>,
+        front: Vec<ProjectileFrameRuntime>,
+        split: bool,
+    }
+
+    #[derive(Clone)]
+    struct PersistentItemAuraRuntime {
+        frames: PersistentItemAuraFrames,
+        back_index: usize,
+        back_elapsed: Duration,
+        front_index: usize,
+        front_elapsed: Duration,
+    }
+
+    impl PersistentItemAuraRuntime {
+        fn new(frames: PersistentItemAuraFrames) -> Option<Self> {
+            (!frames.back.is_empty() || !frames.front.is_empty()).then_some(Self {
+                frames,
+                back_index: 0,
+                back_elapsed: Duration::ZERO,
+                front_index: 0,
+                front_elapsed: Duration::ZERO,
+            })
+        }
+
+        fn advance(&mut self, elapsed: Duration) {
+            advance_looping_frames(
+                &self.frames.back,
+                &mut self.back_index,
+                &mut self.back_elapsed,
+                elapsed,
+            );
+            advance_looping_frames(
+                &self.frames.front,
+                &mut self.front_index,
+                &mut self.front_elapsed,
+                elapsed,
+            );
+        }
+
+        fn below(&self) -> Option<&ProjectileFrameRuntime> {
+            if self.frames.split {
+                self.frames.back.get(self.back_index)
+            } else {
+                self.frames.front.get(self.front_index)
+            }
+        }
+
+        fn above(&self) -> Option<&ProjectileFrameRuntime> {
+            self.frames
+                .split
+                .then(|| self.frames.front.get(self.front_index))
+                .flatten()
+        }
+    }
+
+    fn advance_looping_frames(
+        frames: &[ProjectileFrameRuntime],
+        frame_index: &mut usize,
+        elapsed: &mut Duration,
+        delta: Duration,
+    ) {
+        if frames.is_empty() {
+            return;
+        }
+        *elapsed = elapsed.saturating_add(delta);
+        while let Some(frame) = frames.get(*frame_index) {
+            if *elapsed < frame.delay {
+                break;
+            }
+            *elapsed -= frame.delay;
+            *frame_index = (*frame_index + 1) % frames.len();
+        }
     }
 
     struct ChairAnimationRuntime {
@@ -1224,6 +1656,13 @@ mod native {
         sit_offset_y: f32,
     }
 
+    #[derive(Default)]
+    struct PersistentItemAuraAsset {
+        back: Vec<ProjectileFrameAsset>,
+        front: Vec<ProjectileFrameAsset>,
+        split: bool,
+    }
+
     struct MapPortalRuntime {
         portal_type: u8,
         name: String,
@@ -1249,6 +1688,7 @@ mod native {
         state: i8,
         x: f64,
         y: f64,
+        foothold_layer: u8,
         width: f64,
         height: f64,
         hittable: bool,
@@ -1284,6 +1724,7 @@ mod native {
         miss: bool,
         critical: bool,
         heal: bool,
+        player_damage: bool,
         lifetime: Duration,
         rise_speed: f32,
         elapsed: Duration,
@@ -1305,8 +1746,9 @@ mod native {
     }
 
     impl CashItemComposeKind {
-        const fn label(self) -> &'static str {
+        const fn label(self, item_id: i32) -> &'static str {
             match self {
+                Self::Megaphone if (item_id / 1_000) % 10 == 6 => "Item Megaphone",
                 Self::Megaphone => "Megaphone",
                 Self::MapleTv => "Maple TV",
                 Self::AvatarMegaphone => "Avatar Megaphone",
@@ -1323,13 +1765,57 @@ mod native {
                 _ => 60,
             }
         }
+
+        const fn max_lines(self, item_id: i32) -> usize {
+            match self {
+                Self::Megaphone if (item_id / 1_000) % 10 == 7 => 3,
+                Self::MapleTv => 5,
+                Self::AvatarMegaphone => 4,
+                _ => 1,
+            }
+        }
+
+        const fn has_recipient_field(self, item_id: i32) -> bool {
+            match self {
+                Self::MapleTv => item_id != 5_075_001 && item_id != 5_075_004,
+                _ => false,
+            }
+        }
+
+        const fn uses_item_attachment(self, item_id: i32) -> bool {
+            matches!(self, Self::Megaphone) && (item_id / 1_000) % 10 == 6
+        }
+
+        const fn has_whisper_toggle(self, item_id: i32) -> bool {
+            matches!(self, Self::Megaphone) && matches!((item_id / 1_000) % 10, 2 | 6 | 7)
+        }
+
+        const fn is_item_megaphone(self, item_id: i32) -> bool {
+            matches!(self, Self::Megaphone) && (item_id / 1_000) % 10 == 6
+        }
     }
 
-    #[derive(Clone, Copy)]
+    #[derive(Clone)]
     struct CashItemCompose {
         slot: i16,
         item_id: i32,
         kind: CashItemComposeKind,
+        lines: Vec<String>,
+        recipient: String,
+        recipient_prompt_pending: bool,
+        whisper: bool,
+        attached_item: Option<(openstory_protocol::InventoryType, u16, i32)>,
+        awaiting_attachment: bool,
+    }
+
+    impl CashItemCompose {
+        fn input_max_chars(&self) -> usize {
+            if self.recipient_prompt_pending {
+                12
+            } else {
+                self.kind.max_chars()
+            }
+        }
     }
 
     struct WhisperConversation {
@@ -1818,11 +2304,16 @@ mod native {
 
     struct MapNpcRuntime {
         npc_id: i32,
+        maple_tv_anchors: Option<MapleTvAnchors>,
         scripted: bool,
         x: f64,
         y: f64,
+        foothold: u16,
+        body: PhysicsBody,
         flipped: bool,
         animations: HashMap<NpcMotion, Vec<NpcFrameRuntime>>,
+        animation_order: Vec<NpcMotion>,
+        random_state: u32,
         motion: NpcMotion,
         frame_index: usize,
         elapsed: Duration,
@@ -1832,11 +2323,131 @@ mod native {
         quest_mark_elapsed: Duration,
     }
 
-    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+    #[derive(Clone, Copy)]
+    struct MapleTvAnchors {
+        message_x: i16,
+        message_y: i16,
+        ad_x: i16,
+        ad_y: i16,
+    }
+
+    struct MapleTvBroadcastRuntime {
+        type_id: u8,
+        has_partner: bool,
+        expires_at: Instant,
+        sender_avatar_draws: Vec<(usize, SpriteRect)>,
+        partner_avatar_draws: Vec<(usize, SpriteRect)>,
+    }
+
+    struct MapleTvAnimation {
+        frames: Vec<MapleTvAnimationFrame>,
+        frame_index: usize,
+        elapsed: Duration,
+    }
+
+    struct MapleTvAnimationFrame {
+        texture: GpuTexture,
+        delay: Duration,
+        origin: (i16, i16),
+    }
+
+    impl MapleTvAnimation {
+        fn empty() -> Self {
+            Self {
+                frames: Vec::new(),
+                frame_index: 0,
+                elapsed: Duration::ZERO,
+            }
+        }
+
+        fn current(&self) -> Option<&MapleTvAnimationFrame> {
+            self.frames.get(self.frame_index)
+        }
+
+        /// Advances a one-shot reel and returns true when it reaches its last frame.
+        fn advance_once(&mut self, elapsed: Duration) -> bool {
+            if self.frames.len() < 2 {
+                return false;
+            }
+            self.elapsed = self.elapsed.saturating_add(elapsed);
+            loop {
+                let delay = self.frames[self.frame_index].delay;
+                if self.elapsed < delay {
+                    return false;
+                }
+                self.elapsed = self.elapsed.saturating_sub(delay);
+                if self.frame_index + 1 == self.frames.len() {
+                    self.frame_index = 0;
+                    self.elapsed = Duration::ZERO;
+                    return true;
+                }
+                self.frame_index += 1;
+            }
+        }
+
+        fn advance_loop(&mut self, elapsed: Duration) {
+            if self.frames.len() < 2 {
+                return;
+            }
+            let cycle_nanos = self.frames.iter().fold(0_u128, |total, frame| {
+                total.saturating_add(frame.delay.as_nanos())
+            });
+            if cycle_nanos == 0 {
+                return;
+            }
+            let mut phase_nanos =
+                self.elapsed.as_nanos().saturating_add(elapsed.as_nanos()) % cycle_nanos;
+            self.frame_index = 0;
+            for (index, frame) in self.frames.iter().enumerate() {
+                let delay_nanos = frame.delay.as_nanos();
+                if phase_nanos < delay_nanos {
+                    self.frame_index = index;
+                    break;
+                }
+                phase_nanos -= delay_nanos;
+                self.frame_index = (index + 1) % self.frames.len();
+            }
+            self.elapsed = Duration::new(
+                (phase_nanos / 1_000_000_000) as u64,
+                (phase_nanos % 1_000_000_000) as u32,
+            );
+        }
+    }
+
+    #[derive(Clone, Debug, PartialEq, Eq, Hash)]
     enum NpcMotion {
         Stand,
         Move,
         Say,
+        Other(String),
+    }
+
+    impl NpcMotion {
+        fn from_state_name(name: String) -> Self {
+            match name.as_str() {
+                "stand" => Self::Stand,
+                "move" => Self::Move,
+                "say" => Self::Say,
+                _ => Self::Other(name),
+            }
+        }
+
+        fn is_walking(&self) -> bool {
+            match self {
+                Self::Move => true,
+                Self::Other(name) => name == "walk",
+                Self::Stand | Self::Say => false,
+            }
+        }
+
+        fn state_name(&self) -> &str {
+            match self {
+                Self::Stand => "stand",
+                Self::Move => "move",
+                Self::Say => "say",
+                Self::Other(name) => name,
+            }
+        }
     }
 
     #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -1853,20 +2464,44 @@ mod native {
             self.animations
                 .get(&self.motion)
                 .or_else(|| self.animations.get(&NpcMotion::Stand))
+                .or_else(|| {
+                    self.animation_order
+                        .first()
+                        .and_then(|motion| self.animations.get(motion))
+                })
                 .map_or(&[], Vec::as_slice)
         }
 
         fn set_motion(&mut self, motion: NpcMotion) {
-            let motion = if self.animations.contains_key(&motion) {
-                motion
-            } else {
-                NpcMotion::Stand
-            };
             if self.motion != motion {
+                let walking = motion.is_walking();
                 self.motion = motion;
                 self.frame_index = 0;
                 self.elapsed = Duration::ZERO;
+                if walking {
+                    self.body.horizontal_speed = if self.flipped { 1.0 } else { -1.0 };
+                    self.body.flags.turn_at_edges = true;
+                } else {
+                    self.body.horizontal_speed = 0.0;
+                    self.body.flags.turn_at_edges = false;
+                }
             }
+        }
+
+        fn next_random_motion(&mut self) -> Option<NpcMotion> {
+            if self.animation_order.is_empty() {
+                return None;
+            }
+            // Keep the legacy random state changes deterministic per spawned NPC. This
+            // avoids syncing or platform-specific RNG while still varying the stance.
+            let mut value = self.random_state;
+            value ^= value << 13;
+            value ^= value >> 17;
+            value ^= value << 5;
+            self.random_state = value.max(1);
+            self.animation_order
+                .get(value as usize % self.animation_order.len())
+                .cloned()
         }
     }
 
@@ -2002,6 +2637,8 @@ mod native {
         text: String,
         visible_text_chars: usize,
         reveal_elapsed: Duration,
+        text_scroll: usize,
+        text_max_scroll: usize,
         inline_icons: NpcInlineIcons,
         selections: Vec<(i32, String)>,
         selected_selection: usize,
@@ -2081,6 +2718,7 @@ mod native {
     struct CharacterInfoUi {
         name: String,
         info: openstory_protocol::CharacterInfoReply,
+        fame_pending: bool,
     }
 
     #[derive(Clone, Copy)]
@@ -2171,6 +2809,10 @@ mod native {
         selected_sn: Option<i32>,
         query: String,
         search_focused: bool,
+        coupon_code: String,
+        coupon_focused: bool,
+        coupon_open: bool,
+        coupon_pending: bool,
         currency: usize,
         balances: [i32; 3],
         locker: Vec<openstory_protocol::CashShopItem>,
@@ -2179,6 +2821,13 @@ mod native {
         pending_withdrawal: Option<i64>,
         confirmation: bool,
         notice: Option<String>,
+    }
+
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    enum CashShopView {
+        #[default]
+        Catalog,
+        Locker,
     }
 
     struct GuildBbsUi {
@@ -2207,11 +2856,28 @@ mod native {
         focus: GuildBbsDraftFocus,
     }
 
-    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-    enum CashShopView {
-        #[default]
-        Catalog,
-        Locker,
+    #[derive(Default)]
+    struct FamilyUiState {
+        info: Option<openstory_protocol::FamilyInfo>,
+        chart: Option<openstory_protocol::FamilyChart>,
+        privileges: Vec<openstory_protocol::FamilyPrivilege>,
+        selected_ability: usize,
+        selected_member: Option<i32>,
+        notice: Option<String>,
+        input: Option<FamilyInput>,
+        confirm_leave: bool,
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum FamilyInputKind {
+        InviteJunior,
+        EditPrecepts,
+    }
+
+    struct FamilyInput {
+        kind: FamilyInputKind,
+        text: String,
+        key_text_for_ime_dedup: Option<String>,
     }
 
     impl CashShopUi {
@@ -2224,6 +2890,10 @@ mod native {
                 selected_sn: None,
                 query: String::new(),
                 search_focused: false,
+                coupon_code: String::new(),
+                coupon_focused: false,
+                coupon_open: false,
+                coupon_pending: false,
                 currency: 0,
                 balances: [0; 3],
                 locker: Vec::new(),
@@ -2386,9 +3056,10 @@ mod native {
         hit_effects: Vec<MapMobHitEffect>,
         dying: bool,
         fade_remaining: Option<Duration>,
+        fade_in_remaining: Option<Duration>,
         hp_percent: Option<u8>,
         hp_bar_remaining: Duration,
-        statuses: HashSet<u32>,
+        statuses: HashSet<(openstory_protocol::MobStatusMaskGroup, u32)>,
         control_acked: bool,
         ai_counter: u16,
         random_state: u32,
@@ -2700,13 +3371,13 @@ mod native {
         attack_type: openstory_protocol::AttackType,
         projectile_id: Option<i32>,
         attack_class: u8,
-        speed: u8,
+        speed: i8,
         level: i32,
         minimum_damage: f64,
         maximum_damage: f64,
         intelligence: i64,
         luck: i64,
-        magic_attack: i64,
+        magic_total: i64,
         magic_damage: bool,
         element: Option<char>,
         fixed_damage: Option<i32>,
@@ -2716,17 +3387,19 @@ mod native {
 
     impl MapMobRuntime {
         fn is_immobilized(&self) -> bool {
-            [0x80, 0x100, 0x20000]
-                .into_iter()
-                .any(|flag| self.statuses.contains(&flag))
+            [0x80, 0x100, 0x20000].into_iter().any(|flag| {
+                self.statuses
+                    .contains(&(openstory_protocol::MobStatusMaskGroup::Second, flag))
+            })
         }
 
         fn status_tint(&self) -> [f32; 3] {
-            if self.statuses.contains(&0x100) {
+            let group = openstory_protocol::MobStatusMaskGroup::Second;
+            if self.statuses.contains(&(group, 0x100)) {
                 [0.5, 0.7, 1.0]
-            } else if self.statuses.contains(&0x200) {
+            } else if self.statuses.contains(&(group, 0x200)) {
                 [0.5, 1.0, 0.5]
-            } else if self.statuses.contains(&0x80) {
+            } else if self.statuses.contains(&(group, 0x80)) {
                 [1.0, 1.0, 0.5]
             } else {
                 [1.0, 1.0, 1.0]
@@ -2894,12 +3567,13 @@ mod native {
         foothold: u16,
         stance: u8,
         facing_left: bool,
-        attack_speed: u8,
+        attack_speed: i8,
         attack_stance: Option<u8>,
         speech_bubble_remaining: Option<Duration>,
         invincibility_remaining: Duration,
         mini_room: Option<openstory_protocol::CharacterMiniRoom>,
         face_expression: Option<FaceExpressionRuntime>,
+        item_aura: Option<PersistentItemAuraRuntime>,
         avatar_frames: Vec<AvatarFrameRuntime>,
         active_avatar_frame: Option<usize>,
         desired_avatar_motion: AvatarMotion,
@@ -2947,6 +3621,17 @@ mod native {
                 .iter()
                 .position(|frame| frame.motion == AvatarMotion::Stand)
                 .or_else(|| (!avatar_frames.is_empty()).then_some(0));
+            let minimap_presentation =
+                scene
+                    .minimap
+                    .as_ref()
+                    .map_or(minimap::Presentation::Collapsed, |data| {
+                        if data.town {
+                            minimap::Presentation::Expanded
+                        } else {
+                            minimap::Presentation::Normal
+                        }
+                    });
             let (map_art_animations, map_art_animation_draw_indices, active_map_art_draw_indices) =
                 prepare_map_art_animations(scene.map_art_animations);
             let map_backgrounds = scene
@@ -2960,6 +3645,8 @@ mod native {
                     vertical_tiled: background.vertical_tiled,
                     tile_width: background.tile_width,
                     tile_height: background.tile_height,
+                    tile_count_x: background.tile_count_x,
+                    tile_count_y: background.tile_count_y,
                     horizontal_mobile: background.horizontal_mobile,
                     vertical_mobile: background.vertical_mobile,
                     horizontal_speed: background.horizontal_speed,
@@ -2972,8 +3659,15 @@ mod native {
                 .collect();
             let runtime = Self {
                 map_id: scene.map_id,
+                camera_offset: scene.camera_offset,
+                camera_bounds: scene.camera_bounds,
+                minimap: scene.minimap,
+                minimap_presentation,
                 footholds: scene.footholds,
                 map_seats: scene.seats,
+                map_ladders: scene.ladders,
+                local_ladder: None,
+                climb_cooldown: 0,
                 player: PhysicsBody::new(scene.spawn.0, scene.spawn.1),
                 world_draw_indices: scene.world_draw_indices,
                 map_backgrounds,
@@ -2996,6 +3690,7 @@ mod native {
                 facing_right: true,
                 last_movement: None,
                 remote_players: HashMap::new(),
+                local_item_aura: None,
                 local_face_expression: None,
                 local_speech_bubble_remaining: None,
                 npcs: HashMap::new(),
@@ -3008,6 +3703,7 @@ mod native {
                 pets: HashMap::new(),
                 pet_loot_cooldown: 0,
                 character_effects: Vec::with_capacity(8),
+                screen_effect: None,
                 reactors: HashMap::new(),
                 portals,
                 regular_portal_frames,
@@ -3017,7 +3713,7 @@ mod native {
                 regular_portal_elapsed: Duration::ZERO,
                 hidden_portal_frame_index: 0,
                 hidden_portal_elapsed: Duration::ZERO,
-                portal_cooldown: 48,
+                portal_cooldown: 0,
                 teleport_cooldown: 0,
                 touch_damage_cooldown: Duration::ZERO,
                 local_invincibility_remaining: Duration::ZERO,
@@ -3028,6 +3724,7 @@ mod native {
                 damage_numbers: Vec::with_capacity(64),
                 quest_clear_effect: None,
                 projectiles: Vec::with_capacity(8),
+                layer_insert_indices: scene.layer_insert_indices,
                 foreground_start_index: scene.foreground_start_index,
             };
             runtime.refresh_avatar_draws(draws);
@@ -3038,8 +3735,31 @@ mod native {
             self.local_chair.is_some() || self.local_map_seat.is_some()
         }
 
+        fn update_camera(&mut self) -> (f32, f32) {
+            let old = self.camera_offset;
+            if let Some(bounds) = self.camera_bounds {
+                self.camera_offset = bounds.offset_for(self.player.x, self.player.y);
+            } else {
+                self.camera_offset = (
+                    512.0 - self.player.x as f32,
+                    GAMEPLAY_CAMERA_CENTER_Y - self.player.y as f32,
+                );
+            }
+            (
+                self.camera_offset.0 - old.0,
+                self.camera_offset.1 - old.1,
+            )
+        }
+
+        fn advance_climb_cooldown(&mut self, updates: u8) {
+            self.climb_cooldown = self.climb_cooldown.saturating_sub(updates);
+        }
+
         fn sit_on_nearby_map_seat(&mut self, draws: &mut [(usize, SpriteRect)]) -> bool {
-            if self.is_locally_seated() || self.attack_stance.is_some() {
+            if self.is_locally_seated()
+                || self.local_ladder.is_some()
+                || self.attack_stance.is_some()
+            {
                 return false;
             }
             let Some((x, y)) = nearby_map_seat(&self.map_seats, &self.player) else {
@@ -3071,6 +3791,10 @@ mod native {
                 animation.elapsed = animation.elapsed.saturating_add(elapsed);
                 let mut changed = false;
                 loop {
+                    if animation.hold_last && animation.frame_index + 1 == animation.frames.len() {
+                        animation.elapsed = Duration::ZERO;
+                        break;
+                    }
                     let Some(frame) = animation.frames.get(animation.frame_index) else {
                         break;
                     };
@@ -3079,7 +3803,11 @@ mod native {
                         break;
                     }
                     animation.elapsed -= delay;
-                    animation.frame_index = (animation.frame_index + 1) % animation.frames.len();
+                    animation.frame_index = if animation.frame_index + 1 == animation.frames.len() {
+                        0
+                    } else {
+                        animation.frame_index + 1
+                    };
                     changed = true;
                 }
                 if changed {
@@ -3169,7 +3897,6 @@ mod native {
                 if !up_pressed || !can_use_portal || self.portal_cooldown != 0 {
                     continue;
                 }
-                self.portal_cooldown = 48;
                 let Some(portal) = self
                     .portals
                     .iter()
@@ -3188,11 +3915,13 @@ mod native {
                     else {
                         continue;
                     };
+                    self.portal_cooldown = 48;
                     return Some(PortalWarp::SameMap {
                         x: target.x,
                         y: target.y - 30.0,
                     });
                 }
+                self.portal_cooldown = 48;
                 return Some(PortalWarp::ChangeMap {
                     map_id: portal.target_map_id,
                     portal_name: portal.name.clone(),
@@ -3319,6 +4048,8 @@ mod native {
         }
 
         fn respawn_at_portal(&mut self, x: f64, spawn_y: f64) {
+            self.local_ladder = None;
+            self.climb_cooldown = 0;
             let (y, foothold_id) = if let Some(footholds) = self.footholds.as_ref() {
                 footholds
                     .find_below(x, spawn_y)
@@ -3346,6 +4077,7 @@ mod native {
                 .map_or(0.0, |foothold| foothold.slope());
             self.player.ground_below = y + 1.0;
             self.player.on_ground = foothold_id != 0;
+            self.player.mode = PhysicsMode::Normal;
             self.last_movement = None;
         }
 
@@ -3513,9 +4245,7 @@ mod native {
                 .map(|player| (player.x, player.y));
             if let Some(player) = self.remote_players.get_mut(&attack.attacker_id) {
                 player.facing_left = attack.to_left;
-                if attack.speed > 0 {
-                    player.attack_speed = attack.speed;
-                }
+                player.attack_speed = attack.speed;
                 player.attack_stance = Some(attack.stance);
                 player.desired_avatar_motion = AvatarMotion::Attack(attack.stance);
                 player.active_avatar_frame =
@@ -3577,32 +4307,32 @@ mod native {
 
         fn advance_background_positions(
             &mut self,
-            player_delta_x: f32,
-            player_delta_y: f32,
+            camera_delta_x: f32,
+            camera_delta_y: f32,
             updates: u8,
             draws: &mut [(usize, SpriteRect)],
         ) {
             let elapsed_updates = f32::from(updates);
             for background in &mut self.map_backgrounds {
                 let raw_delta_x = if background.horizontal_mobile {
-                    -player_delta_x
+                    camera_delta_x
                         + if background.active {
                             background.horizontal_speed * elapsed_updates
                         } else {
                             0.0
                         }
                 } else {
-                    player_delta_x * background.horizontal_parallax / 100.0
+                    camera_delta_x * background.horizontal_parallax / 100.0
                 };
                 let raw_delta_y = if background.vertical_mobile {
-                    -player_delta_y
+                    camera_delta_y
                         + if background.active {
                             background.vertical_speed * elapsed_updates
                         } else {
                             0.0
                         }
                 } else {
-                    player_delta_y * background.vertical_parallax / 100.0
+                    camera_delta_y * background.vertical_parallax / 100.0
                 };
                 let delta_x = if background.horizontal_tiled {
                     let interval = background.tile_width.max(1.0);
@@ -3628,6 +4358,32 @@ mod native {
                     if let Some((_, rect)) = draws.get_mut(index) {
                         rect.x += delta_x;
                         rect.y += delta_y;
+                        if background.horizontal_tiled {
+                            let period = background.tile_width * background.tile_count_x as f32;
+                            let left_bound = -background.tile_width;
+                            let right_bound = 1024.0 + background.tile_width;
+                            if period > 0.0 && rect.x + rect.width <= left_bound {
+                                let wraps =
+                                    ((left_bound - (rect.x + rect.width)) / period).floor() + 1.0;
+                                rect.x += wraps * period;
+                            } else if period > 0.0 && rect.x >= right_bound {
+                                let wraps = ((rect.x - right_bound) / period).floor() + 1.0;
+                                rect.x -= wraps * period;
+                            }
+                        }
+                        if background.vertical_tiled {
+                            let period = background.tile_height * background.tile_count_y as f32;
+                            let top_bound = -background.tile_height;
+                            let bottom_bound = 768.0 + background.tile_height;
+                            if period > 0.0 && rect.y + rect.height <= top_bound {
+                                let wraps =
+                                    ((top_bound - (rect.y + rect.height)) / period).floor() + 1.0;
+                                rect.y += wraps * period;
+                            } else if period > 0.0 && rect.y >= bottom_bound {
+                                let wraps = ((rect.y - bottom_bound) / period).floor() + 1.0;
+                                rect.y -= wraps * period;
+                            }
+                        }
                     }
                 }
             }
@@ -3635,8 +4391,15 @@ mod native {
 
         fn advance_remote_players(&mut self, updates: u8) {
             advance_face_expression(&mut self.local_face_expression, updates);
+            let aura_elapsed = Duration::from_millis(8 * u64::from(updates));
+            if let Some(aura) = self.local_item_aura.as_mut() {
+                aura.advance(aura_elapsed);
+            }
             for player in self.remote_players.values_mut() {
                 advance_face_expression(&mut player.face_expression, updates);
+                if let Some(aura) = player.item_aura.as_mut() {
+                    aura.advance(aura_elapsed);
+                }
                 player.invincibility_remaining = player
                     .invincibility_remaining
                     .saturating_sub(Duration::from_millis(8 * u64::from(updates)));
@@ -3716,11 +4479,30 @@ mod native {
         }
 
         fn advance_npcs(&mut self, updates: u8) {
+            let footholds = self.footholds.as_ref();
             for npc in self.npcs.values_mut() {
                 for _ in 0..updates {
-                    if npc.frames().len() >= 2 {
+                    if let Some(footholds) = footholds {
+                        PhysicsEngine.move_body(footholds, &mut npc.body);
+                    } else {
+                        npc.body.previous_x = npc.body.x;
+                        npc.body.previous_y = npc.body.y;
+                        npc.body.x += npc.body.horizontal_speed;
+                        npc.body.y += npc.body.vertical_speed;
+                    }
+                    if npc.motion.is_walking() && !npc.body.flags.turn_at_edges {
+                        npc.flipped = !npc.flipped;
+                        npc.body.horizontal_speed = if npc.flipped { 1.0 } else { -1.0 };
+                        npc.body.flags.turn_at_edges = true;
+                    }
+                    npc.x = npc.body.x;
+                    npc.y = npc.body.y;
+                    npc.foothold = npc.body.foothold_id;
+
+                    if !npc.frames().is_empty() {
                         npc.elapsed = npc.elapsed.saturating_add(Duration::from_millis(8));
                         loop {
+                            let frame_count = npc.frames().len();
                             let Some(delay) =
                                 npc.frames().get(npc.frame_index).map(|frame| frame.delay)
                             else {
@@ -3730,7 +4512,16 @@ mod native {
                                 break;
                             }
                             npc.elapsed -= delay;
-                            npc.frame_index = (npc.frame_index + 1) % npc.frames().len();
+                            if npc.frame_index + 1 < frame_count {
+                                npc.frame_index += 1;
+                            } else {
+                                // The legacy NPC animation is one-shot: after a
+                                // clip completes it chooses another authored NX state.
+                                npc.frame_index = 0;
+                                if let Some(next) = npc.next_random_motion() {
+                                    npc.set_motion(next);
+                                }
+                            }
                         }
                     }
                     if npc.quest_mark_frames.len() >= 2 {
@@ -3888,7 +4679,7 @@ mod native {
                 .iter()
                 .filter_map(|(&owner_id, merchant)| {
                     let x = 512.0 + (merchant.x - self.player.x) as f32;
-                    let y = 384.0 + (merchant.y - self.player.y) as f32;
+                    let y = GAMEPLAY_CAMERA_CENTER_Y + (merchant.y - self.player.y) as f32;
                     (point.x >= x - 28.0
                         && point.x <= x + 28.0
                         && point.y >= y - 85.0
@@ -3909,7 +4700,7 @@ mod native {
                     }
                     let x = 512.0 + player.x as f32 + player.recoil_offset_x as f32
                         - self.player.x as f32;
-                    let y = 384.0 + player.y as f32 - self.player.y as f32;
+                    let y = GAMEPLAY_CAMERA_CENTER_Y + player.y as f32 - self.player.y as f32;
                     (point.x >= x - 30.0
                         && point.x <= x + 30.0
                         && point.y >= y - 70.0
@@ -3926,7 +4717,7 @@ mod native {
                 .filter_map(|(&character_id, player)| {
                     let x = 512.0 + player.x as f32 + player.recoil_offset_x as f32
                         - self.player.x as f32;
-                    let y = 384.0 + player.y as f32 - self.player.y as f32;
+                    let y = GAMEPLAY_CAMERA_CENTER_Y + player.y as f32 - self.player.y as f32;
                     (point.x >= x - 30.0
                         && point.x <= x + 30.0
                         && point.y >= y - 70.0
@@ -4110,7 +4901,7 @@ mod native {
                         None,
                         |bounds: Option<(f64, f64, f64, f64)>, (_, rect)| {
                             let left = mob.x + f64::from(rect.x - 512.0);
-                            let top = mob.y + f64::from(rect.y - 384.0);
+                            let top = mob.y + f64::from(rect.y - GAMEPLAY_CAMERA_CENTER_Y);
                             let right = left + f64::from(rect.width);
                             let bottom = top + f64::from(rect.height);
                             Some(match bounds {
@@ -4576,6 +5367,39 @@ mod native {
             });
         }
 
+        fn show_screen_effect(&mut self, frames: Vec<ProjectileFrameRuntime>) {
+            self.screen_effect = (!frames.is_empty()).then_some(MapScreenEffect {
+                frames,
+                frame_index: 0,
+                elapsed: Duration::ZERO,
+            });
+        }
+
+        fn advance_screen_effect(&mut self, updates: u8) {
+            let mut finished = false;
+            if let Some(effect) = self.screen_effect.as_mut() {
+                for _ in 0..updates {
+                    let Some(frame) = effect.frames.get(effect.frame_index) else {
+                        finished = true;
+                        break;
+                    };
+                    effect.elapsed = effect.elapsed.saturating_add(Duration::from_millis(6));
+                    if effect.elapsed < frame.delay {
+                        continue;
+                    }
+                    effect.elapsed -= frame.delay;
+                    if effect.frame_index + 1 >= effect.frames.len() {
+                        finished = true;
+                        break;
+                    }
+                    effect.frame_index += 1;
+                }
+            }
+            if finished {
+                self.screen_effect = None;
+            }
+        }
+
         fn show_mob_hit_effects(
             &mut self,
             object_id: i32,
@@ -4605,7 +5429,10 @@ mod native {
                         })
                 })
                 .map_or((0.0, 0.0), |(top, left, right)| {
-                    ((left + right) * 0.5 - 512.0, top - 384.0)
+                    (
+                        (left + right) * 0.5 - 512.0,
+                        top - GAMEPLAY_CAMERA_CENTER_Y,
+                    )
                 });
             for animation in animations {
                 if animation.frames.is_empty() {
@@ -4664,6 +5491,12 @@ mod native {
                     *remaining = remaining.saturating_sub(elapsed);
                     if remaining.is_zero() {
                         return false;
+                    }
+                }
+                if let Some(remaining) = mob.fade_in_remaining.as_mut() {
+                    *remaining = remaining.saturating_sub(elapsed);
+                    if remaining.is_zero() {
+                        mob.fade_in_remaining = None;
                     }
                 }
                 if mob.dying && mob.fade_remaining.is_some() {
@@ -4907,7 +5740,8 @@ mod native {
                 return;
             };
             let world_x = mob.x + f64::from((left + right) * 0.5 - 512.0);
-            let world_y = mob.y + f64::from(top - 384.0 - 4.0 - stack_offset);
+            let world_y = mob.y
+                + f64::from(top - GAMEPLAY_CAMERA_CENTER_Y - 4.0 - stack_offset);
             if self.damage_numbers.len() == 64 {
                 self.damage_numbers.remove(0);
             }
@@ -4927,6 +5761,7 @@ mod native {
                 miss: damage.damage <= 0,
                 critical,
                 heal: false,
+                player_damage: false,
                 lifetime: Duration::from_millis(1500),
                 rise_speed: 31.25,
                 elapsed: Duration::ZERO,
@@ -4965,6 +5800,7 @@ mod native {
                 miss: damage.damage <= 0,
                 critical: false,
                 heal: false,
+                player_damage: true,
                 lifetime: Duration::from_millis(1500),
                 rise_speed: 31.25,
                 elapsed: Duration::ZERO,
@@ -4993,6 +5829,32 @@ mod native {
                 miss: damage <= 0,
                 critical: false,
                 heal: false,
+                player_damage: true,
+                lifetime: Duration::from_millis(1500),
+                rise_speed: 31.25,
+                elapsed: Duration::ZERO,
+            });
+        }
+
+        fn show_local_heal_backlash(&mut self, damage: i32) {
+            if damage <= 0 {
+                return;
+            }
+            if self.damage_numbers.len() == 64 {
+                self.damage_numbers.remove(0);
+            }
+            self.damage_numbers.push(MobDamageNumber {
+                world_x: self.player.x,
+                world_y: self.player.y - 48.0,
+                digits: damage
+                    .to_string()
+                    .bytes()
+                    .map(|digit| digit - b'0')
+                    .collect(),
+                miss: false,
+                critical: false,
+                heal: false,
+                player_damage: true,
                 lifetime: Duration::from_millis(1500),
                 rise_speed: 31.25,
                 elapsed: Duration::ZERO,
@@ -5017,6 +5879,37 @@ mod native {
                 miss: false,
                 critical: false,
                 heal: true,
+                player_damage: false,
+                lifetime: Duration::from_millis(500),
+                rise_speed: 7.5,
+                elapsed: Duration::ZERO,
+            });
+        }
+
+        fn show_remote_player_heal(&mut self, character_id: i32, amount: i32) {
+            if amount <= 0 {
+                return;
+            }
+            let Some(player) = self.remote_players.get(&character_id) else {
+                return;
+            };
+            let world_x = player.x + player.recoil_offset_x;
+            let world_y = player.y - 60.0;
+            if self.damage_numbers.len() == 64 {
+                self.damage_numbers.remove(0);
+            }
+            self.damage_numbers.push(MobDamageNumber {
+                world_x,
+                world_y,
+                digits: amount
+                    .to_string()
+                    .bytes()
+                    .map(|digit| digit - b'0')
+                    .collect(),
+                miss: false,
+                critical: false,
+                heal: true,
+                player_damage: false,
                 lifetime: Duration::from_millis(500),
                 rise_speed: 7.5,
                 elapsed: Duration::ZERO,
@@ -5028,7 +5921,7 @@ mod native {
                 return;
             };
             for entry in update.entries {
-                mob.statuses.insert(entry.flag);
+                mob.statuses.insert((entry.group, entry.flag));
             }
             if mob.is_immobilized() {
                 if let Some(motion) = first_mob_motion(&mob.animations, MobMotion::Stand) {
@@ -5045,11 +5938,21 @@ mod native {
             let Some(mob) = self.mobs.get_mut(&update.object_id) else {
                 return;
             };
-            let mut mask = update.first_mask | update.second_mask;
-            while mask != 0 {
-                let flag = 1_u32 << mask.trailing_zeros();
-                mob.statuses.remove(&flag);
-                mask &= !flag;
+            for (group, mut mask) in [
+                (
+                    openstory_protocol::MobStatusMaskGroup::First,
+                    update.first_mask,
+                ),
+                (
+                    openstory_protocol::MobStatusMaskGroup::Second,
+                    update.second_mask,
+                ),
+            ] {
+                while mask != 0 {
+                    let flag = 1_u32 << mask.trailing_zeros();
+                    mob.statuses.remove(&(group, flag));
+                    mask &= !flag;
+                }
             }
             if !mob.is_immobilized() {
                 let desired = mob_motion_for_stance(mob.server_stance);
@@ -5108,6 +6011,7 @@ mod native {
             }
             mob.dying = false;
             mob.fade_remaining = None;
+            mob.fade_in_remaining = None;
             if mob.motion == MobMotion::Die {
                 mob.set_motion(MobMotion::Stand);
                 mob.refresh_server_stance();
@@ -5120,28 +6024,28 @@ mod native {
                 self.mobs.remove(&object_id);
                 return;
             }
-            if animation == 1
-                && !self
-                    .mobs
-                    .get(&object_id)
-                    .is_some_and(|mob| mob.animations.contains_key(&MobMotion::Die))
-            {
-                self.mobs.remove(&object_id);
-                return;
-            }
             let Some(mob) = self.mobs.get_mut(&object_id) else {
                 return;
             };
             match animation {
                 1 => {
-                    mob.motion = MobMotion::Die;
-                    mob.frame_index = 0;
-                    mob.elapsed = Duration::ZERO;
+                    // The legacy client falls back to a stance the mob has when its
+                    // NX archive has no DIE clip, then keeps it until server removal.
+                    mob.set_motion(MobMotion::Die);
                     mob.dying = true;
                 }
                 2 => {
                     mob.dying = true;
-                    mob.fade_remaining = Some(Duration::from_millis(400));
+                    let opacity = if let Some(remaining) = mob.fade_remaining {
+                        remaining.as_secs_f32() / MOB_FADE_DURATION.as_secs_f32()
+                    } else if let Some(remaining) = mob.fade_in_remaining {
+                        1.0 - remaining.as_secs_f32() / MOB_FADE_DURATION.as_secs_f32()
+                    } else {
+                        1.0
+                    }
+                    .clamp(0.0, 1.0);
+                    mob.fade_remaining = Some(MOB_FADE_DURATION.mul_f32(opacity));
+                    mob.fade_in_remaining = None;
                 }
                 _ => {}
             }
@@ -5175,7 +6079,11 @@ mod native {
                     let fallback = match motion {
                         AvatarMotion::Stand => AvatarMotion::Walk,
                         AvatarMotion::Sit => AvatarMotion::Stand,
-                        AvatarMotion::Walk | AvatarMotion::Jump => AvatarMotion::Stand,
+                        AvatarMotion::Crouch => AvatarMotion::Stand,
+                        AvatarMotion::Walk
+                        | AvatarMotion::Jump
+                        | AvatarMotion::Ladder
+                        | AvatarMotion::Rope => AvatarMotion::Stand,
                         AvatarMotion::Attack(_) => AvatarMotion::Stand,
                     };
                     self.avatar_frames
@@ -5196,7 +6104,7 @@ mod native {
                         continue;
                     };
                     *rect = sprite.rect;
-                    if active && !self.facing_right {
+                    if active && self.facing_right {
                         rect.x = 1024.0 - (rect.x + rect.width);
                     }
                     if !active {
@@ -5268,9 +6176,15 @@ mod native {
         left: bool,
         right: bool,
         sitting: bool,
+        down: bool,
+        climbing: Option<bool>,
     ) -> openstory_protocol::PlayerMovement {
-        let base_stance: u8 = if sitting {
+        let base_stance: u8 = if let Some(is_ladder) = climbing {
+            if is_ladder { 14 } else { 16 }
+        } else if sitting {
             20
+        } else if player.on_ground && down {
+            10
         } else if !player.on_ground {
             6
         } else if left != right && player.horizontal_speed != 0.0 {
@@ -5345,6 +6259,9 @@ mod native {
                 LoginField::Password
             };
             let settings = AudioSettings::load();
+            let gameplay_settings = GameplaySettings::load();
+            let saved_quickslot_keys = load_quickslot_keys();
+            let quickslot_keys_customized = saved_quickslot_keys.is_some();
             let mut audio = audio::AudioEngine::new();
             audio.set_music_volume(settings.music_volume);
             audio.set_sound_volume(settings.effects_volume);
@@ -5377,30 +6294,44 @@ mod native {
                 remote_art_cache: MapArtCache::default(),
                 projectile_frames_cache: HashMap::new(),
                 item_use_effect_cache: HashMap::new(),
+                item_aura_frames_cache: HashMap::new(),
                 summon_frames_cache: HashMap::new(),
                 pet_frames_cache: HashMap::new(),
                 pet_interaction_frames_cache: HashMap::new(),
                 skill_projectile_cache: HashMap::new(),
                 skill_effect_cache: HashMap::new(),
+                mob_disease_effect_cache: HashMap::new(),
                 character_effect_cache: HashMap::new(),
+                field_effect_cache: HashMap::new(),
+                weather_overlay: weather::WeatherOverlay::default(),
+                weather_texture: None,
+                scrolling_notice: None,
                 skill_hit_effect_cache: HashMap::new(),
                 face_expression_cache: HashMap::new(),
                 last_face_expression_at: None,
                 teleport_effect_frames: None,
                 login_actions: actions,
                 cursor: None,
+                cursor_physical: None,
                 field_textures: Vec::with_capacity(2),
                 account_text,
                 password_text,
                 focused_field,
+                login_caret_visible: true,
+                next_login_caret_toggle: Instant::now() + LOGIN_CARET_BLINK_INTERVAL,
                 focused_login_button: None,
+                character_action_focus: None,
                 suppress_login_ime_space: false,
+                login_key_text_for_ime_dedup: None,
+                character_creation_key_text_for_ime_dedup: None,
                 save_account_id: login_preferences.save_account_id,
                 save_id_indicator_draws,
                 pic_entry: None,
                 pic_dialog_texture: None,
                 settings_texture: None,
                 status_texture: None,
+                key_config_texture: None,
+                skill_macro_texture: None,
                 inventory_texture: None,
                 storage_texture: None,
                 hired_merchant_texture: None,
@@ -5410,17 +6341,46 @@ mod native {
                 death_notice_texture: None,
                 pet_equipment_texture: None,
                 cash_shop_texture: None,
+                cash_shop_hit_regions: Vec::new(),
                 owl_texture: None,
                 skill_book_texture: None,
                 quest_log_texture: None,
+                monster_book: monster_book::State::default(),
+                monster_book_animation_texture: None,
+                world_map: world_map::State::default(),
+                world_map_key_text_for_ime_dedup: None,
+                channel_switch_open: false,
+                channel_switch_texture: None,
+                channel_switch_actions: Vec::new(),
+                channel_switch_selected: 0,
+                messenger: None,
+                messenger_texture: None,
+                messenger_actions: Vec::new(),
+                messenger_bounds: None,
+                messenger_chat_focused: false,
+                messenger_drag_offset: None,
+                minimap_ui_assets: None,
+                minimap_texture: None,
+                minimap_bounds: None,
+                minimap_hit_regions: Vec::new(),
+                next_minimap_refresh: Instant::now(),
+                party_search: None,
+                party_search_texture: None,
+                party_search_actions: Vec::new(),
                 chat_texture: None,
+                item_megaphone_texture: None,
                 whisper_texture: None,
                 party_texture: None,
                 buddy_texture: None,
                 guild_texture: None,
+                family_texture: None,
+                family_tree_texture: None,
                 alliance_texture: None,
                 guild_bbs_texture: None,
-                chat_lines: VecDeque::with_capacity(32),
+                chat_lines: VecDeque::from([ChatLine {
+                    text: "[Welcome] Welcome to MapleStory!".to_owned(),
+                    color: [255, 255, 0],
+                }]),
                 chat_input: String::new(),
                 chat_open: false,
                 chat_target: ChatTarget::Public,
@@ -5439,6 +6399,11 @@ mod native {
                 show_party_panel: false,
                 guild_info: None,
                 show_guild_panel: false,
+                family_ui: FamilyUiState::default(),
+                show_family_panel: false,
+                show_family_tree: false,
+                pending_family_join: None,
+                pending_family_summon: None,
                 guild_panel_mode: GuildPanelMode::Overview,
                 guild_scroll: 0,
                 pending_guild_invite: None,
@@ -5461,14 +6426,38 @@ mod native {
                 show_inventory: false,
                 show_settings: false,
                 show_status: false,
+                show_key_config: false,
+                key_config_capture: None,
+                quickslot_key_capture: None,
+                key_config_scroll_row: 0,
+                key_config_actions: Vec::new(),
+                key_config_actions_dirty: true,
+                server_keymap: None,
+                quickslot_keys: saved_quickslot_keys.unwrap_or(DEFAULT_QUICKSLOT_KEYS),
+                quickslot_keys_customized,
+                show_quickslots: false,
+                quickslot_texture: None,
+                quickslot_icon_cache: HashMap::new(),
+                show_status_menu: false,
+                status_menu_texture: None,
+                skill_macro_editor: skill_macros::State::default(),
+                skill_macros: vec![
+                    openstory_protocol::SkillMacro::default();
+                    openstory_protocol::SKILL_MACRO_COUNT
+                ],
+                pending_macro_skills: VecDeque::new(),
+                next_macro_skill_at: Instant::now(),
                 status_auto_confirmation: false,
                 status_waiting_for_stats: false,
                 settings_dragging: None,
-                settings_selected_slider: AudioSettingSlider::Music,
+                settings_selected_slider: OptionSlider::Music,
                 settings,
                 settings_original: settings,
+                gameplay_settings,
+                gameplay_settings_original: gameplay_settings,
                 settings_notice: None,
                 show_pet_equipment: false,
+                pet_equipment_scroll_row: 0,
                 show_skill_book: false,
                 show_quest_log: false,
                 skill_book_tab: 0,
@@ -5476,6 +6465,7 @@ mod native {
                 skills: HashMap::new(),
                 skill_book_entries: Vec::new(),
                 active_buffs: HashMap::new(),
+                forced_equipment_stats: ForcedEquipmentStats::default(),
                 inventory_tab: openstory_protocol::InventoryType::Equip,
                 inventory_scroll_row: 0,
                 inventory_hover_slot: None,
@@ -5485,7 +6475,11 @@ mod native {
                 death_notice: false,
                 death_respawn_pending: false,
                 font,
+                server_address: connect_to
+                    .clone()
+                    .unwrap_or_else(|| "127.0.0.1:8484".to_owned()),
                 session: connect_to.map(session::connect),
+                pending_login_packet: None,
                 login_server_connected: false,
                 channel_connected: false,
                 debug_event_loop_logged: false,
@@ -5508,7 +6502,16 @@ mod native {
                 owl_name_index: None,
                 damage_glyph_texture: None,
                 damage_glyphs: Vec::with_capacity(20),
+                maple_tv_assets_loaded: false,
+                maple_tv_base_pixels: None,
+                maple_tv_idle_texture: None,
+                maple_tv_ad_animations: Vec::with_capacity(3),
+                maple_tv_ad_index: 0,
+                maple_tv_theme_animations: [MapleTvAnimation::empty(), MapleTvAnimation::empty()],
+                maple_tv_text_texture: None,
+                maple_tv_broadcast: None,
                 npc_dialogue: None,
+                npc_dialogue_scroll_dragging: false,
                 npc_shop: None,
                 hired_merchant_room: None,
                 trade_room: None,
@@ -5518,6 +6521,14 @@ mod native {
                 cash_shop: None,
                 cash_products,
                 map_hud_texture: None,
+                status_bar_draw_indices: Vec::new(),
+                status_bar_gauges: [None; 3],
+                status_bar_number_font: None,
+                status_bar_layout: StatusBarLayout::V83,
+                quit_confirmation: false,
+                quit_confirmation_draws: Vec::new(),
+                quit_confirmation_buttons: [None; 2],
+                quit_requested: false,
                 scriptable_npc_ids: HashSet::new(),
                 worlds: Vec::new(),
                 preferred_world: None,
@@ -5525,6 +6536,8 @@ mod native {
                 selected_channel: 0,
                 character_list: None,
                 character_page: 0,
+                selected_character_index: 0,
+                character_selection_status: None,
                 character_creation: None,
                 active_character: None,
                 inventory: None,
@@ -5540,6 +6553,8 @@ mod native {
                 show_login_fields: true,
                 map_scene: None,
                 last_npc_talk_at: None,
+                last_local_skill_cast: None,
+                pending_zombify_heal_feedback_until: None,
                 gameplay_input: GameplayInput::default(),
                 simulation_clock: FixedStepClock::default(),
                 client_started_at: Instant::now(),
@@ -5629,6 +6644,10 @@ mod native {
                 animation.elapsed = animation.elapsed.saturating_add(elapsed);
                 let mut changed = false;
                 loop {
+                    if animation.hold_last && animation.frame_index + 1 == animation.frames.len() {
+                        animation.elapsed = Duration::ZERO;
+                        break;
+                    }
                     let Some(frame) = animation.frames.get(animation.frame_index) else {
                         break;
                     };
@@ -5637,7 +6656,11 @@ mod native {
                         break;
                     }
                     animation.elapsed -= delay;
-                    animation.frame_index = (animation.frame_index + 1) % animation.frames.len();
+                    animation.frame_index = if animation.frame_index + 1 == animation.frames.len() {
+                        0
+                    } else {
+                        animation.frame_index + 1
+                    };
                     changed = true;
                 }
                 if changed {
@@ -5656,6 +6679,11 @@ mod native {
 
         fn update_map_simulation(&mut self, elapsed: Duration) {
             let frame = self.simulation_clock.advance(elapsed);
+            if frame.updates > 0 {
+                let texture_width = self.weather_texture.as_ref().map_or(0, GpuTexture::width);
+                self.weather_overlay.advance(frame.updates, texture_width);
+                self.advance_scrolling_notice(frame.updates);
+            }
             if self.cash_shop.is_some() {
                 self.gameplay_input = GameplayInput::default();
                 return;
@@ -5682,12 +6710,25 @@ mod native {
                 Duration::from_millis(8 * u64::from(frame.updates)),
                 is_dead,
             );
+            let (walk_force, jump_force, climb_force) =
+                self.active_character
+                    .as_ref()
+                    .map_or((0.16, 4.5, 1.0), |character| {
+                        player_movement_forces(
+                            character,
+                            &self.character_archive,
+                            &self.active_buffs,
+                            &self.forced_equipment_stats,
+                            is_slowed,
+                        )
+                    });
             let Some(scene) = self.map_scene.as_mut() else {
                 self.gameplay_input.jump_buffer = 0;
                 return;
             };
             let local_character_id = self.active_character.as_ref().map(|character| character.id);
             scene.advance_map_art_animations(frame.updates);
+            scene.advance_climb_cooldown(frame.updates);
             scene.advance_local_chair_animations(frame.updates);
             scene.advance_remote_players(frame.updates);
             scene.local_speech_bubble_remaining =
@@ -5705,6 +6746,7 @@ mod native {
             scene.advance_summons(frame.updates);
             let pet_packets = scene.advance_pets(frame.updates, local_character_id);
             scene.advance_character_effects(frame.updates);
+            scene.advance_screen_effect(frame.updates);
             let mob_packets = scene.advance_mobs(frame.updates);
             if self.channel_connected {
                 for packet in pet_packets {
@@ -5764,7 +6806,6 @@ mod native {
             }
             self.audio
                 .set_listener((rounded_i16(scene.player.x), rounded_i16(scene.player.y)));
-            let previous = (scene.player.x, scene.player.y);
             if self.gameplay_input.sit {
                 scene.sit_on_nearby_map_seat(&mut self.sprite_draws);
             }
@@ -5778,8 +6819,15 @@ mod native {
                 scene.player.vertical_speed = 0.0;
                 scene.player.on_ground = true;
                 self.gameplay_input.jump_buffer = 0;
-                let movement =
-                    player_movement(&scene.player, scene.facing_right, false, false, true);
+                let movement = player_movement(
+                    &scene.player,
+                    scene.facing_right,
+                    false,
+                    false,
+                    true,
+                    false,
+                    None,
+                );
                 if scene.last_movement != Some(movement) && self.channel_connected {
                     if let Some(session) = self.session.as_ref() {
                         match session.send_packet(openstory_protocol::move_player(movement)) {
@@ -5795,50 +6843,164 @@ mod native {
                 }
             } else if let Some(footholds) = scene.footholds.as_ref() {
                 for _ in 0..frame.updates {
-                    if is_stunned {
+                    if let Some(ladder) = scene.local_ladder {
+                        scene.player.mode = PhysicsMode::Fixated;
+                        scene.player.x = f64::from(ladder.x);
                         scene.player.horizontal_speed = 0.0;
-                    }
-                    if scene.player.on_ground {
-                        let direction = if is_stunned {
-                            0.0
-                        } else {
-                            match (left, right) {
-                                (true, false) => -1.0,
-                                (false, true) => 1.0,
-                                _ => 0.0,
-                            }
-                        };
-                        if direction != 0.0 {
-                            scene
-                                .player
-                                .apply_force(direction * if is_slowed { 0.025 } else { 0.05 }, 0.0);
-                        }
-                        if self.gameplay_input.jump_buffer > 0 && !is_stunned {
+                        if self.gameplay_input.jump_buffer > 0 && (left || right) && !is_stunned {
                             self.audio.play_world_sound(
                                 &self.sound_archive,
                                 "Game.img/Jump",
                                 (rounded_i16(scene.player.x), rounded_i16(scene.player.y)),
                             );
-                            scene.player.apply_force(0.0, -1.0);
+                            let jump_right = right;
+                            if scene.facing_right != jump_right {
+                                scene.facing_right = jump_right;
+                                scene.refresh_avatar_draws(&mut self.sprite_draws);
+                            }
+                            scene.player.horizontal_speed = if left {
+                                -walk_force * 8.0
+                            } else {
+                                walk_force * 8.0
+                            };
+                            scene.player.vertical_speed = -jump_force / 1.5;
+                            scene.local_ladder = None;
+                            scene.player.mode = PhysicsMode::Normal;
+                            scene.player.on_ground = false;
+                            scene.player.foothold_layer = scene
+                                .footholds
+                                .as_ref()
+                                .and_then(|tree| tree.get(scene.player.foothold_id))
+                                .map_or(0, |foothold| foothold.layer);
+                            scene.climb_cooldown = 32;
                             self.gameplay_input.jump_buffer = 0;
+                        } else {
+                            scene.player.vertical_speed = if is_stunned {
+                                0.0
+                            } else if self.gameplay_input.up && !self.gameplay_input.down {
+                                -climb_force
+                            } else if self.gameplay_input.down && !self.gameplay_input.up {
+                                climb_force
+                            } else {
+                                0.0
+                            };
                         }
                     } else {
+                        scene.player.mode = PhysicsMode::Normal;
                         if is_stunned {
                             scene.player.horizontal_speed = 0.0;
-                        } else if left && !right && scene.player.horizontal_speed > 0.0 {
-                            scene.player.horizontal_speed =
-                                (scene.player.horizontal_speed - 0.025).max(0.0);
-                        } else if right && !left && scene.player.horizontal_speed < 0.0 {
-                            scene.player.horizontal_speed =
-                                (scene.player.horizontal_speed + 0.025).min(0.0);
                         }
-                        self.gameplay_input.jump_buffer =
-                            self.gameplay_input.jump_buffer.saturating_sub(1);
+                        if scene.player.on_ground {
+                            let direction = if is_stunned {
+                                0.0
+                            } else {
+                                match (left, right) {
+                                    (true, false) => -1.0,
+                                    (false, true) => 1.0,
+                                    _ => 0.0,
+                                }
+                            };
+                            if direction != 0.0 {
+                                scene.player.apply_force(direction * walk_force, 0.0);
+                            }
+                            if self.gameplay_input.jump_buffer > 0 && !is_stunned {
+                                if self.gameplay_input.down
+                                    && self.gameplay_input.jump_down_ticks < 5
+                                {
+                                    self.gameplay_input.jump_down_ticks += 1;
+                                } else {
+                                    self.audio.play_world_sound(
+                                        &self.sound_archive,
+                                        "Game.img/Jump",
+                                        (rounded_i16(scene.player.x), rounded_i16(scene.player.y)),
+                                    );
+                                    let lower_foothold = self
+                                        .gameplay_input
+                                        .down
+                                        .then(|| {
+                                            scene.footholds.as_ref().and_then(|tree| {
+                                                let ground = tree
+                                                    .get(scene.player.foothold_id)
+                                                    .and_then(|foothold| {
+                                                        foothold.ground_y(scene.player.x)
+                                                    })
+                                                    .unwrap_or(scene.player.y);
+                                                tree.find_below(scene.player.x, ground + 1.0)
+                                            })
+                                        })
+                                        .flatten();
+                                    if let Some((foothold_id, _)) = lower_foothold {
+                                        scene.player.y += 1.0;
+                                        scene.player.foothold_id = foothold_id;
+                                        scene.player.foothold_layer = scene
+                                            .footholds
+                                            .as_ref()
+                                            .and_then(|tree| tree.get(foothold_id))
+                                            .map_or(0, |foothold| foothold.layer);
+                                        scene.player.vertical_speed = 0.0;
+                                        scene.player.on_ground = false;
+                                        scene.player.jump_down_enabled = false;
+                                    } else {
+                                        scene.player.apply_force(0.0, -jump_force);
+                                    }
+                                    self.gameplay_input.jump_buffer = 0;
+                                    self.gameplay_input.jump_down_ticks = 0;
+                                }
+                            } else if !self.gameplay_input.down {
+                                self.gameplay_input.jump_down_ticks = 0;
+                            }
+                        } else {
+                            self.gameplay_input.jump_down_ticks = 0;
+                            if is_stunned {
+                                scene.player.horizontal_speed = 0.0;
+                            } else if left && !right && scene.player.horizontal_speed > 0.0 {
+                                scene.player.horizontal_speed =
+                                    (scene.player.horizontal_speed - 0.025).max(0.0);
+                            } else if right && !left && scene.player.horizontal_speed < 0.0 {
+                                scene.player.horizontal_speed =
+                                    (scene.player.horizontal_speed + 0.025).min(0.0);
+                            }
+                            self.gameplay_input.jump_buffer =
+                                self.gameplay_input.jump_buffer.saturating_sub(1);
+                        }
                     }
                     PhysicsEngine.move_body(footholds, &mut scene.player);
+                    if let Some(ladder) = scene.local_ladder {
+                        if ladder.fell_off(rounded_i16(scene.player.y), self.gameplay_input.down) {
+                            scene.local_ladder = None;
+                            scene.player.mode = PhysicsMode::Normal;
+                            scene.player.on_ground = false;
+                            scene.player.foothold_layer = scene
+                                .footholds
+                                .as_ref()
+                                .and_then(|tree| tree.get(scene.player.foothold_id))
+                                .map_or(0, |foothold| foothold.layer);
+                            scene.climb_cooldown = 32;
+                        }
+                    } else if !is_stunned && scene.attack_stance.is_none() {
+                        let upwards = self.gameplay_input.up && !self.gameplay_input.down;
+                        if (upwards || self.gameplay_input.down) && scene.climb_cooldown == 0 {
+                            let x = rounded_i16(scene.player.x);
+                            let y = rounded_i16(scene.player.y);
+                            if let Some(ladder) = scene
+                                .map_ladders
+                                .iter()
+                                .copied()
+                                .find(|ladder| ladder.in_range(x, y, upwards))
+                            {
+                                scene.local_ladder = Some(ladder);
+                                scene.player.x = f64::from(ladder.x);
+                                scene.player.horizontal_speed = 0.0;
+                                scene.player.vertical_speed = 0.0;
+                                scene.player.foothold_layer = 7;
+                                scene.player.mode = PhysicsMode::Fixated;
+                            }
+                        }
+                    }
                     let seated_on_map = if self.gameplay_input.sit
                         && scene.local_chair.is_none()
                         && scene.local_map_seat.is_none()
+                        && scene.local_ladder.is_none()
                         && scene.attack_stance.is_none()
                     {
                         nearby_map_seat(&scene.map_seats, &scene.player).is_some_and(|(x, y)| {
@@ -5865,6 +7027,8 @@ mod native {
                             left && !is_stunned,
                             right && !is_stunned,
                             scene.local_map_seat.is_some(),
+                            self.gameplay_input.down,
+                            scene.local_ladder.map(|ladder| ladder.is_ladder),
                         );
                         if scene.last_movement != Some(movement) {
                             if let Some(session) = self.session.as_ref() {
@@ -5909,6 +7073,7 @@ mod native {
                     &self.skill_archive,
                     &self.skills,
                     &self.active_buffs,
+                    &self.forced_equipment_stats,
                 );
                 let direction = u8::from(touch.origin_x <= scene.player.x);
                 let stance = f64::from(character_buff_value(
@@ -5916,7 +7081,10 @@ mod native {
                     openstory_protocol::BuffMaskGroup::Second,
                     0x10,
                 )) / 100.0;
-                let knockback = damage > 0 && scene.next_attack_random() > stance;
+                let knockback = damage > 0
+                    && scene.local_ladder.is_none()
+                    && scene.next_attack_random() > stance;
+                self.pending_zombify_heal_feedback_until = None;
                 scene.show_local_player_damage(damage);
                 if damage > 0 {
                     self.audio.play_world_sound(
@@ -5948,7 +7116,9 @@ mod native {
 
             match scene.advance_portals(
                 self.gameplay_input.up && !is_stunned && !is_confused,
-                scene.attack_stance.is_none() && !scene.is_locally_seated(),
+                scene.attack_stance.is_none()
+                    && !scene.is_locally_seated()
+                    && scene.local_ladder.is_none(),
                 frame.updates,
             ) {
                 Some(PortalWarp::SameMap { x, y }) => {
@@ -5993,7 +7163,15 @@ mod native {
                 None => {}
             }
 
-            let fallback_motion = if !scene.player.on_ground {
+            let fallback_motion = if let Some(ladder) = scene.local_ladder {
+                if ladder.is_ladder {
+                    AvatarMotion::Ladder
+                } else {
+                    AvatarMotion::Rope
+                }
+            } else if scene.player.on_ground && self.gameplay_input.down {
+                AvatarMotion::Crouch
+            } else if !scene.player.on_ground {
                 AvatarMotion::Jump
             } else if scene.is_locally_seated() {
                 AvatarMotion::Sit
@@ -6006,29 +7184,33 @@ mod native {
                 .attack_stance
                 .map(AvatarMotion::Attack)
                 .unwrap_or(fallback_motion);
+            let animation_speed = if scene.local_ladder.is_some() {
+                scene.player.vertical_speed.abs()
+            } else {
+                1.0
+            };
             scene.advance_avatar_animation(
-                Duration::from_millis(8 * u64::from(frame.updates)),
+                Duration::from_secs_f64(0.008 * f64::from(frame.updates) * animation_speed),
                 motion,
                 fallback_motion,
                 &mut self.sprite_draws,
             );
             self.audio
                 .set_listener((rounded_i16(scene.player.x), rounded_i16(scene.player.y)));
-            let delta_x = (scene.player.x - previous.0) as f32;
-            let delta_y = (scene.player.y - previous.1) as f32;
+            let camera_delta = scene.update_camera();
             scene.advance_background_positions(
-                delta_x,
-                delta_y,
+                camera_delta.0,
+                camera_delta.1,
                 frame.updates,
                 &mut self.sprite_draws,
             );
-            if delta_x == 0.0 && delta_y == 0.0 {
+            if camera_delta.0 == 0.0 && camera_delta.1 == 0.0 {
                 return;
             }
             for index in &scene.world_draw_indices {
                 if let Some((_, rect)) = self.sprite_draws.get_mut(*index) {
-                    rect.x -= delta_x;
-                    rect.y -= delta_y;
+                    rect.x += camera_delta.0;
+                    rect.y += camera_delta.1;
                 }
             }
         }
@@ -6072,6 +7254,13 @@ mod native {
 
         fn try_local_attack(&mut self, skill: Option<&SkillUiEntry>) {
             let skill_id = skill.map_or(0, |skill| skill.id);
+            if self
+                .map_scene
+                .as_ref()
+                .is_some_and(|scene| scene.local_ladder.is_some())
+            {
+                return;
+            }
             let now = Instant::now();
             self.active_buffs
                 .retain(|_, buff| buff.expires_at.is_none_or(|expires_at| expires_at > now));
@@ -6100,6 +7289,7 @@ mod native {
                 &self.skill_archive,
                 &self.skills,
                 &self.active_buffs,
+                &self.forced_equipment_stats,
             ) {
                 Ok(Some(stats)) => stats,
                 Ok(None) => return,
@@ -6116,15 +7306,42 @@ mod native {
                 attack_stats.element = skill.element;
                 attack_stats.fixed_damage = skill.fixed_damage;
                 if skill.magic_damage && skill.fixed_damage.is_none() {
-                    let magic_factor = attack_stats.magic_attack.max(0) as f64 / 100.0
-                        * skill.magic_damage_multiplier;
-                    attack_stats.minimum_damage =
-                        (4.0 * attack_stats.intelligence as f64 * skill.magic_mastery
-                            + attack_stats.luck as f64)
-                            * magic_factor;
-                    attack_stats.maximum_damage = (4.0 * attack_stats.intelligence as f64
-                        + attack_stats.luck as f64)
-                        * magic_factor;
+                    // Match Cosmic's v83 magic upper-bound formula. `mad` in
+                    // Skill.nx is already the multiplier (for example 33),
+                    // while total magic includes INT and equipment MATK.
+                    let magic = attack_stats.magic_total.max(0);
+                    let magic_per_thousand = magic.saturating_add(999) / 1000;
+                    let numerator = magic
+                        .saturating_mul(magic_per_thousand)
+                        .saturating_add(magic);
+                    let mut base_max = numerator.saturating_add(29) / 30;
+                    let total_intelligence = attack_stats.intelligence.max(0);
+                    base_max =
+                        base_max.saturating_add(total_intelligence.saturating_add(199) / 200);
+                    if let Some(amplification_skill) =
+                        magic_amplification_skill(character.stats.job)
+                        && let Some(level) = learned_skill_level(
+                            &self.skill_archive,
+                            &self.skills,
+                            amplification_skill,
+                        )
+                    {
+                        let amplification = integer_property(&level, "y").unwrap_or(100).max(0);
+                        base_max = base_max.saturating_mul(amplification) / 100;
+                    }
+                    let maximum_damage = base_max as f64 * skill.magic_damage_multiplier;
+                    let unmastered_minimum =
+                        4.0 * total_intelligence as f64 + attack_stats.luck.max(0) as f64;
+                    let mastery_fraction = if unmastered_minimum > 0.0 {
+                        (4.0 * total_intelligence as f64 * skill.magic_mastery
+                            + attack_stats.luck.max(0) as f64)
+                            / unmastered_minimum
+                    } else {
+                        skill.magic_mastery
+                    }
+                    .clamp(0.0, 1.0);
+                    attack_stats.minimum_damage = maximum_damage * mastery_fraction;
+                    attack_stats.maximum_damage = maximum_damage;
                 } else if !skill.magic_damage && skill.fixed_damage.is_none() {
                     attack_stats.minimum_damage *= skill.damage_multiplier;
                     attack_stats.maximum_damage *= skill.damage_multiplier;
@@ -6323,29 +7540,1263 @@ mod native {
             }
             if self.channel_connected {
                 if let Some(session) = self.session.as_ref() {
-                    if let Err(error) = session.send_packet(packet) {
-                        eprintln!("OpenStory: could not send a basic attack: {error}");
-                        self.channel_connected = false;
-                    } else if let Some(object_id) = reactor_target {
-                        let stance = if matches!(stance, 0 | 2) {
-                            if scene.facing_right { 3 } else { 1 }
-                        } else {
-                            stance
-                        };
-                        let packet = openstory_protocol::damage_reactor_packet(
-                            object_id,
-                            rounded_i16(scene.player.x),
-                            rounded_i16(scene.player.y),
-                            i16::from(stance),
-                            0,
-                        );
-                        if let Err(error) = session.send_packet(packet) {
-                            eprintln!("OpenStory: could not request reactor hit: {error}");
+                    match session.send_packet(packet) {
+                        Err(error) => {
+                            eprintln!("OpenStory: could not send a basic attack: {error}");
                             self.channel_connected = false;
+                        }
+                        Ok(()) => {
+                            if skill_id > 0 {
+                                self.last_local_skill_cast = Some((skill_id, Instant::now()));
+                            }
+                            if let Some(object_id) = reactor_target {
+                                let stance = if matches!(stance, 0 | 2) {
+                                    if scene.facing_right { 3 } else { 1 }
+                                } else {
+                                    stance
+                                };
+                                let packet = openstory_protocol::damage_reactor_packet(
+                                    object_id,
+                                    rounded_i16(scene.player.x),
+                                    rounded_i16(scene.player.y),
+                                    i16::from(stance),
+                                    0,
+                                );
+                                if let Err(error) = session.send_packet(packet) {
+                                    eprintln!("OpenStory: could not request reactor hit: {error}");
+                                    self.channel_connected = false;
+                                }
+                            }
                         }
                     }
                 }
             }
+        }
+
+        fn toggle_key_config(&mut self) {
+            self.show_key_config = !self.show_key_config;
+            self.key_config_capture = None;
+            self.quickslot_key_capture = None;
+            if self.show_key_config {
+                self.key_config_scroll_row = 0;
+                self.key_config_actions_dirty = true;
+                self.show_inventory = false;
+                self.show_skill_book = false;
+                self.show_quest_log = false;
+                self.show_pet_equipment = false;
+                self.refresh_key_config_texture();
+            }
+        }
+
+        fn toggle_quickslots(&mut self) {
+            if self.current_field.is_none() {
+                return;
+            }
+            self.show_quickslots = !self.show_quickslots;
+            if self.show_quickslots {
+                self.refresh_quickslots_texture();
+            }
+        }
+
+        fn toggle_status_menu(&mut self) {
+            self.show_status_menu = !self.show_status_menu;
+            if self.show_status_menu {
+                self.refresh_status_menu_texture();
+            }
+        }
+
+        fn refresh_status_menu_texture(&mut self) {
+            if !self.show_status_menu {
+                return;
+            }
+            let pixels = render_status_menu(&self.font);
+            let Some(renderer) = self.renderer.as_ref() else {
+                return;
+            };
+            let result = if let Some(texture) = self.status_menu_texture.as_ref() {
+                renderer.update_bgra(texture, &pixels).map(|()| None)
+            } else {
+                renderer
+                    .upload_bgra(STATUS_MENU_WIDTH, STATUS_MENU_HEIGHT, &pixels)
+                    .map(Some)
+            };
+            match result {
+                Ok(Some(texture)) => self.status_menu_texture = Some(texture),
+                Ok(None) => {}
+                Err(error) => eprintln!("OpenStoryRS: could not update the status menu: {error}"),
+            }
+        }
+
+        fn open_inventory_tab(&mut self, tab: openstory_protocol::InventoryType) {
+            if self.show_inventory && self.inventory_tab == tab {
+                self.show_inventory = false;
+                self.inventory_drag_source = None;
+                self.inventory_hover_slot = None;
+                self.pending_scroll_slot = None;
+                return;
+            }
+            self.show_inventory = true;
+            self.inventory_tab = tab;
+            self.inventory_scroll_row = 0;
+            self.inventory_drag_source = None;
+            self.inventory_hover_slot = None;
+            self.pending_scroll_slot = None;
+            self.show_skill_book = false;
+            self.show_pet_equipment = false;
+            self.update_inventory_hover();
+            self.refresh_inventory_texture();
+        }
+
+        fn activate_status_menu_item(&mut self, item: usize) {
+            self.show_status_menu = false;
+            match item {
+                0 => self.open_status_window(),
+                1 => {
+                    self.show_skill_book = !self.show_skill_book;
+                    if self.show_skill_book {
+                        self.show_inventory = false;
+                        self.show_pet_equipment = false;
+                        self.skill_book_tab = 0;
+                        self.skill_book_scroll_row = 0;
+                        self.refresh_skill_book_entries();
+                        self.refresh_skill_book_texture();
+                    }
+                }
+                2 => {
+                    self.show_quest_log = true;
+                    self.show_inventory = false;
+                    self.show_pet_equipment = false;
+                    self.show_skill_book = false;
+                    self.inventory_drag_source = None;
+                    self.pending_scroll_slot = None;
+                    self.quest_log_tab = QuestLogTab::Active;
+                    self.quest_log_scroll = 0;
+                    self.quest_log_selected = 0;
+                    self.quest_reward_selected = 0;
+                    self.quest_forfeit_confirmation = None;
+                    self.refresh_quest_log_texture();
+                }
+                3 => self.open_inventory_tab(openstory_protocol::InventoryType::Use),
+                4 => self.open_inventory_tab(openstory_protocol::InventoryType::Equip),
+                5 => {
+                    self.show_party_panel = !self.show_party_panel;
+                    if self.show_party_panel {
+                        self.show_buddy_panel = false;
+                        self.show_guild_panel = false;
+                        self.show_alliance_panel = false;
+                    }
+                    self.refresh_party_texture();
+                }
+                6 => {
+                    self.show_buddy_panel = !self.show_buddy_panel;
+                    if self.show_buddy_panel {
+                        self.show_party_panel = false;
+                        self.show_guild_panel = false;
+                        self.show_alliance_panel = false;
+                    }
+                    self.refresh_buddy_texture();
+                }
+                7 => {
+                    self.show_guild_panel = !self.show_guild_panel;
+                    if self.show_guild_panel {
+                        self.show_party_panel = false;
+                        self.show_buddy_panel = false;
+                        self.show_alliance_panel = false;
+                    }
+                    self.refresh_guild_texture();
+                }
+                8 => {
+                    self.monster_book.open = !self.monster_book.open;
+                    if self.monster_book.open {
+                        self.refresh_monster_book_texture();
+                    }
+                }
+                9 => {
+                    if self.world_map.open {
+                        self.world_map.open = false;
+                        self.refresh_world_map_texture();
+                    } else {
+                        self.open_world_map();
+                    }
+                }
+                10 => self.toggle_key_config(),
+                11 => self.open_settings(),
+                _ => {}
+            }
+        }
+
+        fn click_native_status_bar(&mut self, cursor: Point) -> bool {
+            if self.current_field.is_none() {
+                return false;
+            }
+
+            if self.show_status_menu {
+                let menu_bounds = SpriteRect {
+                    x: STATUS_MENU_X,
+                    y: STATUS_MENU_Y,
+                    width: STATUS_MENU_WIDTH as f32,
+                    height: STATUS_MENU_HEIGHT as f32,
+                    blend_mode: BlendMode::Alpha,
+                };
+                if rect_contains(menu_bounds, cursor) {
+                    let row_y = cursor.y - (STATUS_MENU_Y + 4.0);
+                    if row_y >= 0.0 {
+                        let row = (row_y / STATUS_MENU_ROW_HEIGHT as f32) as usize;
+                        if row < STATUS_MENU_ROWS.len() {
+                            self.audio
+                                .play_ui_sound(&self.sound_archive, "UI.img/BtMouseClick");
+                            self.activate_status_menu_item(row);
+                        }
+                    }
+                    return true;
+                }
+                self.show_status_menu = false;
+            }
+
+            let small_x = 838.0;
+            let small_y = STATUS_BAR_TOP + 5.0;
+            if (small_y..small_y + 20.0).contains(&cursor.y) {
+                let icon = (0..6).find(|index| {
+                    let left = small_x + *index as f32 * 30.0;
+                    (left..left + 28.0).contains(&cursor.x)
+                });
+                match icon {
+                    Some(0..=5) => {
+                        self.audio
+                            .play_ui_sound(&self.sound_archive, "UI.img/BtMouseClick");
+                        match icon {
+                            Some(0) => self.open_status_window(),
+                            Some(1) => {
+                                self.open_inventory_tab(openstory_protocol::InventoryType::Use)
+                            }
+                            Some(2) => {
+                                self.open_inventory_tab(openstory_protocol::InventoryType::Equip)
+                            }
+                            Some(3) => {
+                                self.show_skill_book = !self.show_skill_book;
+                                if self.show_skill_book {
+                                    self.show_inventory = false;
+                                    self.show_pet_equipment = false;
+                                    self.skill_book_tab = 0;
+                                    self.skill_book_scroll_row = 0;
+                                    self.refresh_skill_book_entries();
+                                    self.refresh_skill_book_texture();
+                                }
+                            }
+                            Some(4) => self.toggle_key_config(),
+                            Some(5) => self.toggle_quickslots(),
+                            _ => {}
+                        }
+                    }
+                    _ => return false,
+                }
+                return true;
+            }
+
+            let big_x = 794.0;
+            let big_y = STATUS_BAR_TOP + 35.0;
+            if (big_y..big_y + 34.0).contains(&cursor.y) {
+                let button = (0..4).find(|index| {
+                    let left = big_x + *index as f32 * 56.0;
+                    (left..left + 54.0).contains(&cursor.x)
+                });
+                match button {
+                    Some(0..=3) => {
+                        self.audio
+                            .play_ui_sound(&self.sound_archive, "UI.img/BtMouseClick");
+                        match button {
+                            Some(0) => self.toggle_status_menu(),
+                            Some(1) => self.open_cash_shop(),
+                            Some(2) => self.open_settings(),
+                            Some(3) => {
+                                self.chat_target = ChatTarget::Public;
+                                self.chat_input = "/trade ".to_owned();
+                                self.chat_open = true;
+                                self.refresh_chat_texture();
+                            }
+                            _ => {}
+                        }
+                    }
+                    _ => return false,
+                }
+                return true;
+            }
+
+            false
+        }
+
+        fn quickslot_at(&self, cursor: Point) -> Option<usize> {
+            if !self.show_quickslots {
+                return None;
+            }
+            const PANEL_X: f32 = 865.0;
+            const PANEL_Y: f32 = 615.0;
+            const CELL_X: f32 = 7.0;
+            const CELL_Y: f32 = 8.0;
+            const CELL_WIDTH: f32 = 32.0;
+            const CELL_HEIGHT: f32 = 30.0;
+            const COLUMN_STEP: f32 = 35.0;
+            const ROW_STEP: f32 = 34.0;
+            (0..8).find(|slot| {
+                let column = (*slot % 4) as f32;
+                let row = (*slot / 4) as f32;
+                rect_contains(
+                    SpriteRect {
+                        x: PANEL_X + CELL_X + column * COLUMN_STEP,
+                        y: PANEL_Y + CELL_Y + row * ROW_STEP,
+                        width: CELL_WIDTH,
+                        height: CELL_HEIGHT,
+                        blend_mode: BlendMode::Alpha,
+                    },
+                    cursor,
+                )
+            })
+        }
+
+        fn click_quickslot(&mut self, cursor: Point) -> bool {
+            let Some(slot) = self.quickslot_at(cursor) else {
+                return false;
+            };
+            let key = self.quickslot_keys[slot];
+            if let Some(binding) = self
+                .server_keymap
+                .as_ref()
+                .and_then(|bindings| bindings.get(usize::from(key)))
+                .copied()
+                && binding.kind != 0
+            {
+                self.apply_keymap_binding(ElementState::Pressed, false, binding);
+            }
+            true
+        }
+
+        fn quickslot_icon_pixels(
+            &mut self,
+            binding: openstory_protocol::KeyBinding,
+        ) -> Option<(u32, u32, Arc<[u8]>)> {
+            if binding.action < 0 || (binding.action == 0 && binding.kind != 8) {
+                return None;
+            }
+            let cache_key = (binding.kind, binding.action);
+            if let Some(cached) = self.quickslot_icon_cache.get(&cache_key) {
+                return cached.clone();
+            }
+            let icon = match binding.kind {
+                1 => decode_nx_icon(
+                    &self.skill_archive,
+                    &format!(
+                        "{:03}.img/skill/{}/icon",
+                        binding.action / 10_000,
+                        binding.action
+                    ),
+                ),
+                2 | 3 => inventory_item_icon(
+                    binding.action,
+                    &self.item_archive,
+                    &self.character_archive,
+                    &mut self.inventory_icon_cache,
+                ),
+                4 | 5 => {
+                    let path = format!("UIWindow.img/KeyConfig/icon/{}", binding.action);
+                    decode_nx_icon(&self.ui_archive, &path).or_else(|| {
+                        decode_nx_icon(
+                            &self.ui_archive,
+                            &format!("UIWindow2.img/KeyConfig/icon/{}", binding.action),
+                        )
+                    })
+                }
+                8 => decode_nx_icon(
+                    &self.ui_archive,
+                    &format!("UIWindow.img/SkillMacro/Macroicon/{}/icon", binding.action),
+                ),
+                _ => None,
+            };
+            if self.quickslot_icon_cache.len() >= 256 {
+                self.quickslot_icon_cache.clear();
+            }
+            self.quickslot_icon_cache.insert(cache_key, icon.clone());
+            icon
+        }
+
+        fn refresh_quickslots_texture(&mut self) {
+            if !self.show_quickslots {
+                return;
+            }
+            const WIDTH: usize = 151;
+            const HEIGHT: usize = 80;
+            let fallback = default_keymap_bindings();
+            let bindings = self.server_keymap.as_deref().unwrap_or(&fallback);
+            let slot_bindings = self
+                .quickslot_keys
+                .iter()
+                .map(|key| bindings.get(usize::from(*key)).copied().unwrap_or_default())
+                .collect::<Vec<_>>();
+            let icons: [Option<(u32, u32, Arc<[u8]>)>; 8] = std::array::from_fn(|slot| {
+                let binding = slot_bindings.get(slot).copied().unwrap_or_default();
+                (binding.kind != 0)
+                    .then(|| self.quickslot_icon_pixels(binding))
+                    .flatten()
+            });
+            let pixels = render_quickslot_panel_pixels(
+                &self.font,
+                quickslot_background_image(&self.legacy_ui_archive),
+                &self.quickslot_keys,
+                &icons,
+            );
+
+            let Some(renderer) = self.renderer.as_ref() else {
+                return;
+            };
+            let result = if let Some(texture) = self.quickslot_texture.as_ref() {
+                renderer.update_bgra(texture, &pixels).map(|()| None)
+            } else {
+                renderer
+                    .upload_bgra(WIDTH as u32, HEIGHT as u32, &pixels)
+                    .map(Some)
+            };
+            match result {
+                Ok(Some(texture)) => self.quickslot_texture = Some(texture),
+                Ok(None) => {}
+                Err(error) => eprintln!("OpenStoryRS: could not refresh quick slots: {error}"),
+            }
+        }
+
+        fn refresh_key_config_texture(&mut self) {
+            if !self.show_key_config {
+                return;
+            }
+            if self.key_config_actions_dirty {
+                let captured_action = self.key_config_capture.and_then(|index| {
+                    self.key_config_actions
+                        .get(index)
+                        .map(|entry| (entry.kind, entry.action))
+                });
+                self.key_config_actions = build_key_config_actions(
+                    self.inventory.as_ref(),
+                    &self.skills,
+                    self.server_keymap.as_deref(),
+                    &self.skill_macros,
+                    &self.string_archive,
+                    &mut self.item_name_cache,
+                );
+                self.key_config_capture = captured_action.and_then(|(kind, action)| {
+                    self.key_config_actions
+                        .iter()
+                        .position(|entry| entry.kind == kind && entry.action == action)
+                });
+                self.key_config_actions_dirty = false;
+            }
+            self.key_config_scroll_row = self.key_config_scroll_row.min(
+                self.key_config_actions
+                    .len()
+                    .saturating_sub(KEY_CONFIG_VISIBLE_ROWS),
+            );
+            let fallback;
+            let bindings = if let Some(bindings) = self.server_keymap.as_ref() {
+                bindings.as_slice()
+            } else {
+                fallback = default_keymap_bindings();
+                fallback.as_slice()
+            };
+            let pixels = render_key_config_panel(
+                &self.font,
+                bindings,
+                &self.quickslot_keys,
+                self.key_config_capture,
+                self.quickslot_key_capture,
+                self.key_config_scroll_row,
+                &self.key_config_actions,
+            );
+            let Some(renderer) = self.renderer.as_ref() else {
+                return;
+            };
+            let result = if let Some(texture) = self.key_config_texture.as_ref() {
+                renderer.update_bgra(texture, &pixels).map(|()| None)
+            } else {
+                renderer
+                    .upload_bgra(KEY_CONFIG_PANEL_WIDTH, KEY_CONFIG_PANEL_HEIGHT, &pixels)
+                    .map(Some)
+            };
+            match result {
+                Ok(Some(texture)) => self.key_config_texture = Some(texture),
+                Ok(None) => {}
+                Err(error) => eprintln!("OpenStory: could not update key bindings panel: {error}"),
+            }
+        }
+
+        fn skill_macro_choices(&self) -> Vec<(i32, String)> {
+            self.skills
+                .values()
+                .filter(|skill| skill.id > 0 && skill.level > 0 && (skill.id % 10_000) / 1_000 != 0)
+                .map(|skill| {
+                    (
+                        skill.id,
+                        key_config_skill_name(skill.id, &self.string_archive),
+                    )
+                })
+                .collect::<BTreeMap<_, _>>()
+                .into_iter()
+                .collect()
+        }
+
+        fn refresh_skill_macro_texture(&mut self) {
+            if !self.skill_macro_editor.open {
+                return;
+            }
+            let skills = self.skill_macro_choices();
+            self.skill_macro_editor.scroll_skills(0, skills.len());
+            let pixels = skill_macros::render(&self.font, &self.skill_macro_editor, &skills);
+            let Some(renderer) = self.renderer.as_ref() else {
+                return;
+            };
+            let result = if let Some(texture) = self.skill_macro_texture.as_ref() {
+                renderer.update_bgra(texture, &pixels).map(|()| None)
+            } else {
+                renderer
+                    .upload_bgra(
+                        skill_macros::PANEL_WIDTH,
+                        skill_macros::PANEL_HEIGHT,
+                        &pixels,
+                    )
+                    .map(Some)
+            };
+            match result {
+                Ok(Some(texture)) => self.skill_macro_texture = Some(texture),
+                Ok(None) => {}
+                Err(error) => eprintln!("OpenStoryRS: could not update skill macros: {error}"),
+            }
+        }
+
+        fn open_skill_macro_editor(&mut self) {
+            self.skill_macro_editor.open(&self.skill_macros);
+            self.refresh_skill_macro_texture();
+        }
+
+        fn click_skill_macro_editor(&mut self, cursor: Point) {
+            let bounds = SpriteRect {
+                x: skill_macros::PANEL_X,
+                y: skill_macros::PANEL_Y,
+                width: skill_macros::PANEL_WIDTH as f32,
+                height: skill_macros::PANEL_HEIGHT as f32,
+                blend_mode: BlendMode::Alpha,
+            };
+            if !rect_contains(bounds, cursor) {
+                self.skill_macro_editor.close();
+                return;
+            }
+            let skills = self.skill_macro_choices();
+            let action = skill_macros::hit_test(
+                cursor.x - bounds.x,
+                cursor.y - bounds.y,
+                &self.skill_macro_editor,
+                &skills,
+            );
+            match action {
+                Some(skill_macros::Action::Close) => self.skill_macro_editor.close(),
+                Some(skill_macros::Action::Save) => self.save_skill_macro_editor(),
+                Some(skill_macros::Action::SelectMacro(index)) => {
+                    self.skill_macro_editor.select_macro(index);
+                }
+                Some(skill_macros::Action::FocusName) => {
+                    self.skill_macro_editor.name_focused = true;
+                }
+                Some(skill_macros::Action::ToggleShout) => {
+                    self.skill_macro_editor.toggle_shout();
+                }
+                Some(skill_macros::Action::SelectSlot(slot)) => {
+                    self.skill_macro_editor.select_slot(slot);
+                }
+                Some(skill_macros::Action::ClearSkill(slot)) => {
+                    self.skill_macro_editor.clear_skill(slot);
+                }
+                Some(skill_macros::Action::AssignSkill(skill_id)) => {
+                    self.skill_macro_editor.assign_skill(skill_id);
+                }
+                None => {}
+            }
+            self.refresh_skill_macro_texture();
+        }
+
+        fn save_skill_macro_editor(&mut self) {
+            let macros = self.skill_macro_editor.drafts().to_vec();
+            let packet = match openstory_protocol::save_skill_macros_packet(&macros) {
+                Ok(packet) => packet,
+                Err(error) => {
+                    eprintln!("OpenStoryRS: could not encode skill macros: {error}");
+                    return;
+                }
+            };
+            let Some(session) = self.session.as_ref() else {
+                eprintln!("OpenStoryRS: cannot save skill macros while disconnected");
+                return;
+            };
+            match session.send_packet(packet) {
+                Ok(()) => {
+                    self.skill_macros = macros;
+                    self.skill_macro_editor.close();
+                    self.key_config_actions_dirty = true;
+                    self.refresh_key_config_texture();
+                }
+                Err(error) => {
+                    eprintln!("OpenStoryRS: could not save skill macros: {error}");
+                    self.channel_connected = false;
+                }
+            }
+        }
+
+        fn handle_skill_macro_editor_key(
+            &mut self,
+            key: PhysicalKey,
+            state: ElementState,
+            repeat: bool,
+            text: Option<&str>,
+        ) -> bool {
+            if !self.skill_macro_editor.open {
+                return false;
+            }
+            if state == ElementState::Pressed {
+                match key {
+                    PhysicalKey::Code(KeyCode::Escape) if !repeat => {
+                        self.skill_macro_editor.close();
+                    }
+                    PhysicalKey::Code(KeyCode::Enter | KeyCode::NumpadEnter) if !repeat => {
+                        self.save_skill_macro_editor();
+                    }
+                    PhysicalKey::Code(KeyCode::Backspace) => {
+                        self.skill_macro_editor.backspace();
+                    }
+                    PhysicalKey::Code(KeyCode::Tab) if !repeat => {
+                        self.skill_macro_editor.name_focused =
+                            !self.skill_macro_editor.name_focused;
+                    }
+                    PhysicalKey::Code(KeyCode::ArrowUp)
+                        if !self.skill_macro_editor.name_focused =>
+                    {
+                        self.skill_macro_editor
+                            .scroll_skills(-1, self.skill_macro_choices().len());
+                    }
+                    PhysicalKey::Code(KeyCode::ArrowDown)
+                        if !self.skill_macro_editor.name_focused =>
+                    {
+                        self.skill_macro_editor
+                            .scroll_skills(1, self.skill_macro_choices().len());
+                    }
+                    PhysicalKey::Code(KeyCode::PageUp) => {
+                        self.skill_macro_editor.scroll_skills(
+                            -(skill_macros::VISIBLE_SKILLS as isize),
+                            self.skill_macro_choices().len(),
+                        );
+                    }
+                    PhysicalKey::Code(KeyCode::PageDown) => {
+                        self.skill_macro_editor.scroll_skills(
+                            skill_macros::VISIBLE_SKILLS as isize,
+                            self.skill_macro_choices().len(),
+                        );
+                    }
+                    _ => {}
+                }
+                if self.skill_macro_editor.open
+                    && let Some(text) =
+                        text.filter(|text| text.chars().any(|character| !character.is_control()))
+                {
+                    self.skill_macro_editor.insert_text(text);
+                    self.skill_macro_editor.key_text_for_ime_dedup = Some(text.to_owned());
+                }
+            }
+            self.refresh_skill_macro_texture();
+            true
+        }
+
+        fn begin_key_config_capture(&mut self, row: usize) {
+            if row < self.key_config_actions.len() {
+                self.quickslot_key_capture = None;
+                self.key_config_capture = Some(row);
+                self.refresh_key_config_texture();
+            }
+        }
+
+        fn begin_quickslot_key_capture(&mut self, slot: usize) {
+            if slot < self.quickslot_keys.len() {
+                self.key_config_capture = None;
+                self.quickslot_key_capture = Some(slot);
+                self.refresh_key_config_texture();
+            }
+        }
+
+        fn click_key_config(&mut self, cursor: Point) {
+            let panel = SpriteRect {
+                x: KEY_CONFIG_PANEL_X,
+                y: KEY_CONFIG_PANEL_Y,
+                width: KEY_CONFIG_PANEL_WIDTH as f32,
+                height: KEY_CONFIG_PANEL_HEIGHT as f32,
+                blend_mode: BlendMode::Alpha,
+            };
+            if !rect_contains(panel, cursor) {
+                return;
+            }
+            let local_x = cursor.x - panel.x;
+            let local_y = cursor.y - panel.y;
+            if local_x >= panel.width - 42.0 && local_y < 42.0 {
+                self.show_key_config = false;
+                self.key_config_capture = None;
+                self.quickslot_key_capture = None;
+            } else if let Some(slot) = quickslot_key_slot_at(local_x, local_y) {
+                self.begin_quickslot_key_capture(slot);
+            } else if (KEY_CONFIG_ROW_TOP as f32
+                ..(KEY_CONFIG_ROW_TOP + KEY_CONFIG_VISIBLE_ROWS as i32 * KEY_CONFIG_ROW_HEIGHT)
+                    as f32)
+                .contains(&local_y)
+            {
+                let visible_row =
+                    ((local_y - KEY_CONFIG_ROW_TOP as f32) / KEY_CONFIG_ROW_HEIGHT as f32) as usize;
+                let row = self.key_config_scroll_row + visible_row;
+                self.begin_key_config_capture(row);
+            }
+        }
+
+        fn assign_quickslot_key_capture(&mut self, key: u8) {
+            let Some(slot) = self.quickslot_key_capture.take() else {
+                return;
+            };
+            if key == 0 || key >= openstory_protocol::KEYMAP_ENTRY_COUNT as u8 {
+                self.refresh_key_config_texture();
+                return;
+            }
+            let previous = self.quickslot_keys[slot];
+            for (other_slot, other_key) in self.quickslot_keys.iter_mut().enumerate() {
+                if other_slot != slot && *other_key == key {
+                    *other_key = previous;
+                }
+            }
+            self.quickslot_keys[slot] = key;
+            self.quickslot_keys_customized = true;
+            match save_quickslot_keys(self.quickslot_keys) {
+                Ok(path) => eprintln!("OpenStoryRS: saved quick-slot keys to {}", path.display()),
+                Err(error) => eprintln!("OpenStoryRS: could not save quick-slot keys: {error}"),
+            }
+            self.refresh_key_config_texture();
+            self.refresh_quickslots_texture();
+        }
+
+        fn scroll_key_config(&mut self, direction: isize) {
+            self.key_config_scroll_row = self
+                .key_config_scroll_row
+                .saturating_add_signed(direction)
+                .min(
+                    self.key_config_actions
+                        .len()
+                        .saturating_sub(KEY_CONFIG_VISIBLE_ROWS),
+                );
+            self.refresh_key_config_texture();
+        }
+
+        fn send_key_config_updates(&mut self, updates: &[(u8, openstory_protocol::KeyBinding)]) {
+            if updates.is_empty() {
+                return;
+            }
+            match openstory_protocol::change_keymap_packet(updates) {
+                Ok(packet) => {
+                    if let Some(session) = self.session.as_ref()
+                        && let Err(error) = session.send_packet(packet)
+                    {
+                        eprintln!("OpenStory: could not save key binding: {error}");
+                        self.channel_connected = false;
+                    }
+                }
+                Err(error) => eprintln!("OpenStory: could not encode key binding: {error}"),
+            }
+        }
+
+        fn assign_key_config_capture(&mut self, key: u8) {
+            let Some(row) = self.key_config_capture.take() else {
+                return;
+            };
+            if key == 0 || key >= openstory_protocol::KEYMAP_ENTRY_COUNT as u8 {
+                self.refresh_key_config_texture();
+                return;
+            }
+            let Some(action_entry) = self.key_config_actions.get(row) else {
+                self.refresh_key_config_texture();
+                return;
+            };
+            let (kind, action, assignable) = (
+                action_entry.kind,
+                action_entry.action,
+                action_entry.assignable,
+            );
+            if !assignable {
+                self.refresh_key_config_texture();
+                return;
+            }
+
+            let mut bindings = self
+                .server_keymap
+                .clone()
+                .unwrap_or_else(default_keymap_bindings);
+            let mut updates = Vec::with_capacity(2);
+            for (index, binding) in bindings.iter_mut().enumerate() {
+                if binding.kind == kind && binding.action == action && index != usize::from(key) {
+                    *binding = openstory_protocol::KeyBinding::default();
+                    updates.push((index as u8, *binding));
+                }
+            }
+            let binding = openstory_protocol::KeyBinding { kind, action };
+            bindings[usize::from(key)] = binding;
+            updates.push((key, binding));
+            self.server_keymap = Some(bindings);
+            self.send_key_config_updates(&updates);
+            self.refresh_key_config_texture();
+            self.refresh_quickslots_texture();
+        }
+
+        fn clear_key_config_binding(&mut self, row: usize) {
+            let Some(action_entry) = self.key_config_actions.get(row) else {
+                return;
+            };
+            let (kind, action) = (action_entry.kind, action_entry.action);
+            let mut bindings = self
+                .server_keymap
+                .clone()
+                .unwrap_or_else(default_keymap_bindings);
+            let mut updates = Vec::new();
+            for (index, binding) in bindings.iter_mut().enumerate() {
+                if binding.kind == kind && binding.action == action {
+                    *binding = openstory_protocol::KeyBinding::default();
+                    updates.push((index as u8, *binding));
+                }
+            }
+            self.server_keymap = Some(bindings);
+            self.key_config_actions_dirty = true;
+            self.send_key_config_updates(&updates);
+            self.refresh_key_config_texture();
+            self.refresh_quickslots_texture();
+        }
+
+        fn use_keybound_skill(&mut self, skill_id: i32) {
+            let skill = self
+                .skill_ui_entry_by_id(skill_id)
+                .filter(|skill| skill.level > 0 && !skill.passive);
+            if let Some(skill) = skill {
+                self.use_skill(&skill);
+            }
+        }
+
+        fn skill_ui_entry_by_id(&mut self, skill_id: i32) -> Option<SkillUiEntry> {
+            if let Some(skill) = self
+                .skill_book_entries
+                .iter()
+                .find(|skill| skill.id == skill_id)
+                .cloned()
+            {
+                return Some(skill);
+            }
+            let job = self.active_character.as_ref()?.stats.job;
+            let original_tab = self.skill_book_tab;
+            let mut found = None;
+            for tab in 0..5 {
+                if skill_subjob_for_tab(job, tab).is_none() {
+                    continue;
+                }
+                self.skill_book_tab = tab;
+                self.refresh_skill_book_entries();
+                if let Some(skill) = self
+                    .skill_book_entries
+                    .iter()
+                    .find(|skill| skill.id == skill_id)
+                    .cloned()
+                {
+                    found = Some(skill);
+                    break;
+                }
+            }
+            self.skill_book_tab = original_tab;
+            self.refresh_skill_book_entries();
+            if self.show_skill_book {
+                self.refresh_skill_book_texture();
+            }
+            found
+        }
+
+        fn trigger_skill_macro(&mut self, macro_index: i32) {
+            let Some(macro_entry) = usize::try_from(macro_index)
+                .ok()
+                .and_then(|index| self.skill_macros.get(index))
+                .cloned()
+            else {
+                return;
+            };
+            if macro_entry.shout && !macro_entry.name.is_empty() {
+                match openstory_protocol::general_chat_packet(&macro_entry.name, true) {
+                    Ok(packet) => {
+                        if let Some(session) = self.session.as_ref()
+                            && let Err(error) = session.send_packet(packet)
+                        {
+                            eprintln!("OpenStoryRS: could not shout skill macro: {error}");
+                            self.channel_connected = false;
+                        }
+                    }
+                    Err(error) => {
+                        eprintln!("OpenStoryRS: invalid skill macro shout: {error}")
+                    }
+                }
+            }
+            self.pending_macro_skills.clear();
+            self.pending_macro_skills.extend(
+                macro_entry
+                    .skills
+                    .into_iter()
+                    .filter(|skill_id| *skill_id > 0),
+            );
+            self.next_macro_skill_at = Instant::now();
+            self.advance_skill_macro();
+        }
+
+        fn advance_skill_macro(&mut self) {
+            if self.pending_macro_skills.is_empty() {
+                return;
+            }
+            if self.current_field.is_none() || !self.channel_connected {
+                self.pending_macro_skills.clear();
+                return;
+            }
+            let now = Instant::now();
+            if now < self.next_macro_skill_at
+                || self
+                    .map_scene
+                    .as_ref()
+                    .is_some_and(|scene| scene.attack_stance.is_some())
+            {
+                return;
+            }
+            if let Some(skill_id) = self.pending_macro_skills.pop_front() {
+                self.use_keybound_skill(skill_id);
+                self.next_macro_skill_at = now + Duration::from_millis(250);
+            }
+        }
+
+        fn use_keybound_item(&mut self, item_id: i32) {
+            let item = self.inventory.as_ref().and_then(|inventory| {
+                inventory
+                    .items
+                    .iter()
+                    .find(|item| {
+                        item.item_id == item_id
+                            && matches!(
+                                item.inventory_type,
+                                openstory_protocol::InventoryType::Use
+                                    | openstory_protocol::InventoryType::Setup
+                                    | openstory_protocol::InventoryType::Cash
+                            )
+                    })
+                    .map(|item| (item.inventory_type, item.slot))
+            });
+            let Some((inventory_type, slot)) = item else {
+                return;
+            };
+            self.activate_inventory_item(inventory_type, slot);
+        }
+
+        fn assign_inventory_item_to_quickslot(
+            &mut self,
+            quickslot: usize,
+            inventory_type: openstory_protocol::InventoryType,
+            inventory_slot: u16,
+        ) {
+            let Some(item_id) = self.inventory.as_ref().and_then(|inventory| {
+                inventory
+                    .items
+                    .iter()
+                    .find(|item| {
+                        item.inventory_type == inventory_type
+                            && item.slot == inventory_slot
+                            && item.count > 0
+                    })
+                    .map(|item| item.item_id)
+            }) else {
+                return;
+            };
+            let kind = match inventory_type {
+                openstory_protocol::InventoryType::Use
+                | openstory_protocol::InventoryType::Setup => 2,
+                openstory_protocol::InventoryType::Cash => 3,
+                _ => {
+                    self.push_chat_line(
+                        "[Quick slots] Only Use, Setup, and Cash items can be assigned.".to_owned(),
+                        [255, 215, 128],
+                    );
+                    self.refresh_chat_texture();
+                    return;
+                }
+            };
+            if !self.channel_connected {
+                self.push_chat_line(
+                    "[Quick slots] Connect to a field before changing bindings.".to_owned(),
+                    [255, 215, 128],
+                );
+                self.refresh_chat_texture();
+                return;
+            }
+            let Some(key) = self.quickslot_keys.get(quickslot).copied() else {
+                return;
+            };
+            let binding = openstory_protocol::KeyBinding {
+                kind,
+                action: item_id,
+            };
+            let mut bindings = self
+                .server_keymap
+                .clone()
+                .unwrap_or_else(default_keymap_bindings);
+            let Some(target) = bindings.get_mut(usize::from(key)) else {
+                return;
+            };
+            *target = binding;
+            self.server_keymap = Some(bindings);
+            self.send_key_config_updates(&[(key, binding)]);
+            self.key_config_actions_dirty = true;
+            self.refresh_key_config_texture();
+            self.refresh_quickslots_texture();
+            self.refresh_inventory_texture();
+        }
+
+        fn apply_keymap_binding(
+            &mut self,
+            state: ElementState,
+            repeat: bool,
+            binding: openstory_protocol::KeyBinding,
+        ) -> bool {
+            let pressed = state == ElementState::Pressed;
+            if binding.kind == 0 {
+                return false;
+            }
+            match binding.kind {
+                1 => {
+                    if pressed && !repeat {
+                        self.use_keybound_skill(binding.action);
+                    }
+                }
+                2 | 3 => {
+                    if pressed && !repeat {
+                        self.use_keybound_item(binding.action);
+                    }
+                }
+                8 => {
+                    if pressed && !repeat {
+                        self.trigger_skill_macro(binding.action);
+                    }
+                }
+                4 if pressed && !repeat => match binding.action {
+                    0 | 1 => {
+                        let tab = if binding.action == 0 {
+                            openstory_protocol::InventoryType::Equip
+                        } else {
+                            openstory_protocol::InventoryType::Use
+                        };
+                        if self.show_inventory && self.inventory_tab == tab {
+                            self.show_inventory = false;
+                        } else {
+                            self.show_inventory = true;
+                            self.inventory_tab = tab;
+                            self.refresh_inventory_texture();
+                        }
+                    }
+                    2 => self.open_status_window(),
+                    3 => {
+                        self.show_skill_book = !self.show_skill_book;
+                        if self.show_skill_book {
+                            self.refresh_skill_book_entries();
+                            self.refresh_skill_book_texture();
+                        }
+                    }
+                    4 => {
+                        self.show_buddy_panel = !self.show_buddy_panel;
+                        self.refresh_buddy_texture();
+                    }
+                    5 => {
+                        if self.world_map.open {
+                            self.world_map.open = false;
+                            self.refresh_world_map_texture();
+                        } else {
+                            self.open_world_map();
+                        }
+                    }
+                    6 | 10 => {
+                        self.chat_target = ChatTarget::Public;
+                        self.chat_open = true;
+                        self.refresh_chat_texture();
+                    }
+                    7 => self.toggle_minimap(),
+                    8 => {
+                        self.show_quest_log = !self.show_quest_log;
+                        self.refresh_quest_log_texture();
+                    }
+                    9 => self.toggle_key_config(),
+                    11 => self.open_new_whisper_window(),
+                    12 => {
+                        self.chat_target = ChatTarget::Party;
+                        self.chat_open = true;
+                        self.refresh_chat_texture();
+                    }
+                    13 => {
+                        self.chat_target = ChatTarget::Buddy;
+                        self.chat_open = true;
+                        self.refresh_chat_texture();
+                    }
+                    15 => {
+                        self.toggle_quickslots();
+                    }
+                    16 => {
+                        self.chat_open = !self.chat_open;
+                        self.refresh_chat_texture();
+                    }
+                    17 => {
+                        self.show_guild_panel = !self.show_guild_panel;
+                        self.refresh_guild_texture();
+                    }
+                    18 => {
+                        self.chat_target = ChatTarget::Guild;
+                        self.chat_open = true;
+                        self.refresh_chat_texture();
+                    }
+                    19 => {
+                        self.show_party_panel = !self.show_party_panel;
+                        self.refresh_party_texture();
+                    }
+                    21 => {
+                        if let Some(character_id) =
+                            self.active_character.as_ref().map(|character| character.id)
+                        {
+                            self.request_character_info(character_id);
+                        }
+                    }
+                    22 => {
+                        if self.monster_book.open {
+                            self.monster_book.open = false;
+                            self.monster_book.texture = None;
+                            self.monster_book.clear_selected_card();
+                            self.monster_book_animation_texture = None;
+                        } else {
+                            self.monster_book.open = true;
+                            self.refresh_monster_book_texture();
+                        }
+                    }
+                    23 => self.open_cash_shop(),
+                    24 => {
+                        self.chat_target = ChatTarget::Alliance;
+                        self.chat_open = true;
+                        self.refresh_chat_texture();
+                    }
+                    25 => self.open_channel_switch(),
+                    26 => self.open_messenger(),
+                    27 => self.open_party_search(),
+                    28 => self.open_settings(),
+                    42 => self.toggle_family_panel(),
+                    _ => {}
+                },
+                5 => match binding.action {
+                    50 if pressed && !repeat => {
+                        if let Some((object_id, x, y)) = self.map_scene.as_ref().and_then(|scene| {
+                            scene.nearest_drop().map(|object_id| {
+                                (
+                                    object_id,
+                                    rounded_i16(scene.player.x),
+                                    rounded_i16(scene.player.y),
+                                )
+                            })
+                        }) && let Some(session) = self.session.as_ref()
+                            && let Err(error) = session
+                                .send_packet(openstory_protocol::pickup_item(object_id, x, y))
+                        {
+                            eprintln!("OpenStory: could not request item pickup: {error}");
+                            self.channel_connected = false;
+                        }
+                    }
+                    51 => self.gameplay_input.sit = pressed,
+                    52 if pressed && !repeat => self.try_local_basic_attack(),
+                    53 if pressed && !repeat => self.gameplay_input.jump_buffer = 12,
+                    54 if pressed && !repeat => self.request_nearest_npc_talk(),
+                    200 => self.gameplay_input.left = pressed,
+                    201 => self.gameplay_input.right = pressed,
+                    202 => self.gameplay_input.up = pressed,
+                    203 => self.gameplay_input.down = pressed,
+                    _ => {}
+                },
+                6 if pressed && !repeat => {
+                    self.send_face_expression(binding.action.saturating_sub(99));
+                }
+                _ => {}
+            }
+            true
+        }
+
+        fn handle_key_config_key(&mut self, key: PhysicalKey, repeat: bool) -> bool {
+            if repeat {
+                return true;
+            }
+            if self.quickslot_key_capture.is_some() {
+                match key {
+                    PhysicalKey::Code(KeyCode::Escape | KeyCode::Backspace) => {
+                        self.quickslot_key_capture = None;
+                    }
+                    _ => {
+                        if let Some(maple_key) = maple_key_from_physical(key) {
+                            self.assign_quickslot_key_capture(maple_key);
+                        }
+                    }
+                }
+            } else if let Some(row) = self.key_config_capture {
+                match key {
+                    PhysicalKey::Code(KeyCode::Escape) => self.key_config_capture = None,
+                    PhysicalKey::Code(KeyCode::Backspace) => {
+                        self.key_config_capture = None;
+                        self.clear_key_config_binding(row);
+                    }
+                    _ => {
+                        if let Some(maple_key) = maple_key_from_physical(key) {
+                            self.assign_key_config_capture(maple_key);
+                        }
+                    }
+                }
+            } else {
+                match key {
+                    PhysicalKey::Code(KeyCode::Escape) => self.show_key_config = false,
+                    PhysicalKey::Code(KeyCode::Digit1) => {
+                        self.begin_key_config_capture(self.key_config_scroll_row)
+                    }
+                    PhysicalKey::Code(KeyCode::Digit2) => {
+                        self.begin_key_config_capture(self.key_config_scroll_row + 1)
+                    }
+                    PhysicalKey::Code(KeyCode::Digit3) => {
+                        self.begin_key_config_capture(self.key_config_scroll_row + 2)
+                    }
+                    PhysicalKey::Code(KeyCode::Digit4) => {
+                        self.begin_key_config_capture(self.key_config_scroll_row + 3)
+                    }
+                    PhysicalKey::Code(KeyCode::Digit5) => {
+                        self.begin_key_config_capture(self.key_config_scroll_row + 4)
+                    }
+                    PhysicalKey::Code(KeyCode::Digit6) => {
+                        self.begin_key_config_capture(self.key_config_scroll_row + 5)
+                    }
+                    PhysicalKey::Code(KeyCode::Digit7) => {
+                        self.begin_key_config_capture(self.key_config_scroll_row + 6)
+                    }
+                    PhysicalKey::Code(KeyCode::Digit8) => {
+                        self.begin_key_config_capture(self.key_config_scroll_row + 7)
+                    }
+                    PhysicalKey::Code(KeyCode::ArrowUp) => self.scroll_key_config(-1),
+                    PhysicalKey::Code(KeyCode::ArrowDown) => self.scroll_key_config(1),
+                    PhysicalKey::Code(KeyCode::PageUp) => {
+                        self.scroll_key_config(-(KEY_CONFIG_VISIBLE_ROWS as isize))
+                    }
+                    PhysicalKey::Code(KeyCode::PageDown) => {
+                        self.scroll_key_config(KEY_CONFIG_VISIBLE_ROWS as isize)
+                    }
+                    _ => {}
+                }
+            }
+            self.refresh_key_config_texture();
+            true
         }
 
         fn set_gameplay_key(
@@ -6356,6 +8807,26 @@ mod native {
         ) -> bool {
             if self.current_field.is_none() || self.map_scene.is_none() {
                 return false;
+            }
+            if self.quit_confirmation {
+                if state == ElementState::Pressed && !repeat {
+                    match key {
+                        PhysicalKey::Code(KeyCode::Escape) => {
+                            self.quit_confirmation = false;
+                        }
+                        PhysicalKey::Code(KeyCode::Enter | KeyCode::NumpadEnter) => {
+                            self.quit_requested = true;
+                        }
+                        _ => {}
+                    }
+                }
+                return true;
+            }
+            if self.show_key_config {
+                if state == ElementState::Pressed {
+                    return self.handle_key_config_key(key, repeat);
+                }
+                return true;
             }
             if self.show_settings {
                 return true;
@@ -6380,13 +8851,99 @@ mod native {
                 }
                 return true;
             }
+            let pressed = state == ElementState::Pressed;
+            if self.handle_messenger_key(key, state, repeat) {
+                return true;
+            }
+            if self.channel_switch_open {
+                if pressed && !repeat {
+                    match key {
+                        PhysicalKey::Code(KeyCode::Escape) => self.close_channel_switch(),
+                        PhysicalKey::Code(KeyCode::ArrowLeft) => {
+                            self.move_channel_switch_selection(-1, 0)
+                        }
+                        PhysicalKey::Code(KeyCode::ArrowRight) => {
+                            self.move_channel_switch_selection(1, 0)
+                        }
+                        PhysicalKey::Code(KeyCode::ArrowUp) => {
+                            self.move_channel_switch_selection(0, -1)
+                        }
+                        PhysicalKey::Code(KeyCode::ArrowDown) => {
+                            self.move_channel_switch_selection(0, 1)
+                        }
+                        PhysicalKey::Code(KeyCode::Enter | KeyCode::NumpadEnter) => {
+                            self.request_channel_switch()
+                        }
+                        _ => {}
+                    }
+                    if let Some(window) = self.window.as_ref() {
+                        window.request_redraw();
+                    }
+                }
+                return true;
+            }
             if self.npc_dialogue.is_some() {
                 return false;
             }
             if self.npc_shop.is_some() {
                 return false;
             }
-            let pressed = state == ElementState::Pressed;
+            if self.monster_book.open {
+                if pressed && !repeat && matches!(key, PhysicalKey::Code(KeyCode::Escape)) {
+                    self.monster_book.open = false;
+                    self.monster_book.texture = None;
+                    self.monster_book.clear_selected_card();
+                    self.monster_book_animation_texture = None;
+                }
+                return true;
+            }
+            if self.party_search.is_some() {
+                if pressed && !repeat && matches!(key, PhysicalKey::Code(KeyCode::Escape)) {
+                    self.party_search = None;
+                    self.party_search_texture = None;
+                    self.party_search_actions.clear();
+                }
+                return true;
+            }
+            if self.world_map.open
+                && pressed
+                && !repeat
+                && matches!(key, PhysicalKey::Code(KeyCode::Escape))
+            {
+                self.escape_world_map();
+                return true;
+            }
+            if let Some(bindings) = self.server_keymap.as_ref() {
+                if !matches!(key, PhysicalKey::Code(KeyCode::Escape))
+                    && let Some(maple_key) = maple_key_from_physical(key)
+                    && let Some(binding) = bindings.get(usize::from(maple_key)).copied()
+                    && binding.kind != 0
+                    && self.apply_keymap_binding(state, repeat, binding)
+                {
+                    return true;
+                }
+                // Escape belongs to the shared UI/modal handler below. Returning from
+                // this server-keymap branch used to bypass that handler and leave the
+                // quit dialog waiting on an unrelated redraw.
+                if !matches!(key, PhysicalKey::Code(KeyCode::Escape)) {
+                    match key {
+                        PhysicalKey::Code(KeyCode::ArrowLeft | KeyCode::KeyA) => {
+                            self.gameplay_input.left = pressed;
+                        }
+                        PhysicalKey::Code(KeyCode::ArrowRight | KeyCode::KeyD) => {
+                            self.gameplay_input.right = pressed;
+                        }
+                        PhysicalKey::Code(KeyCode::ArrowUp | KeyCode::KeyW) => {
+                            self.gameplay_input.up = pressed;
+                        }
+                        PhysicalKey::Code(KeyCode::ArrowDown | KeyCode::KeyS) => {
+                            self.gameplay_input.down = pressed;
+                        }
+                        _ => {}
+                    }
+                    return true;
+                }
+            }
             if pressed
                 && !repeat
                 && self
@@ -6430,14 +8987,40 @@ mod native {
             if self.cash_shop.is_some() {
                 if pressed && !repeat {
                     match key {
-                        PhysicalKey::Code(KeyCode::Escape) => self.exit_cash_shop(),
+                        PhysicalKey::Code(KeyCode::Escape) => {
+                            let modal = self.cash_shop.as_ref().map_or(0, |shop| {
+                                if shop.confirmation {
+                                    1
+                                } else if shop.coupon_open {
+                                    2
+                                } else {
+                                    0
+                                }
+                            });
+                            if let Some(shop) = self.cash_shop.as_mut() {
+                                match modal {
+                                    1 => shop.confirmation = false,
+                                    2 => {
+                                        shop.coupon_open = false;
+                                        shop.coupon_focused = false;
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            if modal == 0 {
+                                self.exit_cash_shop();
+                            }
+                            self.refresh_cash_shop_texture();
+                        }
                         PhysicalKey::Code(KeyCode::Enter | KeyCode::NumpadEnter) => {
-                            let confirming = self
-                                .cash_shop
-                                .as_ref()
-                                .is_some_and(|shop| shop.confirmation);
+                            let (confirming, coupon_focused) =
+                                self.cash_shop.as_ref().map_or((false, false), |shop| {
+                                    (shop.confirmation, shop.coupon_focused)
+                                });
                             if confirming {
                                 self.buy_selected_cash_item();
+                            } else if coupon_focused {
+                                self.redeem_cash_shop_coupon();
                             } else if let Some(shop) = self.cash_shop.as_mut() {
                                 shop.search_focused = false;
                                 self.refresh_cash_shop_texture();
@@ -6448,6 +9031,8 @@ mod native {
                                 if shop.search_focused {
                                     shop.query.pop();
                                     shop.page = 0;
+                                } else if shop.coupon_focused {
+                                    shop.coupon_code.pop();
                                 }
                             }
                             self.refresh_cash_shop_texture();
@@ -6463,6 +9048,15 @@ mod native {
                     && !repeat
                 {
                     self.show_pet_equipment = false;
+                } else if pressed && !repeat {
+                    let scroll = match key {
+                        PhysicalKey::Code(KeyCode::ArrowUp) => -1,
+                        PhysicalKey::Code(KeyCode::ArrowDown) => 1,
+                        PhysicalKey::Code(KeyCode::PageUp) => -5,
+                        PhysicalKey::Code(KeyCode::PageDown) => 5,
+                        _ => 0,
+                    };
+                    self.scroll_pet_equipment_by(scroll);
                 }
                 return true;
             }
@@ -6485,6 +9079,11 @@ mod native {
             if pressed && !repeat && matches!(key, PhysicalKey::Code(KeyCode::Escape)) {
                 if self.show_skill_book {
                     self.show_skill_book = false;
+                } else if self.show_family_tree {
+                    self.show_family_tree = false;
+                    self.refresh_family_tree_texture();
+                } else if self.show_family_panel {
+                    self.show_family_panel = false;
                 } else if self.show_alliance_panel {
                     self.show_alliance_panel = false;
                 } else if self.show_guild_panel {
@@ -6499,7 +9098,7 @@ mod native {
                         self.inventory_hover_slot = None;
                     }
                 } else {
-                    self.open_settings();
+                    self.open_quit_confirmation();
                 }
                 return true;
             }
@@ -6523,6 +9122,7 @@ mod native {
                 PhysicalKey::Code(KeyCode::KeyP) => {
                     if pressed && !repeat {
                         self.show_pet_equipment = true;
+                        self.pet_equipment_scroll_row = 0;
                         self.show_inventory = false;
                         self.inventory_hover_slot = None;
                         self.show_skill_book = false;
@@ -6636,6 +9236,11 @@ mod native {
                         self.open_guild_bbs();
                     }
                 }
+                PhysicalKey::Code(KeyCode::Backslash) => {
+                    if pressed && !repeat {
+                        self.toggle_key_config();
+                    }
+                }
                 PhysicalKey::Code(KeyCode::ArrowLeft | KeyCode::KeyA) => {
                     self.gameplay_input.left = pressed;
                 }
@@ -6715,6 +9320,7 @@ mod native {
             self.texture_indices = texture_indices;
             self.remote_art_cache.clear();
             self.item_use_effect_cache.clear();
+            self.item_aura_frames_cache.clear();
             self.face_expression_cache.clear();
             self.npc_dialogue = None;
             self.inventory_drag_source = None;
@@ -6756,9 +9362,11 @@ mod native {
             } else {
                 self.map_hud_texture = None;
             }
+            self.refresh_minimap_texture();
             if self.map_scene.is_none() {
                 self.current_field = None;
                 self.gameplay_input = GameplayInput::default();
+                self.show_status_menu = false;
             }
             if let Some(window) = self.window.as_ref() {
                 window.request_redraw();
@@ -6805,6 +9413,7 @@ mod native {
                 .worlds
                 .iter()
                 .any(|world| world.id == world_id && !world.channels.is_empty())
+                && self.selected_world != Some(world_id)
             {
                 self.selected_world = Some(world_id);
                 self.selected_channel = 0;
@@ -6819,24 +9428,162 @@ mod native {
             else {
                 return;
             };
-            if usize::from(channel_id) < world.channels.len() {
+            if usize::from(channel_id) < world.channels.len() && self.selected_channel != channel_id
+            {
                 self.selected_channel = channel_id;
                 self.refresh_world_scene();
             }
         }
 
         fn change_character_page(&mut self, direction: i8) {
-            let page_count = self
+            let Some(characters) = self.character_list.as_ref() else {
+                return;
+            };
+            let character_count = characters.characters.len();
+            let page_count = character_count.div_ceil(CHARACTER_PAGE_SIZE);
+            if page_count <= 1 {
+                return;
+            }
+            self.character_page = if direction < 0 {
+                if self.character_page == 0 {
+                    page_count - 1
+                } else {
+                    self.character_page - 1
+                }
+            } else if self.character_page + 1 == page_count {
+                0
+            } else {
+                self.character_page + 1
+            };
+            let page_start = self.character_page * CHARACTER_PAGE_SIZE;
+            self.selected_character_index = if direction < 0 {
+                (page_start + CHARACTER_PAGE_SIZE).min(character_count) - 1
+            } else {
+                page_start
+            };
+            self.refresh_character_scene();
+        }
+
+        fn focus_character(&mut self, index: usize) {
+            let Some(characters) = self.character_list.as_ref() else {
+                return;
+            };
+            if index >= characters.characters.len() {
+                return;
+            }
+            self.selected_character_index = index;
+            self.character_page = index / CHARACTER_PAGE_SIZE;
+            self.refresh_character_scene();
+        }
+
+        fn click_character_slot(&mut self, index: usize) {
+            self.focus_character(index);
+        }
+
+        fn character_action_enabled(&self, action: usize) -> bool {
+            let Some(characters) = self.character_list.as_ref() else {
+                return false;
+            };
+            match action {
+                0 | 2 => self.selected_character_index < characters.characters.len(),
+                1 => {
+                    characters.characters.len()
+                        < usize::try_from(characters.slots.max(0)).unwrap_or(0)
+                        && characters.characters.len() < 64
+                }
+                _ => false,
+            }
+        }
+
+        fn advance_character_action_focus(&mut self) {
+            let enabled = (0..3)
+                .filter(|action| self.character_action_enabled(*action))
+                .collect::<Vec<_>>();
+            let next = self
+                .character_action_focus
+                .and_then(|current| enabled.iter().position(|action| *action == current))
+                .map_or(0, |index| index + 1);
+            self.character_action_focus = enabled.get(next).copied();
+            self.refresh_character_scene();
+        }
+
+        fn activate_focused_character_action(&mut self) {
+            let Some(action) = self.character_action_focus else {
+                self.select_character(self.selected_character_index);
+                return;
+            };
+            if !self.character_action_enabled(action) {
+                return;
+            }
+            match action {
+                0 => self.select_character(self.selected_character_index),
+                1 => self.begin_character_creation(),
+                2 => self.delete_character(self.selected_character_index),
+                _ => {}
+            }
+        }
+
+        fn click_character_selection(&mut self, cursor: Point) -> bool {
+            if self.character_list.is_none()
+                || self.character_creation.is_some()
+                || self.show_login_fields
+            {
+                return false;
+            }
+
+            let action = self
+                .login_actions
+                .iter()
+                .rev()
+                .find(|hit| rect_contains(hit.rect, cursor))
+                .map(|hit| hit.action);
+            if let Some(action) = action {
+                self.audio
+                    .play_ui_sound(&self.sound_archive, "UI.img/BtMouseClick");
+                match action {
+                    LoginAction::HighlightCharacter(index) => self.click_character_slot(index),
+                    // The action region is rebuilt after every selection change. Read the
+                    // current index here as well so a stale draw cannot send the old one.
+                    LoginAction::SelectCharacter(_) => {
+                        self.select_character(self.selected_character_index)
+                    }
+                    LoginAction::DeleteCharacter(index) => self.delete_character(index),
+                    LoginAction::PreviousCharacterPage => self.change_character_page(-1),
+                    LoginAction::NextCharacterPage => self.change_character_page(1),
+                    LoginAction::BeginCharacterCreation => self.begin_character_creation(),
+                    LoginAction::ReturnToWorld => {
+                        self.character_list = None;
+                        self.character_selection_status = None;
+                        self.refresh_world_scene();
+                        self.show_login_fields = false;
+                    }
+                    _ => {}
+                }
+            }
+            if let Some(window) = self.window.as_ref() {
+                window.request_redraw();
+            }
+            // Character selection is a top-level screen. Do not let an unrelated
+            // gameplay panel consume clicks while this screen is active.
+            true
+        }
+
+        fn move_character_selection(&mut self, direction: isize) {
+            let Some(character_count) = self
                 .character_list
                 .as_ref()
-                .map(|characters| characters.characters.len().div_ceil(CHARACTER_PAGE_SIZE))
-                .unwrap_or(0);
-            if direction < 0 {
-                self.character_page = self.character_page.saturating_sub(1);
-            } else if self.character_page + 1 < page_count {
-                self.character_page += 1;
+                .map(|characters| characters.characters.len())
+            else {
+                return;
+            };
+            if character_count == 0 {
+                return;
             }
-            self.refresh_character_scene();
+            let index = self
+                .selected_character_index
+                .saturating_add_signed(direction)
+                .min(character_count - 1);
+            self.focus_character(index);
         }
 
         fn request_characters(&self) {
@@ -6855,6 +9602,9 @@ mod native {
         fn show_character_selection(&mut self, characters: openstory_protocol::CharacterList) {
             self.character_creation = None;
             self.character_page = 0;
+            self.selected_character_index = 0;
+            self.character_action_focus = None;
+            self.character_selection_status = None;
             self.character_list = Some(characters);
             self.show_login_fields = false;
             self.refresh_character_scene();
@@ -6891,6 +9641,9 @@ mod native {
                     &self.map_archive,
                     &self.legacy_ui_archive,
                     &self.character_archive,
+                    &self.string_archive,
+                    &mut self.item_name_cache,
+                    self.login_caret_visible,
                     creation,
                     &self.font,
                 )
@@ -6920,6 +9673,7 @@ mod native {
                 if !creation.awaiting_name && !creation.awaiting_create {
                     creation.name_focused = true;
                     creation.notice = None;
+                    self.reset_login_caret();
                 }
             }
             self.refresh_character_creation_scene();
@@ -7155,6 +9909,11 @@ mod native {
                         }
                         self.character_page =
                             list.characters.len().saturating_sub(1) / CHARACTER_PAGE_SIZE;
+                        self.selected_character_index = list.characters.len().saturating_sub(1);
+                        // Character creation returns to the selected new slot;
+                        // put keyboard focus on Select so the next Enter keeps
+                        // the legacy action flow instead of reopening creation.
+                        self.character_action_focus = Some(0);
                         self.character_creation = None;
                         self.refresh_character_scene();
                     } else {
@@ -7188,13 +9947,24 @@ mod native {
             let Some(characters) = self.character_list.as_ref() else {
                 return;
             };
+            if characters.characters.is_empty() {
+                self.selected_character_index = 0;
+            } else {
+                self.selected_character_index = self
+                    .selected_character_index
+                    .min(characters.characters.len() - 1);
+                self.character_page = self.selected_character_index / CHARACTER_PAGE_SIZE;
+            }
             let scene = load_character_selection_scene(
                 &self.map_archive,
                 &self.legacy_ui_archive,
                 &self.character_archive,
                 characters,
                 self.character_page,
+                self.selected_character_index,
+                self.character_selection_status.as_deref(),
                 &self.font,
+                self.character_action_focus,
             );
             match scene.and_then(|scene| self.replace_scene(scene)) {
                 Ok(()) => {}
@@ -7209,24 +9979,31 @@ mod native {
                 .changes
                 .iter()
                 .any(|change| matches!(change, openstory_protocol::CharacterStatChange::Hp(0)));
-            let hp_decreased = self
-                .active_character
-                .as_ref()
-                .is_some_and(|character| {
-                    update.changes.iter().any(|change| {
-                        matches!(change, openstory_protocol::CharacterStatChange::Hp(value) if *value < character.stats.hp)
-                    })
-                });
-            let hp_healed = self.active_character.as_ref().and_then(|character| {
+            let hp_delta = self.active_character.as_ref().and_then(|character| {
                 update.changes.iter().find_map(|change| match change {
-                    openstory_protocol::CharacterStatChange::Hp(value)
-                        if *value > character.stats.hp =>
-                    {
+                    openstory_protocol::CharacterStatChange::Hp(value) => {
                         Some(i32::from(*value) - i32::from(character.stats.hp))
                     }
                     _ => None,
                 })
             });
+            let now = Instant::now();
+            let heal_feedback_pending = self
+                .pending_zombify_heal_feedback_until
+                .is_some_and(|until| until > now);
+            let zombify_active = character_has_mob_skill_buff(
+                &self.active_buffs,
+                openstory_protocol::BuffMaskGroup::Second,
+                STATUS_ZOMBIFY,
+                MOB_SKILL_TYPE_UNDEAD,
+            );
+            let hp_healed = hp_delta.filter(|delta| *delta > 0);
+            let zombify_heal_backlash = (heal_feedback_pending && zombify_active)
+                .then(|| hp_delta.filter(|delta| *delta < 0).map(i32::abs))
+                .flatten();
+            if hp_delta.is_some() || !heal_feedback_pending {
+                self.pending_zombify_heal_feedback_until = None;
+            }
             let Some(character) = self.active_character.as_mut() else {
                 return;
             };
@@ -7264,7 +10041,9 @@ mod native {
                     Change::Pet(_) | Change::GachaExperience(_) => {}
                 }
             }
-            if hp_decreased && let Some(scene) = self.map_scene.as_mut() {
+            if hp_delta.is_some_and(|delta| delta < 0)
+                && let Some(scene) = self.map_scene.as_mut()
+            {
                 scene.idle_regen_elapsed = Duration::ZERO;
                 scene.regen_hit_lockout_remaining = Duration::from_secs(3);
             }
@@ -7272,6 +10051,11 @@ mod native {
                 && let Some(scene) = self.map_scene.as_mut()
             {
                 scene.show_local_player_heal(amount);
+            }
+            if let Some(amount) = zombify_heal_backlash
+                && let Some(scene) = self.map_scene.as_mut()
+            {
+                scene.show_local_heal_backlash(amount);
             }
             self.refresh_map_hud();
             self.refresh_inventory_texture();
@@ -7283,6 +10067,59 @@ mod native {
             if hp_changed_to_zero {
                 self.enter_death_state();
             }
+        }
+
+        fn apply_forced_stat_set(&mut self, update: openstory_protocol::ForcedStatSet) {
+            let Some(character) = self.active_character.as_mut() else {
+                eprintln!("OpenStoryRS: ignored forced stats without an active character");
+                return;
+            };
+            if let Some(value) = update.strength {
+                character.stats.strength = value;
+            }
+            if let Some(value) = update.dexterity {
+                character.stats.dexterity = value;
+            }
+            if let Some(value) = update.intelligence {
+                character.stats.intelligence = value;
+            }
+            if let Some(value) = update.luck {
+                character.stats.luck = value;
+            }
+
+            let forced = &mut self.forced_equipment_stats;
+            if let Some(value) = update.weapon_attack {
+                forced.weapon_attack = Some(value.min(999));
+            }
+            if let Some(value) = update.weapon_defense {
+                forced.weapon_defense = Some(value.min(999));
+            }
+            if let Some(value) = update.magic_attack {
+                forced.magic_attack = Some(value.min(2000));
+            }
+            if let Some(value) = update.magic_defense {
+                forced.magic_defense = Some(value.min(999));
+            }
+            if let Some(value) = update.accuracy {
+                forced.accuracy = Some(value.min(999));
+            }
+            if let Some(value) = update.avoidability {
+                forced.avoidability = Some(value.min(999));
+            }
+            if let Some(value) = update.speed {
+                forced.speed = Some(value.min(140));
+            }
+            if let Some(value) = update.jump {
+                forced.jump = Some(value.min(123));
+            }
+            self.refresh_map_hud();
+            self.refresh_status_texture();
+        }
+
+        fn recalculate_forced_stats(&mut self) {
+            self.forced_equipment_stats = ForcedEquipmentStats::default();
+            self.refresh_map_hud();
+            self.refresh_status_texture();
         }
 
         fn enter_death_state(&mut self) {
@@ -7391,6 +10228,11 @@ mod native {
         }
 
         fn apply_character_buffs(&mut self, update: openstory_protocol::CharacterBuffUpdate) {
+            let disease_effects = update
+                .entries
+                .iter()
+                .filter_map(|entry| mob_disease_skill_parts(entry.skill_id))
+                .collect::<HashSet<_>>();
             for entry in update.entries {
                 let expires_at = (entry.duration_ms > 0)
                     .then(|| Instant::now() + Duration::from_millis(entry.duration_ms as u64));
@@ -7398,11 +10240,38 @@ mod native {
                     entry.key,
                     ActiveCharacterBuff {
                         value: entry.value,
+                        skill_id: entry.skill_id,
                         expires_at,
                     },
                 );
             }
+            for (skill_type, skill_level) in disease_effects {
+                self.show_mob_disease_effect(None, skill_type, skill_level);
+            }
             self.refresh_map_hud();
+        }
+
+        fn show_mob_disease_effect(
+            &mut self,
+            character_id: Option<i32>,
+            skill_type: u16,
+            skill_level: u16,
+        ) {
+            if self.map_scene.is_none() {
+                return;
+            }
+            let animations = match self.load_mob_disease_effect(skill_type, skill_level) {
+                Ok(animations) => animations,
+                Err(error) => {
+                    eprintln!(
+                        "OpenStoryRS: could not load mob disease effect {skill_type}/{skill_level}: {error}"
+                    );
+                    Vec::new()
+                }
+            };
+            if let Some(scene) = self.map_scene.as_mut() {
+                scene.show_character_skill_effect(character_id, animations, 1.0);
+            }
         }
 
         fn cancel_character_buffs(&mut self, update: openstory_protocol::CharacterBuffCancel) {
@@ -7461,16 +10330,27 @@ mod native {
                 stats.max_mp = ((i32::from(stats.max_mp) * (100 + i32::from(hyperbody_mp))) / 100)
                     .clamp(0, i32::from(u16::MAX)) as u16;
             }
-            let pixels = render_map_hud(&self.font, &stats, &self.active_buffs);
+            let collapsed_chat_line = self
+                .chat_lines
+                .back()
+                .map(|line| (line.text.as_str(), line.color));
+            let pixels = render_map_hud(
+                &self.font,
+                self.status_bar_number_font.as_ref(),
+                self.status_bar_layout,
+                &stats,
+                &self.active_buffs,
+                collapsed_chat_line,
+            );
             let Some(renderer) = self.renderer.as_ref() else {
                 return;
             };
-            const WIDTH: u32 = 440;
-            const HEIGHT: u32 = 76;
+            const WIDTH: u32 = 1024;
+            let height = self.status_bar_layout.height();
             let result = if let Some(texture) = self.map_hud_texture.as_ref() {
                 renderer.update_bgra(texture, &pixels).map(|()| None)
             } else {
-                renderer.upload_bgra(WIDTH, HEIGHT, &pixels).map(Some)
+                renderer.upload_bgra(WIDTH, height, &pixels).map(Some)
             };
             match result {
                 Ok(Some(texture)) => self.map_hud_texture = Some(texture),
@@ -7479,13 +10359,270 @@ mod native {
             }
         }
 
+        fn load_native_status_bar(&mut self) {
+            self.map_hud_texture = None;
+            self.status_bar_draw_indices.clear();
+            self.status_bar_gauges = [None; 3];
+            self.status_bar_number_font = None;
+            let (sprites, gauge_sprite_indices, layout) =
+                match build_status_bar_sprites(&self.legacy_ui_archive) {
+                    Ok(assets) => assets,
+                    Err(error) => {
+                        eprintln!("OpenStoryRS: native status bar is unavailable: {error}");
+                        return;
+                    }
+                };
+            self.status_bar_layout = layout;
+            let number_path = match layout {
+                StatusBarLayout::Modern => "StatusBar2.img/mainBar/gauge/number",
+                StatusBarLayout::V83 => "StatusBar.img/number",
+            };
+            let number_archive = match layout {
+                StatusBarLayout::Modern => &self.ui_archive,
+                StatusBarLayout::V83 => &self.legacy_ui_archive,
+            };
+            match load_status_bar_number_font(number_archive, number_path) {
+                Ok(font) => self.status_bar_number_font = Some(font),
+                Err(error) => {
+                    eprintln!("OpenStoryRS: native status-bar number font is unavailable: {error}");
+                    self.status_bar_number_font = None;
+                }
+            }
+            let uploaded = match self.upload_dynamic_sprites(sprites) {
+                Ok(draws) => draws,
+                Err(error) => {
+                    eprintln!("OpenStoryRS: could not upload native status bar: {error}");
+                    return;
+                }
+            };
+            let gauge_set: HashSet<usize> = gauge_sprite_indices
+                .iter()
+                .flat_map(|gauge| {
+                    [Some(gauge.fill_index), gauge.start_index, gauge.end_index]
+                        .into_iter()
+                        .flatten()
+                })
+                .collect();
+            self.status_bar_draw_indices = uploaded
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| !gauge_set.contains(index))
+                .map(|(_, draw)| *draw)
+                .collect();
+            self.status_bar_gauges = gauge_sprite_indices.map(|gauge| {
+                let (texture_index, rect) = uploaded[gauge.fill_index];
+                Some(StatusBarGauge {
+                    texture_index,
+                    start_texture_index: gauge.start_index.map(|index| uploaded[index].0),
+                    end_texture_index: gauge.end_index.map(|index| uploaded[index].0),
+                    x: rect.x,
+                    y: rect.y,
+                    width: rect.width,
+                    height: rect.height,
+                })
+            });
+        }
+
+        fn refresh_minimap_texture(&mut self) {
+            if self.minimap_ui_assets.is_none() {
+                let loaded = minimap::UiAssets::load(&self.ui_archive);
+                if let Err(error) = &loaded {
+                    eprintln!("OpenStoryRS: minimap UI art unavailable: {error}");
+                }
+                self.minimap_ui_assets = Some(loaded);
+            }
+            let Some(Ok(ui_assets)) = self.minimap_ui_assets.as_ref() else {
+                self.minimap_texture = None;
+                self.minimap_bounds = None;
+                self.minimap_hit_regions.clear();
+                return;
+            };
+            let Some(scene) = self.map_scene.as_ref() else {
+                self.minimap_texture = None;
+                self.minimap_bounds = None;
+                self.minimap_hit_regions.clear();
+                return;
+            };
+            let Some(data) = scene.minimap.as_ref().filter(|data| !data.hidden) else {
+                self.minimap_texture = None;
+                self.minimap_bounds = None;
+                self.minimap_hit_regions.clear();
+                return;
+            };
+
+            let mut markers = Vec::with_capacity(
+                1 + scene.npcs.len() + scene.mobs.len() + scene.remote_players.len(),
+            );
+            markers.push(minimap::Marker {
+                kind: minimap::MarkerKind::Player,
+                x: scene.player.x as f32,
+                y: scene.player.y as f32,
+                facing_left: !scene.facing_right,
+                sprite: None,
+            });
+            markers.extend(scene.npcs.values().map(|npc| minimap::Marker {
+                kind: minimap::MarkerKind::Npc,
+                x: npc.x as f32,
+                y: npc.y as f32,
+                facing_left: npc.flipped,
+                sprite: None,
+            }));
+            markers.extend(scene.mobs.values().filter(|mob| !mob.dying).map(|mob| {
+                minimap::Marker {
+                    kind: minimap::MarkerKind::Mob,
+                    x: mob.body.x as f32,
+                    y: mob.body.y as f32,
+                    facing_left: !mob.faces_right,
+                    sprite: None,
+                }
+            }));
+            markers.extend(scene.remote_players.values().map(|player| minimap::Marker {
+                kind: minimap::MarkerKind::OtherPlayer,
+                x: player.x as f32,
+                y: player.y as f32,
+                facing_left: player.facing_left,
+                sprite: None,
+            }));
+
+            let map_id = scene.map_id;
+            let presentation = scene.minimap_presentation;
+            let map_name = map_string_name(&self.string_archive, map_id)
+                .unwrap_or_else(|| format!("Map {map_id}"));
+            let panel = match minimap::render(
+                data,
+                ui_assets,
+                LogicalSize::LEGACY_1024X768,
+                &map_name,
+                presentation,
+                &markers,
+                &self.font,
+            ) {
+                Ok(panel) => panel,
+                Err(error) => {
+                    eprintln!("OpenStoryRS: could not render minimap for map {map_id}: {error}");
+                    self.minimap_texture = None;
+                    self.minimap_bounds = None;
+                    self.minimap_hit_regions.clear();
+                    return;
+                }
+            };
+            let Some(renderer) = self.renderer.as_ref() else {
+                return;
+            };
+            let same_size = self.minimap_bounds.is_some_and(|bounds| {
+                bounds.width == panel.width as f32 && bounds.height == panel.height as f32
+            });
+            let result = if same_size {
+                self.minimap_texture.as_ref().map_or_else(
+                    || {
+                        renderer
+                            .upload_bgra(panel.width, panel.height, &panel.pixels)
+                            .map(Some)
+                    },
+                    |texture| renderer.update_bgra(texture, &panel.pixels).map(|()| None),
+                )
+            } else {
+                renderer
+                    .upload_bgra(panel.width, panel.height, &panel.pixels)
+                    .map(Some)
+            };
+            match result {
+                Ok(texture) => {
+                    if let Some(texture) = texture {
+                        self.minimap_texture = Some(texture);
+                    }
+                    self.minimap_bounds = Some(minimap::HitRect {
+                        x: panel.x,
+                        y: panel.y,
+                        width: panel.width as f32,
+                        height: panel.height as f32,
+                    });
+                    self.minimap_hit_regions = panel.hit_regions;
+                }
+                Err(error) => {
+                    eprintln!("OpenStoryRS: could not upload minimap: {error}");
+                    self.minimap_texture = None;
+                    self.minimap_bounds = None;
+                    self.minimap_hit_regions.clear();
+                }
+            }
+        }
+
+        fn toggle_minimap(&mut self) {
+            if let Some(scene) = self.map_scene.as_mut()
+                && scene.minimap.as_ref().is_some_and(|data| !data.hidden)
+            {
+                scene.minimap_presentation = match scene.minimap_presentation {
+                    minimap::Presentation::Collapsed => minimap::Presentation::Normal,
+                    minimap::Presentation::Normal => minimap::Presentation::Expanded,
+                    minimap::Presentation::Expanded => minimap::Presentation::Collapsed,
+                };
+                self.refresh_minimap_texture();
+                if let Some(window) = self.window.as_ref() {
+                    window.request_redraw();
+                }
+            }
+        }
+
+        fn adjust_minimap_presentation(&mut self, expand: bool) {
+            if let Some(scene) = self.map_scene.as_mut()
+                && scene.minimap.as_ref().is_some_and(|data| !data.hidden)
+            {
+                scene.minimap_presentation = match (scene.minimap_presentation, expand) {
+                    (minimap::Presentation::Collapsed, true) => minimap::Presentation::Normal,
+                    (minimap::Presentation::Normal, true) => minimap::Presentation::Expanded,
+                    (minimap::Presentation::Expanded, false) => minimap::Presentation::Normal,
+                    (minimap::Presentation::Normal, false) => minimap::Presentation::Collapsed,
+                    (presentation, _) => presentation,
+                };
+                self.refresh_minimap_texture();
+                if let Some(window) = self.window.as_ref() {
+                    window.request_redraw();
+                }
+            }
+        }
+
+        fn click_minimap(&mut self, cursor: Point) -> bool {
+            let Some(bounds) = self.minimap_bounds else {
+                return false;
+            };
+            if !bounds.contains(cursor.x, cursor.y) {
+                return false;
+            }
+            let action = self
+                .minimap_hit_regions
+                .iter()
+                .rev()
+                .find(|hit| hit.bounds.contains(cursor.x, cursor.y))
+                .map(|hit| hit.action);
+            match action {
+                Some(minimap::HitAction::Expand) => self.adjust_minimap_presentation(true),
+                Some(minimap::HitAction::Collapse) => self.adjust_minimap_presentation(false),
+                Some(minimap::HitAction::OpenWorldMap) => self.open_world_map(),
+                None => {}
+            }
+            true
+        }
+
+        fn open_messenger(&mut self) {
+            self.messenger
+                .get_or_insert_with(messenger::State::default)
+                .open();
+            self.messenger_chat_focused = false;
+            self.refresh_messenger_texture();
+            if let Some(window) = self.window.as_ref() {
+                window.request_redraw();
+            }
+        }
+
         fn refresh_settings_texture(&mut self) {
             if !self.show_settings {
                 return;
             }
-            let pixels = render_audio_settings_panel(
+            let pixels = render_options_panel(
                 &self.font,
                 self.settings,
+                self.gameplay_settings,
                 self.settings_selected_slider,
                 self.settings_notice.as_deref(),
             );
@@ -7508,15 +10645,46 @@ mod native {
 
         fn open_settings(&mut self) {
             self.settings_original = self.settings;
-            self.settings_selected_slider = AudioSettingSlider::Music;
+            self.gameplay_settings_original = self.gameplay_settings;
+            self.settings_selected_slider = OptionSlider::Music;
             self.settings_dragging = None;
             self.settings_notice = None;
             self.show_settings = true;
             self.refresh_settings_texture();
         }
 
+        fn open_quit_confirmation(&mut self) {
+            if self.quit_confirmation {
+                return;
+            }
+            if self.quit_confirmation_draws.is_empty() {
+                let assets = build_quit_confirmation_sprites(&self.legacy_ui_archive)
+                    .or_else(|_| build_quit_confirmation_sprites(&self.ui_archive));
+                match assets {
+                    Ok((sprites, buttons)) => match self.upload_dynamic_sprites(sprites) {
+                        Ok(draws) => {
+                            self.quit_confirmation_draws = draws;
+                            self.quit_confirmation_buttons = buttons.map(Some);
+                        }
+                        Err(error) => eprintln!(
+                            "OpenStoryRS: could not upload the native quit dialog: {error}"
+                        ),
+                    },
+                    Err(error) => {
+                        eprintln!("OpenStoryRS: native quit dialog is unavailable: {error}")
+                    }
+                }
+            }
+            self.quit_requested = false;
+            self.quit_confirmation = true;
+            if let Some(window) = self.window.as_ref() {
+                window.request_redraw();
+            }
+        }
+
         fn cancel_settings(&mut self) {
             self.settings = self.settings_original;
+            self.gameplay_settings = self.gameplay_settings_original;
             self.audio.set_music_volume(self.settings.music_volume);
             self.audio.set_sound_volume(self.settings.effects_volume);
             self.show_settings = false;
@@ -7526,9 +10694,10 @@ mod native {
         }
 
         fn save_settings(&mut self) {
-            match self.settings.save() {
+            match save_settings(self.settings, self.gameplay_settings) {
                 Ok(path) => {
                     self.settings_original = self.settings;
+                    self.gameplay_settings_original = self.gameplay_settings;
                     self.show_settings = false;
                     self.settings_dragging = None;
                     self.settings_notice = None;
@@ -7542,38 +10711,46 @@ mod native {
             }
         }
 
-        fn set_audio_setting(&mut self, slider: AudioSettingSlider, value: u8) {
+        fn set_option_setting(&mut self, slider: OptionSlider, value: u8) {
             match slider {
-                AudioSettingSlider::Music => {
+                OptionSlider::Music => {
                     self.settings.music_volume = value.min(100);
                     self.audio.set_music_volume(self.settings.music_volume);
                 }
-                AudioSettingSlider::Effects => {
+                OptionSlider::Effects => {
                     self.settings.effects_volume = value.min(100);
                     self.audio.set_sound_volume(self.settings.effects_volume);
+                }
+                OptionSlider::HpWarning => {
+                    self.gameplay_settings.hp_warning = value.min(100);
+                }
+                OptionSlider::MpWarning => {
+                    self.gameplay_settings.mp_warning = value.min(100);
                 }
             }
             self.settings_notice = None;
             self.refresh_settings_texture();
         }
 
-        fn adjust_selected_audio_setting(&mut self, amount: i16) {
+        fn adjust_selected_option_setting(&mut self, amount: i16) {
             let current = match self.settings_selected_slider {
-                AudioSettingSlider::Music => self.settings.music_volume,
-                AudioSettingSlider::Effects => self.settings.effects_volume,
+                OptionSlider::Music => self.settings.music_volume,
+                OptionSlider::Effects => self.settings.effects_volume,
+                OptionSlider::HpWarning => self.gameplay_settings.hp_warning,
+                OptionSlider::MpWarning => self.gameplay_settings.mp_warning,
             };
             let value = (i16::from(current) + amount).clamp(0, 100) as u8;
-            self.set_audio_setting(self.settings_selected_slider, value);
+            self.set_option_setting(self.settings_selected_slider, value);
         }
 
-        fn set_audio_setting_from_cursor(&mut self, slider: AudioSettingSlider, x: f32) {
+        fn set_option_setting_from_cursor(&mut self, slider: OptionSlider, x: f32) {
             const TRACK_LEFT: f32 = SETTINGS_PANEL_X + 148.0;
             const TRACK_WIDTH: f32 = 280.0;
             let percent = ((x - TRACK_LEFT) / TRACK_WIDTH * 100.0)
                 .round()
                 .clamp(0.0, 100.0);
             self.settings_selected_slider = slider;
-            self.set_audio_setting(slider, percent as u8);
+            self.set_option_setting(slider, percent as u8);
         }
 
         fn click_settings(&mut self, cursor: Point) {
@@ -7586,27 +10763,47 @@ mod native {
             }
             let local_x = cursor.x - SETTINGS_PANEL_X;
             let local_y = cursor.y - SETTINGS_PANEL_Y;
-            if (91.0..125.0).contains(&local_y) && (138.0..438.0).contains(&local_x) {
-                self.settings_dragging = Some(AudioSettingSlider::Music);
-                self.set_audio_setting_from_cursor(AudioSettingSlider::Music, cursor.x);
-            } else if (151.0..185.0).contains(&local_y) && (138.0..438.0).contains(&local_x) {
-                self.settings_dragging = Some(AudioSettingSlider::Effects);
-                self.set_audio_setting_from_cursor(AudioSettingSlider::Effects, cursor.x);
-            } else if (270.0..310.0).contains(&local_y) && (266.0..362.0).contains(&local_x) {
+            if (49.0..83.0).contains(&local_y) && (138.0..438.0).contains(&local_x) {
+                self.settings_dragging = Some(OptionSlider::Music);
+                self.set_option_setting_from_cursor(OptionSlider::Music, cursor.x);
+            } else if (91.0..125.0).contains(&local_y) && (138.0..438.0).contains(&local_x) {
+                self.settings_dragging = Some(OptionSlider::Effects);
+                self.set_option_setting_from_cursor(OptionSlider::Effects, cursor.x);
+            } else if (152.0..186.0).contains(&local_y) && (138.0..438.0).contains(&local_x) {
+                self.settings_dragging = Some(OptionSlider::HpWarning);
+                self.set_option_setting_from_cursor(OptionSlider::HpWarning, cursor.x);
+            } else if (194.0..228.0).contains(&local_y) && (138.0..438.0).contains(&local_x) {
+                self.settings_dragging = Some(OptionSlider::MpWarning);
+                self.set_option_setting_from_cursor(OptionSlider::MpWarning, cursor.x);
+            } else if (278.0..314.0).contains(&local_y) && (266.0..362.0).contains(&local_x) {
                 self.save_settings();
-            } else if (270.0..310.0).contains(&local_y) && (370.0..466.0).contains(&local_x) {
+            } else if (278.0..314.0).contains(&local_y) && (370.0..466.0).contains(&local_x) {
                 self.cancel_settings();
             }
         }
 
         fn refresh_chat_texture(&mut self) {
+            let item_megaphone_open = self
+                .cash_item_compose
+                .as_ref()
+                .is_some_and(|compose| compose.kind.is_item_megaphone(compose.item_id));
             let pixels = render_chat_panel(
                 &self.font,
                 &self.chat_lines,
-                &self.chat_input,
-                self.chat_open,
+                if item_megaphone_open {
+                    ""
+                } else {
+                    &self.chat_input
+                },
+                self.chat_open && !item_megaphone_open,
                 self.chat_target,
-                self.cash_item_compose.map(|compose| compose.kind.label()),
+                (!item_megaphone_open)
+                    .then(|| {
+                        self.cash_item_compose
+                            .as_ref()
+                            .map(|compose| compose.kind.label(compose.item_id))
+                    })
+                    .flatten(),
             );
             let Some(renderer) = self.renderer.as_ref() else {
                 return;
@@ -7623,6 +10820,146 @@ mod native {
                 Ok(None) => {}
                 Err(error) => eprintln!("OpenStoryRS: could not update chat panel: {error}"),
             }
+            self.refresh_item_megaphone_texture();
+            self.refresh_map_hud();
+        }
+
+        fn refresh_item_megaphone_texture(&mut self) {
+            let Some((whisper, saved_message, attachment)) = self
+                .cash_item_compose
+                .as_ref()
+                .filter(|compose| compose.kind.is_item_megaphone(compose.item_id))
+                .map(|compose| {
+                    (
+                        compose.whisper,
+                        compose.lines.first().cloned(),
+                        compose.attached_item,
+                    )
+                })
+            else {
+                self.item_megaphone_texture = None;
+                return;
+            };
+            let attachment_icon = attachment.and_then(|(_, _, item_id)| {
+                inventory_item_icon(
+                    item_id,
+                    &self.item_archive,
+                    &self.character_archive,
+                    &mut self.inventory_icon_cache,
+                )
+            });
+            let attachment_name = attachment.map(|(_, _, item_id)| {
+                item_name(item_id, &self.string_archive, &mut self.item_name_cache)
+            });
+            let panel = match item_megaphone::render(
+                &self.ui_archive,
+                &self.font,
+                &self.chat_input,
+                saved_message.as_deref(),
+                whisper,
+                attachment_name.as_deref(),
+                attachment_icon,
+                self.login_caret_visible,
+            ) {
+                Ok(panel) => panel,
+                Err(error) => {
+                    eprintln!("OpenStoryRS: could not render Item Megaphone: {error}");
+                    self.item_megaphone_texture = None;
+                    return;
+                }
+            };
+            let Some(renderer) = self.renderer.as_ref() else {
+                return;
+            };
+            let result = if let Some(texture) = self.item_megaphone_texture.as_ref() {
+                if texture.width() == panel.width && texture.height() == panel.height {
+                    renderer.update_bgra(texture, &panel.pixels).map(|()| None)
+                } else {
+                    renderer
+                        .upload_bgra(panel.width, panel.height, &panel.pixels)
+                        .map(Some)
+                }
+            } else {
+                renderer
+                    .upload_bgra(panel.width, panel.height, &panel.pixels)
+                    .map(Some)
+            };
+            match result {
+                Ok(Some(texture)) => self.item_megaphone_texture = Some(texture),
+                Ok(None) => {}
+                Err(error) => eprintln!("OpenStoryRS: could not upload Item Megaphone: {error}"),
+            }
+        }
+
+        fn click_item_megaphone(&mut self, cursor: Point) -> bool {
+            let active = self.current_field.is_some()
+                && self
+                    .cash_item_compose
+                    .as_ref()
+                    .is_some_and(|compose| compose.kind.is_item_megaphone(compose.item_id));
+            if !active {
+                return false;
+            }
+            let local_x = cursor.x - ITEM_MEGAPHONE_X;
+            let local_y = cursor.y - ITEM_MEGAPHONE_Y;
+            let inside = (0.0..item_megaphone::WIDTH as f32).contains(&local_x)
+                && (0.0..item_megaphone::HEIGHT as f32).contains(&local_y);
+            if !inside {
+                return false;
+            }
+            let whisper_box = (10.0..22.0).contains(&local_x) && (154.0..166.0).contains(&local_y);
+            if whisper_box {
+                if let Some(compose) = self.cash_item_compose.as_mut() {
+                    compose.whisper = !compose.whisper;
+                }
+                self.refresh_chat_texture();
+                return true;
+            }
+            let attachment_box =
+                (16.0..48.0).contains(&local_x) && (90.0..122.0).contains(&local_y);
+            if attachment_box {
+                let awaiting_attachment = self.cash_item_compose.as_ref().is_some_and(|compose| {
+                    compose.awaiting_attachment
+                        && compose.kind.uses_item_attachment(compose.item_id)
+                });
+                if let Some(compose) = self.cash_item_compose.as_mut() {
+                    if compose.attached_item.is_some() {
+                        compose.attached_item = None;
+                    } else if !awaiting_attachment {
+                        self.push_chat_line(
+                            "[Item Megaphone] Enter a message first, then press Enter to choose an attachment."
+                                .to_owned(),
+                            [255, 222, 112],
+                        );
+                    }
+                }
+                if awaiting_attachment
+                    && self
+                        .cash_item_compose
+                        .as_ref()
+                        .is_some_and(|compose| compose.attached_item.is_none())
+                {
+                    self.show_inventory = true;
+                    self.update_inventory_hover();
+                    self.refresh_inventory_texture();
+                }
+                self.refresh_chat_texture();
+                return true;
+            }
+            if let Some(button) = item_megaphone::button_at(&self.ui_archive, local_x, local_y) {
+                match button {
+                    item_megaphone::Button::Send => self.submit_chat_message(),
+                    item_megaphone::Button::Cancel => {
+                        self.cash_item_compose = None;
+                        self.chat_input.clear();
+                        self.chat_open = false;
+                        self.item_megaphone_texture = None;
+                        self.refresh_chat_texture();
+                    }
+                }
+                return true;
+            }
+            true
         }
 
         fn ensure_whisper_conversation(&mut self, target: &str) -> usize {
@@ -7957,6 +11294,463 @@ mod native {
                 Ok(None) => {}
                 Err(error) => eprintln!("OpenStoryRS: could not update guild panel: {error}"),
             }
+        }
+
+        fn refresh_family_texture(&mut self) {
+            let pixels = render_family_panel(&self.font, &self.ui_archive, &self.family_ui);
+            let Some(renderer) = self.renderer.as_ref() else {
+                return;
+            };
+            let result = if let Some(texture) = self.family_texture.as_ref() {
+                renderer.update_bgra(texture, &pixels).map(|()| None)
+            } else {
+                renderer
+                    .upload_bgra(FAMILY_PANEL_WIDTH, FAMILY_PANEL_HEIGHT, &pixels)
+                    .map(Some)
+            };
+            match result {
+                Ok(Some(texture)) => self.family_texture = Some(texture),
+                Ok(None) => {}
+                Err(error) => eprintln!("OpenStoryRS: could not update family panel: {error}"),
+            }
+        }
+
+        fn refresh_family_tree_texture(&mut self) {
+            let pixels = render_family_tree_panel(&self.font, &self.ui_archive, &self.family_ui);
+            let Some(renderer) = self.renderer.as_ref() else {
+                return;
+            };
+            let result = if let Some(texture) = self.family_tree_texture.as_ref() {
+                renderer.update_bgra(texture, &pixels).map(|()| None)
+            } else {
+                renderer
+                    .upload_bgra(FAMILY_TREE_PANEL_WIDTH, FAMILY_TREE_PANEL_HEIGHT, &pixels)
+                    .map(Some)
+            };
+            match result {
+                Ok(Some(texture)) => self.family_tree_texture = Some(texture),
+                Ok(None) => {}
+                Err(error) => eprintln!("OpenStoryRS: could not update family tree: {error}"),
+            }
+        }
+
+        fn toggle_family_panel(&mut self) {
+            self.show_family_panel = !self.show_family_panel;
+            if self.show_family_panel {
+                self.show_party_panel = false;
+                self.show_buddy_panel = false;
+                self.show_guild_panel = false;
+                self.show_alliance_panel = false;
+                self.show_family_tree = false;
+                if let Some(session) = self.session.as_ref()
+                    && let Err(error) =
+                        session.send_packet(openstory_protocol::open_family_packet())
+                {
+                    self.family_ui.notice = Some(format!("Could not request family data: {error}"));
+                }
+            } else {
+                self.show_family_tree = false;
+            }
+            self.refresh_family_texture();
+            if self.show_family_tree {
+                self.refresh_family_tree_texture();
+            }
+        }
+
+        fn open_family_tree(&mut self) {
+            let Some(name) = self
+                .active_character
+                .as_ref()
+                .map(|character| character.stats.name.clone())
+            else {
+                self.family_ui.notice = Some("Character data is not available yet.".to_owned());
+                self.refresh_family_texture();
+                return;
+            };
+            let packet = match openstory_protocol::family_pedigree_request_packet(&name) {
+                Ok(packet) => packet,
+                Err(error) => {
+                    self.family_ui.notice = Some(format!("Could not request family tree: {error}"));
+                    self.refresh_family_texture();
+                    return;
+                }
+            };
+            if let Some(session) = self.session.as_ref()
+                && let Err(error) = session.send_packet(packet)
+            {
+                self.family_ui.notice = Some(format!("Could not request family tree: {error}"));
+            } else {
+                self.show_family_tree = true;
+                self.family_ui.notice = None;
+            }
+            self.refresh_family_texture();
+            self.refresh_family_tree_texture();
+        }
+
+        fn apply_family_event(&mut self, event: openstory_protocol::FamilyEvent) {
+            use openstory_protocol::FamilyEvent;
+            match event {
+                FamilyEvent::Info(info) => {
+                    self.family_ui.info = Some(info);
+                    self.family_ui.notice = None;
+                }
+                FamilyEvent::Chart(chart) => {
+                    self.family_ui.selected_member = Some(chart.viewed_character_id);
+                    self.family_ui.chart = Some(chart);
+                    self.show_family_tree = true;
+                }
+                FamilyEvent::Result { result_code, mesos } => {
+                    let message = match result_code {
+                        65 => "Player not found.".to_owned(),
+                        69 => "Target is on a different map or hidden.".to_owned(),
+                        72 => "Level difference is too great (maximum 20).".to_owned(),
+                        73 => "Target already has a pending family invitation.".to_owned(),
+                        74 => "Target is already being summoned by another family.".to_owned(),
+                        75 => "You cannot teleport to that location right now.".to_owned(),
+                        77 => "Target is too low level to be a junior.".to_owned(),
+                        _ => format!("Family result {result_code} (mesos: {mesos})."),
+                    };
+                    self.family_ui.notice = Some(message.clone());
+                    self.push_chat_line(format!("[Family] {message}"), [255, 222, 112]);
+                }
+                FamilyEvent::JoinRequest { character_id, name } => {
+                    self.pending_family_join = Some((character_id, name.clone()));
+                    self.push_chat_line(
+                        format!(
+                            "[Family] {name} wants to join. Press Y to accept or N to decline."
+                        ),
+                        [255, 222, 112],
+                    );
+                }
+                FamilyEvent::JoinRequestResult { accepted, name } => {
+                    let message = if accepted {
+                        format!("{name} accepted your family invitation.")
+                    } else {
+                        format!("{name} declined your family invitation.")
+                    };
+                    self.push_chat_line(format!("[Family] {message}"), [255, 222, 112]);
+                }
+                FamilyEvent::Joined { name, .. } => {
+                    self.push_chat_line(
+                        format!("[Family] {name} joined the family."),
+                        [255, 222, 112],
+                    );
+                    if self.show_family_panel {
+                        self.open_family_panel_refresh();
+                    }
+                }
+                FamilyEvent::Privileges(privileges) => {
+                    self.family_ui.privileges = privileges;
+                }
+                FamilyEvent::ReputationGained { amount, from } => {
+                    self.push_chat_line(
+                        format!("[Family] +{amount} reputation from {from}."),
+                        [255, 222, 112],
+                    );
+                }
+                FamilyEvent::MemberPresenceChanged { logged_in, name } => {
+                    let action = if logged_in { "logged in" } else { "logged out" };
+                    self.push_chat_line(format!("[Family] {name} {action}."), [255, 222, 112]);
+                }
+                FamilyEvent::SummonRequest { from, family_name } => {
+                    self.pending_family_summon = Some((from.clone(), family_name.clone()));
+                    self.push_chat_line(
+                        format!(
+                            "[Family] {from} is summoning you. Press Y to accept or N to decline."
+                        ),
+                        [255, 222, 112],
+                    );
+                }
+            }
+            if self.show_family_panel {
+                self.refresh_family_texture();
+            }
+            if self.show_family_tree {
+                self.refresh_family_tree_texture();
+            }
+        }
+
+        fn open_family_panel_refresh(&mut self) {
+            if let Some(session) = self.session.as_ref()
+                && let Err(error) = session.send_packet(openstory_protocol::open_family_packet())
+            {
+                self.family_ui.notice = Some(format!("Could not refresh family data: {error}"));
+            }
+            self.refresh_family_texture();
+        }
+
+        fn answer_family_request(&mut self, accept: bool) {
+            if let Some((character_id, name)) = self.pending_family_join.take() {
+                if accept {
+                    match openstory_protocol::family_accept_request_packet(character_id) {
+                        Ok(packet) => {
+                            if let Some(session) = self.session.as_ref()
+                                && let Err(error) = session.send_packet(packet)
+                            {
+                                self.push_chat_line(
+                                    format!("[Family] Could not accept {name}: {error}"),
+                                    [255, 105, 105],
+                                );
+                            }
+                        }
+                        Err(error) => self.push_chat_line(
+                            format!("[Family] Could not accept {name}: {error}"),
+                            [255, 105, 105],
+                        ),
+                    }
+                } else {
+                    self.push_chat_line(
+                        format!("[Family] Declined {name}'s request."),
+                        [255, 222, 112],
+                    );
+                }
+                return;
+            }
+            if let Some((from, family_name)) = self.pending_family_summon.take() {
+                match openstory_protocol::family_summon_response_packet(&family_name, accept) {
+                    Ok(packet) => {
+                        if let Some(session) = self.session.as_ref()
+                            && let Err(error) = session.send_packet(packet)
+                        {
+                            self.push_chat_line(
+                                format!("[Family] Could not respond to {from}: {error}"),
+                                [255, 105, 105],
+                            );
+                        }
+                    }
+                    Err(error) => self.push_chat_line(
+                        format!("[Family] Could not respond to {from}: {error}"),
+                        [255, 105, 105],
+                    ),
+                }
+            }
+        }
+
+        fn click_family_panel(&mut self, cursor: Point) {
+            let x = cursor.x - 375.0;
+            let y = cursor.y - 165.0;
+            if self.family_ui.input.is_some() {
+                if (53.0..132.0).contains(&x) && (253.0..281.0).contains(&y) {
+                    self.submit_family_input();
+                } else if (143.0..222.0).contains(&x) && (253.0..281.0).contains(&y) {
+                    self.family_ui.input = None;
+                }
+                self.refresh_family_texture();
+                return;
+            }
+            if self.family_ui.confirm_leave {
+                if (53.0..132.0).contains(&x) && (253.0..281.0).contains(&y) {
+                    self.resolve_family_leave(true);
+                } else if (143.0..222.0).contains(&x) && (253.0..281.0).contains(&y) {
+                    self.family_ui.confirm_leave = false;
+                }
+                self.refresh_family_texture();
+                return;
+            }
+            if (242.0..270.0).contains(&x) && (4.0..32.0).contains(&y) {
+                self.show_family_panel = false;
+                self.show_family_tree = false;
+            } else if (12.0..72.0).contains(&x) && (390.0..428.0).contains(&y) {
+                self.open_family_tree();
+            } else if (76.0..126.0).contains(&x) && (390.0..428.0).contains(&y) {
+                self.use_family_ability();
+            } else if (130.0..188.0).contains(&x) && (390.0..428.0).contains(&y) {
+                self.family_ui.input = Some(FamilyInput {
+                    kind: FamilyInputKind::InviteJunior,
+                    text: String::new(),
+                    key_text_for_ime_dedup: None,
+                });
+                self.family_ui.notice = None;
+            } else if (192.0..260.0).contains(&x) && (390.0..428.0).contains(&y) {
+                self.family_ui.confirm_leave = true;
+            } else if (236.0..266.0).contains(&x) && (300.0..332.0).contains(&y) {
+                self.family_ui.selected_ability = (self.family_ui.selected_ability + 1) % 5;
+            } else if (196.0..226.0).contains(&x) && (300.0..332.0).contains(&y) {
+                self.family_ui.selected_ability = self.family_ui.selected_ability.saturating_sub(1);
+            } else if (14.0..260.0).contains(&x) && (185.0..237.0).contains(&y) {
+                self.family_ui.input = Some(FamilyInput {
+                    kind: FamilyInputKind::EditPrecepts,
+                    text: self
+                        .family_ui
+                        .info
+                        .as_ref()
+                        .map(|info| info.message.clone())
+                        .unwrap_or_default(),
+                    key_text_for_ime_dedup: None,
+                });
+                self.family_ui.notice = None;
+            }
+            self.refresh_family_texture();
+        }
+
+        fn edit_family_input(&mut self, text: &str) {
+            let Some(input) = self.family_ui.input.as_mut() else {
+                return;
+            };
+            let max_utf16 = match input.kind {
+                FamilyInputKind::InviteJunior => 13,
+                FamilyInputKind::EditPrecepts => 200,
+            };
+            for character in text.chars().filter(|character| !character.is_control()) {
+                if input.text.encode_utf16().count() + character.len_utf16() > max_utf16 {
+                    break;
+                }
+                input.text.push(character);
+            }
+            self.family_ui.notice = None;
+            self.refresh_family_texture();
+        }
+
+        fn backspace_family_input(&mut self) {
+            if let Some(input) = self.family_ui.input.as_mut() {
+                input.text.pop();
+                self.family_ui.notice = None;
+                self.refresh_family_texture();
+            }
+        }
+
+        fn submit_family_input(&mut self) {
+            let Some(input) = self.family_ui.input.take() else {
+                return;
+            };
+            let value = match input.kind {
+                FamilyInputKind::InviteJunior => input.text.trim(),
+                FamilyInputKind::EditPrecepts => input.text.as_str(),
+            };
+            if value.trim().is_empty() {
+                self.family_ui.notice = Some(match input.kind {
+                    FamilyInputKind::InviteJunior => "Enter a character name first.".to_owned(),
+                    FamilyInputKind::EditPrecepts => "The family motto cannot be empty.".to_owned(),
+                });
+                return;
+            }
+            let packet = match input.kind {
+                FamilyInputKind::InviteJunior => {
+                    openstory_protocol::family_add_junior_packet(value)
+                }
+                FamilyInputKind::EditPrecepts => openstory_protocol::family_precepts_packet(value),
+            };
+            match packet {
+                Ok(packet) => {
+                    let Some(session) = self.session.as_ref() else {
+                        self.family_ui.notice = Some("No server connection.".to_owned());
+                        self.refresh_family_texture();
+                        return;
+                    };
+                    if let Err(error) = session.send_packet(packet) {
+                        self.family_ui.notice =
+                            Some(format!("Could not send family request: {error}"));
+                    } else {
+                        self.family_ui.notice = Some(match input.kind {
+                            FamilyInputKind::InviteJunior => format!("Invitation sent to {value}."),
+                            FamilyInputKind::EditPrecepts => {
+                                "Family motto update requested.".to_owned()
+                            }
+                        });
+                        self.open_family_panel_refresh();
+                    }
+                }
+                Err(error) => {
+                    self.family_ui.notice = Some(format!("Invalid family request: {error}"));
+                }
+            }
+            self.refresh_family_texture();
+        }
+
+        fn resolve_family_leave(&mut self, leave: bool) {
+            self.family_ui.confirm_leave = false;
+            if !leave {
+                self.refresh_family_texture();
+                return;
+            }
+            let Some(entry_id) = self.active_character.as_ref().map(|character| character.id)
+            else {
+                self.family_ui.notice = Some("Character data is not available yet.".to_owned());
+                self.refresh_family_texture();
+                return;
+            };
+            let Some(session) = self.session.as_ref() else {
+                self.family_ui.notice = Some("No server connection.".to_owned());
+                self.refresh_family_texture();
+                return;
+            };
+            if let Err(error) =
+                session.send_packet(openstory_protocol::family_leave_packet(entry_id))
+            {
+                self.family_ui.notice = Some(format!("Could not leave the family: {error}"));
+            } else {
+                self.family_ui.info = None;
+                self.family_ui.chart = None;
+                self.family_ui.notice = Some("Family leave requested.".to_owned());
+                self.open_family_panel_refresh();
+            }
+            self.refresh_family_texture();
+        }
+
+        fn click_family_tree(&mut self, cursor: Point) {
+            let x = cursor.x - 223.0;
+            let y = cursor.y - 191.0;
+            if (542.0..576.0).contains(&x) && (4.0..36.0).contains(&y) {
+                self.show_family_tree = false;
+            } else if (12.0..566.0).contains(&x)
+                && (44.0..365.0).contains(&y)
+                && let Some(chart) = self.family_ui.chart.as_ref()
+            {
+                let row = ((y - 44.0) / 30.0) as usize;
+                if let Some(entry) = chart.entries.get(row).cloned() {
+                    self.family_ui.selected_member = Some(entry.character_id);
+                    if let Ok(packet) =
+                        openstory_protocol::family_pedigree_request_packet(&entry.name)
+                        && let Some(session) = self.session.as_ref()
+                        && let Err(error) = session.send_packet(packet)
+                    {
+                        self.family_ui.notice =
+                            Some(format!("Could not view {}: {error}", entry.name));
+                    }
+                }
+            }
+            if self.show_family_tree {
+                self.refresh_family_tree_texture();
+            }
+        }
+
+        fn use_family_ability(&mut self) {
+            let ability = self.family_ui.selected_ability.min(4) as i32;
+            let target = if ability <= 1 {
+                self.family_ui
+                    .chart
+                    .as_ref()
+                    .and_then(|chart| {
+                        self.family_ui.selected_member.and_then(|id| {
+                            chart.entries.iter().find(|entry| entry.character_id == id)
+                        })
+                    })
+                    .map(|entry| entry.name.as_str())
+            } else {
+                None
+            };
+            if ability <= 1 && target.is_none() {
+                self.family_ui.notice =
+                    Some("Open the family tree and select a member first.".to_owned());
+                self.refresh_family_texture();
+                return;
+            }
+            match openstory_protocol::family_use_packet(ability, target) {
+                Ok(packet) => {
+                    if let Some(session) = self.session.as_ref()
+                        && let Err(error) = session.send_packet(packet)
+                    {
+                        self.family_ui.notice =
+                            Some(format!("Could not use family ability: {error}"));
+                    } else {
+                        self.family_ui.notice = Some("Family ability requested.".to_owned());
+                    }
+                }
+                Err(error) => {
+                    self.family_ui.notice = Some(format!("Invalid family ability: {error}"))
+                }
+            }
+            self.refresh_family_texture();
         }
 
         fn edit_guild_panel_text(&mut self, text: &str) {
@@ -9144,6 +12938,17 @@ mod native {
                     self.push_chat_line(
                         format!("[Guild] {name} {verb} the guild."),
                         [190, 225, 255],
+                    );
+                }
+                GuildEvent::GuildDisbanded { .. } => {
+                    self.guild_info = None;
+                    self.alliance_info = None;
+                    self.show_guild_panel = false;
+                    self.show_alliance_panel = false;
+                    self.guild_scroll = 0;
+                    self.push_chat_line(
+                        "[Guild] The guild has been disbanded.".to_owned(),
+                        [255, 255, 255],
                     );
                 }
                 GuildEvent::CapacityChanged { guild_id, capacity } => {
@@ -10582,7 +14387,7 @@ mod native {
         }
 
         fn submit_chat_message(&mut self) {
-            if let Some(compose) = self.cash_item_compose {
+            if let Some(compose) = self.cash_item_compose.clone() {
                 self.submit_cash_item_message(compose);
                 return;
             }
@@ -10734,40 +14539,98 @@ mod native {
                 slot,
                 item_id,
                 kind,
+                lines: Vec::new(),
+                recipient: String::new(),
+                recipient_prompt_pending: kind.has_recipient_field(item_id),
+                whisper: false,
+                attached_item: None,
+                awaiting_attachment: false,
             });
             self.chat_input.clear();
             self.chat_target = ChatTarget::Public;
             self.chat_open = true;
-            let prompt = match kind {
-                CashItemComposeKind::PetNameTag => {
-                    "Enter the new name; Enter sends and Escape cancels."
+            let prompt = if kind.has_recipient_field(item_id) {
+                "Enter an optional target name (blank Enter skips), then message lines; Escape cancels."
+            } else if kind.uses_item_attachment(item_id) {
+                "Enter a message; Enter then click an inventory item to attach it, or Enter blank to send without one. Tab toggles the whisper icon."
+            } else {
+                match kind {
+                    CashItemComposeKind::PetNameTag => {
+                        "Enter the new name; Enter sends and Escape cancels."
+                    }
+                    CashItemComposeKind::PersonalShop => {
+                        "Enter a shop name; Enter creates it and Escape cancels."
+                    }
+                    CashItemComposeKind::HiredMerchant => {
+                        "Enter a merchant name; Enter creates it and Escape cancels."
+                    }
+                    _ if kind.max_lines(item_id) > 1 => {
+                        "Enter a message; Enter adds a line, blank Enter sends, Escape cancels."
+                    }
+                    _ => "Enter a message; Enter sends and Escape cancels.",
                 }
-                CashItemComposeKind::PersonalShop => {
-                    "Enter a shop name; Enter creates it and Escape cancels."
-                }
-                CashItemComposeKind::HiredMerchant => {
-                    "Enter a merchant name; Enter creates it and Escape cancels."
-                }
-                _ => "Enter a message; Enter sends and Escape cancels.",
             };
-            self.push_chat_line(format!("[{}] {prompt}", kind.label()), [255, 222, 112]);
+            let prompt = if kind.has_whisper_toggle(item_id) && !kind.uses_item_attachment(item_id)
+            {
+                format!("{prompt} Tab toggles the whisper icon.")
+            } else {
+                prompt.to_owned()
+            };
+            self.push_chat_line(
+                format!("[{}] {prompt}", kind.label(item_id)),
+                [255, 222, 112],
+            );
             self.refresh_chat_texture();
         }
 
-        fn submit_cash_item_message(&mut self, compose: CashItemCompose) {
+        fn submit_cash_item_message(&mut self, mut compose: CashItemCompose) {
             let message = self.chat_input.trim().to_owned();
-            if message.is_empty() {
-                return;
-            }
-            if message.chars().count() > compose.kind.max_chars() {
+            if compose.recipient_prompt_pending {
+                if message.chars().count() > 12 || message.chars().any(char::is_control) {
+                    self.push_chat_line(
+                        "[Notice] Maple TV recipient names are limited to 12 characters."
+                            .to_owned(),
+                        [255, 222, 112],
+                    );
+                    return;
+                }
+                compose.recipient = message;
+                compose.recipient_prompt_pending = false;
+                self.cash_item_compose = Some(compose);
+                self.chat_input.clear();
                 self.push_chat_line(
-                    format!(
-                        "[Notice] {} text is limited to {} characters.",
-                        compose.kind.label(),
-                        compose.kind.max_chars()
-                    ),
+                    "[Maple TV] Enter up to five message lines; blank Enter sends the lines entered."
+                        .to_owned(),
                     [255, 222, 112],
                 );
+                self.refresh_chat_texture();
+                return;
+            }
+            if compose.awaiting_attachment && !message.is_empty() {
+                self.push_chat_line(
+                    "[Item Megaphone] The message is ready. Click an inventory item to attach it, or press Enter on a blank line to send."
+                        .to_owned(),
+                    [255, 222, 112],
+                );
+                return;
+            }
+            let finish_now = message.is_empty();
+            let mut lines = compose.lines.clone();
+            if !message.is_empty() {
+                if message.chars().count() > compose.kind.max_chars() {
+                    self.push_chat_line(
+                        format!(
+                            "[Notice] {} text is limited to {} characters per line.",
+                            compose.kind.label(compose.item_id),
+                            compose.kind.max_chars()
+                        ),
+                        [255, 222, 112],
+                    );
+                    return;
+                }
+                lines.push(message);
+            }
+            if lines.is_empty() {
                 return;
             }
             let still_owned = self.inventory.as_ref().is_some_and(|inventory| {
@@ -10796,19 +14659,75 @@ mod native {
                 );
                 return;
             }
-            let lines = [message.clone()];
+            if compose.kind.uses_item_attachment(compose.item_id) && !compose.awaiting_attachment {
+                compose.lines = lines;
+                compose.awaiting_attachment = true;
+                self.cash_item_compose = Some(compose);
+                self.chat_input.clear();
+                self.push_chat_line(
+                    "[Item Megaphone] Click an inventory item to attach it; click it again to clear. Press Enter to send, or Enter on blank to send without an attachment. Press I to reopen the inventory."
+                        .to_owned(),
+                    [255, 222, 112],
+                );
+                self.refresh_chat_texture();
+                return;
+            }
+            let maximum_lines = compose.kind.max_lines(compose.item_id);
+            if lines.len() < maximum_lines && !finish_now {
+                let next_line = lines.len() + 1;
+                self.cash_item_compose = Some(CashItemCompose {
+                    lines,
+                    ..compose.clone()
+                });
+                self.chat_input.clear();
+                self.push_chat_line(
+                    format!(
+                        "[{}] Line saved. Enter line {next_line}, or press Enter on a blank line to send.",
+                        compose.kind.label(compose.item_id)
+                    ),
+                    [255, 222, 112],
+                );
+                self.refresh_chat_texture();
+                return;
+            }
+            let message = lines.first().map(String::as_str).unwrap_or_default();
+            let attached_item =
+                compose
+                    .attached_item
+                    .and_then(|(inventory_type, slot, item_id)| {
+                        self.inventory.as_ref().and_then(|inventory| {
+                            inventory
+                                .items
+                                .iter()
+                                .any(|item| {
+                                    item.inventory_type == inventory_type
+                                        && item.slot == slot
+                                        && item.item_id == item_id
+                                })
+                                .then_some((inventory_type, slot))
+                        })
+                    });
+            if compose.attached_item.is_some() && attached_item.is_none() {
+                self.push_chat_line(
+                    "[Item Megaphone] The selected attachment is no longer in that inventory slot; sending without it."
+                        .to_owned(),
+                    [255, 222, 112],
+                );
+            }
             let packet = match compose.kind {
                 CashItemComposeKind::Megaphone => openstory_protocol::use_megaphone_packet(
                     compose.slot,
                     compose.item_id,
                     &lines,
-                    false,
+                    compose.whisper,
+                    attached_item,
                 ),
                 CashItemComposeKind::MapleTv => openstory_protocol::use_maple_tv_packet(
                     compose.slot,
                     compose.item_id,
+                    &compose.recipient,
                     &lines,
-                    false,
+                    matches!(compose.item_id, 5_075_003..=5_075_005),
                 ),
                 CashItemComposeKind::AvatarMegaphone => {
                     openstory_protocol::use_avatar_megaphone_packet(
@@ -10821,18 +14740,21 @@ mod native {
                 CashItemComposeKind::PetNameTag => openstory_protocol::use_pet_name_tag_packet(
                     compose.slot,
                     compose.item_id,
-                    &message,
+                    message,
                 ),
                 CashItemComposeKind::PersonalShop => {
-                    openstory_protocol::create_personal_shop_packet(&message, compose.item_id)
+                    openstory_protocol::create_personal_shop_packet(message, compose.item_id)
                 }
                 CashItemComposeKind::HiredMerchant => {
-                    openstory_protocol::create_hired_merchant_shop_packet(&message, compose.item_id)
+                    openstory_protocol::create_hired_merchant_shop_packet(message, compose.item_id)
                 }
             };
             let Some(packet) = packet else {
                 self.push_chat_line(
-                    format!("[Notice] {} item payload is invalid.", compose.kind.label()),
+                    format!(
+                        "[Notice] {} item payload is invalid.",
+                        compose.kind.label(compose.item_id)
+                    ),
                     [255, 222, 112],
                 );
                 return;
@@ -10847,7 +14769,10 @@ mod native {
             if let Err(error) = session.send_packet(packet) {
                 self.channel_connected = false;
                 self.push_chat_line(
-                    format!("[Notice] Could not use {}: {error}", compose.kind.label()),
+                    format!(
+                        "[Notice] Could not use {}: {error}",
+                        compose.kind.label(compose.item_id)
+                    ),
                     [255, 105, 105],
                 );
                 return;
@@ -10877,8 +14802,8 @@ mod native {
                 self.pending_scroll_slot = None;
             }
             let maximum_row = inventory_slot_max(inventory, self.inventory_tab)
-                .div_ceil(4)
-                .saturating_sub(6);
+                .div_ceil(INVENTORY_SLOT_COLUMNS as u16)
+                .saturating_sub(INVENTORY_SLOT_ROWS as u16);
             self.inventory_scroll_row = self.inventory_scroll_row.min(maximum_row);
             let pixels = render_inventory_panel(
                 &self.font,
@@ -10889,6 +14814,7 @@ mod native {
                 self.inventory_drag_source
                     .map(|(inventory_type, slot, _)| (inventory_type, slot)),
                 self.pending_scroll_slot,
+                &self.legacy_ui_archive,
                 &self.item_archive,
                 &self.character_archive,
                 &self.string_archive,
@@ -10898,8 +14824,8 @@ mod native {
             let Some(renderer) = self.renderer.as_ref() else {
                 return;
             };
-            const WIDTH: u32 = 390;
-            const HEIGHT: u32 = 512;
+            const WIDTH: u32 = INVENTORY_PANEL_WIDTH;
+            const HEIGHT: u32 = INVENTORY_PANEL_HEIGHT;
             let result = if let Some(texture) = self.inventory_texture.as_ref() {
                 renderer.update_bgra(texture, &pixels).map(|()| None)
             } else {
@@ -11434,6 +15360,14 @@ mod native {
             let Some(name) = self.character_info.as_ref().map(|ui| ui.name.clone()) else {
                 return;
             };
+            if (440.0..472.0).contains(&local_y) {
+                if (20.0..112.0).contains(&local_x) {
+                    self.request_character_fame(true);
+                } else if (118.0..210.0).contains(&local_x) {
+                    self.request_character_fame(false);
+                }
+                return;
+            }
             if !(402.0..436.0).contains(&local_y) {
                 return;
             }
@@ -12270,6 +16204,9 @@ mod native {
             }
             let empty_inventory = openstory_protocol::InventorySnapshot::default();
             let inventory = self.inventory.as_ref().unwrap_or(&empty_inventory);
+            self.pet_equipment_scroll_row = self
+                .pet_equipment_scroll_row
+                .min(pet_equipment_items(inventory).len().saturating_sub(5));
             let pixels = render_pet_equipment_panel(
                 &self.font,
                 inventory,
@@ -12278,6 +16215,7 @@ mod native {
                 &self.string_archive,
                 &mut self.inventory_icon_cache,
                 &mut self.item_name_cache,
+                self.pet_equipment_scroll_row,
             );
             let Some(renderer) = self.renderer.as_ref() else {
                 return;
@@ -12296,12 +16234,33 @@ mod native {
             }
         }
 
+        fn scroll_pet_equipment_by(&mut self, amount: isize) {
+            if amount == 0 {
+                return;
+            }
+            let gear_count = self
+                .inventory
+                .as_ref()
+                .map_or(0, |inventory| pet_equipment_items(inventory).len());
+            let maximum = gear_count.saturating_sub(5);
+            let next = self
+                .pet_equipment_scroll_row
+                .saturating_add_signed(amount)
+                .min(maximum);
+            if next != self.pet_equipment_scroll_row {
+                self.pet_equipment_scroll_row = next;
+                self.refresh_pet_equipment_texture();
+            }
+        }
+
         fn refresh_cash_shop_texture(&mut self) {
             let Some(state) = self.cash_shop.as_ref() else {
                 self.cash_shop_texture = None;
+                self.cash_shop_hit_regions.clear();
                 return;
             };
-            let pixels = render_cash_shop_panel(
+            let scene = match cash_shop_ui::render(
+                &self.ui_archive,
                 &self.font,
                 state,
                 &self.cash_products,
@@ -12310,20 +16269,29 @@ mod native {
                 &self.string_archive,
                 &mut self.inventory_icon_cache,
                 &mut self.item_name_cache,
-            );
+            ) {
+                Ok(scene) => scene,
+                Err(error) => {
+                    eprintln!("OpenStoryRS: could not draw Cash Shop: {error}");
+                    return;
+                }
+            };
             let Some(renderer) = self.renderer.as_ref() else {
                 return;
             };
             const WIDTH: u32 = 1024;
             const HEIGHT: u32 = 768;
             let result = if let Some(texture) = self.cash_shop_texture.as_ref() {
-                renderer.update_bgra(texture, &pixels).map(|()| None)
+                renderer.update_bgra(texture, &scene.pixels).map(|()| None)
             } else {
-                renderer.upload_bgra(WIDTH, HEIGHT, &pixels).map(Some)
+                renderer.upload_bgra(WIDTH, HEIGHT, &scene.pixels).map(Some)
             };
             match result {
-                Ok(Some(texture)) => self.cash_shop_texture = Some(texture),
-                Ok(None) => {}
+                Ok(Some(texture)) => {
+                    self.cash_shop_texture = Some(texture);
+                    self.cash_shop_hit_regions = scene.hit_regions;
+                }
+                Ok(None) => self.cash_shop_hit_regions = scene.hit_regions,
                 Err(error) => eprintln!("OpenStoryRS: could not update Cash Shop: {error}"),
             }
         }
@@ -13156,7 +17124,7 @@ mod native {
                                 damage as f64 / 100.0,
                                 horizontal_range_multiplier,
                                 attack_range,
-                                mad.max(0) as f64 / 100.0,
+                                mad.max(0) as f64,
                                 magic_mastery,
                                 (fixed > 0).then(|| i32::try_from(fixed).unwrap_or(i32::MAX)),
                                 mp_cost,
@@ -13279,7 +17247,7 @@ mod native {
                 return;
             };
             const WIDTH: u32 = 430;
-            const HEIGHT: u32 = 480;
+            const HEIGHT: u32 = 500;
             let result = if let Some(texture) = self.skill_book_texture.as_ref() {
                 renderer.update_bgra(texture, &pixels).map(|()| None)
             } else {
@@ -13309,12 +17277,16 @@ mod native {
                 self.quest_log_scroll = 0;
             } else {
                 self.quest_log_selected = self.quest_log_selected.min(quest_ids.len() - 1);
-                self.quest_log_scroll =
-                    self.quest_log_scroll.min(quest_ids.len().saturating_sub(8));
+                self.quest_log_scroll = self
+                    .quest_log_scroll
+                    .min(quest_ids.len().saturating_sub(QUEST_LOG_VISIBLE_ROWS));
                 if self.quest_log_selected < self.quest_log_scroll
-                    || self.quest_log_selected >= self.quest_log_scroll.saturating_add(8)
+                    || self.quest_log_selected
+                        >= self.quest_log_scroll.saturating_add(QUEST_LOG_VISIBLE_ROWS)
                 {
-                    self.quest_log_scroll = self.quest_log_selected.min(quest_ids.len() - 8);
+                    self.quest_log_scroll = self
+                        .quest_log_selected
+                        .min(quest_ids.len() - QUEST_LOG_VISIBLE_ROWS);
                 }
             }
             if self.quest_log_tab == QuestLogTab::Active {
@@ -13363,12 +17335,13 @@ mod native {
                 self.quest_reward_selected,
                 self.active_character.as_ref(),
                 self.quest_forfeit_confirmation,
+                &self.legacy_ui_archive,
             );
             let Some(renderer) = self.renderer.as_ref() else {
                 return;
             };
-            const WIDTH: u32 = 664;
-            const HEIGHT: u32 = 548;
+            const WIDTH: u32 = QUEST_LOG_PANEL_WIDTH;
+            const HEIGHT: u32 = QUEST_LOG_PANEL_HEIGHT;
             let result = if let Some(texture) = self.quest_log_texture.as_ref() {
                 renderer.update_bgra(texture, &pixels).map(|()| None)
             } else {
@@ -13379,6 +17352,1260 @@ mod native {
                 Ok(None) => {}
                 Err(error) => eprintln!("OpenStory: could not update quest log: {error}"),
             }
+        }
+
+        fn open_world_map(&mut self) {
+            let Some((map_id, _)) = self.current_field else {
+                return;
+            };
+            if self.world_map.search_catalog.is_none() {
+                match world_map::load_search_catalog(&self.map_archive, &self.string_archive) {
+                    Ok(catalog) => self.world_map.search_catalog = Some(catalog),
+                    Err(error) => eprintln!("OpenStoryRS: could not index world maps: {error}"),
+                }
+            }
+            self.world_map.open = true;
+            self.world_map.search_open = true;
+            self.world_map.search_query.clear();
+            self.world_map.search_scroll = 0;
+            self.world_map.search_focused = false;
+            self.world_map.hovered_link = None;
+            self.world_map.hovered_marker = None;
+            self.world_map.selected_route_map_id = None;
+            self.world_map.map_id = Some(map_id);
+            self.world_map.map_path = None;
+            self.refresh_world_map_texture();
+        }
+
+        fn channel_switch_channel_count(&self) -> usize {
+            self.selected_world
+                .and_then(|world_id| self.worlds.iter().find(|world| world.id == world_id))
+                .map(|world| world.channels.len())
+                .filter(|count| *count > 0)
+                .unwrap_or(channel_switch::MAX_VISIBLE_CHANNELS)
+                .min(channel_switch::MAX_VISIBLE_CHANNELS)
+                .max(1)
+        }
+
+        fn open_channel_switch(&mut self) {
+            if self.current_field.is_none()
+                || !self.channel_connected
+                || self.active_character.is_none()
+            {
+                return;
+            }
+            let maximum = self.channel_switch_channel_count().saturating_sub(1) as u8;
+            self.channel_switch_selected = self.selected_channel.min(maximum);
+            self.channel_switch_open = true;
+            self.refresh_channel_switch_texture();
+            if let Some(window) = self.window.as_ref() {
+                window.request_redraw();
+            }
+        }
+
+        fn close_channel_switch(&mut self) {
+            self.channel_switch_open = false;
+            self.channel_switch_texture = None;
+            self.channel_switch_actions.clear();
+        }
+
+        fn refresh_channel_switch_texture(&mut self) {
+            if !self.channel_switch_open {
+                self.channel_switch_texture = None;
+                self.channel_switch_actions.clear();
+                return;
+            }
+            let channel_count = self.channel_switch_channel_count();
+            self.channel_switch_selected = self
+                .channel_switch_selected
+                .min(channel_count.saturating_sub(1) as u8);
+            let panel = match channel_switch::render(
+                &self.ui_archive,
+                &self.font,
+                self.selected_world.unwrap_or(0),
+                channel_count,
+                self.selected_channel,
+                self.channel_switch_selected,
+            ) {
+                Ok(panel) => panel,
+                Err(error) => {
+                    eprintln!("OpenStoryRS: could not build channel selector: {error}");
+                    return;
+                }
+            };
+            let Some(renderer) = self.renderer.as_ref() else {
+                return;
+            };
+            match renderer.upload_bgra(panel.width, panel.height, &panel.pixels) {
+                Ok(texture) => {
+                    self.channel_switch_texture = Some(texture);
+                    self.channel_switch_actions = panel.actions;
+                }
+                Err(error) => eprintln!("OpenStoryRS: could not upload channel selector: {error}"),
+            }
+        }
+
+        fn move_channel_switch_selection(&mut self, dx: i8, dy: i8) {
+            let count = self.channel_switch_channel_count();
+            let current = usize::from(self.channel_switch_selected).min(count - 1);
+            let current_channel = usize::from(self.selected_channel).min(count - 1);
+            let next = if dx < 0 {
+                if current > 0 { current - 1 } else { count - 1 }
+            } else if dx > 0 {
+                if current + 1 < count { current + 1 } else { 0 }
+            } else if dy < 0 {
+                let candidate = if current >= 5 {
+                    current - 5
+                } else {
+                    current + 15
+                };
+                if candidate >= count {
+                    current_channel
+                } else {
+                    candidate
+                }
+            } else if dy > 0 {
+                let candidate = current + 5;
+                if candidate >= count {
+                    current % 5
+                } else {
+                    candidate
+                }
+            } else {
+                current
+            };
+            self.channel_switch_selected = next as u8;
+            self.refresh_channel_switch_texture();
+        }
+
+        fn request_channel_switch(&mut self) {
+            let selected = self.channel_switch_selected;
+            if selected == self.selected_channel {
+                self.close_channel_switch();
+                return;
+            }
+            let packet = openstory_protocol::change_channel_packet(selected);
+            let result = self
+                .session
+                .as_ref()
+                .ok_or_else(|| "channel connection is unavailable".to_owned())
+                .and_then(|session| session.send_packet(packet));
+            match result {
+                Ok(()) => {
+                    self.selected_channel = selected;
+                    self.close_channel_switch();
+                    self.channel_connected = false;
+                }
+                Err(error) => {
+                    eprintln!("OpenStoryRS: could not request channel change: {error}");
+                    self.push_chat_line(
+                        "[Notice] Channel change request could not be sent.".to_owned(),
+                        [255, 190, 125],
+                    );
+                    self.close_channel_switch();
+                    self.channel_connected = false;
+                }
+            }
+            if let Some(window) = self.window.as_ref() {
+                window.request_redraw();
+            }
+        }
+
+        fn click_channel_switch(&mut self, cursor: Point) -> bool {
+            if !self.channel_switch_open {
+                return false;
+            }
+            let local_x = cursor.x - channel_switch::DEFAULT_X;
+            let local_y = cursor.y - channel_switch::DEFAULT_Y;
+            let action = self
+                .channel_switch_actions
+                .iter()
+                .find(|hit| hit.bounds.contains(local_x, local_y))
+                .map(|hit| hit.action);
+            match action {
+                Some(channel_switch::Action::Close) => self.close_channel_switch(),
+                Some(channel_switch::Action::Change) => self.request_channel_switch(),
+                Some(channel_switch::Action::Select(channel)) => {
+                    self.channel_switch_selected = channel;
+                    self.refresh_channel_switch_texture();
+                }
+                None => {}
+            }
+            true
+        }
+
+        fn refresh_messenger_texture(&mut self) {
+            let Some(state) = self.messenger.as_ref() else {
+                self.messenger_texture = None;
+                self.messenger_actions.clear();
+                self.messenger_bounds = None;
+                return;
+            };
+            let panel = match messenger::render(&self.ui_archive, &self.font, state) {
+                Ok(panel) => panel,
+                Err(error) => {
+                    eprintln!("OpenStoryRS: could not build Messenger: {error}");
+                    return;
+                }
+            };
+            let Some(renderer) = self.renderer.as_ref() else {
+                return;
+            };
+            match renderer.upload_bgra(panel.width, panel.height, &panel.pixels) {
+                Ok(texture) => {
+                    let state = self.messenger.as_ref().expect("messenger state retained");
+                    self.messenger_bounds = Some(messenger::HitRect {
+                        x: state.x,
+                        y: state.y,
+                        width: panel.width as f32,
+                        height: panel.height as f32,
+                    });
+                    self.messenger_texture = Some(texture);
+                    self.messenger_actions = panel.actions;
+                }
+                Err(error) => eprintln!("OpenStoryRS: could not upload Messenger: {error}"),
+            }
+        }
+
+        fn send_messenger_packet(&mut self, packet: Vec<u8>, context: &str) -> bool {
+            let Some(session) = self.session.as_ref() else {
+                self.push_chat_line(
+                    format!("[Messenger] Cannot {context}: the server session is unavailable."),
+                    [255, 180, 120],
+                );
+                return false;
+            };
+            match session.send_packet(packet) {
+                Ok(()) => true,
+                Err(error) => {
+                    self.channel_connected = false;
+                    eprintln!("OpenStoryRS: could not {context}: {error}");
+                    self.push_chat_line(
+                        format!("[Messenger] Could not {context}."),
+                        [255, 130, 130],
+                    );
+                    false
+                }
+            }
+        }
+
+        fn handle_messenger_action(&mut self, action: messenger::Action) {
+            match action {
+                messenger::Action::Open => {
+                    if let Some(state) = self.messenger.as_mut() {
+                        state.open();
+                    }
+                    self.messenger_chat_focused = false;
+                }
+                messenger::Action::Close | messenger::Action::Leave => {
+                    self.send_messenger_packet(
+                        openstory_protocol::messenger_leave_packet(),
+                        "leave Messenger",
+                    );
+                    self.messenger = None;
+                    self.messenger_chat_focused = false;
+                    self.messenger_drag_offset = None;
+                }
+                messenger::Action::Invite => {
+                    let prompt = self
+                        .messenger
+                        .as_ref()
+                        .and_then(messenger::State::invite_prompt)
+                        .cloned();
+                    if let Some(messenger::InvitePrompt::EnterName { draft }) = prompt {
+                        if !draft.is_empty() {
+                            match openstory_protocol::messenger_invite_packet(&draft) {
+                                Ok(packet) => {
+                                    if self.send_messenger_packet(packet, "invite that player")
+                                        && let Some(state) = self.messenger.as_mut()
+                                    {
+                                        state.dismiss_invite_prompt();
+                                    }
+                                }
+                                Err(error) => eprintln!(
+                                    "OpenStoryRS: could not build Messenger invite: {error}"
+                                ),
+                            }
+                        }
+                    } else if let Some(state) = self.messenger.as_mut() {
+                        state.begin_invite();
+                        self.messenger_chat_focused = false;
+                    }
+                }
+                messenger::Action::Send => {
+                    let message = self
+                        .messenger
+                        .as_ref()
+                        .map(|state| state.draft().to_owned())
+                        .unwrap_or_default();
+                    let name = self
+                        .active_character
+                        .as_ref()
+                        .map(|character| character.stats.name.clone())
+                        .unwrap_or_default();
+                    if !message.is_empty() && !name.is_empty() {
+                        match openstory_protocol::messenger_chat_packet(&format!(
+                            "{name} : {message}"
+                        )) {
+                            Ok(packet) => {
+                                if self.send_messenger_packet(packet, "send Messenger chat") {
+                                    if let Some(state) = self.messenger.as_mut() {
+                                        state.add_chat(&name, &message);
+                                        state.set_draft("");
+                                    }
+                                    self.push_chat_line(
+                                        format!("[Messenger] {name}: {message}"),
+                                        [128, 200, 255],
+                                    );
+                                    self.refresh_chat_texture();
+                                }
+                            }
+                            Err(error) => {
+                                eprintln!("OpenStoryRS: could not build Messenger chat: {error}")
+                            }
+                        }
+                    }
+                }
+                messenger::Action::Accept => {
+                    if matches!(
+                        self.messenger
+                            .as_ref()
+                            .and_then(messenger::State::invite_prompt),
+                        Some(messenger::InvitePrompt::Incoming { .. })
+                    ) && self.send_messenger_packet(
+                        openstory_protocol::messenger_accept_invite_packet(),
+                        "accept Messenger invite",
+                    ) && let Some(state) = self.messenger.as_mut()
+                    {
+                        state.dismiss_invite_prompt();
+                    }
+                }
+                messenger::Action::Decline => {
+                    let incoming_inviter = self
+                        .messenger
+                        .as_ref()
+                        .and_then(messenger::State::invite_prompt)
+                        .and_then(|prompt| match prompt {
+                            messenger::InvitePrompt::Incoming { inviter } => Some(inviter.clone()),
+                            messenger::InvitePrompt::EnterName { .. } => None,
+                        });
+                    if let Some(inviter) = incoming_inviter {
+                        if let Ok(packet) =
+                            openstory_protocol::messenger_decline_invite_packet(&inviter, "")
+                            && self.send_messenger_packet(packet, "decline Messenger invite")
+                            && let Some(state) = self.messenger.as_mut()
+                        {
+                            state.dismiss_invite_prompt();
+                        }
+                    } else if let Some(state) = self.messenger.as_mut() {
+                        state.dismiss_invite_prompt();
+                    }
+                }
+                messenger::Action::FocusChat => {
+                    self.messenger_chat_focused = true;
+                }
+                messenger::Action::FocusInviteName => {
+                    self.messenger_chat_focused = false;
+                }
+            }
+            self.refresh_messenger_texture();
+            if let Some(window) = self.window.as_ref() {
+                window.request_redraw();
+            }
+        }
+
+        fn click_messenger(&mut self, cursor: Point) -> bool {
+            let Some(bounds) = self.messenger_bounds else {
+                return self
+                    .messenger
+                    .as_ref()
+                    .is_some_and(|state| state.invite_prompt().is_some());
+            };
+            if !bounds.contains(cursor.x, cursor.y) {
+                return self
+                    .messenger
+                    .as_ref()
+                    .is_some_and(|state| state.invite_prompt().is_some());
+            }
+            let action = self
+                .messenger_actions
+                .iter()
+                .rev()
+                .find(|hit| hit.bounds.contains(cursor.x, cursor.y))
+                .map(|hit| hit.action);
+            if let Some(action) = action {
+                self.handle_messenger_action(action);
+            } else if self
+                .messenger
+                .as_ref()
+                .is_some_and(|state| state.invite_prompt().is_none())
+                && cursor.y < bounds.y + 22.0
+            {
+                self.messenger_chat_focused = false;
+                if let Some(state) = self.messenger.as_ref() {
+                    self.messenger_drag_offset = Some((cursor.x - state.x, cursor.y - state.y));
+                }
+            } else if self
+                .messenger
+                .as_ref()
+                .is_some_and(|state| state.invite_prompt().is_none())
+            {
+                self.messenger_chat_focused = false;
+            }
+            true
+        }
+
+        fn update_messenger_drag(&mut self, cursor: Point) {
+            let Some((offset_x, offset_y)) = self.messenger_drag_offset else {
+                return;
+            };
+            let Some(bounds) = self.messenger_bounds else {
+                self.messenger_drag_offset = None;
+                return;
+            };
+            if let Some(state) = self.messenger.as_mut() {
+                state.x = cursor.x - offset_x;
+                state.y = cursor.y - offset_y;
+                state.clamp_to_viewport(bounds.width as u32, bounds.height as u32);
+            }
+            self.refresh_messenger_texture();
+            if let Some(window) = self.window.as_ref() {
+                window.request_redraw();
+            }
+        }
+
+        fn handle_messenger_key(
+            &mut self,
+            key: PhysicalKey,
+            state: ElementState,
+            repeat: bool,
+        ) -> bool {
+            if self.messenger.is_some() && matches!(key, PhysicalKey::Code(KeyCode::Escape)) {
+                if state == ElementState::Pressed && !repeat {
+                    self.handle_messenger_action(messenger::Action::Close);
+                }
+                return true;
+            }
+
+            let prompt = self
+                .messenger
+                .as_ref()
+                .and_then(messenger::State::invite_prompt)
+                .cloned();
+            if let Some(prompt) = prompt {
+                if state == ElementState::Pressed && !repeat {
+                    match key {
+                        PhysicalKey::Code(KeyCode::Escape) => match prompt {
+                            messenger::InvitePrompt::Incoming { .. } => {
+                                self.handle_messenger_action(messenger::Action::Decline)
+                            }
+                            messenger::InvitePrompt::EnterName { .. } => {
+                                if let Some(state) = self.messenger.as_mut() {
+                                    state.dismiss_invite_prompt();
+                                }
+                                self.refresh_messenger_texture();
+                            }
+                        },
+                        PhysicalKey::Code(KeyCode::Enter | KeyCode::NumpadEnter) => match prompt {
+                            messenger::InvitePrompt::Incoming { .. } => {
+                                self.handle_messenger_action(messenger::Action::Accept)
+                            }
+                            messenger::InvitePrompt::EnterName { .. } => {
+                                self.handle_messenger_action(messenger::Action::Invite)
+                            }
+                        },
+                        PhysicalKey::Code(KeyCode::KeyY)
+                            if matches!(&prompt, messenger::InvitePrompt::Incoming { .. }) =>
+                        {
+                            self.handle_messenger_action(messenger::Action::Accept)
+                        }
+                        PhysicalKey::Code(KeyCode::KeyN)
+                            if matches!(&prompt, messenger::InvitePrompt::Incoming { .. }) =>
+                        {
+                            self.handle_messenger_action(messenger::Action::Decline)
+                        }
+                        PhysicalKey::Code(KeyCode::Backspace)
+                            if matches!(&prompt, messenger::InvitePrompt::EnterName { .. }) =>
+                        {
+                            if let Some(state) = self.messenger.as_mut() {
+                                state.backspace_invite();
+                            }
+                            self.refresh_messenger_texture();
+                        }
+                        _ => {}
+                    }
+                    if let Some(window) = self.window.as_ref() {
+                        window.request_redraw();
+                    }
+                }
+                return true;
+            }
+
+            if !self.messenger_chat_focused {
+                if state == ElementState::Pressed
+                    && !repeat
+                    && matches!(key, PhysicalKey::Code(KeyCode::Escape))
+                {
+                    self.handle_messenger_action(messenger::Action::Leave);
+                    return true;
+                }
+                return false;
+            }
+            if state == ElementState::Pressed && !repeat {
+                match key {
+                    PhysicalKey::Code(KeyCode::Escape) => {
+                        self.handle_messenger_action(messenger::Action::Leave);
+                    }
+                    PhysicalKey::Code(KeyCode::Enter | KeyCode::NumpadEnter) => {
+                        self.handle_messenger_action(messenger::Action::Send);
+                    }
+                    PhysicalKey::Code(KeyCode::Backspace) => {
+                        if let Some(state) = self.messenger.as_mut() {
+                            state.backspace_draft();
+                        }
+                        self.refresh_messenger_texture();
+                    }
+                    _ => {}
+                }
+                if let Some(window) = self.window.as_ref() {
+                    window.request_redraw();
+                }
+            }
+            true
+        }
+
+        fn handle_messenger_text(&mut self, text: &str) -> bool {
+            let prompt = self
+                .messenger
+                .as_ref()
+                .and_then(messenger::State::invite_prompt)
+                .cloned();
+            if let Some(prompt) = prompt {
+                if matches!(prompt, messenger::InvitePrompt::EnterName { .. }) {
+                    if let Some(state) = self.messenger.as_mut() {
+                        for character in text.chars() {
+                            state.push_invite_char(character);
+                        }
+                    }
+                    self.refresh_messenger_texture();
+                }
+                if let Some(window) = self.window.as_ref() {
+                    window.request_redraw();
+                }
+                return true;
+            }
+            if !self.messenger_chat_focused {
+                return false;
+            }
+            if let Some(state) = self.messenger.as_mut() {
+                for character in text.chars() {
+                    state.push_draft_char(character);
+                }
+            }
+            self.refresh_messenger_texture();
+            if let Some(window) = self.window.as_ref() {
+                window.request_redraw();
+            }
+            true
+        }
+
+        fn apply_messenger_event(&mut self, event: openstory_protocol::MessengerEvent) {
+            match event {
+                openstory_protocol::MessengerEvent::PlayerJoined {
+                    slot,
+                    look: _,
+                    name,
+                    channel,
+                    reserved: _,
+                } => {
+                    if let Ok(slot) = usize::try_from(slot) {
+                        if let Some(state) = self.messenger.as_mut() {
+                            state.set_member(slot, &name);
+                        }
+                    }
+                    eprintln!("OpenStoryRS: {name} joined Messenger on channel {channel}");
+                }
+                openstory_protocol::MessengerEvent::SlotAssigned { slot: _ } => {}
+                openstory_protocol::MessengerEvent::PlayerLeft { slot } => {
+                    if let Ok(slot) = usize::try_from(slot)
+                        && let Some(state) = self.messenger.as_mut()
+                    {
+                        state.remove_member(slot);
+                    }
+                }
+                openstory_protocol::MessengerEvent::Invite { from, .. } => {
+                    self.messenger
+                        .get_or_insert_with(messenger::State::default)
+                        .prompt_incoming_invite(&from);
+                    self.messenger_chat_focused = false;
+                    self.push_chat_line(
+                        format!("{from} invited you to a Messenger conversation."),
+                        [255, 222, 112],
+                    );
+                }
+                openstory_protocol::MessengerEvent::Note { text } => {
+                    self.push_chat_line(text, [255, 128, 128]);
+                }
+                openstory_protocol::MessengerEvent::Chat { text } => {
+                    if let Some(state) = self.messenger.as_mut() {
+                        if let Some((name, message)) = text.split_once(" : ") {
+                            state.add_chat(name, message);
+                        } else {
+                            state.add_chat("", &text);
+                        }
+                    }
+                    self.push_chat_line(format!("[Messenger] {text}"), [128, 200, 255]);
+                }
+                openstory_protocol::MessengerEvent::Unsupported { mode } => {
+                    eprintln!("OpenStoryRS: unsupported Messenger operation {mode:#04x}");
+                }
+            }
+            if self.messenger.is_some() {
+                self.refresh_messenger_texture();
+            }
+            self.refresh_chat_texture();
+            if let Some(window) = self.window.as_ref() {
+                window.request_redraw();
+            }
+        }
+
+        fn refresh_monster_book_texture(&mut self) {
+            if !self.monster_book.open {
+                return;
+            }
+            if self.monster_book.set_card_icons.is_none() {
+                self.monster_book.set_card_icons =
+                    Some(monster_book::load_set_card_icons(&self.item_archive));
+            }
+            let panel = match monster_book::render(
+                &self.ui_archive,
+                &self.item_archive,
+                &self.character_archive,
+                &self.mob_archive,
+                &self.string_archive,
+                &self.monster_book.card_updates,
+                self.monster_book
+                    .set_card_icons
+                    .as_ref()
+                    .expect("Monster Book card icons are initialized before rendering"),
+                self.monster_book.cover_item_id,
+                self.monster_book.page,
+                self.monster_book.category,
+                self.monster_book.selected_card,
+                Some(self.monster_book.current_detail_animation()),
+                self.monster_book.search_open,
+                &self.monster_book.search_query,
+                self.monster_book.search_notice.as_deref(),
+                self.monster_book.set_effect_open,
+                self.monster_book.set_scroll,
+                self.monster_book.selected_set,
+                self.monster_book.drop_scroll,
+                &mut self.inventory_icon_cache,
+                &self.font,
+            ) {
+                Ok(panel) => panel,
+                Err(error) => {
+                    eprintln!("OpenStoryRS: could not build Monster Book: {error}");
+                    return;
+                }
+            };
+            let Some(renderer) = self.renderer.as_ref() else {
+                return;
+            };
+            let uploaded = renderer.upload_bgra(panel.width, panel.height, &panel.pixels);
+            match uploaded {
+                Ok(texture) => {
+                    self.monster_book.texture = Some(texture);
+                    self.monster_book.set_layout(panel);
+                    self.refresh_monster_book_animation_texture();
+                }
+                Err(error) => eprintln!("OpenStoryRS: could not upload Monster Book: {error}"),
+            }
+        }
+
+        fn refresh_monster_book_animation_texture(&mut self) {
+            let sprite = match self
+                .monster_book
+                .refresh_detail_animation_sprite(&self.mob_archive)
+            {
+                Ok(sprite) => sprite,
+                Err(error) => {
+                    self.monster_book_animation_texture = None;
+                    eprintln!("OpenStoryRS: could not decode Monster Book animation: {error}");
+                    return;
+                }
+            };
+            let Some(sprite) = sprite else {
+                self.monster_book_animation_texture = None;
+                return;
+            };
+            let uploaded = self
+                .renderer
+                .as_ref()
+                .map(|renderer| renderer.upload_bgra(sprite.width, sprite.height, &sprite.pixels));
+            match uploaded {
+                Some(Ok(texture)) => self.monster_book_animation_texture = Some(texture),
+                Some(Err(error)) => {
+                    self.monster_book_animation_texture = None;
+                    eprintln!("OpenStoryRS: could not upload Monster Book animation: {error}");
+                }
+                None => self.monster_book_animation_texture = None,
+            }
+        }
+
+        fn click_monster_book(&mut self, cursor: Point) -> bool {
+            if !self.monster_book.open {
+                return false;
+            }
+            if self.monster_book.search_open {
+                return true;
+            }
+            let inside_panel = cursor.x >= self.monster_book.x
+                && cursor.y >= self.monster_book.y
+                && cursor.x < self.monster_book.x + self.monster_book.width as f32
+                && cursor.y < self.monster_book.y + self.monster_book.height as f32;
+            if !inside_panel {
+                return false;
+            }
+
+            let mut refresh = false;
+            if self
+                .monster_book
+                .close
+                .is_some_and(|bounds| bounds.contains(cursor.x, cursor.y))
+            {
+                self.monster_book.open = false;
+                self.monster_book.texture = None;
+                self.monster_book.clear_selected_card();
+                self.monster_book_animation_texture = None;
+                return true;
+            }
+            if self
+                .monster_book
+                .search
+                .is_some_and(|bounds| bounds.contains(cursor.x, cursor.y))
+            {
+                self.monster_book.search_open = true;
+                self.monster_book.search_query.clear();
+                self.monster_book.search_notice = None;
+                refresh = true;
+            } else if self
+                .monster_book
+                .set_effect
+                .is_some_and(|bounds| bounds.contains(cursor.x, cursor.y))
+            {
+                self.monster_book.set_effect_open = !self.monster_book.set_effect_open;
+                self.monster_book.selected_set = None;
+                self.monster_book.set_scroll = 0;
+                self.monster_book.clear_selected_card();
+                self.monster_book.drop_scroll = 0;
+                self.monster_book.search_open = false;
+                refresh = true;
+            } else if let Some(set_index) = self
+                .monster_book
+                .set_cells
+                .iter()
+                .find(|hit| hit.bounds.contains(cursor.x, cursor.y))
+                .map(|hit| hit.index)
+            {
+                self.monster_book.selected_set =
+                    (self.monster_book.selected_set != Some(set_index)).then_some(set_index);
+                refresh = true;
+            } else if self
+                .monster_book
+                .previous_page
+                .is_some_and(|bounds| bounds.contains(cursor.x, cursor.y))
+            {
+                self.monster_book.page = self.monster_book.page.saturating_sub(1);
+                self.monster_book.clear_selected_card();
+                self.monster_book.drop_scroll = 0;
+                refresh = true;
+            } else if self
+                .monster_book
+                .next_page
+                .is_some_and(|bounds| bounds.contains(cursor.x, cursor.y))
+            {
+                self.monster_book.page = self.monster_book.page.saturating_add(1);
+                self.monster_book.clear_selected_card();
+                self.monster_book.drop_scroll = 0;
+                refresh = true;
+            } else if let Some(category) = self
+                .monster_book
+                .categories
+                .iter()
+                .find(|hit| hit.bounds.contains(cursor.x, cursor.y))
+                .map(|hit| hit.category)
+            {
+                self.monster_book.category =
+                    (self.monster_book.category != Some(category)).then_some(category);
+                self.monster_book.page = 0;
+                self.monster_book.clear_selected_card();
+                self.monster_book.drop_scroll = 0;
+                self.monster_book.set_effect_open = false;
+                self.monster_book.selected_set = None;
+                refresh = true;
+            } else if let Some((item_id, mob_id)) = self
+                .monster_book
+                .cards
+                .iter()
+                .find(|hit| hit.bounds.contains(cursor.x, cursor.y))
+                .map(|hit| (hit.item_id, hit.mob_id))
+            {
+                self.monster_book
+                    .select_card(item_id, mob_id, &self.mob_archive);
+                self.monster_book.drop_scroll = 0;
+                self.monster_book.set_effect_open = false;
+                self.monster_book.selected_set = None;
+                refresh = true;
+            } else if self
+                .monster_book
+                .detail_animation_area
+                .is_some_and(|bounds| bounds.contains(cursor.x, cursor.y))
+            {
+                self.monster_book.cycle_detail_animation();
+                refresh = true;
+            } else if self
+                .monster_book
+                .drop_area
+                .is_some_and(|bounds| bounds.contains(cursor.x, cursor.y))
+            {
+                return true;
+            } else if self
+                .monster_book
+                .detail_back
+                .is_some_and(|bounds| bounds.contains(cursor.x, cursor.y))
+            {
+                self.monster_book.clear_selected_card();
+                self.monster_book.drop_scroll = 0;
+                refresh = true;
+            }
+            if refresh {
+                self.refresh_monster_book_texture();
+            }
+            true
+        }
+
+        fn scroll_monster_book_drops(&mut self, cursor: Point, amount: f32) -> bool {
+            if !self.monster_book.open || self.monster_book.search_open {
+                return false;
+            }
+            let Some(area) = self.monster_book.drop_area else {
+                return false;
+            };
+            if !area.contains(cursor.x, cursor.y) {
+                return false;
+            }
+            let max_scroll = monster_book::drop_scroll_max(self.monster_book.drop_count);
+            let next = if amount > 0.0 {
+                self.monster_book.drop_scroll.saturating_sub(1)
+            } else if amount < 0.0 {
+                self.monster_book
+                    .drop_scroll
+                    .saturating_add(1)
+                    .min(max_scroll)
+            } else {
+                self.monster_book.drop_scroll
+            };
+            if next != self.monster_book.drop_scroll {
+                self.monster_book.drop_scroll = next;
+                self.refresh_monster_book_texture();
+            }
+            true
+        }
+
+        fn submit_monster_book_search(&mut self) {
+            let query = self.monster_book.search_query.trim();
+            if query.is_empty() {
+                return;
+            }
+            if let Some(page) = monster_book::find_card_page(
+                &self.item_archive,
+                &self.mob_archive,
+                &self.string_archive,
+                &self.monster_book.card_updates,
+                self.monster_book.category,
+                query,
+            ) {
+                self.monster_book.page = page;
+                self.monster_book.clear_selected_card();
+                self.monster_book.drop_scroll = 0;
+                self.monster_book.search_open = false;
+                self.monster_book.search_notice = None;
+            } else {
+                self.monster_book.search_notice = Some("No matching card found.".to_owned());
+            }
+            self.refresh_monster_book_texture();
+        }
+
+        fn refresh_world_map_texture(&mut self) {
+            if !self.world_map.open {
+                return;
+            }
+            let Some((map_id, _)) = self.current_field else {
+                self.world_map.open = false;
+                self.world_map.texture = None;
+                return;
+            };
+            if self.world_map.map_id != Some(map_id) {
+                self.world_map.map_id = Some(map_id);
+                self.world_map.map_path = None;
+                self.world_map.hovered_link = None;
+                self.world_map.hovered_marker = None;
+                self.world_map.selected_route_map_id = None;
+            }
+            let panel = match world_map::render(
+                &self.map_archive,
+                &self.ui_archive,
+                map_id,
+                self.world_map.map_path.as_deref(),
+                self.world_map.search_open,
+                &self.world_map.search_query,
+                self.world_map.search_focused,
+                self.world_map.search_catalog.as_ref(),
+                self.world_map.search_scroll,
+                self.world_map.hovered_link,
+                self.world_map.hovered_marker,
+                self.world_map.selected_route_map_id,
+                &self.string_archive,
+                &self.font,
+            ) {
+                Ok(panel) => panel,
+                Err(error) => {
+                    eprintln!("OpenStoryRS: could not build world map: {error}");
+                    return;
+                }
+            };
+            let Some(renderer) = self.renderer.as_ref() else {
+                return;
+            };
+            match renderer.upload_bgra(panel.width, panel.height, &panel.pixels) {
+                Ok(texture) => {
+                    self.world_map.texture = Some(texture);
+                    self.world_map.set_layout(panel);
+                }
+                Err(error) => eprintln!("OpenStoryRS: could not upload world map: {error}"),
+            }
+        }
+
+        fn click_world_map(&mut self, cursor: Point) -> bool {
+            if !self.world_map.open {
+                return false;
+            }
+            let inside_panel = cursor.x >= self.world_map.x
+                && cursor.y >= self.world_map.y
+                && cursor.x < self.world_map.x + self.world_map.width as f32
+                && cursor.y < self.world_map.y + self.world_map.height as f32;
+            let mut refresh = false;
+            if self
+                .world_map
+                .close
+                .is_some_and(|bounds| bounds.contains(cursor.x, cursor.y))
+            {
+                self.world_map.open = false;
+                self.world_map.search_focused = false;
+                self.world_map.hovered_link = None;
+                self.world_map.hovered_marker = None;
+                return true;
+            }
+            if self
+                .world_map
+                .search_close
+                .is_some_and(|bounds| bounds.contains(cursor.x, cursor.y))
+            {
+                self.world_map.search_open = false;
+                self.world_map.search_focused = false;
+                self.world_map.hovered_link = None;
+                self.world_map.hovered_marker = None;
+                refresh = true;
+            } else if self
+                .world_map
+                .search_toggle
+                .is_some_and(|bounds| bounds.contains(cursor.x, cursor.y))
+            {
+                self.world_map.search_open = !self.world_map.search_open;
+                self.world_map.search_focused = false;
+                self.world_map.hovered_link = None;
+                self.world_map.hovered_marker = None;
+                refresh = true;
+            } else if self
+                .world_map
+                .search_input
+                .is_some_and(|bounds| bounds.contains(cursor.x, cursor.y))
+            {
+                if !self.world_map.search_focused {
+                    self.world_map.search_focused = true;
+                    refresh = true;
+                }
+            } else if let Some(hit) = self
+                .world_map
+                .search_hits
+                .iter()
+                .find(|hit| hit.bounds.contains(cursor.x, cursor.y))
+                .cloned()
+            {
+                self.world_map.map_path = Some(hit.world_map);
+                self.world_map.selected_route_map_id = Some(hit.map_id);
+                self.world_map.search_focused = false;
+                self.world_map.hovered_link = None;
+                self.world_map.hovered_marker = None;
+                refresh = true;
+            } else if self
+                .world_map
+                .search_submit
+                .is_some_and(|bounds| bounds.contains(cursor.x, cursor.y))
+            {
+                if self.world_map.search_focused {
+                    self.world_map.search_focused = false;
+                    refresh = true;
+                }
+            } else if let Some(target) = self
+                .world_map
+                .links
+                .iter()
+                .find(|link| link.bounds.contains(cursor.x, cursor.y))
+                .map(|link| link.target.clone())
+            {
+                self.world_map.map_path = Some(target);
+                self.world_map.search_focused = false;
+                self.world_map.hovered_link = None;
+                self.world_map.hovered_marker = None;
+                self.world_map.selected_route_map_id = None;
+                refresh = true;
+            } else if let Some((map_id, clears_selected_route)) = self
+                .world_map
+                .markers
+                .iter()
+                .find(|marker| marker.bounds.contains(cursor.x, cursor.y))
+                .map(|marker| {
+                    (
+                        marker.map_id,
+                        self.world_map
+                            .selected_route_map_id
+                            .is_some_and(|selected| marker.map_ids.contains(&selected)),
+                    )
+                })
+            {
+                self.world_map.selected_route_map_id = (!clears_selected_route).then_some(map_id);
+                self.world_map.search_focused = false;
+                self.world_map.hovered_marker = None;
+                refresh = true;
+            } else {
+                if self.world_map.search_focused {
+                    self.world_map.search_focused = false;
+                    refresh = true;
+                }
+            }
+            if refresh {
+                self.refresh_world_map_texture();
+            }
+            inside_panel
+        }
+
+        fn escape_world_map(&mut self) {
+            if self.world_map.search_open {
+                self.world_map.search_open = false;
+                self.world_map.search_focused = false;
+                self.world_map.hovered_link = None;
+                self.world_map.hovered_marker = None;
+                self.refresh_world_map_texture();
+                return;
+            }
+            if let Some(parent) = self
+                .world_map
+                .parent_map
+                .clone()
+                .filter(|parent| !parent.is_empty())
+            {
+                self.world_map.map_path = Some(parent);
+                self.world_map.hovered_link = None;
+                self.world_map.hovered_marker = None;
+                self.world_map.selected_route_map_id = None;
+                self.refresh_world_map_texture();
+            } else {
+                self.world_map.open = false;
+            }
+        }
+
+        fn edit_world_map_search(&mut self, text: &str) {
+            if !self.world_map.open || !self.world_map.search_focused {
+                return;
+            }
+            for character in text.chars() {
+                if !character.is_control() && self.world_map.search_query.chars().count() < 8 {
+                    self.world_map.search_query.push(character);
+                }
+            }
+            self.world_map.search_scroll = 0;
+            self.world_map.selected_route_map_id = None;
+            self.world_map.hovered_marker = None;
+            self.refresh_world_map_texture();
+        }
+
+        fn backspace_world_map_search(&mut self) {
+            if !self.world_map.open || !self.world_map.search_focused {
+                return;
+            }
+            self.world_map.search_query.pop();
+            self.world_map.search_scroll = 0;
+            self.world_map.selected_route_map_id = None;
+            self.world_map.hovered_marker = None;
+            self.refresh_world_map_texture();
+        }
+
+        fn scroll_world_map_results(&mut self, cursor: Point, amount: f32) -> bool {
+            if !self.world_map.open
+                || !self.world_map.search_open
+                || self.world_map.search_query.trim().is_empty()
+                || !self.world_map.search_input.is_some_and(|input| {
+                    cursor.x >= input.x - 6.0
+                        && cursor.x < self.world_map.x + self.world_map.width as f32
+                        && (self.world_map.y..self.world_map.y + self.world_map.height as f32)
+                            .contains(&cursor.y)
+                })
+            {
+                return false;
+            }
+            let max_scroll = self
+                .world_map
+                .search_result_count
+                .saturating_sub(world_map::MAX_VISIBLE_SEARCH_RESULTS);
+            let next = if amount > 0.0 {
+                self.world_map.search_scroll.saturating_sub(1)
+            } else if amount < 0.0 {
+                self.world_map
+                    .search_scroll
+                    .saturating_add(1)
+                    .min(max_scroll)
+            } else {
+                self.world_map.search_scroll
+            };
+            if next == self.world_map.search_scroll {
+                return true;
+            }
+            self.world_map.search_scroll = next;
+            self.refresh_world_map_texture();
+            true
+        }
+
+        fn update_world_map_hover(&mut self, cursor: Point) -> bool {
+            if !self.world_map.open {
+                return false;
+            }
+            let hovered_link = self
+                .world_map
+                .links
+                .iter()
+                .position(|link| link.bounds.contains(cursor.x, cursor.y));
+            let hovered_marker = self
+                .world_map
+                .markers
+                .iter()
+                .position(|marker| marker.bounds.contains(cursor.x, cursor.y));
+            if self.world_map.hovered_link == hovered_link
+                && self.world_map.hovered_marker == hovered_marker
+            {
+                return false;
+            }
+            self.world_map.hovered_link = hovered_link;
+            self.world_map.hovered_marker = hovered_marker;
+            self.refresh_world_map_texture();
+            true
+        }
+
+        fn open_party_search(&mut self) {
+            self.party_search
+                .get_or_insert_with(party_search::State::default)
+                .set_status("This server does not publish party result rows.");
+            self.refresh_party_search_texture();
+        }
+
+        fn refresh_party_search_texture(&mut self) {
+            let Some(state) = self.party_search.as_ref() else {
+                self.party_search_texture = None;
+                self.party_search_actions.clear();
+                return;
+            };
+            let panel = match party_search::render(&self.ui_archive, &self.font, state) {
+                Ok(panel) => panel,
+                Err(error) => {
+                    eprintln!("OpenStoryRS: could not build Party Search: {error}");
+                    return;
+                }
+            };
+            let Some(renderer) = self.renderer.as_ref() else {
+                return;
+            };
+            match renderer.upload_bgra(panel.width, panel.height, &panel.pixels) {
+                Ok(texture) => {
+                    self.party_search_texture = Some(texture);
+                    self.party_search_actions = panel.actions;
+                }
+                Err(error) => eprintln!("OpenStoryRS: could not upload Party Search: {error}"),
+            }
+        }
+
+        fn click_party_search(&mut self, cursor: Point) -> bool {
+            let Some(state) = self.party_search.as_ref() else {
+                return false;
+            };
+            let inside_panel = cursor.x >= state.x
+                && cursor.y >= state.y
+                && cursor.x < state.x + party_search::PANEL_WIDTH as f32
+                && cursor.y < state.y + party_search::PANEL_HEIGHT as f32;
+            if !inside_panel {
+                return false;
+            }
+
+            let action = self
+                .party_search_actions
+                .iter()
+                .find(|hit| hit.bounds.contains(cursor.x, cursor.y))
+                .map(|hit| hit.action);
+            match action {
+                Some(party_search::Action::Close | party_search::Action::Cancel) => {
+                    self.party_search = None;
+                    self.party_search_texture = None;
+                    self.party_search_actions.clear();
+                }
+                Some(party_search::Action::Start) => {
+                    if let Some(state) = self.party_search.as_mut() {
+                        state.set_searching(true);
+                        state.set_status("This server does not publish party result rows.");
+                    }
+                    self.refresh_party_search_texture();
+                }
+                Some(party_search::Action::Stop | party_search::Action::Pause) => {
+                    if let Some(state) = self.party_search.as_mut() {
+                        state.set_searching(false);
+                        state.set_status(
+                            "Cosmic does not provide a request to stop party matching.",
+                        );
+                    }
+                    self.refresh_party_search_texture();
+                }
+                Some(party_search::Action::Register) => {
+                    let level = self
+                        .active_character
+                        .as_ref()
+                        .map_or(1, |character| i32::from(character.stats.level));
+                    let criteria = openstory_protocol::PartySearchCriteria::around_level(level);
+                    let sent = self.send_party_packet(
+                        openstory_protocol::party_search_start_packet(criteria),
+                        "Party search request sent.",
+                    );
+                    if let Some(state) = self.party_search.as_mut() {
+                        state.set_searching(sent);
+                        if sent {
+                            state.set_status(
+                                "Request sent; matching leaders may invite you through Party.",
+                            );
+                        }
+                    }
+                    self.refresh_party_search_texture();
+                }
+                None => {}
+            }
+            true
         }
 
         fn open_status_window(&mut self) {
@@ -13418,6 +18645,7 @@ mod native {
             };
             let pixels = render_status_panel(
                 &self.font,
+                &self.ui_archive,
                 character,
                 self.status_waiting_for_stats,
                 self.status_auto_confirmation,
@@ -13487,38 +18715,38 @@ mod native {
             let x = cursor.x - STATUS_PANEL_X;
             let y = cursor.y - STATUS_PANEL_Y;
             if self.status_auto_confirmation {
-                if (248.0..286.0).contains(&y) && (48.0..166.0).contains(&x) {
+                if (184.0..216.0).contains(&y) && (27.0..96.0).contains(&x) {
                     self.resolve_status_auto_allocate(true);
-                } else if (248.0..286.0).contains(&y) && (190.0..308.0).contains(&x) {
+                } else if (184.0..216.0).contains(&y) && (116.0..185.0).contains(&x) {
                     self.resolve_status_auto_allocate(false);
                 }
                 return;
             }
-            if (8.0..38.0).contains(&y) && (318.0..348.0).contains(&x) {
+            if (6.0..20.0).contains(&y) && (190.0..204.0).contains(&x) {
                 self.show_status = false;
                 return;
             }
             if self.status_waiting_for_stats {
                 return;
             }
-            let stat = if (116.0..144.0).contains(&y) && (304.0..342.0).contains(&x) {
+            let stat = if (121.0..134.0).contains(&y) && (187.0..200.0).contains(&x) {
                 Some(openstory_protocol::AbilityStat::Hp)
-            } else if (148.0..176.0).contains(&y) && (304.0..342.0).contains(&x) {
+            } else if (139.0..152.0).contains(&y) && (187.0..200.0).contains(&x) {
                 Some(openstory_protocol::AbilityStat::Mp)
-            } else if (252.0..280.0).contains(&y) && (304.0..342.0).contains(&x) {
+            } else if (208.0..221.0).contains(&y) && (187.0..200.0).contains(&x) {
                 Some(openstory_protocol::AbilityStat::Strength)
-            } else if (284.0..312.0).contains(&y) && (304.0..342.0).contains(&x) {
+            } else if (226.0..239.0).contains(&y) && (187.0..200.0).contains(&x) {
                 Some(openstory_protocol::AbilityStat::Dexterity)
-            } else if (316.0..344.0).contains(&y) && (304.0..342.0).contains(&x) {
+            } else if (244.0..257.0).contains(&y) && (187.0..200.0).contains(&x) {
                 Some(openstory_protocol::AbilityStat::Intelligence)
-            } else if (348.0..376.0).contains(&y) && (304.0..342.0).contains(&x) {
+            } else if (262.0..275.0).contains(&y) && (187.0..200.0).contains(&x) {
                 Some(openstory_protocol::AbilityStat::Luck)
             } else {
                 None
             };
             if let Some(stat) = stat {
                 self.send_ability_point_requests(stat, 1);
-            } else if (394.0..426.0).contains(&y) && (214.0..342.0).contains(&x) {
+            } else if (162.0..197.0).contains(&y) && (128.0..196.0).contains(&x) {
                 if self
                     .active_character
                     .as_ref()
@@ -13535,6 +18763,27 @@ mod native {
             self.refresh_npc_quest_marks();
             if self.show_quest_log {
                 self.refresh_quest_log_texture();
+            }
+        }
+
+        fn handle_quest_timer_update(&mut self, update: openstory_protocol::QuestTimerUpdate) {
+            match update {
+                openstory_protocol::QuestTimerUpdate::Set { timers } => {
+                    for timer in timers {
+                        self.push_chat_line(
+                            format!("[Quest] Time limit set: {} seconds", timer.time_ms / 1_000),
+                            [255, 222, 112],
+                        );
+                    }
+                }
+                openstory_protocol::QuestTimerUpdate::Lifted { quest_id, .. } => {
+                    if let Some(name) = quest_info_text(&self.quest_archive, quest_id, "name") {
+                        self.push_chat_line(
+                            format!("[Quest] Time limit lifted: {name}"),
+                            [255, 222, 112],
+                        );
+                    }
+                }
             }
         }
 
@@ -13695,45 +18944,57 @@ mod native {
         }
 
         fn click_quest_log(&mut self, cursor: Point) -> bool {
-            const PANEL_X: f32 = 180.0;
-            const PANEL_Y: f32 = 110.0;
             if !self.show_quest_log {
                 return false;
             }
+            let has_detail =
+                quest_ids_for_tab(&self.quest_log, &self.available_quests, self.quest_log_tab)
+                    .get(self.quest_log_selected)
+                    .is_some();
+            let (panel_width, panel_height) =
+                if has_detail || self.quest_forfeit_confirmation.is_some() {
+                    (QUEST_LOG_PANEL_WIDTH as f32, QUEST_LOG_PANEL_HEIGHT as f32)
+                } else {
+                    (296.0, 289.0)
+                };
             if !rect_contains(
                 SpriteRect {
-                    x: PANEL_X,
-                    y: PANEL_Y,
-                    width: 664.0,
-                    height: 548.0,
+                    x: QUEST_LOG_PANEL_X,
+                    y: QUEST_LOG_PANEL_Y,
+                    width: panel_width,
+                    height: panel_height,
                     blend_mode: BlendMode::Alpha,
                 },
                 cursor,
             ) {
-                return true;
+                return false;
             }
-            let x = cursor.x - PANEL_X;
-            let y = cursor.y - PANEL_Y;
+            let x = cursor.x - QUEST_LOG_PANEL_X;
+            let y = cursor.y - QUEST_LOG_PANEL_Y;
             if let Some(quest_id) = self.quest_forfeit_confirmation {
-                if (300.0..338.0).contains(&y) && (170.0..290.0).contains(&x) {
+                let overlay_x = (QUEST_LOG_PANEL_WIDTH as f32 - 266.0) * 0.5;
+                if (218.0..240.0).contains(&y) && (overlay_x + 35.0..overlay_x + 105.0).contains(&x)
+                {
                     self.resolve_quest_forfeit(true);
-                } else if (300.0..338.0).contains(&y) && (350.0..470.0).contains(&x) {
+                } else if (218.0..240.0).contains(&y)
+                    && (overlay_x + 140.0..overlay_x + 215.0).contains(&x)
+                {
                     self.resolve_quest_forfeit(false);
                 } else {
                     self.quest_forfeit_confirmation = Some(quest_id);
                 }
                 return true;
             }
-            if (12.0..40.0).contains(&y) && (620.0..652.0).contains(&x) {
+            if (5.0..20.0).contains(&y) && (256.0..289.0).contains(&x) {
                 self.show_quest_log = false;
                 return true;
             }
-            if (46.0..74.0).contains(&y) {
-                let tab = if (16.0..100.0).contains(&x) {
+            if (21.0..48.0).contains(&y) {
+                let tab = if (10.0..76.0).contains(&x) {
                     Some(QuestLogTab::Available)
-                } else if (104.0..188.0).contains(&x) {
+                } else if (78.0..148.0).contains(&x) {
                     Some(QuestLogTab::Active)
-                } else if (192.0..276.0).contains(&x) {
+                } else if (150.0..220.0).contains(&x) {
                     Some(QuestLogTab::Completed)
                 } else {
                     None
@@ -13747,8 +19008,8 @@ mod native {
                 }
                 return true;
             }
-            if (84.0..420.0).contains(&y) && (14.0..262.0).contains(&x) {
-                let row = ((y - 84.0) / 42.0).floor() as usize;
+            if (50.0..254.0).contains(&y) && (8.0..244.0).contains(&x) {
+                let row = ((y - 54.0).max(0.0) / 25.0).floor() as usize;
                 let index = self.quest_log_scroll.saturating_add(row);
                 if index
                     < quest_ids_for_tab(&self.quest_log, &self.available_quests, self.quest_log_tab)
@@ -13761,25 +19022,38 @@ mod native {
                 return true;
             }
             if self.quest_log_tab == QuestLogTab::Active
-                && (426.0..478.0).contains(&y)
-                && (276.0..650.0).contains(&x)
+                && (300.0..335.0).contains(&y)
+                && (QUEST_LOG_DETAIL_X as f32 + 18.0..QUEST_LOG_DETAIL_X as f32 + 285.0)
+                    .contains(&x)
             {
-                if (290.0..322.0).contains(&x) {
+                if x < QUEST_LOG_DETAIL_X as f32 + 56.0 {
                     self.change_selected_quest_reward(-1);
-                } else if (604.0..638.0).contains(&x) {
+                } else if x > QUEST_LOG_DETAIL_X as f32 + 258.0 {
                     self.change_selected_quest_reward(1);
                 }
                 return true;
             }
-            if (490.0..530.0).contains(&y) {
+            if (365.0..389.0).contains(&y) {
                 match self.quest_log_tab {
-                    QuestLogTab::Available if (520.0..648.0).contains(&x) => {
+                    QuestLogTab::Available
+                        if (QUEST_LOG_DETAIL_X as f32 + 36.0
+                            ..QUEST_LOG_DETAIL_X as f32 + 110.0)
+                            .contains(&x) =>
+                    {
                         self.accept_selected_quest();
                     }
-                    QuestLogTab::Active if (380.0..508.0).contains(&x) => {
+                    QuestLogTab::Active
+                        if (QUEST_LOG_DETAIL_X as f32 + 36.0
+                            ..QUEST_LOG_DETAIL_X as f32 + 110.0)
+                            .contains(&x) =>
+                    {
                         self.complete_selected_quest();
                     }
-                    QuestLogTab::Active if (520.0..648.0).contains(&x) => {
+                    QuestLogTab::Active
+                        if (QUEST_LOG_DETAIL_X as f32 + 120.0
+                            ..QUEST_LOG_DETAIL_X as f32 + 190.0)
+                            .contains(&x) =>
+                    {
                         if let Some(quest_id) = self
                             .quest_log
                             .started
@@ -13831,6 +19105,10 @@ mod native {
                         self.refresh_skill_book_texture();
                     }
                 }
+                return true;
+            }
+            if (72.0..91.0).contains(&local_y) && (292.0..418.0).contains(&local_x) {
+                self.open_skill_macro_editor();
                 return true;
             }
             if (91.0..439.0).contains(&local_y) {
@@ -13925,6 +19203,18 @@ mod native {
                     .map(|session| session.send_packet(packet))
                 {
                     Some(Ok(())) => {
+                        self.last_local_skill_cast = Some((skill.id, Instant::now()));
+                        self.pending_zombify_heal_feedback_until = if skill.id == SKILL_HEAL
+                            && character_has_mob_skill_buff(
+                                &self.active_buffs,
+                                openstory_protocol::BuffMaskGroup::Second,
+                                STATUS_ZOMBIFY,
+                                MOB_SKILL_TYPE_UNDEAD,
+                            ) {
+                            Instant::now().checked_add(ZOMBIFY_HEAL_FEEDBACK_WINDOW)
+                        } else {
+                            None
+                        };
                         self.show_local_skill_use_effect(skill.id, skill.level.clamp(0, 255) as u8);
                         if let Some(position) = self
                             .map_scene
@@ -13941,6 +19231,46 @@ mod native {
                     }
                     None => {}
                 }
+            }
+        }
+
+        fn show_local_skill_buff_effect(&mut self, skill_id: i32) {
+            const LOCAL_CAST_ECHO_WINDOW: Duration = Duration::from_millis(720);
+            let now = Instant::now();
+            if self
+                .last_local_skill_cast
+                .is_some_and(|(cast_id, cast_at)| {
+                    cast_id == skill_id
+                        && now.saturating_duration_since(cast_at) <= LOCAL_CAST_ECHO_WINDOW
+                })
+            {
+                return;
+            }
+            let Some((look, character_level)) = self
+                .active_character
+                .as_ref()
+                .map(|character| (character.look.clone(), character.stats.level))
+            else {
+                return;
+            };
+            let skill_level = self
+                .skills
+                .get(&skill_id)
+                .map_or(0, |skill| skill.level.max(0) as u8);
+            let animations = match self.load_character_skill_effects(
+                skill_id,
+                skill_level,
+                character_level,
+                character_weapon_id(&look).is_some_and(is_two_handed_weapon),
+            ) {
+                Ok(animations) => animations,
+                Err(error) => {
+                    eprintln!("OpenStory: could not load skill {skill_id} buff effect: {error}");
+                    Vec::new()
+                }
+            };
+            if let Some(scene) = self.map_scene.as_mut() {
+                scene.show_character_skill_effect(None, animations, 1.1);
             }
         }
 
@@ -13967,13 +19297,18 @@ mod native {
                         self.gameplay_input.up,
                         self.gameplay_input.down,
                     );
-                    if moved && teleport {
-                        let delta_x = (scene.player.x - previous.0) as f32;
-                        let delta_y = (scene.player.y - previous.1) as f32;
+                    if moved {
+                        let camera_delta = scene.update_camera();
+                        scene.advance_background_positions(
+                            camera_delta.0,
+                            camera_delta.1,
+                            1,
+                            &mut self.sprite_draws,
+                        );
                         for index in &scene.world_draw_indices {
                             if let Some((_, rect)) = self.sprite_draws.get_mut(*index) {
-                                rect.x -= delta_x;
-                                rect.y -= delta_y;
+                                rect.x += camera_delta.0;
+                                rect.y += camera_delta.1;
                             }
                         }
                     }
@@ -14240,6 +19575,12 @@ mod native {
                     };
                     openstory_protocol::spawn_pet_packet(slot)
                 }
+                openstory_protocol::InventoryType::Cash => {
+                    let Ok(slot) = i16::try_from(item.slot) else {
+                        return;
+                    };
+                    openstory_protocol::use_item_packet(slot, item.item_id, client_tick)
+                }
                 openstory_protocol::InventoryType::Equip => {
                     let Ok(source) = i16::try_from(item.slot) else {
                         return;
@@ -14300,10 +19641,10 @@ mod native {
         fn begin_inventory_pointer(&mut self, cursor: Point) -> bool {
             if !rect_contains(
                 SpriteRect {
-                    x: 618.0,
-                    y: 128.0,
-                    width: 390.0,
-                    height: 512.0,
+                    x: INVENTORY_PANEL_X,
+                    y: INVENTORY_PANEL_Y,
+                    width: INVENTORY_PANEL_WIDTH as f32,
+                    height: INVENTORY_PANEL_HEIGHT as f32,
                     blend_mode: BlendMode::Alpha,
                 },
                 cursor,
@@ -14311,30 +19652,24 @@ mod native {
                 return false;
             }
             self.inventory_drag_source = None;
-            if (976.0..1002.0).contains(&cursor.x) && (136.0..162.0).contains(&cursor.y) {
+            let local_x = cursor.x - INVENTORY_PANEL_X;
+            let local_y = cursor.y - INVENTORY_PANEL_Y;
+            if (139.0..171.0).contains(&local_x) && (5.0..20.0).contains(&local_y) {
                 self.show_inventory = false;
                 self.inventory_hover_slot = None;
                 self.pending_scroll_slot = None;
                 return true;
             }
-            if (788.0..846.0).contains(&cursor.x) && (136.0..160.0).contains(&cursor.y) {
+            if (142.0..155.0).contains(&local_x) && (269.0..284.0).contains(&local_y) {
                 if self.inventory_tab != openstory_protocol::InventoryType::Equipped {
                     self.request_inventory_arrange(false);
                 }
                 return true;
             }
-            if (853.0..901.0).contains(&cursor.x) && (136.0..160.0).contains(&cursor.y) {
+            if (160.0..173.0).contains(&local_x) && (269.0..284.0).contains(&local_y) {
                 if self.inventory_tab != openstory_protocol::InventoryType::Equipped {
                     self.request_inventory_arrange(true);
                 }
-                return true;
-            }
-            if (911.0..971.0).contains(&cursor.x) && (136.0..162.0).contains(&cursor.y) {
-                self.show_inventory = false;
-                self.inventory_hover_slot = None;
-                self.pending_scroll_slot = None;
-                self.show_pet_equipment = true;
-                self.refresh_pet_equipment_texture();
                 return true;
             }
             if let Some(tab) = inventory_tab_at(cursor) {
@@ -14408,7 +19743,7 @@ mod native {
             let index = ((cursor.y - 348.0) / 49.0).floor() as usize;
             let selected = self.inventory.as_ref().and_then(|inventory| {
                 pet_equipment_items(inventory)
-                    .get(index)
+                    .get(self.pet_equipment_scroll_row.saturating_add(index))
                     .map(|item| (item.inventory_type, item.slot))
             });
             if let Some((inventory_type, slot)) = selected {
@@ -14422,11 +19757,69 @@ mod native {
             let Some((source_type, source_slot, origin)) = self.inventory_drag_source.take() else {
                 return;
             };
-            let destination =
-                cursor.and_then(|cursor| inventory_slot_at(cursor, self.inventory_scroll_row));
+            let awaiting_attachment = self.cash_item_compose.as_ref().is_some_and(|compose| {
+                compose.awaiting_attachment && compose.kind.uses_item_attachment(compose.item_id)
+            });
+            if awaiting_attachment {
+                let selected_item_id = self.inventory.as_ref().and_then(|inventory| {
+                    inventory
+                        .items
+                        .iter()
+                        .find(|item| item.inventory_type == source_type && item.slot == source_slot)
+                        .map(|item| item.item_id)
+                });
+                if source_type == openstory_protocol::InventoryType::Equipped {
+                    self.push_chat_line(
+                        "[Item Megaphone] Choose an item from an inventory bag, not a worn slot."
+                            .to_owned(),
+                        [255, 222, 112],
+                    );
+                } else if let Some(item_id) = selected_item_id {
+                    let current = self
+                        .cash_item_compose
+                        .as_ref()
+                        .and_then(|compose| compose.attached_item);
+                    let selected = (source_type, source_slot, item_id);
+                    let next = if current == Some(selected) {
+                        None
+                    } else {
+                        Some(selected)
+                    };
+                    if let Some(compose) = self.cash_item_compose.as_mut() {
+                        compose.attached_item = next;
+                    }
+                    if next.is_some() {
+                        self.push_chat_line(
+                            format!(
+                                "[Item Megaphone] Attached {source_type:?} item {item_id} from slot {source_slot}. Press Enter to send."
+                            ),
+                            [255, 222, 112],
+                        );
+                    } else {
+                        self.push_chat_line(
+                            "[Item Megaphone] Attachment cleared. Press Enter to send without an item."
+                                .to_owned(),
+                            [255, 222, 112],
+                        );
+                    }
+                }
+                self.refresh_inventory_texture();
+                self.refresh_chat_texture();
+                return;
+            }
             let moved = cursor.is_none_or(|cursor| {
                 (cursor.x - origin.x).abs() + (cursor.y - origin.y).abs() >= 4.0
             });
+            if moved
+                && let Some(cursor) = cursor
+                && let Some(quickslot) = self.quickslot_at(cursor)
+            {
+                self.assign_inventory_item_to_quickslot(quickslot, source_type, source_slot);
+                self.refresh_inventory_texture();
+                return;
+            }
+            let destination =
+                cursor.and_then(|cursor| inventory_slot_at(cursor, self.inventory_scroll_row));
             let merchant_stock_drop = cursor.is_some_and(|cursor| {
                 self.hired_merchant_room.as_ref().is_some_and(|room| {
                     room.state.my_slot == 0
@@ -14485,10 +19878,10 @@ mod native {
             else {
                 if !rect_contains(
                     SpriteRect {
-                        x: 618.0,
-                        y: 128.0,
-                        width: 390.0,
-                        height: 512.0,
+                        x: INVENTORY_PANEL_X,
+                        y: INVENTORY_PANEL_Y,
+                        width: INVENTORY_PANEL_WIDTH as f32,
+                        height: INVENTORY_PANEL_HEIGHT as f32,
                         blend_mode: BlendMode::Alpha,
                     },
                     cursor,
@@ -14813,7 +20206,9 @@ mod native {
                 return;
             };
             let maximum_slot = inventory_slot_max(inventory, self.inventory_tab);
-            let maximum_row = maximum_slot.div_ceil(4).saturating_sub(6);
+            let maximum_row = maximum_slot
+                .div_ceil(INVENTORY_SLOT_COLUMNS as u16)
+                .saturating_sub(INVENTORY_SLOT_ROWS as u16);
             self.inventory_scroll_row = if amount > 0.0 {
                 self.inventory_scroll_row.saturating_sub(1)
             } else {
@@ -14849,7 +20244,23 @@ mod native {
                 }
             }
             equips.sort_unstable();
-            if look.equips == equips && look.weapon_id == weapon_id {
+            let look_changed = look.equips != equips || look.weapon_id != weapon_id;
+            let mut equipped_look = look.clone();
+            equipped_look.equips = equips.clone();
+            let ring_effect_id = equipped_ring_effect_id(&equipped_look, &self.effect_archive);
+            if !look_changed {
+                if ring_effect_id > 0
+                    && self
+                        .map_scene
+                        .as_ref()
+                        .is_some_and(|scene| scene.local_item_aura.is_none())
+                {
+                    if let Some(character_id) =
+                        self.active_character.as_ref().map(|character| character.id)
+                    {
+                        self.set_character_item_effect(character_id, ring_effect_id);
+                    }
+                }
                 return;
             }
             look.equips = equips;
@@ -14863,6 +20274,10 @@ mod native {
                     eprintln!("OpenStory: could not update equipped appearance: {error}");
                 }
             }
+            if let Some(character_id) = self.active_character.as_ref().map(|character| character.id)
+            {
+                self.set_character_item_effect(character_id, ring_effect_id);
+            }
         }
 
         fn refresh_local_avatar_appearance(
@@ -14875,7 +20290,7 @@ mod native {
                 &self.character_archive,
                 look,
                 512.0,
-                384.0,
+                GAMEPLAY_CAMERA_CENTER_Y,
                 &mut self.remote_art_cache,
             )?;
             let draws = self.upload_dynamic_sprites(sprites)?;
@@ -14896,6 +20311,8 @@ mod native {
         }
 
         fn show_map_scene(&mut self, map_id: i32, portal: u8) {
+            self.weather_overlay.clear();
+            self.weather_texture = None;
             let music_path = map_music_path(&self.map_archive, map_id);
             let scene = load_map_scene(
                 &self.map_archive,
@@ -14911,6 +20328,11 @@ mod native {
                         self.audio.play_music(&self.sound_archive, &path);
                     }
                     self.current_field = Some((map_id, portal));
+                    // Replacing the map scene resets sprite_textures. Reload the
+                    // native HUD afterward so its draw indices refer to this scene.
+                    self.load_native_status_bar();
+                    self.refresh_map_hud();
+                    self.show_status_menu = false;
                     self.chat_open = false;
                     self.chat_input.clear();
                     self.refresh_chat_texture();
@@ -14988,8 +20410,10 @@ mod native {
         }
 
         fn send_character_selection(&mut self, character: openstory_protocol::CharacterInfo) {
-            let mac_addresses = std::env::var("OPENSTORY_MACS").unwrap_or_default();
-            let hardware_id = std::env::var("OPENSTORY_HWID").unwrap_or_default();
+            self.forced_equipment_stats = ForcedEquipmentStats::default();
+            self.character_selection_status =
+                Some(format!("Connecting to {}...", character.stats.name));
+            let (mac_addresses, hardware_id) = character_selection_hardware_info();
             let packet = match openstory_protocol::select_character(
                 character.id,
                 &mac_addresses,
@@ -14998,16 +20422,36 @@ mod native {
                 Ok(packet) => packet,
                 Err(error) => {
                     eprintln!("OpenStory: could not create character selection packet: {error}");
+                    self.character_selection_status = Some(
+                        "Could not create the character request. Click Start to retry.".to_owned(),
+                    );
+                    self.refresh_character_scene();
                     return;
                 }
             };
             if let Some(session) = self.session.as_ref() {
                 if let Err(error) = session.send_packet(packet) {
                     eprintln!("OpenStory: could not send character selection: {error}");
+                    self.character_selection_status = Some(
+                        "Could not contact the login server. Click Start to retry.".to_owned(),
+                    );
                 } else {
+                    self.monster_book = monster_book::State::default();
+                    self.monster_book_animation_texture = None;
                     self.active_character = Some(character);
+                    eprintln!("OpenStory: sent character selection request");
                 }
+            } else {
+                self.character_selection_status =
+                    Some("No login server connection. Click Start to retry.".to_owned());
             }
+            self.refresh_character_scene();
+        }
+
+        fn show_character_selection_failure(&mut self, message: &str) {
+            self.active_character = None;
+            self.character_selection_status = Some(message.to_owned());
+            self.refresh_character_scene();
         }
 
         fn begin_pic_entry(&mut self, character_id: i32, step: PicEntryStep) {
@@ -15214,8 +20658,7 @@ mod native {
         }
 
         fn send_pic_registration(&mut self, character_id: i32, pic: &str) {
-            let mac_addresses = std::env::var("OPENSTORY_MACS").unwrap_or_default();
-            let hardware_id = std::env::var("OPENSTORY_HWID").unwrap_or_default();
+            let (mac_addresses, hardware_id) = character_selection_hardware_info();
             let packet = openstory_protocol::register_character_pic(
                 character_id,
                 pic,
@@ -15226,8 +20669,7 @@ mod native {
         }
 
         fn send_character_pic(&mut self, character_id: i32, pic: &str) {
-            let mac_addresses = std::env::var("OPENSTORY_MACS").unwrap_or_default();
-            let hardware_id = std::env::var("OPENSTORY_HWID").unwrap_or_default();
+            let (mac_addresses, hardware_id) = character_selection_hardware_info();
             let packet = openstory_protocol::select_character_with_pic(
                 pic,
                 character_id,
@@ -15278,14 +20720,10 @@ mod native {
             }
         }
 
-        fn activate_login(&self, action: LoginAction) {
+        fn activate_login(&mut self, action: LoginAction) {
             if matches!(action, LoginAction::Login) {
                 self.persist_login_preferences();
             }
-            let Some(session) = self.session.as_ref() else {
-                eprintln!("OpenStory: connect to a server with --connect HOST:PORT first");
-                return;
-            };
             let packet = match action {
                 LoginAction::Login => match self.login_packet() {
                     Ok(packet) => packet,
@@ -15311,6 +20749,7 @@ mod native {
                 LoginAction::SelectWorld(_)
                 | LoginAction::SelectChannel(_)
                 | LoginAction::EnterWorld
+                | LoginAction::HighlightCharacter(_)
                 | LoginAction::SelectCharacter(_)
                 | LoginAction::DeleteCharacter(_)
                 | LoginAction::ReturnToWorld
@@ -15324,8 +20763,38 @@ mod native {
                 | LoginAction::SubmitCharacterCreation
                 | LoginAction::CancelCharacterCreation => return,
             };
-            if let Err(error) = session.send_packet(packet) {
-                eprintln!("OpenStory: could not send login request: {error}");
+            if !self.login_server_connected || self.session.is_none() {
+                if self.session.is_none() {
+                    eprintln!(
+                        "OpenStory: reconnecting to the login server at {}",
+                        self.server_address
+                    );
+                    self.session = Some(session::connect(self.server_address.clone()));
+                }
+                self.pending_login_packet = Some(packet);
+                eprintln!("OpenStory: login request queued until the server connection is ready");
+                return;
+            }
+            match self
+                .session
+                .as_ref()
+                .map(|session| session.send_packet(packet.clone()))
+            {
+                Some(Ok(())) => {}
+                Some(Err(error)) => {
+                    eprintln!(
+                        "OpenStory: could not send login request ({error}); reconnecting to {}",
+                        self.server_address
+                    );
+                    self.login_server_connected = false;
+                    self.pending_login_packet = Some(packet);
+                    self.session = Some(session::connect(self.server_address.clone()));
+                }
+                None => {
+                    self.pending_login_packet = Some(packet);
+                    self.login_server_connected = false;
+                    self.session = Some(session::connect(self.server_address.clone()));
+                }
             }
         }
 
@@ -15399,6 +20868,8 @@ mod native {
                         .key_focused_draw
                         .or(button.mouse_over_draw)
                         .unwrap_or(button.normal_draw)
+                } else if matches!(button.action, Some(LoginAction::Login | LoginAction::Guest)) {
+                    button.mouse_over_draw.unwrap_or(button.normal_draw)
                 } else {
                     button.normal_draw
                 };
@@ -15410,31 +20881,18 @@ mod native {
         }
 
         fn login_button_action(&self, index: usize) -> Option<LoginAction> {
-            let button = self.login_buttons.get(index)?;
-            let center = Point {
-                x: button.hit_rect.x + button.hit_rect.width * 0.5,
-                y: button.hit_rect.y + button.hit_rect.height * 0.5,
-            };
-            self.login_actions
-                .iter()
-                .rev()
-                .find(|region| rect_contains(region.rect, center))
-                .map(|region| region.action)
+            self.login_buttons.get(index)?.action
         }
 
         fn login_action_enabled(&self, action: LoginAction) -> bool {
             match action {
-                LoginAction::Login => {
-                    self.login_server_connected
-                        && !self.account_text.is_empty()
-                        && self.account_text.chars().count() <= 12
-                        && (5..=12).contains(&self.password_text.chars().count())
-                        && configured_machine_id().is_ok()
-                }
-                LoginAction::Guest => {
-                    self.login_server_connected && configured_machine_id().is_ok()
-                }
-                LoginAction::Quit | LoginAction::ToggleSaveId => true,
+                // Keep Login actionable even when the form needs correction. The
+                // submit path performs the credential checks and reports them;
+                // disabling the legacy button here leaves users with no feedback.
+                LoginAction::Login
+                | LoginAction::Guest
+                | LoginAction::Quit
+                | LoginAction::ToggleSaveId => true,
                 _ => true,
             }
         }
@@ -15449,6 +20907,9 @@ mod native {
                 return;
             }
             self.focused_login_button = focused;
+            if focused.is_none() {
+                self.reset_login_caret();
+            }
             self.refresh_field_texture(self.focused_field);
             self.refresh_login_button_visuals();
         }
@@ -15494,6 +20955,7 @@ mod native {
             match self.focused_field {
                 LoginField::Account => {
                     self.focused_field = LoginField::Password;
+                    self.reset_login_caret();
                     self.refresh_field_texture(LoginField::Account);
                     self.refresh_field_texture(LoginField::Password);
                 }
@@ -15549,7 +21011,10 @@ mod native {
             let pixels = rasterize_field(
                 &self.font,
                 &text,
-                self.focused_login_button.is_none() && self.focused_field == field,
+                self.login_caret_visible
+                    && self.show_login_fields
+                    && self.focused_login_button.is_none()
+                    && self.focused_field == field,
             );
             let Some(renderer) = self.renderer.as_ref() else {
                 return;
@@ -15562,6 +21027,11 @@ mod native {
                 }
                 Err(error) => eprintln!("OpenStory: could not update login text: {error}"),
             }
+        }
+
+        fn reset_login_caret(&mut self) {
+            self.login_caret_visible = true;
+            self.next_login_caret_toggle = Instant::now() + LOGIN_CARET_BLINK_INTERVAL;
         }
 
         fn insert_text(&mut self, input: &str) {
@@ -15580,6 +21050,7 @@ mod native {
                 }
                 target.push(character);
             }
+            self.reset_login_caret();
             self.refresh_field_texture(field);
             self.refresh_login_button_visuals();
         }
@@ -15595,6 +21066,7 @@ mod native {
                 LoginField::Password => &mut self.password_text,
             };
             target.pop();
+            self.reset_login_caret();
             self.refresh_field_texture(field);
             self.refresh_login_button_visuals();
         }
@@ -15627,6 +21099,7 @@ mod native {
             };
             self.focused_field = selected;
             self.focused_login_button = None;
+            self.reset_login_caret();
             self.refresh_field_texture(previous);
             self.refresh_field_texture(selected);
             self.refresh_login_button_visuals();
@@ -15660,6 +21133,12 @@ mod native {
                                 eprintln!("OpenStory: could not start login session: {error}");
                             }
                         }
+                        if let Some(packet) = self.pending_login_packet.take()
+                            && let Some(session) = self.session.as_ref()
+                            && let Err(error) = session.send_packet(packet)
+                        {
+                            eprintln!("OpenStory: could not send queued login request: {error}");
+                        }
                         if std::env::var("OPENSTORY_AUTO_LOGIN").as_deref() == Ok("1") {
                             if let Some(session) = self.session.as_ref() {
                                 if let Err(error) = configured_login_packet()
@@ -15674,8 +21153,31 @@ mod native {
                         self.handle_server_packet(&packet);
                     }
                     openstory_protocol::SessionEvent::Disconnected(message) => {
+                        self.pending_login_packet = None;
+                        self.session = None;
                         self.login_server_connected = false;
                         self.channel_connected = false;
+                        let fame_request_was_pending = self
+                            .character_info
+                            .as_mut()
+                            .is_some_and(|ui| std::mem::take(&mut ui.fame_pending));
+                        if fame_request_was_pending {
+                            self.push_chat_line(
+                                "[Fame] The connection closed before the server replied."
+                                    .to_owned(),
+                                [255, 105, 105],
+                            );
+                            self.refresh_character_info_texture();
+                        }
+                        if self.character_list.is_some()
+                            && self.character_selection_status.is_some()
+                            && self.current_field.is_none()
+                        {
+                            self.active_character = None;
+                            self.character_selection_status =
+                                Some("Connection closed. Click Start to retry.".to_owned());
+                            self.refresh_character_scene();
+                        }
                         self.refresh_login_button_visuals();
                         if let Some(window) = self.window.as_ref() {
                             window.request_redraw();
@@ -15689,11 +21191,13 @@ mod native {
 
         fn add_remote_character(&mut self, character: openstory_protocol::RemoteCharacterSpawn) {
             let pet_spawns = character.pets;
+            let item_effect_id = character.item_effect_id;
             if self
                 .active_character
                 .as_ref()
                 .is_some_and(|active| active.id == character.id)
             {
+                self.set_character_item_effect(character.id, item_effect_id);
                 for pet in pet_spawns {
                     self.spawn_pet(pet);
                 }
@@ -15705,6 +21209,15 @@ mod native {
                     eprintln!("OpenStory: could not load remote character appearance: {error}");
                     (Vec::new(), None)
                 });
+            let item_aura = match self.load_persistent_item_aura(item_effect_id) {
+                Ok(aura) => aura,
+                Err(error) => {
+                    eprintln!(
+                        "OpenStory: could not load character item aura {item_effect_id}: {error}"
+                    );
+                    None
+                }
+            };
             let desired_avatar_motion = avatar_motion_for_stance(character.stance);
             let active_avatar_frame = first_avatar_frame(&avatar_frames, desired_avatar_motion);
             let Some(scene) = self.map_scene.as_mut() else {
@@ -15737,6 +21250,7 @@ mod native {
                     invincibility_remaining: Duration::ZERO,
                     mini_room: character.mini_room,
                     face_expression: None,
+                    item_aura,
                     avatar_frames,
                     active_avatar_frame,
                     desired_avatar_motion,
@@ -15754,6 +21268,28 @@ mod native {
             }
         }
 
+        fn set_character_item_effect(&mut self, character_id: i32, item_id: i32) {
+            let item_aura = match self.load_persistent_item_aura(item_id) {
+                Ok(aura) => aura,
+                Err(error) => {
+                    eprintln!("OpenStory: could not load character item aura {item_id}: {error}");
+                    None
+                }
+            };
+            let Some(scene) = self.map_scene.as_mut() else {
+                return;
+            };
+            if self
+                .active_character
+                .as_ref()
+                .is_some_and(|character| character.id == character_id)
+            {
+                scene.local_item_aura = item_aura;
+            } else if let Some(player) = scene.remote_players.get_mut(&character_id) {
+                player.item_aura = item_aura;
+            }
+        }
+
         fn load_remote_avatar(
             &mut self,
             look: &openstory_protocol::CharacterLook,
@@ -15765,7 +21301,7 @@ mod native {
                 &self.character_archive,
                 look,
                 512.0,
-                384.0,
+                GAMEPLAY_CAMERA_CENTER_Y,
                 &mut self.remote_art_cache,
             )?;
             let name_label_index = sprites.len();
@@ -15774,7 +21310,7 @@ mod native {
                 &self.font,
                 name,
                 centered_text_x(&self.font, name, 15.0),
-                292.0,
+                GAMEPLAY_CAMERA_CENTER_Y - 92.0,
                 15.0,
             );
             let draws = self.upload_dynamic_sprites(sprites)?;
@@ -15825,7 +21361,7 @@ mod native {
                         &face_node,
                         &format!("character:{expression_path}/{frame_name}/face"),
                         512.0,
-                        384.0,
+                        GAMEPLAY_CAMERA_CENTER_Y,
                         255,
                         false,
                         &mut self.remote_art_cache,
@@ -15962,6 +21498,236 @@ mod native {
             Ok(draws)
         }
 
+        fn ensure_maple_tv_assets(&mut self) {
+            if self.maple_tv_assets_loaded || self.renderer.is_none() {
+                return;
+            }
+            self.maple_tv_assets_loaded = true;
+
+            let idle = self.load_maple_tv_bitmap("MapleTV.img/TVbasic/0");
+            match idle {
+                Ok((texture, pixels, _)) => {
+                    self.maple_tv_idle_texture = Some(texture);
+                    self.maple_tv_base_pixels = Some(pixels);
+                }
+                Err(error) => eprintln!("OpenStory: Maple TV screen art unavailable: {error}"),
+            }
+            let mut ad_animations = Vec::with_capacity(3);
+            for index in 0..3 {
+                let path = format!("MapleTV.img/TVmedia/{index}");
+                match self.load_maple_tv_animation(&path) {
+                    Ok(animation) => ad_animations.push(animation),
+                    Err(error) => {
+                        eprintln!("OpenStory: Maple TV ad art unavailable: {error}");
+                        ad_animations.push(MapleTvAnimation::empty());
+                    }
+                }
+            }
+            self.maple_tv_ad_animations = ad_animations;
+            self.maple_tv_ad_index = 0;
+
+            for (index, path) in ["MapleTV.img/TVchat1", "MapleTV.img/TVchat2"]
+                .into_iter()
+                .enumerate()
+            {
+                match self.load_maple_tv_animation(path) {
+                    Ok(animation) => self.maple_tv_theme_animations[index] = animation,
+                    Err(error) => eprintln!("OpenStory: Maple TV theme art unavailable: {error}"),
+                }
+            }
+        }
+
+        fn load_maple_tv_bitmap(
+            &self,
+            path: &str,
+        ) -> Result<(GpuTexture, Arc<[u8]>, (i16, i16)), String> {
+            let (width, height, pixels, origin) = read_ui_bitmap(&self.ui_archive, path)?;
+            let renderer = self
+                .renderer
+                .as_ref()
+                .ok_or_else(|| "graphics are not ready for Maple TV art".to_owned())?;
+            let texture = renderer
+                .upload_bgra(width, height, &pixels)
+                .map_err(|error| error.to_string())?;
+            Ok((texture, pixels, origin))
+        }
+
+        fn load_maple_tv_animation(&self, path: &str) -> Result<MapleTvAnimation, String> {
+            const MAX_FRAMES: usize = 128;
+            let source = self
+                .ui_archive
+                .root()
+                .resolve(path)
+                .map_err(|error| error.to_string())?
+                .ok_or_else(|| format!("Maple TV animation {path:?} was not found"))?;
+            let frame_nodes = numeric_children(&source)?;
+            if frame_nodes.len() > MAX_FRAMES {
+                return Err(format!(
+                    "Maple TV animation {path:?} has {} frames (limit {MAX_FRAMES})",
+                    frame_nodes.len()
+                ));
+            }
+            let mut frames = Vec::with_capacity(frame_nodes.len().max(1));
+            if frame_nodes.is_empty() {
+                let (texture, _, origin) = self.load_maple_tv_bitmap(path)?;
+                frames.push(MapleTvAnimationFrame {
+                    texture,
+                    delay: Duration::from_millis(100),
+                    origin,
+                });
+            } else {
+                for frame in frame_nodes {
+                    let name = frame.name().map_err(|error| error.to_string())?;
+                    let frame_path = format!("{path}/{name}");
+                    let (texture, _, origin) = self.load_maple_tv_bitmap(&frame_path)?;
+                    let delay = integer_property(&frame, "delay")
+                        .and_then(|delay| u64::try_from(delay).ok())
+                        .filter(|delay| *delay > 0)
+                        .unwrap_or(100);
+                    frames.push(MapleTvAnimationFrame {
+                        texture,
+                        delay: Duration::from_millis(delay),
+                        origin,
+                    });
+                }
+            }
+            if frames.is_empty() {
+                return Err(format!("Maple TV animation {path:?} has no bitmap frames"));
+            }
+            Ok(MapleTvAnimation {
+                frames,
+                frame_index: 0,
+                elapsed: Duration::ZERO,
+            })
+        }
+
+        fn advance_maple_tv_animations(&mut self, elapsed: Duration) {
+            if let Some(animation) = self.maple_tv_ad_animations.get_mut(self.maple_tv_ad_index)
+                && animation.advance_once(elapsed)
+            {
+                self.maple_tv_ad_index =
+                    (self.maple_tv_ad_index + 1) % self.maple_tv_ad_animations.len();
+            }
+            let theme_index =
+                self.maple_tv_broadcast.as_ref().and_then(|broadcast| {
+                    match broadcast.type_id % 4 {
+                        1 => Some(0),
+                        2 => Some(1),
+                        _ => None,
+                    }
+                });
+            if let Some(index) = theme_index {
+                self.maple_tv_theme_animations[index].advance_loop(elapsed);
+            }
+        }
+
+        fn start_maple_tv_broadcast(&mut self, broadcast: openstory_protocol::MapleTvBroadcast) {
+            self.ensure_maple_tv_assets();
+            let mut sprites = Vec::new();
+            let mut cache = MapArtCache::default();
+            let sender_start = sprites.len();
+            if let Err(error) = append_character_preview(
+                &mut sprites,
+                &self.character_archive,
+                &broadcast.sender_look,
+                30.0,
+                82.0,
+                0.65,
+                false,
+                &mut cache,
+            ) {
+                eprintln!("OpenStory: could not render Maple TV sender: {error}");
+                sprites.truncate(sender_start);
+            }
+            let sender_end = sprites.len();
+            let partner_start = sprites.len();
+            if let Some(partner) = broadcast.partner_look.as_ref()
+                && let Err(error) = append_character_preview(
+                    &mut sprites,
+                    &self.character_archive,
+                    partner,
+                    72.0,
+                    82.0,
+                    0.65,
+                    false,
+                    &mut cache,
+                )
+            {
+                eprintln!("OpenStory: could not render Maple TV partner: {error}");
+                sprites.truncate(partner_start);
+            }
+            let partner_end = sprites.len();
+            let avatar_draws = match self.upload_dynamic_sprites(sprites) {
+                Ok(draws) => draws,
+                Err(error) => {
+                    eprintln!("OpenStory: could not upload Maple TV avatars: {error}");
+                    Vec::new()
+                }
+            };
+            let sender_avatar_draws = avatar_draws
+                .get(sender_start..sender_end)
+                .unwrap_or_default()
+                .to_vec();
+            let partner_avatar_draws = avatar_draws
+                .get(partner_start..partner_end)
+                .unwrap_or_default()
+                .to_vec();
+
+            let themed = matches!(broadcast.type_id % 4, 1 | 2);
+            let color = if themed { [255, 255, 255] } else { [0, 0, 0] };
+            let text_left = if broadcast.partner_look.is_some() {
+                106
+            } else {
+                66
+            };
+            let pixels = rasterize_maple_tv_text(&self.font, &broadcast.lines, text_left, color);
+            self.maple_tv_text_texture = self.renderer.as_ref().and_then(|renderer| match renderer
+                .upload_bgra(240, 90, &pixels)
+            {
+                Ok(texture) => Some(texture),
+                Err(error) => {
+                    eprintln!("OpenStory: could not upload Maple TV message: {error}");
+                    None
+                }
+            });
+            self.maple_tv_broadcast = Some(MapleTvBroadcastRuntime {
+                type_id: broadcast.type_id,
+                has_partner: broadcast.partner_look.is_some(),
+                expires_at: Instant::now()
+                    + Duration::from_millis(u64::from(broadcast.remaining_ms.max(1))),
+                sender_avatar_draws,
+                partner_avatar_draws,
+            });
+            self.push_chat_line(
+                "[Maple TV] A world broadcast is on the air.".to_owned(),
+                [255, 222, 112],
+            );
+            if let Some(window) = self.window.as_ref() {
+                window.request_redraw();
+            }
+        }
+
+        fn stop_maple_tv_broadcast(&mut self) {
+            if self.maple_tv_broadcast.take().is_none() {
+                return;
+            }
+            self.maple_tv_text_texture = None;
+            self.push_chat_line("[Maple TV] Broadcast ended.".to_owned(), [255, 222, 112]);
+            if let Some(window) = self.window.as_ref() {
+                window.request_redraw();
+            }
+        }
+
+        fn expire_maple_tv_broadcast(&mut self, now: Instant) {
+            if self
+                .maple_tv_broadcast
+                .as_ref()
+                .is_some_and(|broadcast| now >= broadcast.expires_at)
+            {
+                self.stop_maple_tv_broadcast();
+            }
+        }
+
         fn load_projectile_frames(
             &mut self,
             item_id: i32,
@@ -16007,6 +21773,38 @@ mod native {
                 },
                 sit_offset_y: assets.sit_offset_y,
             })
+        }
+
+        fn load_persistent_item_aura(
+            &mut self,
+            item_id: i32,
+        ) -> Result<Option<PersistentItemAuraRuntime>, String> {
+            if item_id <= 0 {
+                return Ok(None);
+            }
+            let frames = if let Some(frames) = self.item_aura_frames_cache.get(&item_id) {
+                frames.clone()
+            } else {
+                let mut sprites = Vec::new();
+                let assets = append_item_aura_animations(
+                    &mut sprites,
+                    &self.effect_archive,
+                    item_id,
+                    &mut self.remote_art_cache,
+                )?;
+                let draws = self.upload_dynamic_sprites(sprites)?;
+                let frames = PersistentItemAuraFrames {
+                    back: projectile_frames_runtime(assets.back, &draws),
+                    front: projectile_frames_runtime(assets.front, &draws),
+                    split: assets.split,
+                };
+                if self.item_aura_frames_cache.len() >= 128 {
+                    self.item_aura_frames_cache.clear();
+                }
+                self.item_aura_frames_cache.insert(item_id, frames.clone());
+                frames
+            };
+            Ok(PersistentItemAuraRuntime::new(frames))
         }
 
         fn load_item_use_effect_frames(
@@ -16224,6 +22022,49 @@ mod native {
             Ok(animations)
         }
 
+        fn load_mob_disease_effect(
+            &mut self,
+            skill_type: u16,
+            skill_level: u16,
+        ) -> Result<Vec<CharacterSkillEffectAnimation>, String> {
+            let key = (skill_type, skill_level);
+            if let Some(animations) = self.mob_disease_effect_cache.get(&key) {
+                return Ok(animations.clone());
+            }
+            let path = format!("MobSkill.img/{skill_type}/level/{skill_level}/effect");
+            let source = self
+                .skill_archive
+                .root()
+                .resolve(&path)
+                .map_err(|error| error.to_string())?;
+            let animations = if let Some(source) = source {
+                let mut sprites = Vec::new();
+                let frames = append_summon_frames_from_node(
+                    &mut sprites,
+                    &source,
+                    &format!("mob-disease:{path}"),
+                    &mut self.remote_art_cache,
+                )?;
+                if frames.is_empty() {
+                    Vec::new()
+                } else {
+                    let draws = self.upload_dynamic_sprites(sprites)?;
+                    vec![CharacterSkillEffectAnimation {
+                        z: 0,
+                        frames: projectile_frames_runtime(frames, &draws),
+                    }]
+                }
+            } else {
+                Vec::new()
+            };
+            if self.mob_disease_effect_cache.len() >= 64 {
+                self.mob_disease_effect_cache.clear();
+            }
+            self.mob_disease_effect_cache
+                .insert(key, animations.clone());
+            Ok(animations)
+        }
+
         fn load_skill_hit_effects(
             &mut self,
             skill_id: i32,
@@ -16337,16 +22178,26 @@ mod native {
                 })
                 .collect();
             let x = f64::from(spawn.x);
-            let mut y = f64::from(spawn.y);
-            if let Some(scene) = self.map_scene.as_ref() {
-                if let Some(footholds) = scene.footholds.as_ref() {
-                    y = f64::from(footholds.y_below(spawn.x, spawn.y));
-                }
-            }
+            let (y, foothold_layer) = self
+                .map_scene
+                .as_ref()
+                .and_then(|scene| {
+                    let footholds = scene.footholds.as_ref()?;
+                    let foothold_layer = footholds
+                        .find_below(f64::from(spawn.x), f64::from(spawn.y))
+                        .and_then(|(foothold_id, _)| footholds.get(foothold_id))
+                        .map_or(0, |foothold| foothold.layer);
+                    Some((
+                        f64::from(footholds.y_below(spawn.x, spawn.y)),
+                        foothold_layer,
+                    ))
+                })
+                .unwrap_or((f64::from(spawn.y), 0));
             let reactor = MapReactorRuntime {
                 state: spawn.state,
                 x,
                 y,
+                foothold_layer,
                 width: f64::from(idle_rect.width),
                 height: f64::from(idle_rect.height),
                 hittable: assets.hittable,
@@ -16541,6 +22392,16 @@ mod native {
         }
 
         fn handle_character_info(&mut self, info: openstory_protocol::CharacterInfoReply) {
+            if self
+                .active_character
+                .as_ref()
+                .is_some_and(|character| character.id == info.character_id)
+            {
+                self.monster_book.set_cover(info.monster_book.cover_item_id);
+                if self.monster_book.open {
+                    self.refresh_monster_book_texture();
+                }
+            }
             let name = self
                 .map_scene
                 .as_ref()
@@ -16553,12 +22414,156 @@ mod native {
                         .map(|character| character.stats.name.clone())
                 })
                 .unwrap_or_else(|| format!("Character {}", info.character_id));
-            self.character_info = Some(CharacterInfoUi { name, info });
+            self.character_info = Some(CharacterInfoUi {
+                name,
+                info,
+                fame_pending: false,
+            });
             self.refresh_character_info_texture();
+        }
+
+        fn request_character_fame(&mut self, raise: bool) {
+            let Some((character_id, character_name, fame_pending)) = self
+                .character_info
+                .as_ref()
+                .map(|ui| (ui.info.character_id, ui.name.clone(), ui.fame_pending))
+            else {
+                return;
+            };
+            if fame_pending {
+                return;
+            }
+            let Some(player) = self.active_character.as_ref() else {
+                return;
+            };
+            if player.id == character_id {
+                self.push_chat_line(
+                    "[Fame] You can't raise or lower your own fame.".to_owned(),
+                    [255, 105, 105],
+                );
+                return;
+            }
+            if player.stats.level < 15 {
+                self.push_chat_line(
+                    "[Fame] You must be at least Level 15 to give fame.".to_owned(),
+                    [255, 105, 105],
+                );
+                return;
+            }
+            let Some(packet) = openstory_protocol::give_fame_packet(character_id, raise) else {
+                return;
+            };
+            let Some(session) = self.session.as_ref() else {
+                self.push_chat_line(
+                    "[Fame] The server connection is unavailable.".to_owned(),
+                    [255, 105, 105],
+                );
+                return;
+            };
+            if let Err(error) = session.send_packet(packet) {
+                eprintln!("OpenStoryRS: could not send fame request: {error}");
+                self.channel_connected = false;
+                self.push_chat_line(
+                    "[Fame] Could not send the request.".to_owned(),
+                    [255, 105, 105],
+                );
+                return;
+            }
+            if let Some(ui) = self.character_info.as_mut() {
+                ui.fame_pending = true;
+            }
+            self.push_chat_line(
+                format!(
+                    "[Fame] Requesting to {} {character_name}'s fame…",
+                    if raise { "raise" } else { "lower" }
+                ),
+                [255, 222, 112],
+            );
+            self.refresh_character_info_texture();
+        }
+
+        fn handle_fame_response(&mut self, response: openstory_protocol::FameResponse) {
+            let (message, color) = match response {
+                openstory_protocol::FameResponse::Success {
+                    character_name,
+                    raised,
+                    fame,
+                } => {
+                    if let Some(ui) = self.character_info.as_mut() {
+                        ui.fame_pending = false;
+                        if ui.name == character_name {
+                            ui.info.fame = fame;
+                        }
+                    }
+                    (
+                        format!(
+                            "You have {} {character_name}'s fame to {fame}.",
+                            if raised { "raised" } else { "lowered" }
+                        ),
+                        [245, 239, 223],
+                    )
+                }
+                openstory_protocol::FameResponse::CannotFameSelf => (
+                    "[Fame] You can't raise or lower your own fame.".to_owned(),
+                    [255, 105, 105],
+                ),
+                openstory_protocol::FameResponse::AlreadyFamed => (
+                    "[Fame] You have already given fame to this character today.".to_owned(),
+                    [255, 105, 105],
+                ),
+                openstory_protocol::FameResponse::TargetLevelTooLow => (
+                    "[Fame] That character's level is too low.".to_owned(),
+                    [255, 105, 105],
+                ),
+                openstory_protocol::FameResponse::PlayerLevelTooLow => (
+                    "[Fame] You must be at least Level 15 to give fame.".to_owned(),
+                    [255, 105, 105],
+                ),
+                openstory_protocol::FameResponse::Unknown(mode) => (
+                    format!("[Fame] The server rejected the request (result {mode})."),
+                    [255, 105, 105],
+                ),
+            };
+            if let Some(ui) = self.character_info.as_mut() {
+                ui.fame_pending = false;
+            }
+            self.push_chat_line(message, color);
+            if self.character_info.is_some() {
+                self.refresh_character_info_texture();
+            }
+        }
+
+        fn handle_skill_learn_item_result(
+            &mut self,
+            result: openstory_protocol::SkillLearnItemResult,
+        ) {
+            if result.marker != 1 {
+                eprintln!(
+                    "OpenStoryRS: skill-book result for character {} had marker {}, skill {}, max level {}, can-use {}",
+                    result.character_id,
+                    result.marker,
+                    result.skill_id,
+                    result.max_level,
+                    result.can_use
+                );
+            }
+            let (message, color) = if result.success {
+                (
+                    "[Skill Book] Used successfully!".to_owned(),
+                    [238, 232, 214],
+                )
+            } else {
+                ("[Skill Book] Usage failed.".to_owned(), [255, 105, 105])
+            };
+            self.push_chat_line(message, color);
         }
 
         fn spawn_npc(&mut self, spawn: openstory_protocol::MapNpcSpawn) {
             let flipped = !spawn.flipped;
+            let maple_tv_anchors = maple_tv_screen_anchors(&self.npc_archive, spawn.npc_id);
+            if maple_tv_anchors.is_some() {
+                self.ensure_maple_tv_assets();
+            }
             let mut sprites = Vec::new();
             let (assets, traits) = match append_npc_animations(
                 &mut sprites,
@@ -16598,17 +22603,32 @@ mod native {
                         .push(runtime_frame);
                 }
             }
+            let mut animation_order = animations.keys().cloned().collect::<Vec<_>>();
+            animation_order.sort_by(|left, right| left.state_name().cmp(right.state_name()));
             if let Some(scene) = self.map_scene.as_mut() {
                 let scripted = traits.scripted || scene.scriptable_npc_ids.contains(&spawn.npc_id);
+                let x = f64::from(spawn.x);
+                let y = f64::from(spawn.y);
+                let mut body = PhysicsBody::new(x, y);
+                body.foothold_id = spawn.foothold;
+                body.on_ground = true;
                 scene.npcs.insert(
                     spawn.object_id,
                     MapNpcRuntime {
                         npc_id: spawn.npc_id,
+                        maple_tv_anchors,
                         scripted,
-                        x: f64::from(spawn.x),
-                        y: f64::from(spawn.y),
+                        x,
+                        y,
+                        foothold: spawn.foothold,
+                        body,
                         flipped,
                         animations,
+                        animation_order,
+                        random_state: (spawn.npc_id as u32)
+                            .wrapping_mul(0x9E37_79B9)
+                            .wrapping_add(spawn.object_id as u32)
+                            .max(1),
                         motion: NpcMotion::Stand,
                         frame_index: 0,
                         elapsed: Duration::ZERO,
@@ -16824,6 +22844,7 @@ mod native {
 
         fn show_npc_dialogue(&mut self, dialogue: openstory_protocol::NpcDialogue) {
             self.gameplay_input = GameplayInput::default();
+            self.npc_dialogue_scroll_dragging = false;
             self.npc_shop = None;
             let player_name = self
                 .active_character
@@ -16849,12 +22870,18 @@ mod native {
                 .number_bounds
                 .map(|(default, _, _)| default.to_string())
                 .unwrap_or_default();
-            let (pixels, panel, buttons) = render_npc_dialogue(
+            let visible_text = if dialogue.message_type == 4 {
+                text.as_str()
+            } else {
+                ""
+            };
+            let (pixels, panel, buttons, text_max_scroll) = render_npc_dialogue(
                 &self.font,
                 dialogue.npc_id,
                 dialogue.speaker,
                 dialogue.message_type,
-                &text,
+                visible_text,
+                0,
                 &inline_icons,
                 &selections,
                 0,
@@ -16876,6 +22903,8 @@ mod native {
                         text: formatted_text,
                         visible_text_chars,
                         reveal_elapsed: Duration::ZERO,
+                        text_scroll: 0,
+                        text_max_scroll,
                         inline_icons,
                         selections,
                         selected_selection: 0,
@@ -17106,6 +23135,20 @@ mod native {
                 }
                 openstory_protocol::CashShopOperation::CouponRedeemed => {
                     state.notice = Some("Coupon redeemed successfully.".to_owned());
+                    state.coupon_code.clear();
+                    state.coupon_pending = false;
+                    state.coupon_focused = false;
+                    state.coupon_open = false;
+                }
+                openstory_protocol::CashShopOperation::CashShopMessage(code) => {
+                    state.coupon_pending = false;
+                    state.notice = Some(match code {
+                        0 => "Invalid coupon code.".to_owned(),
+                        1 => "This coupon has expired.".to_owned(),
+                        2 => "This coupon has already been used.".to_owned(),
+                        3 => "This coupon is for a different server.".to_owned(),
+                        code => format!("Coupon error (server code {code})."),
+                    });
                 }
                 openstory_protocol::CashShopOperation::Unknown(_) => {}
             }
@@ -17149,6 +23192,11 @@ mod native {
             };
             if product.sn <= 0 {
                 eprintln!("OpenStoryRS: blocked Cash Shop item without a commodity SN");
+                if let Some(state) = self.cash_shop.as_mut() {
+                    state.notice = Some("This item cannot be purchased right now.".to_owned());
+                    state.confirmation = false;
+                }
+                self.refresh_cash_shop_texture();
                 return;
             }
             if product.price > state.balances[currency_index] {
@@ -17175,6 +23223,61 @@ mod native {
                 Err(error) => {
                     eprintln!("OpenStoryRS: could not purchase Cash Shop item: {error}");
                     self.channel_connected = false;
+                }
+            }
+            self.refresh_cash_shop_texture();
+        }
+
+        fn redeem_cash_shop_coupon(&mut self) {
+            let Some(state) = self.cash_shop.as_ref() else {
+                return;
+            };
+            if state.coupon_pending {
+                return;
+            }
+            if !state.entered {
+                if let Some(state) = self.cash_shop.as_mut() {
+                    state.notice = Some("Waiting for the server to open the shop.".to_owned());
+                }
+                self.refresh_cash_shop_texture();
+                return;
+            }
+            let code = state.coupon_code.trim().to_ascii_uppercase();
+            if code.is_empty() {
+                if let Some(state) = self.cash_shop.as_mut() {
+                    state.notice = Some("Enter a coupon code first.".to_owned());
+                    state.coupon_focused = true;
+                }
+                self.refresh_cash_shop_texture();
+                return;
+            }
+            let packet = match openstory_protocol::cash_shop_coupon_packet(&code) {
+                Ok(packet) => packet,
+                Err(error) => {
+                    if let Some(state) = self.cash_shop.as_mut() {
+                        state.notice = Some(format!("Could not build coupon request: {error}"));
+                    }
+                    self.refresh_cash_shop_texture();
+                    return;
+                }
+            };
+            let Some(session) = self.session.as_ref() else {
+                return;
+            };
+            match session.send_packet(packet) {
+                Ok(()) => {
+                    if let Some(state) = self.cash_shop.as_mut() {
+                        state.coupon_pending = true;
+                        state.coupon_focused = false;
+                        state.notice = Some("Coupon sent; waiting for the server.".to_owned());
+                    }
+                }
+                Err(error) => {
+                    eprintln!("OpenStoryRS: could not redeem Cash Shop coupon: {error}");
+                    self.channel_connected = false;
+                    if let Some(state) = self.cash_shop.as_mut() {
+                        state.notice = Some("Could not send the coupon request.".to_owned());
+                    }
                 }
             }
             self.refresh_cash_shop_texture();
@@ -17212,133 +23315,208 @@ mod native {
         }
 
         fn click_cash_shop(&mut self, cursor: Point) {
-            if self.cash_shop.is_none() {
+            let Some(action) = self.cash_shop_hit_action(cursor) else {
                 return;
-            }
-            if (976.0..1012.0).contains(&cursor.x) && (10.0..48.0).contains(&cursor.y) {
-                self.exit_cash_shop();
-                self.refresh_cash_shop_texture();
-                return;
-            }
-            let mut purchase = false;
-            let mut withdrawal = None;
-            if let Some(state) = self.cash_shop.as_mut() {
+            };
+            let modal = self.cash_shop.as_ref().map_or(0, |state| {
                 if state.confirmation {
-                    if (390.0..510.0).contains(&cursor.x) && (420.0..462.0).contains(&cursor.y) {
-                        purchase = true;
+                    1
+                } else if state.coupon_open {
+                    2
+                } else {
+                    0
+                }
+            });
+            if modal == 1
+                && !matches!(
+                    action,
+                    cash_shop_ui::HitAction::ConfirmPurchase
+                        | cash_shop_ui::HitAction::CancelPurchase
+                )
+            {
+                return;
+            }
+            if modal == 2
+                && !matches!(
+                    action,
+                    cash_shop_ui::HitAction::CouponInput
+                        | cash_shop_ui::HitAction::CouponSubmit
+                        | cash_shop_ui::HitAction::CouponCancel
+                )
+            {
+                return;
+            }
+
+            let mut purchase = false;
+            let mut redeem_coupon = false;
+            let mut withdrawal = None;
+            match action {
+                cash_shop_ui::HitAction::Close => {
+                    self.exit_cash_shop();
+                    self.refresh_cash_shop_texture();
+                    return;
+                }
+                cash_shop_ui::HitAction::Help => {
+                    if let Some(state) = self.cash_shop.as_mut() {
+                        state.notice = Some("Cash Shop help is not available yet.".to_owned());
                     }
-                    if (514.0..634.0).contains(&cursor.x) && (420.0..462.0).contains(&cursor.y) {
-                        state.confirmation = false;
+                }
+                cash_shop_ui::HitAction::Coupon => {
+                    if let Some(state) = self.cash_shop.as_mut() {
+                        state.coupon_open = true;
+                        state.coupon_focused = !state.coupon_pending;
+                        state.search_focused = false;
                     }
-                    state.search_focused = false;
-                } else if (780.0..900.0).contains(&cursor.x) && (12.0..52.0).contains(&cursor.y) {
-                    state.view = CashShopView::Catalog;
-                    state.search_focused = false;
-                    state.page = 0;
-                } else if (902.0..1002.0).contains(&cursor.x) && (12.0..52.0).contains(&cursor.y) {
-                    state.view = CashShopView::Locker;
-                    state.search_focused = false;
-                    state.page = 0;
-                } else if state.view == CashShopView::Catalog
-                    && (204.0..654.0).contains(&cursor.x)
-                    && (12.0..52.0).contains(&cursor.y)
-                {
-                    state.search_focused = true;
-                } else if state.view == CashShopView::Catalog
-                    && (24.0..184.0).contains(&cursor.x)
-                    && (95.0..420.0).contains(&cursor.y)
-                {
-                    let category = ((cursor.y - 100.0) / 36.0).floor() as usize;
-                    if category < CASH_SHOP_CATEGORIES.len() {
+                }
+                cash_shop_ui::HitAction::Search => {
+                    if let Some(state) = self.cash_shop.as_mut() {
+                        state.coupon_focused = false;
+                        state.search_focused = true;
+                    }
+                }
+                cash_shop_ui::HitAction::CatalogView => {
+                    if let Some(state) = self.cash_shop.as_mut() {
+                        state.view = CashShopView::Catalog;
+                        state.page = 0;
+                        state.search_focused = false;
+                    }
+                }
+                cash_shop_ui::HitAction::LockerView => {
+                    if let Some(state) = self.cash_shop.as_mut() {
+                        state.view = CashShopView::Locker;
+                        state.page = 0;
+                        state.search_focused = false;
+                    }
+                }
+                cash_shop_ui::HitAction::Category(category) => {
+                    if let Some(state) = self.cash_shop.as_mut() {
                         state.category = category;
                         state.page = 0;
                         state.selected_sn = None;
+                        state.search_focused = false;
                     }
-                    state.search_focused = false;
-                } else if state.view == CashShopView::Catalog
-                    && (204.0..692.0).contains(&cursor.x)
-                    && (98.0..532.0).contains(&cursor.y)
-                {
-                    let visible = cash_filtered_indices(
-                        &self.cash_products,
-                        state,
-                        &self.string_archive,
-                        &mut self.item_name_cache,
-                    );
-                    let column = ((cursor.x - 204.0) / 162.0).floor() as usize;
-                    let row = ((cursor.y - 98.0) / 218.0).floor() as usize;
-                    if column < 3 && row < 2 {
-                        let product_index = state.page * CASH_SHOP_PAGE_SIZE + row * 3 + column;
-                        if let Some(product_index) = visible.get(product_index) {
-                            state.selected_sn = Some(self.cash_products[*product_index].sn);
+                }
+                cash_shop_ui::HitAction::Product(index) => {
+                    if let (Some(state), Some(product)) =
+                        (self.cash_shop.as_mut(), self.cash_products.get(index))
+                    {
+                        state.selected_sn = Some(product.sn);
+                        state.search_focused = false;
+                    }
+                }
+                cash_shop_ui::HitAction::BuyProduct(index) => {
+                    if let (Some(state), Some(product)) =
+                        (self.cash_shop.as_mut(), self.cash_products.get(index))
+                    {
+                        state.selected_sn = Some(product.sn);
+                        state.search_focused = false;
+                        if state.entered {
+                            state.confirmation = true;
+                        } else {
+                            state.notice =
+                                Some("Waiting for the server to open the shop.".to_owned());
                         }
                     }
-                    state.search_focused = false;
-                } else if state.view == CashShopView::Catalog
-                    && (754.0..976.0).contains(&cursor.x)
-                    && (420.0..465.0).contains(&cursor.y)
-                {
-                    if state.entered && state.selected_sn.is_some() {
-                        state.confirmation = true;
-                    } else if !state.entered {
-                        state.notice = Some("Waiting for the server to open the shop.".to_owned());
+                }
+                cash_shop_ui::HitAction::BuySelected => {
+                    if let Some(state) = self.cash_shop.as_mut() {
+                        if state.entered && state.selected_sn.is_some() {
+                            state.confirmation = true;
+                        } else {
+                            state.notice = Some("Choose an available item first.".to_owned());
+                        }
+                        state.search_focused = false;
                     }
-                    state.search_focused = false;
-                } else if state.view == CashShopView::Catalog
-                    && (714.0..1000.0).contains(&cursor.x)
-                    && (478.0..522.0).contains(&cursor.y)
-                {
-                    state.currency = (((cursor.x - 714.0) / 95.0).floor() as usize).min(2);
-                    state.search_focused = false;
-                } else if state.view == CashShopView::Catalog
-                    && (204.0..692.0).contains(&cursor.x)
-                    && (560.0..604.0).contains(&cursor.y)
-                {
-                    if cursor.x < 284.0 {
+                }
+                cash_shop_ui::HitAction::Currency(currency) => {
+                    if let Some(state) = self.cash_shop.as_mut() {
+                        state.currency = currency.min(2);
+                        state.search_focused = false;
+                    }
+                }
+                cash_shop_ui::HitAction::PreviousPage => {
+                    if let Some(state) = self.cash_shop.as_mut() {
                         state.page = state.page.saturating_sub(1);
-                    } else if cursor.x > 610.0 {
-                        let visible = cash_filtered_indices(
-                            &self.cash_products,
-                            state,
-                            &self.string_archive,
-                            &mut self.item_name_cache,
-                        );
-                        let max_page = visible.len().saturating_sub(1) / CASH_SHOP_PAGE_SIZE;
-                        state.page = (state.page + 1).min(max_page);
+                        state.search_focused = false;
                     }
-                    state.search_focused = false;
-                } else if state.view == CashShopView::Locker
-                    && (204.0..692.0).contains(&cursor.x)
-                    && (560.0..604.0).contains(&cursor.y)
-                {
-                    if cursor.x < 284.0 {
-                        state.page = state.page.saturating_sub(1);
-                    } else if cursor.x > 610.0 {
-                        let max_page = state.locker.len().saturating_sub(1) / 8;
+                }
+                cash_shop_ui::HitAction::NextPage => {
+                    let max_page = self.cash_shop_max_page();
+                    if let Some(state) = self.cash_shop.as_mut() {
                         state.page = (state.page + 1).min(max_page);
+                        state.search_focused = false;
                     }
-                    state.search_focused = false;
-                } else if state.view == CashShopView::Locker
-                    && (204.0..986.0).contains(&cursor.x)
-                    && (92.0..558.0).contains(&cursor.y)
-                    && cursor.x >= 862.0
-                {
-                    let row = state.page * 8 + ((cursor.y - 92.0) / 58.0).floor() as usize;
-                    let mut items = state.locker.clone();
-                    items.sort_by_key(|item| item.instance_id);
-                    withdrawal = items.get(row).map(|item| item.instance_id);
-                    state.search_focused = false;
-                } else {
-                    state.search_focused = false;
+                }
+                cash_shop_ui::HitAction::LockerItem(index) => {
+                    withdrawal = self.cash_shop.as_ref().and_then(|state| {
+                        let mut items = state.locker.iter().collect::<Vec<_>>();
+                        items.sort_by_key(|item| item.instance_id);
+                        items.get(index).map(|item| item.instance_id)
+                    });
+                    if let Some(state) = self.cash_shop.as_mut() {
+                        state.search_focused = false;
+                    }
+                }
+                cash_shop_ui::HitAction::CouponInput => {
+                    if let Some(state) = self.cash_shop.as_mut() {
+                        state.coupon_focused = !state.coupon_pending;
+                    }
+                }
+                cash_shop_ui::HitAction::CouponSubmit => {
+                    if let Some(state) = self.cash_shop.as_mut() {
+                        state.coupon_focused = false;
+                    }
+                    redeem_coupon = true;
+                }
+                cash_shop_ui::HitAction::CouponCancel => {
+                    if let Some(state) = self.cash_shop.as_mut() {
+                        state.coupon_open = false;
+                        state.coupon_focused = false;
+                    }
+                }
+                cash_shop_ui::HitAction::ConfirmPurchase => {
+                    purchase = true;
+                }
+                cash_shop_ui::HitAction::CancelPurchase => {
+                    if let Some(state) = self.cash_shop.as_mut() {
+                        state.confirmation = false;
+                    }
                 }
             }
             self.refresh_cash_shop_texture();
             if purchase {
                 self.buy_selected_cash_item();
             }
+            if redeem_coupon {
+                self.redeem_cash_shop_coupon();
+            }
             if let Some(instance_id) = withdrawal {
                 self.withdraw_cash_shop_item(instance_id);
             }
+        }
+
+        fn cash_shop_hit_action(&mut self, cursor: Point) -> Option<cash_shop_ui::HitAction> {
+            self.cash_shop.as_ref()?;
+            self.cash_shop_hit_regions
+                .iter()
+                .rev()
+                .find(|region| region.bounds.contains(cursor.x, cursor.y))
+                .map(|region| region.action)
+        }
+
+        fn cash_shop_max_page(&mut self) -> usize {
+            let Some(state) = self.cash_shop.as_ref() else {
+                return 0;
+            };
+            cash_filtered_indices(
+                &self.cash_products,
+                state,
+                &self.string_archive,
+                &mut self.item_name_cache,
+            )
+            .len()
+            .saturating_sub(1)
+                / cash_shop_ui::CATALOG_PAGE_SIZE
         }
 
         fn refresh_npc_shop(&mut self) {
@@ -17552,6 +23730,7 @@ mod native {
                 self.refresh_npc_shop();
                 return;
             }
+            let mut unsupported_currency = false;
             let Some(packet) = (|| match mode {
                 NpcShopMode::Buy => {
                     let item = shop.state.items.get(selected)?;
@@ -17559,7 +23738,7 @@ mod native {
                         return None;
                     }
                     if item.price <= 0 && item.pitch <= 0 {
-                        eprintln!("OpenStory: this item requires an unsupported special currency");
+                        unsupported_currency = true;
                         return None;
                     }
                     let maximum = if item.buyable == 0 {
@@ -17600,6 +23779,11 @@ mod native {
                     .ok()
                 }
             })() else {
+                if unsupported_currency {
+                    self.show_npc_shop_notice(
+                        "This item requires a special currency that's not supported.",
+                    );
+                }
                 return;
             };
             let pending = if mode == NpcShopMode::Buy {
@@ -17915,17 +24099,19 @@ mod native {
             let selected_selection = ui.selected_selection;
             let first_visible_selection = ui.first_visible_selection;
             let input = ui.input.clone();
+            let text_scroll = ui.text_scroll;
             let text = if state.message_type == 4 {
                 parse_npc_selections(&dialogue_text).0
             } else {
                 dialogue_text.chars().take(ui.visible_text_chars).collect()
             };
-            let (pixels, panel, buttons) = render_npc_dialogue(
+            let (pixels, panel, buttons, text_max_scroll) = render_npc_dialogue(
                 &self.font,
                 state.npc_id,
                 state.speaker,
                 state.message_type,
                 &text,
+                text_scroll,
                 &inline_icons,
                 &selections,
                 selected_selection,
@@ -17938,6 +24124,8 @@ mod native {
             match renderer.upload_bgra(600, 260, &pixels) {
                 Ok(texture) => {
                     if let Some(ui) = self.npc_dialogue.as_mut() {
+                        ui.text_max_scroll = text_max_scroll;
+                        ui.text_scroll = ui.text_scroll.min(ui.text_max_scroll);
                         ui.texture = texture;
                         ui.panel = panel;
                         ui.buttons = buttons;
@@ -17995,12 +24183,17 @@ mod native {
                         }
                     }
                     self.npc_dialogue = None;
+                    self.npc_dialogue_scroll_dragging = false;
                 }
                 Err(error) => eprintln!("OpenStory: invalid NPC dialogue response: {error}"),
             }
         }
 
         fn click_npc_dialogue(&mut self, cursor: Point) {
+            if self.set_npc_dialogue_scroll_from_cursor(cursor) {
+                self.npc_dialogue_scroll_dragging = true;
+                return;
+            }
             if self.fast_forward_npc_dialogue_text() {
                 return;
             }
@@ -18012,6 +24205,57 @@ mod native {
             });
             if let Some(action) = action {
                 self.send_npc_dialogue_action(action);
+            }
+        }
+
+        fn set_npc_dialogue_scroll_from_cursor(&mut self, cursor: Point) -> bool {
+            let scroll_to = self.npc_dialogue.as_ref().and_then(|dialogue| {
+                if dialogue.text_max_scroll == 0
+                    || !(dialogue.panel.x + 578.0..dialogue.panel.x + 592.0).contains(&cursor.x)
+                    || !(dialogue.panel.y + 50.0
+                        ..dialogue.panel.y
+                            + 50.0
+                            + npc_dialogue_text_view_height(dialogue.state.message_type) as f32)
+                        .contains(&cursor.y)
+                {
+                    return None;
+                }
+                let fraction = ((cursor.y - (dialogue.panel.y + 50.0))
+                    / npc_dialogue_text_view_height(dialogue.state.message_type) as f32)
+                    .clamp(0.0, 1.0);
+                Some((fraction * dialogue.text_max_scroll as f32).round() as usize)
+            });
+            if let Some(scroll) = scroll_to {
+                if let Some(dialogue) = self.npc_dialogue.as_mut() {
+                    dialogue.text_scroll = scroll;
+                }
+                self.rebuild_npc_dialogue();
+                return true;
+            }
+            false
+        }
+
+        fn scroll_npc_dialogue_text(&mut self, direction: isize) {
+            let Some(dialogue) = self.npc_dialogue.as_mut() else {
+                return;
+            };
+            if dialogue.state.message_type == 4 || dialogue.text_max_scroll == 0 {
+                return;
+            }
+            let delta = direction
+                .unsigned_abs()
+                .saturating_mul(NPC_DIALOGUE_SCROLL_STEP);
+            let next = if direction < 0 {
+                dialogue.text_scroll.saturating_sub(delta)
+            } else {
+                dialogue
+                    .text_scroll
+                    .saturating_add(delta)
+                    .min(dialogue.text_max_scroll)
+            };
+            if next != dialogue.text_scroll {
+                dialogue.text_scroll = next;
+                self.rebuild_npc_dialogue();
             }
         }
 
@@ -18236,6 +24480,7 @@ mod native {
                 hit_effects: Vec::with_capacity(2),
                 dying: false,
                 fade_remaining: None,
+                fade_in_remaining: spawn.is_new_spawn.then_some(MOB_FADE_DURATION),
                 hp_percent: None,
                 hp_bar_remaining: Duration::ZERO,
                 statuses: HashSet::new(),
@@ -18593,6 +24838,16 @@ mod native {
                     return;
                 }
             };
+            let item_effect_id = equipped_ring_effect_id(&update.look, &self.effect_archive);
+            let item_aura = match self.load_persistent_item_aura(item_effect_id) {
+                Ok(aura) => aura,
+                Err(error) => {
+                    eprintln!(
+                        "OpenStory: could not refresh remote item aura {item_effect_id}: {error}"
+                    );
+                    None
+                }
+            };
             if let Some(player) = self
                 .map_scene
                 .as_mut()
@@ -18600,6 +24855,7 @@ mod native {
             {
                 player.look = update.look;
                 player.face_expression = None;
+                player.item_aura = item_aura;
                 player.avatar_frames = avatar_frames;
                 player.active_avatar_frame =
                     first_avatar_frame(&player.avatar_frames, player.desired_avatar_motion);
@@ -18621,16 +24877,202 @@ mod native {
             }
         }
 
+        fn load_field_effect_frames(
+            &mut self,
+            path: &str,
+        ) -> Result<Vec<ProjectileFrameRuntime>, String> {
+            let archive_path = if let Some(path) = path.strip_prefix("Map/") {
+                path.to_owned()
+            } else if path.starts_with("Effect.img/") {
+                path.to_owned()
+            } else {
+                format!("Effect.img/{path}")
+            };
+            if let Some(frames) = self.field_effect_cache.get(&archive_path) {
+                return Ok(frames.clone());
+            }
+            let Some(source) = self
+                .map_archive
+                .root()
+                .resolve(&archive_path)
+                .map_err(|error| error.to_string())?
+            else {
+                return Ok(Vec::new());
+            };
+            let mut sprites = Vec::new();
+            let assets = append_animation_frames_from_node_at(
+                &mut sprites,
+                &source,
+                &format!("field-effect:{archive_path}"),
+                512.0,
+                250.0,
+                &mut self.remote_art_cache,
+            )?;
+            let frames = if assets.is_empty() {
+                Vec::new()
+            } else {
+                let draws = self.upload_dynamic_sprites(sprites)?;
+                projectile_frames_runtime(assets, &draws)
+            };
+            if self.field_effect_cache.len() >= 64 {
+                self.field_effect_cache.clear();
+            }
+            self.field_effect_cache.insert(archive_path, frames.clone());
+            Ok(frames)
+        }
+
+        fn apply_field_effect(&mut self, effect: openstory_protocol::FieldEffect) {
+            match effect {
+                openstory_protocol::FieldEffect::ScreenAnimation(path) => {
+                    let frames = match self.load_field_effect_frames(&path) {
+                        Ok(frames) => frames,
+                        Err(error) => {
+                            eprintln!("OpenStory: could not load field effect {path:?}: {error}");
+                            Vec::new()
+                        }
+                    };
+                    if let Some(scene) = self.map_scene.as_mut() {
+                        scene.show_screen_effect(frames);
+                    }
+                }
+                openstory_protocol::FieldEffect::Sound(path) => self
+                    .audio
+                    .play_field_effect_sound(&self.sound_archive, &path),
+                openstory_protocol::FieldEffect::Music(path) => {
+                    self.audio.play_music(&self.sound_archive, &path);
+                }
+            }
+        }
+
+        fn apply_blow_weather(&mut self, update: openstory_protocol::BlowWeatherUpdate) {
+            if update.kind == 0 || update.item_id <= 0 {
+                self.weather_overlay.clear();
+                self.weather_texture = None;
+                if let Some(window) = self.window.as_ref() {
+                    window.request_redraw();
+                }
+                return;
+            }
+
+            let loaded = (|| -> Result<(String, GpuTexture), String> {
+                let item_info_path = format!("Cash/0512.img/0{}/info", update.item_id);
+                let item_info = self
+                    .item_archive
+                    .root()
+                    .resolve(&item_info_path)
+                    .map_err(|error| error.to_string())?
+                    .ok_or_else(|| format!("cash weather item {} is missing", update.item_id))?;
+                let authored_path = string_property(&item_info, "path")
+                    .filter(|path| !path.trim().is_empty())
+                    .ok_or_else(|| {
+                        format!("cash weather item {} has no map path", update.item_id)
+                    })?;
+                let archive_path = authored_path.strip_prefix("Map/").unwrap_or(&authored_path);
+                let weather_node = self
+                    .map_archive
+                    .root()
+                    .resolve(archive_path)
+                    .map_err(|error| error.to_string())?
+                    .ok_or_else(|| format!("weather asset {archive_path:?} is missing"))?;
+                let frame_node = weather_node
+                    .child("0")
+                    .map_err(|error| error.to_string())?
+                    .unwrap_or(weather_node);
+                let bitmap = frame_node
+                    .bitmap()
+                    .map_err(|error| error.to_string())?
+                    .ok_or_else(|| format!("weather asset {archive_path:?} is not an image"))?;
+                let width = u32::from(bitmap.width());
+                let height = u32::from(bitmap.height());
+                let pixels = bitmap
+                    .decode_bgra_shared()
+                    .map_err(|error| error.to_string())?;
+                let renderer = self
+                    .renderer
+                    .as_ref()
+                    .ok_or_else(|| "graphics are not ready for weather assets".to_owned())?;
+                let texture = renderer
+                    .upload_bgra(width, height, &pixels)
+                    .map_err(|error| error.to_string())?;
+                Ok((authored_path, texture))
+            })();
+
+            match loaded {
+                Ok((path, texture)) => {
+                    self.weather_overlay.start(&path, 1024, 768);
+                    self.weather_texture = Some(texture);
+                    if !update.message.trim().is_empty() {
+                        self.set_scrolling_notice(update.message.trim());
+                    }
+                }
+                Err(error) => {
+                    eprintln!("OpenStoryRS: could not load weather: {error}");
+                    self.weather_overlay.clear();
+                    self.weather_texture = None;
+                }
+            }
+            if let Some(window) = self.window.as_ref() {
+                window.request_redraw();
+            }
+        }
+
+        fn set_scrolling_notice(&mut self, message: &str) {
+            if message.is_empty() {
+                return;
+            }
+            let font_size = 14.0;
+            let width = measured_text_width(&self.font, message, font_size)
+                .ceil()
+                .clamp(1.0, 8190.0) as u32
+                + 2;
+            let pixels = rasterize_label(&self.font, message, font_size, width, 24);
+            let Some(renderer) = self.renderer.as_ref() else {
+                return;
+            };
+            match renderer.upload_bgra(width, 24, &pixels) {
+                Ok(texture) => {
+                    self.scrolling_notice = Some(ScrollingNoticeState {
+                        texture,
+                        width: width as f32,
+                        x: 1024.0,
+                    });
+                    if let Some(window) = self.window.as_ref() {
+                        window.request_redraw();
+                    }
+                }
+                Err(error) => eprintln!("OpenStoryRS: could not create scrolling notice: {error}"),
+            }
+        }
+
+        fn advance_scrolling_notice(&mut self, updates: u8) {
+            if updates == 0 {
+                return;
+            }
+            if let Some(notice) = self.scrolling_notice.as_mut() {
+                notice.x -= 0.5 * f32::from(updates);
+                if notice.x < -notice.width {
+                    notice.x = 1024.0;
+                }
+            }
+        }
+
         fn load_foreign_character_effect(
             &mut self,
             effect_type: i8,
+            variant: i8,
         ) -> Result<Vec<CharacterSkillEffectAnimation>, String> {
-            if let Some(animations) = self.character_effect_cache.get(&effect_type) {
+            let cache_key = (effect_type, variant);
+            if let Some(animations) = self.character_effect_cache.get(&cache_key) {
                 return Ok(animations.clone());
             }
-            let effect_name = match effect_type {
-                0 => "LevelUp",
-                13 => "MonsterBook/cardGet",
+            let effect_name = match (effect_type, variant) {
+                (0, _) => "LevelUp",
+                (6 | 8, _) => "JobChanged",
+                (7 | 9, _) => "QuestClear",
+                (13, _) => "MonsterBook/cardGet",
+                (15, _) => "Enchant/Success",
+                (16, 0) => "ItemMake/Success",
+                (16, _) => "ItemMake/Failure",
                 _ => return Ok(Vec::new()),
             };
             let path = format!("BasicEff.img/{effect_name}");
@@ -18667,7 +25109,7 @@ mod native {
                 self.character_effect_cache.clear();
             }
             self.character_effect_cache
-                .insert(effect_type, animations.clone());
+                .insert(cache_key, animations.clone());
             Ok(animations)
         }
 
@@ -18690,16 +25132,27 @@ mod native {
             } else {
                 return;
             };
-            let animations = match self.load_foreign_character_effect(effect.effect_type) {
-                Ok(animations) => animations,
-                Err(error) => {
-                    eprintln!(
-                        "OpenStory: could not load character effect {}: {error}",
-                        effect.effect_type
-                    );
-                    Vec::new()
+            if let Some(amount) = effect.heal_amount {
+                if let Some(scene) = self.map_scene.as_mut() {
+                    if let Some(character_id) = character_id {
+                        scene.show_remote_player_heal(character_id, i32::from(amount));
+                    } else {
+                        scene.show_local_player_heal(i32::from(amount));
+                    }
                 }
-            };
+                return;
+            }
+            let animations =
+                match self.load_foreign_character_effect(effect.effect_type, effect.variant) {
+                    Ok(animations) => animations,
+                    Err(error) => {
+                        eprintln!(
+                            "OpenStory: could not load character effect {}: {error}",
+                            effect.effect_type
+                        );
+                        Vec::new()
+                    }
+                };
             if let Some(scene) = self.map_scene.as_mut() {
                 scene.show_character_skill_effect(character_id, animations, 1.0);
             }
@@ -18710,7 +25163,7 @@ mod native {
             character_id: i32,
             skill_id: i32,
             level: i8,
-            speed: u8,
+            speed: i8,
             direction: i8,
         ) {
             let Some((look, character_level, current_speed, position)) = self
@@ -18778,7 +25231,7 @@ mod native {
             if direction >= 0 {
                 player.facing_left = direction == 0;
             }
-            if speed > 0 {
+            if speed != 0 {
                 player.attack_speed = speed;
             }
             if let Some(stance) = stance {
@@ -18788,9 +25241,122 @@ mod native {
                     first_avatar_frame(&player.avatar_frames, player.desired_avatar_motion);
                 player.avatar_elapsed = Duration::ZERO;
             }
-            let speed = if speed > 0 { speed } else { current_speed };
+            let speed = if speed != 0 { speed } else { current_speed };
             let speed_factor = (1.7 - f32::from(speed) / 10.0).clamp(0.2, 3.0);
             scene.show_character_skill_effect(Some(character_id), animations, speed_factor);
+        }
+
+        fn handle_open_ui_request(&mut self, request: openstory_protocol::OpenUiRequest) {
+            if self.current_field.is_none() {
+                return;
+            }
+            match request {
+                openstory_protocol::OpenUiRequest::Inventory => {
+                    self.show_inventory = true;
+                    self.inventory_tab = openstory_protocol::InventoryType::Equip;
+                    self.inventory_scroll_row = 0;
+                    self.show_status = false;
+                    self.show_pet_equipment = false;
+                    self.show_skill_book = false;
+                    self.show_quest_log = false;
+                    self.inventory_drag_source = None;
+                    self.inventory_hover_slot = None;
+                    self.pending_scroll_slot = None;
+                    self.update_inventory_hover();
+                    self.refresh_inventory_texture();
+                }
+                openstory_protocol::OpenUiRequest::Stats => {
+                    if !self.show_status {
+                        self.open_status_window();
+                    }
+                }
+                openstory_protocol::OpenUiRequest::SkillBook => {
+                    if !self.show_skill_book {
+                        self.show_skill_book = true;
+                        self.show_inventory = false;
+                        self.show_status = false;
+                        self.show_pet_equipment = false;
+                        self.show_quest_log = false;
+                        self.inventory_hover_slot = None;
+                        self.inventory_drag_source = None;
+                        self.pending_scroll_slot = None;
+                        self.skill_book_tab = 0;
+                        self.skill_book_scroll_row = 0;
+                        self.refresh_skill_book_entries();
+                        self.refresh_skill_book_texture();
+                    }
+                }
+                openstory_protocol::OpenUiRequest::BuddyList => {
+                    self.show_buddy_panel = true;
+                    self.show_party_panel = false;
+                    self.show_guild_panel = false;
+                    self.show_alliance_panel = false;
+                    self.refresh_buddy_texture();
+                }
+                openstory_protocol::OpenUiRequest::Messenger => self.open_messenger(),
+                openstory_protocol::OpenUiRequest::MonsterBook => {
+                    self.show_inventory = false;
+                    self.show_status = false;
+                    self.show_pet_equipment = false;
+                    self.show_skill_book = false;
+                    self.show_quest_log = false;
+                    self.inventory_drag_source = None;
+                    self.inventory_hover_slot = None;
+                    self.pending_scroll_slot = None;
+                    self.character_info = None;
+                    self.world_map.open = false;
+                    self.world_map.texture = None;
+                    self.party_search = None;
+                    self.party_search_texture = None;
+                    self.party_search_actions.clear();
+                    self.monster_book.open = true;
+                    self.monster_book.page = 0;
+                    self.monster_book.category = None;
+                    self.monster_book.clear_selected_card();
+                    self.monster_book.drop_scroll = 0;
+                    self.monster_book.search_open = false;
+                    self.monster_book.search_query.clear();
+                    self.monster_book.search_notice = None;
+                    self.monster_book.set_effect_open = false;
+                    self.monster_book.set_scroll = 0;
+                    self.monster_book.selected_set = None;
+                    self.refresh_monster_book_texture();
+                }
+                openstory_protocol::OpenUiRequest::WorldMap => self.open_world_map(),
+                openstory_protocol::OpenUiRequest::PartySearch => self.open_party_search(),
+                openstory_protocol::OpenUiRequest::QuestLog => {
+                    if !self.show_quest_log {
+                        self.show_quest_log = true;
+                        self.show_inventory = false;
+                        self.show_status = false;
+                        self.show_pet_equipment = false;
+                        self.show_skill_book = false;
+                        self.inventory_hover_slot = None;
+                        self.inventory_drag_source = None;
+                        self.pending_scroll_slot = None;
+                        self.quest_log_tab = QuestLogTab::Active;
+                        self.quest_log_scroll = 0;
+                        self.quest_log_selected = 0;
+                        self.quest_reward_selected = 0;
+                        self.quest_forfeit_confirmation = None;
+                        self.refresh_quest_log_texture();
+                    }
+                }
+                openstory_protocol::OpenUiRequest::KeyConfig => {
+                    if !self.show_key_config {
+                        self.toggle_key_config();
+                    }
+                }
+                unsupported => {
+                    self.push_chat_line(
+                        format!("[Notice] Server requested an unsupported UI: {unsupported:?}."),
+                        [255, 215, 128],
+                    );
+                }
+            }
+            if let Some(window) = self.window.as_ref() {
+                window.request_redraw();
+            }
         }
 
         fn handle_server_packet(&mut self, packet: &[u8]) {
@@ -18799,7 +25365,104 @@ mod native {
                 return;
             }
             let opcode = u16::from_le_bytes([packet[0], packet[1]]);
+            if matches!(
+                opcode,
+                openstory_protocol::OPCODE_FAMILY_CHART_RESULT
+                    | openstory_protocol::OPCODE_FAMILY_INFO
+                    | openstory_protocol::OPCODE_FAMILY_RESULT
+                    | openstory_protocol::OPCODE_FAMILY_JOIN_REQUEST
+                    | openstory_protocol::OPCODE_FAMILY_JOIN_REQUEST_RESULT
+                    | openstory_protocol::OPCODE_FAMILY_JOIN_ACCEPTED
+                    | openstory_protocol::OPCODE_FAMILY_PRIVILEGE_LIST
+                    | openstory_protocol::OPCODE_FAMILY_REP_GAIN
+                    | openstory_protocol::OPCODE_FAMILY_NOTIFY_LOGIN
+                    | openstory_protocol::OPCODE_FAMILY_SUMMON_REQUEST
+            ) {
+                match openstory_protocol::parse_family_packet(packet) {
+                    Ok(Some(event)) => self.apply_family_event(event),
+                    Ok(None) => {}
+                    Err(error) => eprintln!("OpenStoryRS: invalid Family packet: {error}"),
+                }
+                return;
+            }
             match opcode {
+                openstory_protocol::OPCODE_MESSENGER => {
+                    match openstory_protocol::parse_messenger(packet) {
+                        Ok(event) => self.apply_messenger_event(event),
+                        Err(error) => eprintln!("OpenStoryRS: invalid Messenger packet: {error}"),
+                    }
+                }
+                openstory_protocol::OPCODE_OPEN_UI => {
+                    match openstory_protocol::parse_open_ui(packet) {
+                        Ok(request) => self.handle_open_ui_request(request),
+                        Err(error) => eprintln!("OpenStoryRS: invalid OPEN_UI packet: {error}"),
+                    }
+                }
+                openstory_protocol::OPCODE_KEYMAP => {
+                    match openstory_protocol::parse_keymap(packet) {
+                        Ok(keymap) => {
+                            self.server_keymap = Some(keymap.bindings);
+                            self.key_config_actions_dirty = true;
+                            self.refresh_key_config_texture();
+                            self.refresh_quickslots_texture();
+                        }
+                        Err(error) => eprintln!("OpenStoryRS: invalid KEYMAP packet: {error}"),
+                    }
+                }
+                openstory_protocol::OPCODE_SKILL_MACROS => {
+                    match openstory_protocol::parse_skill_macros(packet) {
+                        Ok(server_macros) => {
+                            let mut macros = vec![
+                                openstory_protocol::SkillMacro::default();
+                                openstory_protocol::SKILL_MACRO_COUNT
+                            ];
+                            for (index, macro_entry) in server_macros.into_iter().enumerate() {
+                                macros[index] = macro_entry;
+                            }
+                            self.skill_macros = macros;
+                            self.key_config_actions_dirty = true;
+                            self.refresh_key_config_texture();
+                            self.refresh_quickslots_texture();
+                        }
+                        Err(error) => {
+                            eprintln!("OpenStoryRS: invalid skill-macro packet: {error}")
+                        }
+                    }
+                }
+                openstory_protocol::OPCODE_QUICKSLOT_INIT => {
+                    match openstory_protocol::parse_quickslot_init(packet) {
+                        Ok(init) => {
+                            if let Some(keys) = init.keys
+                                && !self.quickslot_keys_customized
+                            {
+                                self.quickslot_keys = keys;
+                                self.refresh_key_config_texture();
+                            }
+                            self.refresh_key_config_texture();
+                            self.refresh_quickslots_texture();
+                        }
+                        Err(error) => {
+                            eprintln!("OpenStoryRS: invalid QUICKSLOT_INIT packet: {error}")
+                        }
+                    }
+                }
+                openstory_protocol::OPCODE_SEND_TV => {
+                    match openstory_protocol::parse_send_tv(packet) {
+                        Ok(broadcast) => self.start_maple_tv_broadcast(broadcast),
+                        Err(error) => eprintln!("OpenStoryRS: invalid SEND_TV packet: {error}"),
+                    }
+                }
+                openstory_protocol::OPCODE_REMOVE_TV => {
+                    match openstory_protocol::parse_remove_tv(packet) {
+                        Ok(()) => self.stop_maple_tv_broadcast(),
+                        Err(error) => eprintln!("OpenStoryRS: invalid REMOVE_TV packet: {error}"),
+                    }
+                }
+                openstory_protocol::OPCODE_ENABLE_TV => {
+                    if let Err(error) = openstory_protocol::parse_enable_tv(packet) {
+                        eprintln!("OpenStoryRS: invalid ENABLE_TV packet: {error}");
+                    }
+                }
                 openstory_protocol::OPCODE_GATHER_RESULT
                 | openstory_protocol::OPCODE_SORT_RESULT => {}
                 openstory_protocol::OPCODE_CHAT_RECEIVED => {
@@ -18973,13 +25636,52 @@ mod native {
                     }
                 }
                 openstory_protocol::OPCODE_UPDATE_QUEST_INFO => {
-                    match openstory_protocol::parse_expired_quest(packet) {
-                        Ok(Some(id)) => {
-                            self.apply_quest_update(openstory_protocol::QuestUpdate::Forfeited {
-                                id,
-                            });
-                        }
-                        Ok(None) => {}
+                    match openstory_protocol::parse_quest_timer_update(packet) {
+                        Ok(Some(update)) => self.handle_quest_timer_update(update),
+                        Ok(None) => match openstory_protocol::parse_quest_action_failure(packet) {
+                            Ok(Some(failure)) => {
+                                let message = match failure {
+                                    openstory_protocol::QuestActionFailure::RequirementsNotMet {
+                                        quest_id,
+                                    } => quest_info_text(&self.quest_archive, quest_id, "name")
+                                        .map_or_else(
+                                            || {
+                                                "[Quest] You don't meet the requirements for this quest."
+                                                    .to_owned()
+                                            },
+                                            |name| {
+                                                format!(
+                                                    "[Quest] You don't meet the requirements for '{name}'."
+                                                )
+                                            },
+                                        ),
+                                    openstory_protocol::QuestActionFailure::NotEnoughMesos => {
+                                        "[Quest] You don't have enough mesos.".to_owned()
+                                    }
+                                    openstory_protocol::QuestActionFailure::ItemEquipped => {
+                                        "[Quest] Item is currently worn by character.".to_owned()
+                                    }
+                                    openstory_protocol::QuestActionFailure::MissingRequiredItem => {
+                                        "[Quest] You don't have the required item.".to_owned()
+                                    }
+                                };
+                                self.push_chat_line(message, [255, 105, 105]);
+                            }
+                            Ok(None) => match openstory_protocol::parse_expired_quest(packet) {
+                                Ok(Some(id)) => {
+                                    self.apply_quest_update(
+                                        openstory_protocol::QuestUpdate::Forfeited { id },
+                                    );
+                                }
+                                Ok(None) => {}
+                                Err(error) => {
+                                    eprintln!("OpenStory: invalid quest info update: {error}")
+                                }
+                            },
+                            Err(error) => {
+                                eprintln!("OpenStory: invalid quest info update: {error}")
+                            }
+                        },
                         Err(error) => eprintln!("OpenStory: invalid quest info update: {error}"),
                     }
                 }
@@ -19141,6 +25843,69 @@ mod native {
                         }
                     }
                 }
+                openstory_protocol::OPCODE_FAME_RESPONSE => {
+                    match openstory_protocol::parse_fame_response(packet) {
+                        Ok(response) => self.handle_fame_response(response),
+                        Err(error) => {
+                            eprintln!("OpenStoryRS: invalid fame response: {error}");
+                            if let Some(ui) = self.character_info.as_mut() {
+                                ui.fame_pending = false;
+                            }
+                            self.push_chat_line(
+                                "[Fame] The server returned an invalid response.".to_owned(),
+                                [255, 105, 105],
+                            );
+                            if self.character_info.is_some() {
+                                self.refresh_character_info_texture();
+                            }
+                        }
+                    }
+                }
+                openstory_protocol::OPCODE_SKILL_LEARN_ITEM_RESULT => {
+                    match openstory_protocol::parse_skill_learn_item_result(packet) {
+                        Ok(result) => self.handle_skill_learn_item_result(result),
+                        Err(error) => {
+                            eprintln!("OpenStoryRS: invalid skill-book result: {error}");
+                            self.push_chat_line(
+                                "[Skill Book] The server returned an invalid result.".to_owned(),
+                                [255, 105, 105],
+                            );
+                        }
+                    }
+                }
+                openstory_protocol::OPCODE_MONSTER_BOOK_SET_CARD => {
+                    match openstory_protocol::parse_monster_book_set_card(packet) {
+                        Ok(update) => {
+                            self.monster_book
+                                .add_card(update.card_item_id, update.card_level as i8);
+                            if self.monster_book.open {
+                                self.refresh_monster_book_texture();
+                                if let Some(window) = self.window.as_ref() {
+                                    window.request_redraw();
+                                }
+                            }
+                        }
+                        Err(error) => {
+                            eprintln!("OpenStoryRS: invalid Monster Book card update: {error}")
+                        }
+                    }
+                }
+                openstory_protocol::OPCODE_MONSTER_BOOK_SET_COVER => {
+                    match openstory_protocol::parse_monster_book_set_cover(packet) {
+                        Ok(update) => {
+                            self.monster_book.set_cover(update.card_item_id);
+                            if self.monster_book.open {
+                                self.refresh_monster_book_texture();
+                                if let Some(window) = self.window.as_ref() {
+                                    window.request_redraw();
+                                }
+                            }
+                        }
+                        Err(error) => {
+                            eprintln!("OpenStoryRS: invalid Monster Book cover update: {error}")
+                        }
+                    }
+                }
                 openstory_protocol::OPCODE_CHARLIST_RESULT => {
                     match openstory_protocol::parse_character_list(packet) {
                         Ok(characters) => {
@@ -19181,10 +25946,62 @@ mod native {
                             if let Some(session) = self.session.as_ref() {
                                 if let Err(error) = session.reconnect(address, login_packet) {
                                     eprintln!("OpenStory: could not reconnect to channel: {error}");
+                                    self.show_character_selection_failure(
+                                        "Could not connect to the selected channel. Click Start to retry.",
+                                    );
                                 }
+                            } else {
+                                self.show_character_selection_failure(
+                                    "The login connection closed before channel entry. Click Start to retry.",
+                                );
                             }
                         }
-                        Err(error) => eprintln!("OpenStory: invalid channel redirect: {error}"),
+                        Err(error) => {
+                            eprintln!("OpenStory: invalid channel redirect: {error}");
+                            self.show_character_selection_failure(
+                                "The server returned an invalid channel address. Click Start to retry.",
+                            );
+                        }
+                    }
+                }
+                openstory_protocol::OPCODE_CHANNEL_TRANSFER => {
+                    match openstory_protocol::parse_channel_transfer(packet) {
+                        Ok(transfer) => {
+                            let Some(character_id) =
+                                self.active_character.as_ref().map(|character| character.id)
+                            else {
+                                eprintln!(
+                                    "OpenStoryRS: received a channel transfer without an active character"
+                                );
+                                return;
+                            };
+                            let address = format!("{}:{}", transfer.address, transfer.port);
+                            let login_packet = openstory_protocol::player_login(character_id);
+                            if let Some(session) = self.session.as_ref() {
+                                match session.reconnect(address, login_packet) {
+                                    Ok(()) => {
+                                        self.channel_connected = false;
+                                        eprintln!(
+                                            "OpenStoryRS: reconnecting to the selected channel"
+                                        );
+                                    }
+                                    Err(error) => {
+                                        self.channel_connected = false;
+                                        eprintln!(
+                                            "OpenStoryRS: could not reconnect to selected channel: {error}"
+                                        );
+                                    }
+                                }
+                            } else {
+                                self.channel_connected = false;
+                                eprintln!(
+                                    "OpenStoryRS: channel transfer arrived without a session"
+                                );
+                            }
+                        }
+                        Err(error) => {
+                            eprintln!("OpenStoryRS: invalid channel transfer packet: {error}")
+                        }
                     }
                 }
                 openstory_protocol::OPCODE_SERVERSTATUS_RESULT => {
@@ -19205,6 +26022,15 @@ mod native {
                         }
                     }
                 }
+                openstory_protocol::OPCODE_FORCED_STAT_SET => {
+                    match openstory_protocol::parse_forced_stat_set(packet) {
+                        Ok(update) => self.apply_forced_stat_set(update),
+                        Err(error) => eprintln!("OpenStoryRS: invalid forced-stat packet: {error}"),
+                    }
+                }
+                openstory_protocol::OPCODE_RECALCULATE_STATS => {
+                    self.recalculate_forced_stats();
+                }
                 openstory_protocol::OPCODE_GIVE_BUFF => {
                     match openstory_protocol::parse_character_buff_update(packet) {
                         Ok(update) => self.apply_character_buffs(update),
@@ -19221,12 +26047,27 @@ mod native {
                         }
                     }
                 }
+                openstory_protocol::OPCODE_GIVE_FOREIGN_BUFF => {
+                    match openstory_protocol::parse_foreign_mob_disease_effect(packet) {
+                        Ok(Some(effect)) => self.show_mob_disease_effect(
+                            Some(effect.character_id),
+                            effect.skill_type,
+                            effect.skill_level,
+                        ),
+                        Ok(None) => {}
+                        Err(error) => {
+                            eprintln!("OpenStoryRS: invalid foreign mob disease effect: {error}")
+                        }
+                    }
+                }
                 openstory_protocol::OPCODE_UPDATE_SKILL => {
                     match openstory_protocol::parse_skill_update(packet) {
                         Ok(update) => {
                             for skill in update.skills {
                                 self.skills.insert(skill.id, skill);
                             }
+                            self.key_config_actions_dirty = true;
+                            self.refresh_key_config_texture();
                             self.refresh_skill_book_entries();
                             self.refresh_skill_book_texture();
                         }
@@ -19236,6 +26077,7 @@ mod native {
                 openstory_protocol::OPCODE_MODIFY_INVENTORY => {
                     match openstory_protocol::parse_inventory_update(packet) {
                         Ok(update) => {
+                            self.key_config_actions_dirty = true;
                             if let Some(inventory) = self.inventory.as_mut() {
                                 self.inventory_drag_source = None;
                                 inventory.apply(update);
@@ -19245,6 +26087,7 @@ mod native {
                                 self.refresh_storage_texture();
                                 self.refresh_inventory_drop_prompt_texture();
                                 self.refresh_pet_equipment_texture();
+                                self.refresh_key_config_texture();
                                 self.refresh_npc_shop();
                                 if self.show_quest_log {
                                     self.refresh_quest_log_texture();
@@ -19283,10 +26126,12 @@ mod native {
                             self.scriptable_npc_ids.clear();
                             self.storage = None;
                             self.storage_texture = None;
+                            self.character_selection_status = None;
                             if let Some(initial_inventory) = inventory.as_ref() {
                                 stats.meso = i32::try_from(initial_inventory.meso).ok();
                             }
                             self.inventory = inventory;
+                            self.key_config_actions_dirty = true;
                             self.inventory_texture = None;
                             self.skills =
                                 skills.into_iter().map(|skill| (skill.id, skill)).collect();
@@ -19527,6 +26372,16 @@ mod native {
                         Err(error) => eprintln!("OpenStory: invalid character look: {error}"),
                     }
                 }
+                openstory_protocol::OPCODE_SHOW_ITEM_EFFECT => {
+                    match openstory_protocol::parse_remote_character_item_effect(packet) {
+                        Ok(effect) => {
+                            self.set_character_item_effect(effect.character_id, effect.item_id);
+                        }
+                        Err(error) => {
+                            eprintln!("OpenStory: invalid character item effect: {error}");
+                        }
+                    }
+                }
                 openstory_protocol::OPCODE_UPDATE_CHARACTER_BOX => {
                     match openstory_protocol::parse_remote_character_mini_room(packet) {
                         Ok(update) => self.update_remote_mini_room(update),
@@ -19579,6 +26434,49 @@ mod native {
                         Ok(_) => {}
                         Err(error) => {
                             eprintln!("OpenStory: invalid foreign character effect: {error}")
+                        }
+                    }
+                }
+                openstory_protocol::OPCODE_SHOW_ITEM_GAIN_INCHAT => {
+                    match openstory_protocol::parse_item_gain_in_chat(packet) {
+                        Ok(Some(openstory_protocol::ItemGainInChat::Item {
+                            item_id,
+                            quantity,
+                        })) => {
+                            let name =
+                                item_name(item_id, &self.string_archive, &mut self.item_name_cache);
+                            let sign = if quantity < 0 { "-" } else { "+" };
+                            self.push_chat_line(
+                                format!(
+                                    "Gained an item: {name} ({sign}{})",
+                                    quantity.unsigned_abs()
+                                ),
+                                [128, 190, 255],
+                            );
+                        }
+                        Ok(Some(openstory_protocol::ItemGainInChat::MonsterBookCard)) => {
+                            if let Some(character_id) =
+                                self.active_character.as_ref().map(|character| character.id)
+                            {
+                                self.show_foreign_character_effect(
+                                    openstory_protocol::ForeignCharacterEffect {
+                                        character_id,
+                                        effect_type: 13,
+                                        variant: 0,
+                                        heal_amount: None,
+                                        skill_id: None,
+                                        level: 0,
+                                        direction: -1,
+                                    },
+                                );
+                            }
+                        }
+                        Ok(Some(openstory_protocol::ItemGainInChat::SkillUse { skill_id })) => {
+                            self.show_local_skill_buff_effect(skill_id);
+                        }
+                        Ok(None) => {}
+                        Err(error) => {
+                            eprintln!("OpenStory: invalid item-gain notification: {error}")
                         }
                     }
                 }
@@ -19645,6 +26543,19 @@ mod native {
                     match openstory_protocol::parse_npc_scriptable(packet) {
                         Ok(npc_ids) => self.mark_npcs_scriptable(&npc_ids),
                         Err(error) => eprintln!("OpenStory: invalid scriptable NPC list: {error}"),
+                    }
+                }
+                openstory_protocol::OPCODE_FIELD_EFFECT => {
+                    match openstory_protocol::parse_field_effect(packet) {
+                        Ok(Some(effect)) => self.apply_field_effect(effect),
+                        Ok(None) => {}
+                        Err(error) => eprintln!("OpenStory: invalid field effect: {error}"),
+                    }
+                }
+                openstory_protocol::OPCODE_BLOW_WEATHER => {
+                    match openstory_protocol::parse_blow_weather(packet) {
+                        Ok(update) => self.apply_blow_weather(update),
+                        Err(error) => eprintln!("OpenStoryRS: invalid weather packet: {error}"),
                     }
                 }
                 openstory_protocol::OPCODE_FIELD_OBSTACLE_ONE => {
@@ -19979,44 +26890,18 @@ mod native {
     }
 
     fn load_system_font() -> Result<fontdue::Font, String> {
-        let mut paths = Vec::new();
         if let Some(path) = std::env::var_os("OPENSTORY_FONT_PATH") {
-            paths.push(PathBuf::from(path));
+            let path = PathBuf::from(path);
+            let bytes = fs::read(&path)
+                .map_err(|error| format!("could not read font {}: {error}", path.display()))?;
+            return fontdue::Font::from_bytes(bytes, fontdue::FontSettings::default())
+                .map_err(|error| format!("could not load font {}: {error}", path.display()));
         }
-        #[cfg(target_os = "macos")]
-        paths.extend([
-            PathBuf::from("/System/Library/Fonts/Supplemental/Arial.ttf"),
-            PathBuf::from("/System/Library/Fonts/Supplemental/Arial Unicode.ttf"),
-        ]);
-        #[cfg(target_os = "windows")]
-        paths.push(PathBuf::from(r"C:\Windows\Fonts\arial.ttf"));
-        #[cfg(target_os = "linux")]
-        paths.push(PathBuf::from(
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-        ));
-
-        let mut errors = Vec::new();
-        for path in paths {
-            let bytes = match fs::read(&path) {
-                Ok(bytes) => bytes,
-                Err(error) => {
-                    errors.push(format!("{}: {error}", path.display()));
-                    continue;
-                }
-            };
-            match fontdue::Font::from_bytes(bytes, fontdue::FontSettings::default()) {
-                Ok(font) => return Ok(font),
-                Err(error) => errors.push(format!("{}: {error}", path.display())),
-            }
-        }
-        Err(format!(
-            "could not load a TrueType font; set OPENSTORY_FONT_PATH{}",
-            if errors.is_empty() {
-                String::new()
-            } else {
-                format!("\n{}", errors.join("\n"))
-            }
-        ))
+        fontdue::Font::from_bytes(
+            include_bytes!("../assets/fonts/Roboto-Regular.ttf").as_slice(),
+            fontdue::FontSettings::default(),
+        )
+        .map_err(|error| format!("could not load the bundled MapleStory Roboto font: {error}"))
     }
 
     fn rasterize_field(font: &fontdue::Font, text: &str, draw_caret: bool) -> Vec<u8> {
@@ -20143,79 +27028,139 @@ mod native {
 
     fn render_map_hud(
         font: &fontdue::Font,
+        number_font: Option<&StatusBarNumberFont>,
+        layout: StatusBarLayout,
         stats: &openstory_protocol::CharacterStats,
         active_buffs: &HashMap<openstory_protocol::BuffStatKey, ActiveCharacterBuff>,
+        chat_line: Option<(&str, [u8; 3])>,
     ) -> Vec<u8> {
-        const WIDTH: usize = 440;
-        const HEIGHT: usize = 76;
-        const BAR_WIDTH: usize = 254;
-        let mut pixels = vec![0_u8; WIDTH * HEIGHT * 4];
-        fill_dialogue_rect(
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            0,
-            0,
-            WIDTH,
-            HEIGHT,
-            [20, 24, 29, 232],
-        );
-        fill_dialogue_rect(
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            0,
-            0,
-            WIDTH,
-            2,
-            [180, 155, 110, 255],
-        );
-        fill_dialogue_rect(
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            0,
-            HEIGHT - 2,
-            WIDTH,
-            2,
-            [180, 155, 110, 255],
-        );
-        fill_dialogue_rect(
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            0,
-            0,
-            2,
-            HEIGHT,
-            [180, 155, 110, 255],
-        );
-        fill_dialogue_rect(
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            WIDTH - 2,
-            0,
-            2,
-            HEIGHT,
-            [180, 155, 110, 255],
-        );
+        const WIDTH: usize = 1024;
+        let height = layout.height() as usize;
+        let modern = layout == StatusBarLayout::Modern;
+        let mut pixels = vec![0_u8; WIDTH * height * 4];
+        // This image is only a transparent dynamic overlay. The frame, button,
+        // gauge and fill art underneath comes directly from the selected NX UI.
+        if let Some((text, color)) = chat_line {
+            draw_dialogue_text(
+                font,
+                &mut pixels,
+                WIDTH,
+                height,
+                text,
+                4,
+                if modern { 22 } else { 9 },
+                12.0,
+                480,
+                17,
+                color,
+            );
+        }
+        if modern {
+            draw_dialogue_text(
+                font,
+                &mut pixels,
+                WIDTH,
+                height,
+                &stats.name,
+                77,
+                48,
+                13.0,
+                160,
+                17,
+                [255, 255, 255],
+            );
+            draw_dialogue_text(
+                font,
+                &mut pixels,
+                WIDTH,
+                height,
+                &character_job_name(stats.job),
+                77,
+                63,
+                11.0,
+                160,
+                15,
+                [255, 220, 44],
+            );
+            draw_dialogue_text(
+                font,
+                &mut pixels,
+                WIDTH,
+                height,
+                &stats.level.to_string(),
+                31,
+                60,
+                12.0,
+                34,
+                15,
+                [255, 255, 255],
+            );
+        } else {
+            draw_dialogue_text(
+                font,
+                &mut pixels,
+                WIDTH,
+                height,
+                &stats.name,
+                10,
+                34,
+                13.0,
+                140,
+                17,
+                [255, 255, 255],
+            );
+            draw_dialogue_text(
+                font,
+                &mut pixels,
+                WIDTH,
+                height,
+                &format!("Lv.{}  {}", stats.level, character_job_name(stats.job)),
+                10,
+                50,
+                11.0,
+                140,
+                15,
+                [255, 220, 44],
+            );
+        }
+        if let Some(number_font) = number_font {
+            draw_status_bar_number(
+                number_font,
+                &mut pixels,
+                WIDTH,
+                height,
+                &format!("[{}/{}]", stats.hp, stats.max_hp),
+                if modern { 388 } else { 260 },
+                if modern { 54 } else { 57 },
+            );
+            draw_status_bar_number(
+                number_font,
+                &mut pixels,
+                WIDTH,
+                height,
+                &format!("[{}/{}]", stats.mp, stats.max_mp),
+                if modern { 559 } else { 368 },
+                if modern { 54 } else { 57 },
+            );
+            draw_status_bar_number(
+                number_font,
+                &mut pixels,
+                WIDTH,
+                height,
+                &format!(
+                    "{}[{}%]",
+                    stats.experience,
+                    format!(
+                        "{:.2}",
+                        v83_exp_fraction(stats.level, stats.experience) * 100.0
+                    )
+                ),
+                if modern { 559 } else { 491 },
+                if modern { 70 } else { 57 },
+            );
+        }
 
-        draw_dialogue_text(
-            font,
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            &format!("{}   Lv. {}", stats.name, stats.level),
-            12,
-            6,
-            15.0,
-            204,
-            20,
-            [245, 228, 192],
-        );
-
-        let mut status_x = 226;
+        let mut status_x = if modern { 576 } else { 438 };
         for (flag, label, background, foreground) in [
             (STATUS_STUN, "STUN", [107, 76, 42, 255], [255, 231, 160]),
             (STATUS_POISON, "POISON", [45, 89, 54, 255], [205, 255, 199]),
@@ -20233,99 +27178,123 @@ mod native {
             (STATUS_CURSE, "CURSE", [77, 49, 91, 255], [239, 211, 255]),
             (STATUS_ZOMBIFY, "UNDEAD", [69, 81, 48, 255], [228, 239, 185]),
         ] {
-            if !character_has_buff(
-                active_buffs,
-                openstory_protocol::BuffMaskGroup::Second,
-                flag,
-            ) {
+            let active = if flag == STATUS_ZOMBIFY {
+                character_has_mob_skill_buff(
+                    active_buffs,
+                    openstory_protocol::BuffMaskGroup::Second,
+                    flag,
+                    MOB_SKILL_TYPE_UNDEAD,
+                )
+            } else {
+                character_has_buff(
+                    active_buffs,
+                    openstory_protocol::BuffMaskGroup::Second,
+                    flag,
+                )
+            };
+            if !active {
                 continue;
             }
-            fill_dialogue_rect(&mut pixels, WIDTH, HEIGHT, status_x, 5, 62, 19, background);
+            if status_x + 62 > if modern { 744 } else { 744 } {
+                break;
+            }
+            fill_dialogue_rect(
+                &mut pixels,
+                WIDTH,
+                height,
+                status_x,
+                if modern { 3 } else { 5 },
+                62,
+                19,
+                background,
+            );
             draw_dialogue_text(
                 font,
                 &mut pixels,
                 WIDTH,
-                HEIGHT,
+                height,
                 label,
                 (status_x + 4) as i32,
-                8,
+                if modern { 6 } else { 8 },
                 8.0,
                 54,
                 12,
                 foreground,
             );
             status_x += 66;
-            if status_x > 400 {
-                break;
-            }
         }
+        pixels
+    }
 
-        for (label, current, maximum, y, color) in [
-            (
-                format!("HP {} / {}", stats.hp, stats.max_hp),
-                stats.hp,
-                stats.max_hp,
-                29,
-                [58, 65, 210, 255],
-            ),
-            (
-                format!("MP {} / {}", stats.mp, stats.max_mp),
-                stats.mp,
-                stats.max_mp,
-                46,
-                [205, 104, 58, 255],
-            ),
-        ] {
+    fn render_status_menu(font: &fontdue::Font) -> Vec<u8> {
+        let width = STATUS_MENU_WIDTH as usize;
+        let height = STATUS_MENU_HEIGHT as usize;
+        let mut pixels = vec![0_u8; width * height * 4];
+        fill_dialogue_rect(
+            &mut pixels,
+            width,
+            height,
+            0,
+            0,
+            width,
+            height,
+            [18, 17, 15, 224],
+        );
+        fill_dialogue_rect(
+            &mut pixels,
+            width,
+            height,
+            0,
+            0,
+            width,
+            1,
+            [181, 137, 56, 255],
+        );
+        fill_dialogue_rect(
+            &mut pixels,
+            width,
+            height,
+            0,
+            height - 1,
+            width,
+            1,
+            [181, 137, 56, 255],
+        );
+        fill_dialogue_rect(
+            &mut pixels,
+            width,
+            height,
+            0,
+            0,
+            1,
+            height,
+            [181, 137, 56, 255],
+        );
+        fill_dialogue_rect(
+            &mut pixels,
+            width,
+            height,
+            width - 1,
+            0,
+            1,
+            height,
+            [181, 137, 56, 255],
+        );
+        for (index, label) in STATUS_MENU_ROWS.iter().enumerate() {
             draw_dialogue_text(
                 font,
                 &mut pixels,
-                WIDTH,
-                HEIGHT,
-                &label,
-                12,
-                y as i32 - 2,
-                12.0,
-                148,
-                16,
-                [238, 238, 238],
+                width,
+                height,
+                label,
+                7,
+                5 + index as i32 * STATUS_MENU_ROW_HEIGHT as i32,
+                11.0,
+                width - 14,
+                STATUS_MENU_ROW_HEIGHT,
+                [245, 237, 213],
             );
-            fill_dialogue_rect(
-                &mut pixels,
-                WIDTH,
-                HEIGHT,
-                170,
-                y + 2,
-                BAR_WIDTH,
-                9,
-                [50, 48, 45, 255],
-            );
-            if maximum > 0 {
-                let filled = (u64::from(current.min(maximum)) * BAR_WIDTH as u64
-                    / u64::from(maximum)) as usize;
-                if filled > 0 {
-                    fill_dialogue_rect(&mut pixels, WIDTH, HEIGHT, 170, y + 2, filled, 9, color);
-                }
-            }
         }
-        draw_dialogue_text(
-            font,
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            &format!(
-                "EXP {}   {}",
-                stats.experience,
-                stats
-                    .meso
-                    .map_or_else(|| "Mesos --".to_owned(), |meso| format!("Mesos {meso}"))
-            ),
-            12,
-            62,
-            11.0,
-            WIDTH - 24,
-            13,
-            [220, 220, 220],
-        );
         pixels
     }
 
@@ -20977,183 +27946,138 @@ mod native {
         selected_reward: usize,
         character: Option<&openstory_protocol::CharacterInfo>,
         confirmation: Option<i16>,
+        ui_archive: &NxArchive,
     ) -> Vec<u8> {
-        const WIDTH: usize = 664;
-        const HEIGHT: usize = 548;
-        const VISIBLE_ROWS: usize = 8;
+        const WIDTH: usize = QUEST_LOG_PANEL_WIDTH as usize;
+        const HEIGHT: usize = QUEST_LOG_PANEL_HEIGHT as usize;
+        const LIST_WIDTH: usize = 296;
+        const DETAIL_X: usize = QUEST_LOG_DETAIL_X;
+        const VISIBLE_ROWS: usize = QUEST_LOG_VISIBLE_ROWS;
         let mut pixels = vec![0_u8; WIDTH * HEIGHT * 4];
-        fill_dialogue_rect(
+        let ids = quest_ids_for_tab(log, available_quests, tab);
+        let selected_quest = ids.get(selected).copied();
+        let _ = composite_nx_ui_bitmap(
             &mut pixels,
             WIDTH,
             HEIGHT,
+            ui_archive,
+            "UIWindow.img/Quest/backgrnd3",
             0,
             0,
-            WIDTH,
-            HEIGHT,
-            [26, 24, 22, 246],
         );
-        fill_dialogue_rect(
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            0,
-            0,
-            WIDTH,
-            42,
-            [91, 69, 42, 255],
-        );
-        draw_dialogue_text(
-            font,
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            "Quest Log",
-            16,
-            10,
-            19.0,
-            320,
-            26,
-            [250, 235, 202],
-        );
-        fill_dialogue_rect(
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            620,
-            10,
-            32,
-            27,
-            [64, 45, 36, 255],
-        );
-        draw_dialogue_text(
-            font,
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            "X",
-            630,
-            13,
-            15.0,
-            16,
-            20,
-            [255, 224, 201],
-        );
-
+        if selected_quest.is_some() {
+            for (path, x, y) in [
+                ("UIWindow.img/Quest/backgrnd3", DETAIL_X as i32, 0),
+                ("UIWindow.img/Quest/backgrnd4", DETAIL_X as i32, 0),
+                ("UIWindow.img/Quest/backgrnd5", DETAIL_X as i32, 0),
+            ] {
+                let _ = composite_nx_ui_bitmap(&mut pixels, WIDTH, HEIGHT, ui_archive, path, x, y);
+            }
+        }
         let active = tab == QuestLogTab::Active;
         let available = tab == QuestLogTab::Available;
         let completed = tab == QuestLogTab::Completed;
-        for (x, label, selected_tab) in [
-            (16, "Available", available),
-            (104, "Active", active),
-            (192, "Completed", completed),
-        ] {
-            fill_dialogue_rect(
-                &mut pixels,
-                WIDTH,
-                HEIGHT,
-                x,
-                48,
-                84,
-                28,
-                if selected_tab {
-                    [100, 78, 48, 255]
-                } else {
-                    [47, 46, 43, 255]
-                },
-            );
-            draw_dialogue_text(
-                font,
-                &mut pixels,
-                WIDTH,
-                HEIGHT,
-                label,
-                x as i32 + 6,
-                54,
-                10.0,
-                74,
-                18,
-                [242, 231, 210],
-            );
+        for (index, selected_tab) in [available, active, completed].into_iter().enumerate() {
+            let state = if selected_tab { "enabled" } else { "disabled" };
+            let path = format!("UIWindow.img/Quest/Tab/{state}/{index}");
+            let x = 17 + index as i32 * 70;
+            let _ = composite_nx_ui_bitmap(&mut pixels, WIDTH, HEIGHT, ui_archive, &path, x, 23);
         }
-        fill_dialogue_rect(
+        let _ = composite_nx_ui_bitmap(
             &mut pixels,
             WIDTH,
             HEIGHT,
-            14,
-            82,
-            248,
-            340,
-            [37, 38, 39, 255],
+            ui_archive,
+            "UIWindow.img/BtUIClose/normal/0",
+            (LIST_WIDTH - 40) as i32,
+            5,
         );
-        fill_dialogue_rect(
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            276,
-            48,
-            374,
-            374,
-            [37, 38, 39, 255],
-        );
-        let ids = quest_ids_for_tab(log, available_quests, tab);
-        for visible in 0..VISIBLE_ROWS {
-            let index = scroll.saturating_add(visible);
-            let Some(id) = ids.get(index).copied() else {
-                break;
-            };
-            let y = 84 + visible * 42;
-            fill_dialogue_rect(
-                &mut pixels,
-                WIDTH,
-                HEIGHT,
-                18,
-                y,
-                240,
-                40,
-                if index == selected {
-                    [92, 73, 48, 255]
-                } else {
-                    [44, 45, 46, 255]
-                },
-            );
-            let name =
-                quest_info_text(archive, id, "name").unwrap_or_else(|| format!("Quest #{id}"));
-            draw_dialogue_text(
-                font,
-                &mut pixels,
-                WIDTH,
-                HEIGHT,
-                &name,
-                26,
-                y as i32 + 5,
-                11.0,
-                224,
-                30,
-                [238, 235, 225],
-            );
-        }
+
         if ids.is_empty() {
-            draw_dialogue_text(
-                font,
+            let notice_index = if available {
+                0
+            } else if active {
+                1
+            } else {
+                2
+            };
+            let notice_width = [143, 150, 170][notice_index];
+            let notice_path = format!("UIWindow.img/Quest/notice{notice_index}");
+            let _ = composite_nx_ui_bitmap(
                 &mut pixels,
                 WIDTH,
                 HEIGHT,
-                if active {
-                    "No active quests."
-                } else if available {
-                    "No available quests."
-                } else {
-                    "No completed quests."
-                },
-                36,
-                235,
-                14.0,
-                210,
-                32,
-                [205, 203, 197],
+                ui_archive,
+                &notice_path,
+                ((LIST_WIDTH - notice_width) / 2) as i32,
+                164,
             );
+        } else {
+            for visible in 0..VISIBLE_ROWS {
+                let index = scroll.saturating_add(visible);
+                let Some(id) = ids.get(index).copied() else {
+                    break;
+                };
+                let y = 54 + visible * 25;
+                if index == selected {
+                    let _ = composite_nx_ui_bitmap(
+                        &mut pixels,
+                        WIDTH,
+                        HEIGHT,
+                        ui_archive,
+                        "UIWindow.img/Quest/icon1",
+                        11,
+                        y as i32 + 4,
+                    );
+                } else {
+                    let _ = composite_nx_ui_bitmap(
+                        &mut pixels,
+                        WIDTH,
+                        HEIGHT,
+                        ui_archive,
+                        "UIWindow.img/Quest/icon0",
+                        11,
+                        y as i32 + 4,
+                    );
+                }
+                let name =
+                    quest_info_text(archive, id, "name").unwrap_or_else(|| format!("Quest #{id}"));
+                draw_dialogue_text(
+                    font,
+                    &mut pixels,
+                    WIDTH,
+                    HEIGHT,
+                    &name,
+                    31,
+                    y as i32 + 1,
+                    11.0,
+                    LIST_WIDTH - 42,
+                    23,
+                    if index == selected {
+                        [35, 104, 163]
+                    } else {
+                        [41, 39, 33]
+                    },
+                );
+            }
         }
-        if let Some(id) = ids.get(selected).copied() {
+        draw_dialogue_text(
+            font,
+            &mut pixels,
+            WIDTH,
+            HEIGHT,
+            &format!("{} quest(s)", ids.len()),
+            14,
+            270,
+            9.0,
+            170,
+            14,
+            [74, 70, 61],
+        );
+
+        if let Some(id) = selected_quest {
+            let text_x = DETAIL_X as i32 + 18;
+            let text_width = 264;
             let name =
                 quest_info_text(archive, id, "name").unwrap_or_else(|| format!("Quest #{id}"));
             draw_dialogue_text(
@@ -21162,12 +28086,12 @@ mod native {
                 WIDTH,
                 HEIGHT,
                 &name,
-                294,
-                68,
-                17.0,
-                330,
-                28,
-                [247, 230, 196],
+                text_x,
+                45,
+                15.0,
+                text_width,
+                24,
+                [37, 57, 72],
             );
             draw_dialogue_text(
                 font,
@@ -21175,19 +28099,19 @@ mod native {
                 WIDTH,
                 HEIGHT,
                 &format!(
-                    "Quest ID: {id}   •   {}",
+                    "Quest ID: {id}  ·  {}",
                     match tab {
                         QuestLogTab::Available => "Available",
                         QuestLogTab::Active => "In progress",
                         QuestLogTab::Completed => "Completed",
                     }
                 ),
-                294,
-                104,
-                11.0,
-                334,
-                18,
-                [190, 187, 176],
+                text_x,
+                72,
+                9.0,
+                text_width,
+                14,
+                [89, 83, 71],
             );
             if let Some(summary) = quest_info_text(archive, id, "0") {
                 draw_dialogue_text(
@@ -21196,12 +28120,12 @@ mod native {
                     WIDTH,
                     HEIGHT,
                     &summary,
-                    294,
-                    128,
-                    13.0,
-                    334,
-                    46,
-                    [232, 228, 215],
+                    text_x,
+                    94,
+                    11.0,
+                    text_width,
+                    34,
+                    [53, 50, 44],
                 );
             }
             if let Some(description) = quest_info_text(archive, id, "1") {
@@ -21211,12 +28135,12 @@ mod native {
                     WIDTH,
                     HEIGHT,
                     &description,
-                    294,
-                    182,
-                    12.0,
-                    334,
-                    68,
-                    [207, 207, 200],
+                    text_x,
+                    130,
+                    10.0,
+                    text_width,
+                    48,
+                    [73, 69, 61],
                 );
             }
             draw_dialogue_text(
@@ -21229,12 +28153,12 @@ mod native {
                 } else {
                     "Objectives"
                 },
-                294,
-                258,
-                11.0,
-                334,
-                18,
-                [225, 206, 171],
+                text_x,
+                181,
+                10.0,
+                text_width,
+                15,
+                [49, 75, 93],
             );
             let objectives = quest_objective_lines(
                 log,
@@ -21256,21 +28180,21 @@ mod native {
                     } else {
                         "No tracked objectives."
                     },
-                    294,
-                    280,
-                    11.0,
-                    334,
-                    18,
-                    [190, 187, 176],
+                    text_x,
+                    201,
+                    10.0,
+                    text_width,
+                    16,
+                    [79, 74, 66],
                 );
             } else {
-                for (index, (objective, complete)) in objectives.iter().take(6).enumerate() {
+                for (index, (objective, done)) in objectives.iter().take(5).enumerate() {
                     let prefix = if available {
-                        "• "
-                    } else if *complete {
-                        "[x] "
+                        "· "
+                    } else if *done {
+                        "✓ "
                     } else {
-                        "[ ] "
+                        "○ "
                     };
                     draw_dialogue_text(
                         font,
@@ -21278,31 +28202,12 @@ mod native {
                         WIDTH,
                         HEIGHT,
                         &format!("{prefix}{objective}"),
-                        294,
-                        280 + index as i32 * 18,
-                        11.0,
-                        334,
+                        text_x,
+                        200 + index as i32 * 18,
+                        9.0,
+                        text_width,
                         17,
-                        if *complete {
-                            [175, 205, 151]
-                        } else {
-                            [225, 224, 215]
-                        },
-                    );
-                }
-                if objectives.len() > 6 {
-                    draw_dialogue_text(
-                        font,
-                        &mut pixels,
-                        WIDTH,
-                        HEIGHT,
-                        &format!("… and {} more", objectives.len() - 6),
-                        294,
-                        388,
-                        10.0,
-                        334,
-                        16,
-                        [165, 163, 155],
+                        if *done { [62, 112, 57] } else { [57, 53, 45] },
                     );
                 }
             }
@@ -21313,254 +28218,108 @@ mod native {
                 if !reward_choices.is_empty() {
                     let choice_index = selected_reward.min(reward_choices.len() - 1);
                     let choice = &reward_choices[choice_index];
-                    fill_dialogue_rect(
-                        &mut pixels,
-                        WIDTH,
-                        HEIGHT,
-                        276,
-                        426,
-                        374,
-                        52,
-                        [47, 44, 38, 255],
-                    );
-                    draw_dialogue_text(
-                        font,
-                        &mut pixels,
-                        WIDTH,
-                        HEIGHT,
-                        "Choose one reward",
-                        290,
-                        430,
-                        10.0,
-                        180,
-                        15,
-                        [225, 206, 171],
-                    );
-                    if reward_choices.len() > 1 {
-                        draw_dialogue_text(
-                            font,
-                            &mut pixels,
-                            WIDTH,
-                            HEIGHT,
-                            "<",
-                            296,
-                            449,
-                            14.0,
-                            18,
-                            20,
-                            [246, 231, 199],
-                        );
-                        draw_dialogue_text(
-                            font,
-                            &mut pixels,
-                            WIDTH,
-                            HEIGHT,
-                            ">",
-                            610,
-                            449,
-                            14.0,
-                            18,
-                            20,
-                            [246, 231, 199],
-                        );
-                    }
                     draw_dialogue_text(
                         font,
                         &mut pixels,
                         WIDTH,
                         HEIGHT,
                         &format!(
-                            "{} × {}   ({}/{})",
+                            "Reward: {} × {} ({}/{})",
                             choice.name,
                             choice.count,
                             choice_index + 1,
                             reward_choices.len()
                         ),
-                        326,
-                        450,
-                        11.0,
-                        276,
-                        18,
-                        [238, 235, 225],
+                        text_x,
+                        304,
+                        9.0,
+                        text_width,
+                        28,
+                        [91, 74, 42],
                     );
                 }
             }
             if available {
-                fill_dialogue_rect(
+                let _ = composite_nx_ui_bitmap(
                     &mut pixels,
                     WIDTH,
                     HEIGHT,
-                    520,
-                    490,
-                    128,
-                    34,
-                    [94, 67, 43, 255],
+                    ui_archive,
+                    "UIWindow.img/Quest/BtOK/normal/0",
+                    DETAIL_X as i32 + 42,
+                    367,
                 );
-                draw_dialogue_text(
-                    font,
-                    &mut pixels,
-                    WIDTH,
-                    HEIGHT,
-                    "Accept",
-                    550,
-                    498,
-                    12.0,
-                    80,
-                    18,
-                    [247, 226, 194],
-                );
-            }
-            if active {
+            } else if active {
                 let can_complete = log
                     .started
                     .iter()
                     .find(|quest| quest.id == id)
                     .is_some_and(|quest| quest_is_completable(quest, archive, inventory));
                 if can_complete {
-                    fill_dialogue_rect(
+                    let _ = composite_nx_ui_bitmap(
                         &mut pixels,
                         WIDTH,
                         HEIGHT,
-                        380,
-                        490,
-                        128,
-                        34,
-                        [66, 88, 56, 255],
-                    );
-                    draw_dialogue_text(
-                        font,
-                        &mut pixels,
-                        WIDTH,
-                        HEIGHT,
-                        "Complete",
-                        405,
-                        498,
-                        11.0,
-                        90,
-                        18,
-                        [227, 240, 213],
+                        ui_archive,
+                        "UIWindow.img/Quest/BtOK/normal/0",
+                        DETAIL_X as i32 + 42,
+                        367,
                     );
                 }
-                fill_dialogue_rect(
+                let _ = composite_nx_ui_bitmap(
                     &mut pixels,
                     WIDTH,
                     HEIGHT,
-                    520,
-                    490,
-                    128,
-                    34,
-                    [94, 67, 43, 255],
-                );
-                draw_dialogue_text(
-                    font,
-                    &mut pixels,
-                    WIDTH,
-                    HEIGHT,
-                    "Forfeit",
-                    555,
-                    498,
-                    12.0,
-                    80,
-                    18,
-                    [247, 226, 194],
+                    ui_archive,
+                    "UIWindow.img/Quest/BtGiveup/normal/0",
+                    DETAIL_X as i32 + 126,
+                    367,
                 );
             }
         }
-        draw_dialogue_text(
-            font,
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            &format!("{} quest(s)", ids.len()),
-            20,
-            510,
-            10.0,
-            220,
-            16,
-            [157, 157, 151],
-        );
         if let Some(id) = confirmation {
-            fill_dialogue_rect(
+            let overlay_x = ((WIDTH - 266) / 2) as i32;
+            let overlay_y = 140;
+            let _ = composite_nx_ui_bitmap(
                 &mut pixels,
                 WIDTH,
                 HEIGHT,
-                0,
-                0,
-                WIDTH,
-                HEIGHT,
-                [0, 0, 0, 190],
-            );
-            fill_dialogue_rect(
-                &mut pixels,
-                WIDTH,
-                HEIGHT,
-                124,
-                190,
-                416,
-                180,
-                [177, 145, 92, 255],
-            );
-            fill_dialogue_rect(
-                &mut pixels,
-                WIDTH,
-                HEIGHT,
-                128,
-                194,
-                408,
-                172,
-                [33, 31, 30, 255],
+                ui_archive,
+                "UIWindow.img/Quest/backgrnd5",
+                overlay_x,
+                overlay_y,
             );
             draw_dialogue_text(
                 font,
                 &mut pixels,
                 WIDTH,
                 HEIGHT,
-                "Forfeit quest?",
-                156,
-                216,
-                18.0,
-                352,
-                28,
-                [246, 231, 199],
-            );
-            draw_dialogue_text(
-                font,
-                &mut pixels,
-                WIDTH,
-                HEIGHT,
-                &format!("You will abandon Quest #{id}."),
-                156,
-                252,
+                &format!("Forfeit quest #{id}?"),
+                overlay_x + 24,
+                overlay_y + 28,
                 12.0,
-                352,
-                20,
-                [220, 216, 204],
+                218,
+                30,
+                [55, 50, 42],
             );
-            for (x, label) in [(170, "Yes"), (350, "No")] {
-                fill_dialogue_rect(
-                    &mut pixels,
-                    WIDTH,
-                    HEIGHT,
-                    x,
-                    300,
-                    120,
-                    38,
-                    [88, 68, 45, 255],
-                );
-                draw_dialogue_text(
-                    font,
-                    &mut pixels,
-                    WIDTH,
-                    HEIGHT,
-                    label,
-                    x as i32 + 42,
-                    309,
-                    14.0,
-                    40,
-                    20,
-                    [246, 231, 199],
-                );
-            }
+            let _ = composite_nx_ui_bitmap(
+                &mut pixels,
+                WIDTH,
+                HEIGHT,
+                ui_archive,
+                "UIWindow.img/Quest/BtOK/normal/0",
+                overlay_x + 44,
+                overlay_y + 79,
+            );
+            let _ = composite_nx_ui_bitmap(
+                &mut pixels,
+                WIDTH,
+                HEIGHT,
+                ui_archive,
+                "UIWindow.img/Quest/BtNo/normal/0",
+                overlay_x + 147,
+                overlay_y + 79,
+            );
         }
         pixels
     }
@@ -21580,6 +28339,10 @@ mod native {
     }
 
     fn character_job_name(job: u16) -> String {
+        // v83 uses Rogue for job 400 in its character-selection stat sheet.
+        if job == 400 {
+            return "Rogue".to_owned();
+        }
         let branch = match job / 100 {
             0 => "Beginner",
             1 => "Warrior",
@@ -21608,6 +28371,7 @@ mod native {
 
     fn render_status_panel(
         font: &fontdue::Font,
+        ui_archive: &NxArchive,
         character: &openstory_protocol::CharacterInfo,
         waiting_for_stats: bool,
         auto_confirmation: bool,
@@ -21615,299 +28379,145 @@ mod native {
         const WIDTH: usize = STATUS_PANEL_WIDTH as usize;
         const HEIGHT: usize = STATUS_PANEL_HEIGHT as usize;
         let mut pixels = vec![0_u8; WIDTH * HEIGHT * 4];
-        fill_dialogue_rect(
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            0,
-            0,
-            WIDTH,
-            HEIGHT,
-            [26, 24, 22, 248],
-        );
-        fill_dialogue_rect(
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            0,
-            0,
-            WIDTH,
-            42,
-            [91, 69, 42, 255],
-        );
-        draw_dialogue_text(
-            font,
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            "Character Stats",
-            16,
-            10,
-            19.0,
-            280,
-            26,
-            [250, 235, 202],
-        );
-        fill_dialogue_rect(
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            318,
-            8,
-            30,
-            27,
-            [64, 45, 36, 255],
-        );
-        draw_dialogue_text(
-            font,
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            "X",
-            327,
-            12,
-            15.0,
-            16,
-            20,
-            [255, 224, 201],
-        );
+        for path in [
+            "UIWindow4.img/Stat/main/backgrnd",
+            "UIWindow4.img/Stat/main/backgrnd2",
+            "UIWindow4.img/Stat/main/backgrnd3",
+        ] {
+            if let Err(error) =
+                composite_nx_ui_bitmap(&mut pixels, WIDTH, HEIGHT, ui_archive, path, 0, 0)
+            {
+                eprintln!("OpenStoryRS: could not draw native stats art {path}: {error}");
+            }
+        }
 
         let stats = &character.stats;
+        let color = [56, 42, 31];
         draw_dialogue_text(
             font,
             &mut pixels,
             WIDTH,
             HEIGHT,
             &stats.name,
-            20,
-            54,
-            16.0,
-            300,
-            22,
-            [247, 230, 196],
+            73,
+            26,
+            11.0,
+            132,
+            15,
+            color,
+        );
+        let job = character_job_name(stats.job);
+        draw_dialogue_text(
+            font,
+            &mut pixels,
+            WIDTH,
+            HEIGHT,
+            &job,
+            74,
+            44,
+            11.0,
+            132,
+            15,
+            color,
         );
         draw_dialogue_text(
             font,
             &mut pixels,
             WIDTH,
             HEIGHT,
-            &format!("Level {}   {}", stats.level, character_job_name(stats.job)),
-            20,
+            "-",
+            74,
+            63,
+            11.0,
+            132,
+            15,
+            color,
+        );
+        draw_dialogue_text(
+            font,
+            &mut pixels,
+            WIDTH,
+            HEIGHT,
+            &stats.fame.to_string(),
+            74,
             80,
-            12.0,
-            320,
-            18,
-            [215, 211, 199],
+            11.0,
+            120,
+            15,
+            color,
         );
+        // Damage range is not included in the server's character-info packet.
         draw_dialogue_text(
             font,
             &mut pixels,
             WIDTH,
             HEIGHT,
-            &format!("HP   {} / {}", stats.hp, stats.max_hp),
-            24,
-            122,
-            12.0,
-            256,
-            19,
-            [245, 170, 160],
+            "—",
+            74,
+            98,
+            11.0,
+            120,
+            15,
+            color,
         );
-        draw_dialogue_text(
-            font,
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            &format!("MP   {} / {}", stats.mp, stats.max_mp),
-            24,
-            154,
-            12.0,
-            256,
-            19,
-            [162, 194, 245],
-        );
-        draw_dialogue_text(
-            font,
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            &format!("Fame   {}", stats.fame),
-            24,
-            186,
-            12.0,
-            256,
-            19,
-            [225, 219, 204],
-        );
-        fill_dialogue_rect(
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            16,
-            214,
-            324,
-            1,
-            [101, 88, 67, 255],
-        );
-        draw_dialogue_text(
-            font,
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            &format!("Unassigned AP: {}", stats.ability_points),
-            24,
-            222,
-            13.0,
-            300,
-            20,
-            [235, 216, 177],
-        );
+        for (value, y, x) in [
+            (format!("{} / {}", stats.hp, stats.max_hp), 116, 74),
+            (format!("{} / {}", stats.mp, stats.max_mp), 134, 74),
+            (stats.ability_points.to_string(), 175, 91),
+            (stats.strength.to_string(), 201, 73),
+            (stats.dexterity.to_string(), 219, 73),
+            (stats.intelligence.to_string(), 237, 73),
+            (stats.luck.to_string(), 255, 73),
+        ] {
+            draw_dialogue_text(
+                font,
+                &mut pixels,
+                WIDTH,
+                HEIGHT,
+                &value,
+                x,
+                y,
+                11.0,
+                116,
+                15,
+                color,
+            );
+        }
 
-        let available = stats.ability_points > 0 && !waiting_for_stats;
-        let rows = [
-            ("STR", stats.strength, 252),
-            ("DEX", stats.dexterity, 284),
-            ("INT", stats.intelligence, 316),
-            ("LUK", stats.luck, 348),
-        ];
-        for (label, value, y) in rows {
-            draw_dialogue_text(
-                font,
-                &mut pixels,
-                WIDTH,
-                HEIGHT,
-                label,
-                24,
-                (y + 2) as i32,
-                12.0,
-                54,
-                18,
-                [225, 221, 210],
-            );
-            draw_dialogue_text(
-                font,
-                &mut pixels,
-                WIDTH,
-                HEIGHT,
-                &value.to_string(),
-                96,
-                (y + 2) as i32,
-                12.0,
-                120,
-                18,
-                [240, 238, 229],
-            );
-            fill_dialogue_rect(
-                &mut pixels,
-                WIDTH,
-                HEIGHT,
-                304,
-                y,
-                38,
-                26,
-                if available {
-                    [82, 90, 59, 255]
+        let enabled = stats.ability_points > 0 && !waiting_for_stats;
+        for button in [
+            "BtHpUp", "BtMpUp", "BtStrUp", "BtDexUp", "BtIntUp", "BtLukUp", "BtAuto",
+        ] {
+            let state = if enabled { "normal" } else { "disabled" };
+            let path = format!("UIWindow4.img/Stat/main/{button}/{state}/0");
+            if let Err(error) =
+                composite_nx_ui_bitmap(&mut pixels, WIDTH, HEIGHT, ui_archive, &path, 0, 0)
+            {
+                if !enabled {
+                    // Some v83 UI packs omit disabled artwork. Keep the NX button visible.
+                    let normal = format!("UIWindow4.img/Stat/main/{button}/normal/0");
+                    let _ = composite_nx_ui_bitmap(
+                        &mut pixels,
+                        WIDTH,
+                        HEIGHT,
+                        ui_archive,
+                        &normal,
+                        0,
+                        0,
+                    );
                 } else {
-                    [54, 53, 49, 255]
-                },
-            );
-            draw_dialogue_text(
-                font,
-                &mut pixels,
-                WIDTH,
-                HEIGHT,
-                "+",
-                316,
-                (y + 2) as i32,
-                15.0,
-                18,
-                20,
-                if available {
-                    [231, 241, 207]
-                } else {
-                    [148, 145, 136]
-                },
-            );
+                    eprintln!("OpenStoryRS: could not draw native stats button {path}: {error}");
+                }
+            }
         }
-        for y in [116, 148] {
-            fill_dialogue_rect(
-                &mut pixels,
-                WIDTH,
-                HEIGHT,
-                304,
-                y,
-                38,
-                26,
-                if available {
-                    [82, 90, 59, 255]
-                } else {
-                    [54, 53, 49, 255]
-                },
-            );
-            draw_dialogue_text(
-                font,
-                &mut pixels,
-                WIDTH,
-                HEIGHT,
-                "+",
-                316,
-                (y + 2) as i32,
-                15.0,
-                18,
-                20,
-                if available {
-                    [231, 241, 207]
-                } else {
-                    [148, 145, 136]
-                },
-            );
-        }
-        fill_dialogue_rect(
+        let _ = composite_nx_ui_bitmap(
             &mut pixels,
             WIDTH,
             HEIGHT,
-            214,
-            394,
-            128,
-            32,
-            if available {
-                [94, 67, 43, 255]
-            } else {
-                [54, 53, 49, 255]
-            },
-        );
-        draw_dialogue_text(
-            font,
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            "Auto",
-            255,
-            401,
-            12.0,
-            60,
-            18,
-            if available {
-                [247, 226, 194]
-            } else {
-                [148, 145, 136]
-            },
-        );
-        draw_dialogue_text(
-            font,
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            if waiting_for_stats {
-                "Waiting for server update…"
-            } else {
-                "Server confirms each AP change"
-            },
-            24,
-            410,
-            9.0,
-            180,
-            16,
-            [165, 163, 155],
+            ui_archive,
+            "Basic.img/BtClose3/normal/0",
+            190,
+            6,
         );
 
         if auto_confirmation {
@@ -21926,10 +28536,10 @@ mod native {
                 WIDTH,
                 HEIGHT,
                 32,
-                144,
-                292,
-                150,
-                [33, 31, 30, 255],
+                96,
+                148,
+                124,
+                [245, 239, 224, 255],
             );
             draw_dialogue_text(
                 font,
@@ -21937,47 +28547,44 @@ mod native {
                 WIDTH,
                 HEIGHT,
                 "Auto-allocate AP?",
-                54,
-                170,
-                16.0,
-                250,
-                24,
-                [246, 231, 199],
+                43,
+                112,
+                12.0,
+                138,
+                18,
+                color,
             );
+            let primary = match primary_ability_stat(character) {
+                openstory_protocol::AbilityStat::Hp => "HP",
+                openstory_protocol::AbilityStat::Mp => "MP",
+                openstory_protocol::AbilityStat::Strength => "STR",
+                openstory_protocol::AbilityStat::Dexterity => "DEX",
+                openstory_protocol::AbilityStat::Intelligence => "INT",
+                openstory_protocol::AbilityStat::Luck => "LUK",
+            };
             draw_dialogue_text(
                 font,
                 &mut pixels,
                 WIDTH,
                 HEIGHT,
-                &format!(
-                    "{} points go to {}.",
-                    stats.ability_points,
-                    match primary_ability_stat(character) {
-                        openstory_protocol::AbilityStat::Hp => "HP",
-                        openstory_protocol::AbilityStat::Mp => "MP",
-                        openstory_protocol::AbilityStat::Strength => "STR",
-                        openstory_protocol::AbilityStat::Dexterity => "DEX",
-                        openstory_protocol::AbilityStat::Intelligence => "INT",
-                        openstory_protocol::AbilityStat::Luck => "LUK",
-                    }
-                ),
-                54,
-                204,
-                11.0,
-                250,
+                &format!("{} points to {primary}.", stats.ability_points),
+                43,
+                139,
+                10.0,
+                138,
                 20,
-                [220, 216, 204],
+                color,
             );
-            for (x, label) in [(48, "Yes"), (190, "No")] {
+            for (x, label) in [(27, "Yes"), (116, "No")] {
                 fill_dialogue_rect(
                     &mut pixels,
                     WIDTH,
                     HEIGHT,
                     x,
-                    248,
-                    118,
-                    38,
-                    [88, 68, 45, 255],
+                    184,
+                    69,
+                    32,
+                    [120, 87, 46, 255],
                 );
                 draw_dialogue_text(
                     font,
@@ -21985,16 +28592,633 @@ mod native {
                     WIDTH,
                     HEIGHT,
                     label,
-                    x as i32 + 42,
-                    257,
-                    14.0,
+                    x as i32 + 22,
+                    191,
+                    11.0,
                     40,
-                    20,
-                    [246, 231, 199],
+                    16,
+                    [255, 250, 235],
                 );
             }
         }
         pixels
+    }
+
+    const KEY_CONFIG_ACTIONS: [(&str, u8, i32); 40] = [
+        ("Equipment", 4, 0),
+        ("Items", 4, 1),
+        ("Stats", 4, 2),
+        ("Skills", 4, 3),
+        ("Friends", 4, 4),
+        ("World map", 4, 5),
+        ("Public chat", 4, 6),
+        ("Mini map", 4, 7),
+        ("Quest log", 4, 8),
+        ("Key bindings", 4, 9),
+        ("Say", 4, 10),
+        ("Whisper", 4, 11),
+        ("Party chat", 4, 12),
+        ("Friends chat", 4, 13),
+        ("Quick slots", 4, 15),
+        ("Toggle chat", 4, 16),
+        ("Guild", 4, 17),
+        ("Guild chat", 4, 18),
+        ("Party", 4, 19),
+        ("Character info", 4, 21),
+        ("Monster Book", 4, 22),
+        ("Cash Shop", 4, 23),
+        ("Alliance chat", 4, 24),
+        ("Change channel", 4, 25),
+        ("Messenger", 4, 26),
+        ("Party search", 4, 27),
+        ("Settings", 4, 28),
+        ("Family", 4, 42),
+        ("Pick up", 5, 50),
+        ("Sit", 5, 51),
+        ("Attack", 5, 52),
+        ("Jump", 5, 53),
+        ("NPC interaction", 5, 54),
+        ("Face 1", 6, 100),
+        ("Face 2", 6, 101),
+        ("Face 3", 6, 102),
+        ("Face 4", 6, 103),
+        ("Face 5", 6, 104),
+        ("Face 6", 6, 105),
+        ("Face 7", 6, 106),
+    ];
+
+    fn static_key_config_actions() -> Vec<KeyConfigAction> {
+        KEY_CONFIG_ACTIONS
+            .iter()
+            .map(|(label, kind, action)| KeyConfigAction {
+                label: (*label).to_owned(),
+                kind: *kind,
+                action: *action,
+                assignable: true,
+            })
+            .collect()
+    }
+
+    fn key_config_skill_name(skill_id: i32, string_archive: &NxArchive) -> String {
+        let path = format!("Skill.img/{skill_id:07}");
+        string_archive
+            .root()
+            .resolve(&path)
+            .ok()
+            .flatten()
+            .and_then(|node| string_property(&node, "name"))
+            .filter(|name| !name.trim().is_empty())
+            .unwrap_or_else(|| format!("Skill #{skill_id}"))
+    }
+
+    fn build_key_config_actions(
+        inventory: Option<&openstory_protocol::InventorySnapshot>,
+        skills: &HashMap<i32, openstory_protocol::SkillEntry>,
+        server_keymap: Option<&[openstory_protocol::KeyBinding]>,
+        macros: &[openstory_protocol::SkillMacro],
+        string_archive: &NxArchive,
+        item_name_cache: &mut HashMap<i32, Option<String>>,
+    ) -> Vec<KeyConfigAction> {
+        let mut actions = static_key_config_actions();
+        let mut skill_actions = BTreeMap::<i32, KeyConfigAction>::new();
+        let mut item_actions = BTreeMap::<(u8, i32), KeyConfigAction>::new();
+        let mut macro_actions = BTreeMap::<i32, KeyConfigAction>::new();
+
+        if let Some(bindings) = server_keymap {
+            for binding in bindings {
+                match (binding.kind, binding.action) {
+                    (1, skill_id) if skill_id > 0 => {
+                        let name = key_config_skill_name(skill_id, string_archive);
+                        skill_actions.entry(skill_id).or_insert(KeyConfigAction {
+                            label: format!("Skill: {name} (unavailable)"),
+                            kind: 1,
+                            action: skill_id,
+                            assignable: false,
+                        });
+                    }
+                    (kind @ (2 | 3), item_id) if item_id > 0 => {
+                        let name = item_name(item_id, string_archive, item_name_cache);
+                        let category = if kind == 3 { "Cash" } else { "Item" };
+                        item_actions
+                            .entry((kind, item_id))
+                            .or_insert(KeyConfigAction {
+                                label: format!("{category}: {name} (not owned)"),
+                                kind,
+                                action: item_id,
+                                assignable: false,
+                            });
+                    }
+                    (8, macro_index) => {
+                        let label = usize::try_from(macro_index)
+                            .ok()
+                            .and_then(|index| {
+                                macros.get(index).map(|macro_entry| (index, macro_entry))
+                            })
+                            .map_or_else(
+                                || format!("Macro #{macro_index} (unavailable)"),
+                                |(index, macro_entry)| {
+                                    if macro_entry.name.is_empty() {
+                                        format!("Macro {}", index + 1)
+                                    } else {
+                                        format!("Macro: {}", macro_entry.name)
+                                    }
+                                },
+                            );
+                        macro_actions.entry(macro_index).or_insert(KeyConfigAction {
+                            label,
+                            kind: 8,
+                            action: macro_index,
+                            assignable: usize::try_from(macro_index)
+                                .is_ok_and(|index| index < openstory_protocol::SKILL_MACRO_COUNT),
+                        });
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        for skill in skills.values().filter(|skill| skill.id > 0) {
+            let passive = (skill.id % 10_000) / 1_000 == 0;
+            if skill.level <= 0 || passive {
+                continue;
+            }
+            let name = key_config_skill_name(skill.id, string_archive);
+            skill_actions.insert(
+                skill.id,
+                KeyConfigAction {
+                    label: format!("Skill: {name}"),
+                    kind: 1,
+                    action: skill.id,
+                    assignable: true,
+                },
+            );
+        }
+
+        if let Some(inventory) = inventory {
+            for item in inventory.items.iter().filter(|item| item.count > 0) {
+                let (kind, category) = match item.inventory_type {
+                    openstory_protocol::InventoryType::Use => (2, "Use"),
+                    openstory_protocol::InventoryType::Setup => (2, "Setup"),
+                    openstory_protocol::InventoryType::Cash => (3, "Cash"),
+                    _ => continue,
+                };
+                let name = item_name(item.item_id, string_archive, item_name_cache);
+                item_actions.insert(
+                    (kind, item.item_id),
+                    KeyConfigAction {
+                        label: format!("{category}: {name}"),
+                        kind,
+                        action: item.item_id,
+                        assignable: true,
+                    },
+                );
+            }
+        }
+
+        actions.extend(skill_actions.into_values());
+        actions.extend(item_actions.into_values());
+        for (index, macro_entry) in macros.iter().enumerate() {
+            let action = index as i32;
+            macro_actions.insert(
+                action,
+                KeyConfigAction {
+                    label: if macro_entry.name.is_empty() {
+                        format!("Macro {}", index + 1)
+                    } else {
+                        format!("Macro: {}", macro_entry.name)
+                    },
+                    kind: 8,
+                    action,
+                    assignable: true,
+                },
+            );
+        }
+        actions.extend(macro_actions.into_values());
+        actions
+    }
+
+    fn default_keymap_bindings() -> Vec<openstory_protocol::KeyBinding> {
+        let mut bindings = vec![openstory_protocol::KeyBinding::default(); 90];
+        for (key, action) in [(29, 52), (56, 53), (45, 50), (46, 51), (57, 54)] {
+            bindings[key] = openstory_protocol::KeyBinding { kind: 5, action };
+        }
+        bindings
+    }
+
+    fn render_key_config_panel(
+        font: &fontdue::Font,
+        bindings: &[openstory_protocol::KeyBinding],
+        quickslot_keys: &[u8; 8],
+        capture: Option<usize>,
+        quickslot_capture: Option<usize>,
+        first_row: usize,
+        actions: &[KeyConfigAction],
+    ) -> Vec<u8> {
+        let width = KEY_CONFIG_PANEL_WIDTH as usize;
+        let height = KEY_CONFIG_PANEL_HEIGHT as usize;
+        let mut pixels = vec![0_u8; width * height * 4];
+        fill_dialogue_rect(
+            &mut pixels,
+            width,
+            height,
+            0,
+            0,
+            width,
+            height,
+            [27, 25, 23, 250],
+        );
+        fill_dialogue_rect(
+            &mut pixels,
+            width,
+            height,
+            0,
+            0,
+            width,
+            42,
+            [91, 69, 42, 255],
+        );
+        draw_dialogue_text(
+            font,
+            &mut pixels,
+            width,
+            height,
+            "Keyboard Bindings",
+            16,
+            10,
+            19.0,
+            width - 32,
+            26,
+            [250, 235, 202],
+        );
+        draw_dialogue_text(
+            font,
+            &mut pixels,
+            width,
+            height,
+            "X",
+            width as i32 - 28,
+            10,
+            18.0,
+            18,
+            24,
+            [255, 224, 178],
+        );
+        draw_dialogue_text(
+            font,
+            &mut pixels,
+            width,
+            height,
+            "Click an action or press 1-8, then press its key.",
+            18,
+            48,
+            12.0,
+            width - 36,
+            20,
+            [223, 216, 197],
+        );
+        draw_dialogue_text(
+            font,
+            &mut pixels,
+            width,
+            height,
+            "Mouse wheel scrolls; Backspace clears a binding.",
+            18,
+            62,
+            11.0,
+            width - 36,
+            16,
+            [183, 177, 164],
+        );
+        let first_row = first_row.min(actions.len().saturating_sub(KEY_CONFIG_VISIBLE_ROWS));
+        for (visible_row, index) in (first_row..actions.len())
+            .take(KEY_CONFIG_VISIBLE_ROWS)
+            .enumerate()
+        {
+            let action_entry = &actions[index];
+            let y = KEY_CONFIG_ROW_TOP + visible_row as i32 * KEY_CONFIG_ROW_HEIGHT;
+            let is_capturing = capture == Some(index);
+            fill_dialogue_rect(
+                &mut pixels,
+                width,
+                height,
+                14,
+                y as usize,
+                width - 28,
+                28,
+                if is_capturing {
+                    [91, 72, 43, 255]
+                } else {
+                    [45, 41, 35, 255]
+                },
+            );
+            let maple_key = bindings
+                .iter()
+                .take(90)
+                .position(|binding| {
+                    binding.kind == action_entry.kind && binding.action == action_entry.action
+                })
+                .map(|key| key as u8);
+            let assigned = if is_capturing {
+                if action_entry.assignable {
+                    "Press a key...".to_owned()
+                } else {
+                    "Backspace clears".to_owned()
+                }
+            } else {
+                maple_key.map_or_else(|| "Unbound".to_owned(), maple_key_label)
+            };
+            draw_dialogue_text(
+                font,
+                &mut pixels,
+                width,
+                height,
+                &format!("{}  {}", visible_row + 1, action_entry.label),
+                24,
+                y + 5,
+                15.0,
+                235,
+                20,
+                if action_entry.assignable {
+                    [238, 232, 216]
+                } else {
+                    [175, 164, 148]
+                },
+            );
+            draw_dialogue_text(
+                font,
+                &mut pixels,
+                width,
+                height,
+                &assigned,
+                267,
+                y + 5,
+                15.0,
+                138,
+                20,
+                if is_capturing && action_entry.assignable {
+                    [255, 218, 142]
+                } else if !action_entry.assignable {
+                    [207, 169, 133]
+                } else {
+                    [199, 221, 195]
+                },
+            );
+        }
+        let last_row = (first_row + KEY_CONFIG_VISIBLE_ROWS).min(actions.len());
+        draw_dialogue_text(
+            font,
+            &mut pixels,
+            width,
+            height,
+            &format!(
+                "Actions {}–{} of {}",
+                first_row + 1,
+                last_row,
+                actions.len()
+            ),
+            18,
+            333,
+            11.0,
+            width - 36,
+            14,
+            [183, 177, 164],
+        );
+        fill_dialogue_rect(
+            &mut pixels,
+            width,
+            height,
+            14,
+            350,
+            width - 28,
+            1,
+            [101, 88, 66, 255],
+        );
+        draw_dialogue_text(
+            font,
+            &mut pixels,
+            width,
+            height,
+            "Quick-slot keys",
+            18,
+            356,
+            14.0,
+            width - 36,
+            19,
+            [240, 224, 191],
+        );
+        for row in 0..2 {
+            for column in 0..4 {
+                let slot = row * 4 + column;
+                let x = 16 + column * 98;
+                let y = 378 + row * 21;
+                let capturing = quickslot_capture == Some(slot);
+                fill_dialogue_rect(
+                    &mut pixels,
+                    width,
+                    height,
+                    x,
+                    y,
+                    94,
+                    19,
+                    if capturing {
+                        [91, 72, 43, 255]
+                    } else {
+                        [45, 41, 35, 255]
+                    },
+                );
+                let label = if capturing {
+                    format!("{}: Press key", slot + 1)
+                } else {
+                    format!("{}: {}", slot + 1, maple_key_label(quickslot_keys[slot]))
+                };
+                draw_dialogue_text(
+                    font,
+                    &mut pixels,
+                    width,
+                    height,
+                    &label,
+                    x as i32 + 4,
+                    y as i32 + 2,
+                    11.0,
+                    87,
+                    15,
+                    if capturing {
+                        [255, 218, 142]
+                    } else {
+                        [213, 213, 207]
+                    },
+                );
+            }
+        }
+        draw_dialogue_text(
+            font,
+            &mut pixels,
+            width,
+            height,
+            "Click a slot, then press a key. Esc/Backspace cancels; changes save locally.",
+            18,
+            423,
+            10.0,
+            width - 36,
+            16,
+            [183, 177, 164],
+        );
+        pixels
+    }
+
+    fn maple_key_from_physical(key: PhysicalKey) -> Option<u8> {
+        let PhysicalKey::Code(key) = key else {
+            return None;
+        };
+        Some(match key {
+            KeyCode::Digit0 => 2,
+            KeyCode::Digit1 => 3,
+            KeyCode::Digit2 => 4,
+            KeyCode::Digit3 => 5,
+            KeyCode::Digit4 => 6,
+            KeyCode::Digit5 => 7,
+            KeyCode::Digit6 => 8,
+            KeyCode::Digit7 => 9,
+            KeyCode::Digit8 => 10,
+            KeyCode::Digit9 => 11,
+            KeyCode::Minus => 12,
+            KeyCode::Equal => 13,
+            KeyCode::KeyQ => 16,
+            KeyCode::KeyW => 17,
+            KeyCode::KeyE => 18,
+            KeyCode::KeyR => 19,
+            KeyCode::KeyT => 20,
+            KeyCode::KeyY => 21,
+            KeyCode::KeyU => 22,
+            KeyCode::KeyI => 23,
+            KeyCode::KeyO => 24,
+            KeyCode::KeyP => 25,
+            KeyCode::BracketLeft => 26,
+            KeyCode::BracketRight => 27,
+            KeyCode::ControlLeft => 29,
+            KeyCode::KeyA => 30,
+            KeyCode::KeyS => 31,
+            KeyCode::KeyD => 32,
+            KeyCode::KeyF => 33,
+            KeyCode::KeyG => 34,
+            KeyCode::KeyH => 35,
+            KeyCode::KeyJ => 36,
+            KeyCode::KeyK => 37,
+            KeyCode::KeyL => 38,
+            KeyCode::Semicolon => 39,
+            KeyCode::Quote => 40,
+            KeyCode::Backquote => 41,
+            KeyCode::ShiftLeft => 42,
+            KeyCode::Backslash => 43,
+            KeyCode::KeyZ => 45,
+            KeyCode::KeyX => 46,
+            KeyCode::KeyC => 47,
+            KeyCode::KeyV => 48,
+            KeyCode::KeyB => 49,
+            KeyCode::KeyN => 50,
+            KeyCode::KeyM => 51,
+            KeyCode::Comma => 52,
+            KeyCode::Period => 53,
+            KeyCode::AltLeft | KeyCode::SuperLeft => 56,
+            KeyCode::Space => 57,
+            KeyCode::F1 => 59,
+            KeyCode::F2 => 60,
+            KeyCode::F3 => 61,
+            KeyCode::F4 => 62,
+            KeyCode::F5 => 63,
+            KeyCode::F6 => 64,
+            KeyCode::F7 => 65,
+            KeyCode::F8 => 66,
+            KeyCode::F9 => 67,
+            KeyCode::F10 => 68,
+            KeyCode::F11 => 69,
+            KeyCode::F12 => 70,
+            KeyCode::Home => 71,
+            KeyCode::PageUp => 73,
+            KeyCode::End => 79,
+            KeyCode::PageDown => 81,
+            KeyCode::Insert => 82,
+            KeyCode::Delete => 83,
+            KeyCode::Escape => 84,
+            KeyCode::ControlRight => 85,
+            KeyCode::ShiftRight => 86,
+            KeyCode::AltRight | KeyCode::SuperRight => 87,
+            KeyCode::ScrollLock => 88,
+            _ => return None,
+        })
+    }
+
+    fn quickslot_key_slot_at(local_x: f32, local_y: f32) -> Option<usize> {
+        let row = if (378.0..397.0).contains(&local_y) {
+            0
+        } else if (399.0..418.0).contains(&local_y) {
+            1
+        } else {
+            return None;
+        };
+        if !(16.0..408.0).contains(&local_x) {
+            return None;
+        }
+        let column = ((local_x - 16.0) / 98.0).floor() as usize;
+        (column < 4).then_some(row * 4 + column)
+    }
+
+    fn maple_key_label(key: u8) -> String {
+        match key {
+            2..=11 => char::from(b'0' + (key - 2)).to_string(),
+            12 => "-".to_owned(),
+            13 => "=".to_owned(),
+            16..=25 => {
+                ["Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P"][usize::from(key - 16)].to_owned()
+            }
+            26 => "[".to_owned(),
+            27 => "]".to_owned(),
+            29 => "L Ctrl".to_owned(),
+            30..=38 => char::from(b'A' + (key - 30)).to_string(),
+            39 => ";".to_owned(),
+            40 => "'".to_owned(),
+            41 => "`".to_owned(),
+            42 => "L Shift".to_owned(),
+            43 => "\\".to_owned(),
+            45..=51 => ["Z", "X", "C", "V", "B", "N", "M"][usize::from(key - 45)].to_owned(),
+            52 => ",".to_owned(),
+            53 => ".".to_owned(),
+            56 => "Alt / Cmd".to_owned(),
+            57 => "Space".to_owned(),
+            59..=70 => format!("F{}", key - 58),
+            71 => "Home".to_owned(),
+            73 => "Page Up".to_owned(),
+            79 => "End".to_owned(),
+            81 => "Page Down".to_owned(),
+            82 => "Insert".to_owned(),
+            83 => "Delete".to_owned(),
+            84 => "Escape".to_owned(),
+            85 => "R Ctrl".to_owned(),
+            86 => "R Shift".to_owned(),
+            87 => "R Alt / Cmd".to_owned(),
+            88 => "Scroll Lock".to_owned(),
+            _ => format!("Key {key}"),
+        }
+    }
+
+    fn quickslot_short_key_label(key: u8) -> String {
+        match key {
+            14 => "Bksp".to_owned(),
+            15 => "Tab".to_owned(),
+            29 | 85 => "Ctl".to_owned(),
+            42 | 86 => "Shft".to_owned(),
+            56 | 87 => "Alt".to_owned(),
+            57 => "Spc".to_owned(),
+            71 => "Hme".to_owned(),
+            73 => "PgU".to_owned(),
+            79 => "End".to_owned(),
+            81 => "PgD".to_owned(),
+            82 => "Ins".to_owned(),
+            83 => "Del".to_owned(),
+            84 => "Esc".to_owned(),
+            88 => "Scr".to_owned(),
+            _ => maple_key_label(key),
+        }
     }
 
     fn render_skill_book_panel(
@@ -22110,6 +29334,29 @@ mod native {
             120,
             17,
             [218, 218, 218],
+        );
+        fill_dialogue_rect(
+            &mut pixels,
+            WIDTH,
+            HEIGHT,
+            300,
+            71,
+            112,
+            19,
+            [69, 57, 40, 255],
+        );
+        draw_dialogue_text(
+            font,
+            &mut pixels,
+            WIDTH,
+            HEIGHT,
+            "Macros…",
+            328,
+            73,
+            11.0,
+            74,
+            16,
+            [238, 220, 181],
         );
         fill_dialogue_rect(
             &mut pixels,
@@ -22262,10 +29509,11 @@ mod native {
         pixels
     }
 
-    fn render_audio_settings_panel(
+    fn render_options_panel(
         font: &fontdue::Font,
         settings: AudioSettings,
-        selected: AudioSettingSlider,
+        gameplay_settings: GameplaySettings,
+        selected: OptionSlider,
         notice: Option<&str>,
     ) -> Vec<u8> {
         const WIDTH: usize = SETTINGS_PANEL_WIDTH as usize;
@@ -22317,16 +29565,28 @@ mod native {
 
         for (slider, label, value, y) in [
             (
-                AudioSettingSlider::Music,
+                OptionSlider::Music,
                 "Music volume",
                 settings.music_volume,
+                66,
+            ),
+            (
+                OptionSlider::Effects,
+                "Sound effects",
+                settings.effects_volume,
                 108,
             ),
             (
-                AudioSettingSlider::Effects,
-                "Sound effects",
-                settings.effects_volume,
-                168,
+                OptionSlider::HpWarning,
+                "HP warning",
+                gameplay_settings.hp_warning,
+                169,
+            ),
+            (
+                OptionSlider::MpWarning,
+                "MP warning",
+                gameplay_settings.mp_warning,
+                211,
             ),
         ] {
             draw_dialogue_text(
@@ -22381,12 +29641,19 @@ mod native {
                     [203, 197, 180, 255]
                 },
             );
+            let value_label = if matches!(slider, OptionSlider::HpWarning | OptionSlider::MpWarning)
+                && value == 0
+            {
+                "Off".to_owned()
+            } else {
+                format!("{value}%")
+            };
             draw_dialogue_text(
                 font,
                 &mut pixels,
                 WIDTH,
                 HEIGHT,
-                &format!("{value}%"),
+                &value_label,
                 438,
                 y as i32 - 12,
                 13.0,
@@ -22401,9 +29668,9 @@ mod native {
             &mut pixels,
             WIDTH,
             HEIGHT,
-            "Drag a slider or use Left/Right. Tab changes the selected slider.",
+            "Set a warning to Off to disable its low-resource overlay.",
             24,
-            216,
+            242,
             11.0,
             WIDTH - 48,
             16,
@@ -22417,7 +29684,7 @@ mod native {
                 HEIGHT,
                 notice,
                 24,
-                236,
+                258,
                 10.0,
                 WIDTH - 48,
                 30,
@@ -22429,7 +29696,7 @@ mod native {
             (266, "Save", [88, 68, 45, 255]),
             (370, "Cancel", [65, 63, 57, 255]),
         ] {
-            fill_dialogue_rect(&mut pixels, WIDTH, HEIGHT, x, 270, 96, 40, color);
+            fill_dialogue_rect(&mut pixels, WIDTH, HEIGHT, x, 278, 96, 36, color);
             draw_dialogue_text(
                 font,
                 &mut pixels,
@@ -22437,7 +29704,7 @@ mod native {
                 HEIGHT,
                 label,
                 (x + 22) as i32,
-                280,
+                286,
                 13.0,
                 70,
                 20,
@@ -23848,6 +31115,639 @@ mod native {
             };
         };
         choice.colors[index.saturating_add_signed(delta as isize).min(last)]
+    }
+
+    fn render_family_panel(
+        font: &fontdue::Font,
+        ui_archive: &NxArchive,
+        state: &FamilyUiState,
+    ) -> Vec<u8> {
+        let width = FAMILY_PANEL_WIDTH as usize;
+        let height = FAMILY_PANEL_HEIGHT as usize;
+        let mut pixels = vec![0; width * height * 4];
+        fill_dialogue_rect(
+            &mut pixels,
+            width,
+            height,
+            0,
+            0,
+            width,
+            height,
+            [18, 15, 12, 242],
+        );
+        draw_family_nx_background(
+            &mut pixels,
+            width,
+            height,
+            ui_archive,
+            "UIWindow2.img/Family/backgrnd",
+            1.28,
+        );
+
+        draw_dialogue_text(
+            font,
+            &mut pixels,
+            width,
+            height,
+            "Family",
+            15,
+            11,
+            15.0,
+            width - 52,
+            20,
+            [255, 235, 191],
+        );
+        draw_guild_button(font, &mut pixels, width, height, (242, 5, 24, 24), "X");
+
+        if let Some(info) = state.info.as_ref() {
+            draw_dialogue_text(
+                font,
+                &mut pixels,
+                width,
+                height,
+                if info.name.trim().is_empty() {
+                    "No family"
+                } else {
+                    info.name.as_str()
+                },
+                15,
+                49,
+                13.0,
+                width - 30,
+                20,
+                [255, 226, 145],
+            );
+            for (index, (label, value)) in [
+                ("Reputation", info.current_reputation),
+                ("Total", info.total_reputation),
+                ("Today", info.todays_reputation),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let y = 82 + index as i32 * 23;
+                draw_dialogue_text(
+                    font,
+                    &mut pixels,
+                    width,
+                    height,
+                    label,
+                    18,
+                    y,
+                    9.0,
+                    94,
+                    15,
+                    [190, 181, 157],
+                );
+                draw_dialogue_text(
+                    font,
+                    &mut pixels,
+                    width,
+                    height,
+                    &value.to_string(),
+                    122,
+                    y,
+                    9.0,
+                    130,
+                    15,
+                    [248, 242, 221],
+                );
+            }
+            draw_dialogue_text(
+                font,
+                &mut pixels,
+                width,
+                height,
+                &format!(
+                    "Juniors: {} / {}",
+                    info.junior_count.max(0),
+                    info.juniors_allowed.max(0)
+                ),
+                18,
+                158,
+                9.0,
+                width - 36,
+                16,
+                [214, 205, 181],
+            );
+            fill_dialogue_rect(
+                &mut pixels,
+                width,
+                height,
+                14,
+                185,
+                width - 28,
+                52,
+                [30, 25, 20, 228],
+            );
+            draw_dialogue_text(
+                font,
+                &mut pixels,
+                width,
+                height,
+                "Family motto · click to edit",
+                21,
+                187,
+                7.0,
+                width - 42,
+                12,
+                [178, 167, 143],
+            );
+            draw_dialogue_text(
+                font,
+                &mut pixels,
+                width,
+                height,
+                if info.message.trim().is_empty() {
+                    "No motto set"
+                } else {
+                    info.message.as_str()
+                },
+                21,
+                201,
+                9.0,
+                width - 42,
+                32,
+                [229, 220, 197],
+            );
+        } else {
+            draw_dialogue_text(
+                font,
+                &mut pixels,
+                width,
+                height,
+                "Requesting family information…",
+                18,
+                64,
+                10.0,
+                width - 36,
+                30,
+                [220, 211, 188],
+            );
+        }
+
+        let default_abilities = [
+            ("Teleport", "Teleport to a selected family member."),
+            ("Summon", "Summon a selected family member."),
+            ("Drop buff", "Increase item drop rate for a short time."),
+            ("EXP buff", "Increase EXP gained for a short time."),
+            ("Drop + EXP", "Increase drop rate and EXP for a short time."),
+        ];
+        let ability_index = state.selected_ability.min(default_abilities.len() - 1);
+        let fallback = default_abilities[ability_index];
+        let privilege = state
+            .privileges
+            .iter()
+            .find(|privilege| usize::from(privilege.kind) == ability_index);
+        let ability_name = privilege.map_or(fallback.0, |privilege| privilege.name.as_str());
+        let ability_description =
+            privilege.map_or(fallback.1, |privilege| privilege.description.as_str());
+        fill_dialogue_rect(
+            &mut pixels,
+            width,
+            height,
+            14,
+            260,
+            width - 28,
+            91,
+            [28, 24, 19, 232],
+        );
+        draw_dialogue_text(
+            font,
+            &mut pixels,
+            width,
+            height,
+            "Family ability",
+            20,
+            270,
+            8.0,
+            100,
+            14,
+            [178, 167, 143],
+        );
+        draw_dialogue_text(
+            font,
+            &mut pixels,
+            width,
+            height,
+            ability_name,
+            20,
+            287,
+            11.0,
+            width - 40,
+            16,
+            [255, 225, 144],
+        );
+        draw_guild_button(font, &mut pixels, width, height, (196, 299, 29, 25), "<");
+        draw_guild_button(font, &mut pixels, width, height, (236, 299, 29, 25), ">");
+        draw_dialogue_text(
+            font,
+            &mut pixels,
+            width,
+            height,
+            ability_description,
+            20,
+            313,
+            8.0,
+            width - 40,
+            20,
+            [204, 195, 174],
+        );
+        if let Some(privilege) = privilege {
+            draw_dialogue_text(
+                font,
+                &mut pixels,
+                width,
+                height,
+                &format!(
+                    "Cost: {} rep  ·  Uses: {}",
+                    privilege.reputation_cost, privilege.usage_limit
+                ),
+                20,
+                334,
+                8.0,
+                width - 40,
+                14,
+                [196, 185, 159],
+            );
+        }
+        if let Some(notice) = state.notice.as_deref() {
+            draw_dialogue_text(
+                font,
+                &mut pixels,
+                width,
+                height,
+                notice,
+                18,
+                360,
+                8.0,
+                width - 36,
+                23,
+                [255, 157, 132],
+            );
+        }
+        draw_guild_button(font, &mut pixels, width, height, (12, 390, 60, 32), "Tree");
+        draw_guild_button(font, &mut pixels, width, height, (76, 390, 50, 32), "Use");
+        draw_guild_button(
+            font,
+            &mut pixels,
+            width,
+            height,
+            (130, 390, 58, 32),
+            "Invite",
+        );
+        draw_guild_button(
+            font,
+            &mut pixels,
+            width,
+            height,
+            (192, 390, 68, 32),
+            "Leave",
+        );
+
+        if let Some(input) = state.input.as_ref() {
+            fill_dialogue_rect(
+                &mut pixels,
+                width,
+                height,
+                0,
+                0,
+                width,
+                height,
+                [0, 0, 0, 150],
+            );
+            fill_dialogue_rect(
+                &mut pixels,
+                width,
+                height,
+                24,
+                124,
+                226,
+                166,
+                [27, 23, 19, 255],
+            );
+            for (x, y, w, h) in [
+                (24, 124, 226, 2),
+                (24, 288, 226, 2),
+                (24, 124, 2, 166),
+                (248, 124, 2, 166),
+            ] {
+                fill_dialogue_rect(&mut pixels, width, height, x, y, w, h, [147, 121, 78, 255]);
+            }
+            let (heading, helper) = match input.kind {
+                FamilyInputKind::InviteJunior => ("Invite a junior", "Enter a name (max 13)"),
+                FamilyInputKind::EditPrecepts => ("Edit family motto", "Enter a motto (max 200)"),
+            };
+            draw_dialogue_text(
+                font,
+                &mut pixels,
+                width,
+                height,
+                heading,
+                38,
+                140,
+                12.0,
+                198,
+                18,
+                [255, 229, 169],
+            );
+            draw_dialogue_text(
+                font,
+                &mut pixels,
+                width,
+                height,
+                helper,
+                38,
+                164,
+                8.0,
+                198,
+                14,
+                [194, 183, 159],
+            );
+            fill_dialogue_rect(
+                &mut pixels,
+                width,
+                height,
+                38,
+                190,
+                198,
+                35,
+                [12, 10, 8, 255],
+            );
+            draw_dialogue_text(
+                font,
+                &mut pixels,
+                width,
+                height,
+                &input.text,
+                45,
+                199,
+                10.0,
+                184,
+                20,
+                [245, 236, 215],
+            );
+            draw_guild_button(font, &mut pixels, width, height, (53, 253, 79, 28), "OK");
+            draw_guild_button(
+                font,
+                &mut pixels,
+                width,
+                height,
+                (143, 253, 79, 28),
+                "Cancel",
+            );
+        } else if state.confirm_leave {
+            fill_dialogue_rect(
+                &mut pixels,
+                width,
+                height,
+                0,
+                0,
+                width,
+                height,
+                [0, 0, 0, 150],
+            );
+            fill_dialogue_rect(
+                &mut pixels,
+                width,
+                height,
+                24,
+                124,
+                226,
+                166,
+                [27, 23, 19, 255],
+            );
+            for (x, y, w, h) in [
+                (24, 124, 226, 2),
+                (24, 288, 226, 2),
+                (24, 124, 2, 166),
+                (248, 124, 2, 166),
+            ] {
+                fill_dialogue_rect(&mut pixels, width, height, x, y, w, h, [147, 121, 78, 255]);
+            }
+            draw_dialogue_text(
+                font,
+                &mut pixels,
+                width,
+                height,
+                "Leave your family?",
+                38,
+                162,
+                12.0,
+                198,
+                20,
+                [255, 229, 169],
+            );
+            draw_dialogue_text(
+                font,
+                &mut pixels,
+                width,
+                height,
+                "Your family relationship will end.",
+                38,
+                188,
+                8.0,
+                198,
+                24,
+                [210, 198, 175],
+            );
+            draw_guild_button(font, &mut pixels, width, height, (53, 253, 79, 28), "Leave");
+            draw_guild_button(
+                font,
+                &mut pixels,
+                width,
+                height,
+                (143, 253, 79, 28),
+                "Cancel",
+            );
+        }
+        pixels
+    }
+
+    fn render_family_tree_panel(
+        font: &fontdue::Font,
+        ui_archive: &NxArchive,
+        state: &FamilyUiState,
+    ) -> Vec<u8> {
+        let width = FAMILY_TREE_PANEL_WIDTH as usize;
+        let height = FAMILY_TREE_PANEL_HEIGHT as usize;
+        let mut pixels = vec![0; width * height * 4];
+        fill_dialogue_rect(
+            &mut pixels,
+            width,
+            height,
+            0,
+            0,
+            width,
+            height,
+            [17, 15, 13, 243],
+        );
+        draw_family_nx_background(
+            &mut pixels,
+            width,
+            height,
+            ui_archive,
+            "UIWindow2.img/FamilyTree/backgrnd",
+            1.28,
+        );
+        draw_dialogue_text(
+            font,
+            &mut pixels,
+            width,
+            height,
+            "Family tree",
+            18,
+            11,
+            15.0,
+            width - 66,
+            20,
+            [255, 235, 191],
+        );
+        draw_guild_button(font, &mut pixels, width, height, (542, 5, 28, 25), "X");
+        if let Some(chart) = state.chart.as_ref() {
+            draw_dialogue_text(
+                font,
+                &mut pixels,
+                width,
+                height,
+                &format!("{} family members", chart.entries.len()),
+                18,
+                29,
+                9.0,
+                width - 36,
+                15,
+                [197, 188, 167],
+            );
+            for (row, entry) in chart.entries.iter().take(10).enumerate() {
+                let y = 44 + row as i32 * 30;
+                let selected = state.selected_member == Some(entry.character_id);
+                fill_dialogue_rect(
+                    &mut pixels,
+                    width,
+                    height,
+                    12,
+                    y as usize,
+                    width - 24,
+                    27,
+                    if selected {
+                        [78, 61, 37, 242]
+                    } else {
+                        [29, 26, 22, 225]
+                    },
+                );
+                let indent = if entry.parent_id == 0 { 0 } else { 16 };
+                draw_dialogue_text(
+                    font,
+                    &mut pixels,
+                    width,
+                    height,
+                    &format!(
+                        "{}{}",
+                        if entry.parent_id == 0 { "★ " } else { "↳ " },
+                        entry.name
+                    ),
+                    20 + indent,
+                    y + 4,
+                    9.0,
+                    248,
+                    15,
+                    if entry.online {
+                        [255, 232, 173]
+                    } else {
+                        [203, 194, 173]
+                    },
+                );
+                draw_dialogue_text(
+                    font,
+                    &mut pixels,
+                    width,
+                    height,
+                    &format!(
+                        "Lv. {}  Job {}  Rep {}  {}",
+                        entry.level,
+                        entry.job,
+                        entry.current_reputation,
+                        if entry.online { "online" } else { "offline" }
+                    ),
+                    292,
+                    y + 4,
+                    8.0,
+                    width - 312,
+                    15,
+                    [205, 197, 179],
+                );
+            }
+        } else {
+            draw_dialogue_text(
+                font,
+                &mut pixels,
+                width,
+                height,
+                "Family pedigree data has not arrived yet.",
+                18,
+                56,
+                10.0,
+                width - 36,
+                26,
+                [221, 211, 188],
+            );
+        }
+        pixels
+    }
+
+    fn draw_family_nx_background(
+        pixels: &mut [u8],
+        width: usize,
+        height: usize,
+        archive: &NxArchive,
+        path: &str,
+        scale: f32,
+    ) {
+        let bitmap = archive
+            .root()
+            .resolve(path)
+            .ok()
+            .flatten()
+            .and_then(|node| node.bitmap().ok().flatten());
+        let Some(bitmap) = bitmap else {
+            for (x, y, w, h) in [
+                (0, 0, width, 2),
+                (0, height - 2, width, 2),
+                (0, 0, 2, height),
+                (width - 2, 0, 2, height),
+            ] {
+                fill_dialogue_rect(pixels, width, height, x, y, w, h, [130, 105, 68, 255]);
+            }
+            return;
+        };
+        let Ok(source) = bitmap.decode_bgra_shared() else {
+            return;
+        };
+        let source_width = usize::from(bitmap.width());
+        let source_height = usize::from(bitmap.height());
+        let dest_width = ((source_width as f32 * scale).round() as usize).min(width);
+        let dest_height = ((source_height as f32 * scale).round() as usize).min(height);
+        for dest_y in 0..dest_height {
+            let source_y = ((dest_y as f32 / scale).floor() as usize).min(source_height - 1);
+            for dest_x in 0..dest_width {
+                let source_x = ((dest_x as f32 / scale).floor() as usize).min(source_width - 1);
+                let source_index = (source_y * source_width + source_x) * 4;
+                let alpha = u16::from(source[source_index + 3]);
+                if alpha == 0 {
+                    continue;
+                }
+                let dest_index = (dest_y * width + dest_x) * 4;
+                let inverse = 255 - alpha;
+                for channel in 0..3 {
+                    pixels[dest_index + channel] = ((u16::from(source[source_index + channel])
+                        * alpha
+                        + u16::from(pixels[dest_index + channel]) * inverse)
+                        / 255) as u8;
+                }
+                pixels[dest_index + 3] =
+                    (alpha + u16::from(pixels[dest_index + 3]) * inverse / 255).min(255) as u8;
+            }
+        }
     }
 
     fn render_guild_panel(
@@ -25788,281 +33688,77 @@ mod native {
         hovered_slot: Option<u16>,
         drag_source: Option<(openstory_protocol::InventoryType, u16)>,
         pending_scroll_slot: Option<u16>,
+        ui_archive: &NxArchive,
         item_archive: &NxArchive,
         character_archive: &NxArchive,
         string_archive: &NxArchive,
         icon_cache: &mut HashMap<i32, Option<(u32, u32, Arc<[u8]>)>>,
         item_name_cache: &mut HashMap<i32, Option<String>>,
     ) -> Vec<u8> {
-        const WIDTH: usize = 390;
-        const HEIGHT: usize = 512;
+        const WIDTH: usize = INVENTORY_PANEL_WIDTH as usize;
+        const HEIGHT: usize = INVENTORY_PANEL_HEIGHT as usize;
         let mut pixels = vec![0_u8; WIDTH * HEIGHT * 4];
-        fill_dialogue_rect(
+        let _ = composite_nx_ui_bitmap(
             &mut pixels,
             WIDTH,
             HEIGHT,
+            ui_archive,
+            "UIWindow.img/Item/backgrnd",
             0,
             0,
-            WIDTH,
-            HEIGHT,
-            [25, 27, 31, 245],
         );
-        fill_dialogue_rect(
+        let _ = composite_nx_ui_bitmap(
             &mut pixels,
             WIDTH,
             HEIGHT,
-            0,
-            0,
-            WIDTH,
-            2,
-            [192, 164, 112, 255],
+            ui_archive,
+            "UIWindow.img/BtUIClose/normal/0",
+            139,
+            5,
         );
-        fill_dialogue_rect(
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            0,
-            HEIGHT - 2,
-            WIDTH,
-            2,
-            [192, 164, 112, 255],
-        );
-        fill_dialogue_rect(
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            0,
-            0,
-            2,
-            HEIGHT,
-            [192, 164, 112, 255],
-        );
-        fill_dialogue_rect(
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            WIDTH - 2,
-            0,
-            2,
-            HEIGHT,
-            [192, 164, 112, 255],
-        );
-        draw_dialogue_text(
-            font,
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            "Inventory",
-            16,
-            12,
-            20.0,
-            WIDTH - 32,
-            25,
-            [246, 226, 185],
-        );
-        draw_dialogue_text(
-            font,
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            &format!("Meso: {}", inventory.meso),
-            16,
-            42,
-            13.0,
-            WIDTH - 32,
-            20,
-            [224, 224, 224],
-        );
-        for (x, width, label) in [(170, 58, "Gather"), (235, 48, "Sort")] {
-            let enabled = active_tab != openstory_protocol::InventoryType::Equipped;
-            let fill = if enabled {
-                [68, 59, 44, 255]
+
+        let native_tabs = [
+            openstory_protocol::InventoryType::Equip,
+            openstory_protocol::InventoryType::Use,
+            openstory_protocol::InventoryType::Etc,
+            openstory_protocol::InventoryType::Setup,
+            openstory_protocol::InventoryType::Cash,
+        ];
+        for (index, tab) in native_tabs.into_iter().enumerate() {
+            let state = if tab == active_tab {
+                "enabled"
             } else {
-                [43, 44, 46, 255]
+                "disabled"
             };
-            let edge = if enabled {
-                [157, 123, 69, 255]
-            } else {
-                [76, 76, 75, 255]
-            };
-            fill_dialogue_rect(&mut pixels, WIDTH, HEIGHT, x, 8, width, 24, fill);
-            fill_dialogue_rect(&mut pixels, WIDTH, HEIGHT, x, 8, width, 1, edge);
-            fill_dialogue_rect(&mut pixels, WIDTH, HEIGHT, x, 31, width, 1, edge);
-            draw_dialogue_text(
-                font,
+            let path = format!("UIWindow.img/Item/Tab/{state}/{index}");
+            let _ = composite_nx_ui_bitmap(
                 &mut pixels,
                 WIDTH,
                 HEIGHT,
-                label,
-                x as i32 + 5,
-                13,
-                10.0,
-                width - 10,
-                14,
-                if enabled {
-                    [244, 225, 188]
-                } else {
-                    [133, 133, 130]
-                },
-            );
-        }
-        fill_dialogue_rect(
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            293,
-            8,
-            58,
-            24,
-            [63, 57, 45, 255],
-        );
-        draw_dialogue_text(
-            font,
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            "PETS",
-            307,
-            12,
-            11.0,
-            34,
-            16,
-            [255, 236, 192],
-        );
-        fill_dialogue_rect(
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            358,
-            8,
-            24,
-            24,
-            [79, 48, 42, 255],
-        );
-        draw_dialogue_text(
-            font,
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            "X",
-            366,
-            10,
-            14.0,
-            14,
-            18,
-            [255, 225, 210],
-        );
-        let tab_labels = ["EQUIP", "USE", "SETUP", "ETC", "CASH", "WORN"];
-        for (index, (tab, label)) in inventory_tabs().into_iter().zip(tab_labels).enumerate() {
-            let x = 12 + index * 61;
-            let selected = tab == active_tab;
-            fill_dialogue_rect(
-                &mut pixels,
-                WIDTH,
-                HEIGHT,
-                x,
-                75,
-                58,
-                28,
-                if selected {
-                    [105, 78, 51, 255]
-                } else {
-                    [47, 49, 53, 255]
-                },
-            );
-            fill_dialogue_rect(
-                &mut pixels,
-                WIDTH,
-                HEIGHT,
-                x,
-                75,
-                58,
-                1,
-                if selected {
-                    [230, 190, 112, 255]
-                } else {
-                    [94, 89, 78, 255]
-                },
-            );
-            draw_dialogue_text(
-                font,
-                &mut pixels,
-                WIDTH,
-                HEIGHT,
-                label,
-                (x + 3) as i32,
-                82,
-                9.0,
-                52,
-                14,
-                if selected {
-                    [255, 236, 192]
-                } else {
-                    [205, 204, 197]
-                },
+                ui_archive,
+                &path,
+                (10 + index * 31) as i32,
+                29,
             );
         }
         let maximum_slot = inventory_slot_max(inventory, active_tab);
-        draw_dialogue_text(
-            font,
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            &format!("Slots {maximum_slot}    Page {}", scroll_row + 1),
-            18,
-            104,
-            11.0,
-            WIDTH - 36,
-            14,
-            [198, 198, 198],
-        );
-        fill_dialogue_rect(
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            18,
-            117,
-            WIDTH - 36,
-            1,
-            [108, 99, 80, 255],
-        );
-        for row in 0..6 {
-            for column in 0..4 {
+        for row in 0..INVENTORY_SLOT_ROWS {
+            for column in 0..INVENTORY_SLOT_COLUMNS {
                 let slot = scroll_row
-                    .saturating_mul(4)
-                    .saturating_add((row * 4 + column + 1) as u16);
-                let x = 35 + column * 80;
-                let y = 120 + row * 52;
-                let enabled = slot <= maximum_slot;
-                let selected = drag_source == Some((active_tab, slot));
-                fill_dialogue_rect(
-                    &mut pixels,
-                    WIDTH,
-                    HEIGHT,
-                    x,
-                    y,
-                    72,
-                    48,
-                    if selected {
-                        [87, 69, 45, 255]
-                    } else if enabled {
-                        [36, 38, 42, 255]
-                    } else {
-                        [28, 29, 32, 255]
-                    },
-                );
-                let border = if selected {
-                    [241, 193, 99, 255]
-                } else if enabled {
-                    [83, 79, 71, 255]
-                } else {
-                    [48, 48, 48, 255]
-                };
-                fill_dialogue_rect(&mut pixels, WIDTH, HEIGHT, x, y, 72, 1, border);
-                fill_dialogue_rect(&mut pixels, WIDTH, HEIGHT, x, y + 47, 72, 1, border);
-                fill_dialogue_rect(&mut pixels, WIDTH, HEIGHT, x, y, 1, 48, border);
-                fill_dialogue_rect(&mut pixels, WIDTH, HEIGHT, x + 71, y, 1, 48, border);
-                if !enabled {
+                    .saturating_mul(INVENTORY_SLOT_COLUMNS as u16)
+                    .saturating_add((row * INVENTORY_SLOT_COLUMNS + column + 1) as u16);
+                let x = INVENTORY_SLOT_X + column * INVENTORY_SLOT_STEP_X;
+                let y = INVENTORY_SLOT_Y + row * INVENTORY_SLOT_STEP_Y;
+                if slot > maximum_slot {
+                    let _ = composite_nx_ui_bitmap(
+                        &mut pixels,
+                        WIDTH,
+                        HEIGHT,
+                        ui_archive,
+                        "UIWindow.img/Item/disabled",
+                        x as i32,
+                        y as i32,
+                    );
                     continue;
                 }
                 let Some(item) = inventory
@@ -26070,19 +33766,6 @@ mod native {
                     .iter()
                     .find(|item| item.inventory_type == active_tab && item.slot == slot)
                 else {
-                    draw_dialogue_text(
-                        font,
-                        &mut pixels,
-                        WIDTH,
-                        HEIGHT,
-                        &slot.to_string(),
-                        (x + 4) as i32,
-                        (y + 33) as i32,
-                        8.0,
-                        18,
-                        11,
-                        [137, 135, 128],
-                    );
                     continue;
                 };
                 if let Some((icon_width, icon_height, icon_pixels)) =
@@ -26095,8 +33778,8 @@ mod native {
                         &icon_pixels,
                         icon_width as usize,
                         icon_height as usize,
-                        x + 18,
-                        y + 4,
+                        x,
+                        y,
                         36,
                     );
                 }
@@ -26107,128 +33790,156 @@ mod native {
                         WIDTH,
                         HEIGHT,
                         &item.count.to_string(),
-                        (x + 48) as i32,
-                        (y + 33) as i32,
-                        9.0,
-                        20,
-                        12,
+                        (x + 20) as i32,
+                        (y + 23) as i32,
+                        8.0,
+                        15,
+                        11,
                         [255, 255, 255],
+                    );
+                }
+                if drag_source == Some((active_tab, slot)) {
+                    fill_dialogue_rect(
+                        &mut pixels,
+                        WIDTH,
+                        HEIGHT,
+                        x,
+                        y,
+                        34,
+                        33,
+                        [90, 136, 182, 72],
                     );
                 }
             }
         }
-        let hovered_item = hovered_slot.and_then(|slot| {
-            inventory
+        if let Some(slot) = hovered_slot {
+            if let Some(item) = inventory
                 .items
                 .iter()
                 .find(|item| item.inventory_type == active_tab && item.slot == slot)
-        });
-        if let Some(item) = hovered_item {
-            draw_dialogue_text(
-                font,
-                &mut pixels,
-                WIDTH,
-                HEIGHT,
-                &item_name(item.item_id, string_archive, item_name_cache),
-                18,
-                442,
-                11.0,
-                WIDTH - 36,
-                16,
-                [255, 226, 165],
-            );
-            let details = item_description(item.item_id, string_archive).unwrap_or_else(|| {
-                format!(
-                    "Item {}{}",
-                    item.item_id,
-                    if item.count > 1 {
-                        format!(" · Quantity {}", item.count)
-                    } else {
-                        String::new()
-                    }
-                )
-            });
-            draw_dialogue_text(
-                font,
-                &mut pixels,
-                WIDTH,
-                HEIGHT,
-                &details,
-                18,
-                460,
-                9.0,
-                WIDTH - 36,
-                16,
-                [201, 199, 191],
-            );
-            if let Some(stats) =
-                inventory_item_stat_summary(item.item_id, item_archive, character_archive)
             {
                 draw_dialogue_text(
                     font,
                     &mut pixels,
                     WIDTH,
                     HEIGHT,
-                    &stats,
-                    18,
-                    477,
-                    8.0,
-                    WIDTH - 36,
-                    32,
-                    [175, 218, 181],
+                    &item_name(item.item_id, string_archive, item_name_cache),
+                    10,
+                    260,
+                    9.0,
+                    WIDTH - 20,
+                    13,
+                    [47, 82, 116],
+                );
+                let details = item_description(item.item_id, string_archive).unwrap_or_else(|| {
+                    format!(
+                        "Item {}{}",
+                        item.item_id,
+                        if item.count > 1 {
+                            format!(" · Quantity {}", item.count)
+                        } else {
+                            String::new()
+                        }
+                    )
+                });
+                draw_dialogue_text(
+                    font,
+                    &mut pixels,
+                    WIDTH,
+                    HEIGHT,
+                    &details,
+                    10,
+                    274,
+                    7.0,
+                    WIDTH - 20,
+                    11,
+                    [78, 74, 66],
                 );
             }
         } else {
+            let formatted_meso = format_meso_amount(inventory.meso);
+            let meso_text = formatted_meso
+                .strip_suffix(" mesos")
+                .unwrap_or(&formatted_meso);
+            let meso_width = dialogue_text_width(font, meso_text, 8.0);
             draw_dialogue_text(
                 font,
                 &mut pixels,
                 WIDTH,
                 HEIGHT,
-                "Click to use or equip  |  Drag to move  |  Wheel to scroll",
-                18,
-                442,
-                10.0,
-                WIDTH - 36,
-                18,
-                [201, 199, 191],
+                meso_text,
+                (137.0 - meso_width).round() as i32,
+                269,
+                8.0,
+                112,
+                12,
+                [62, 58, 50],
             );
-            draw_dialogue_text(
-                font,
+            let _ = composite_nx_ui_bitmap(
                 &mut pixels,
                 WIDTH,
                 HEIGHT,
-                if pending_scroll_slot.is_some() {
-                    "Scroll selected: choose gear in Equipped; Esc cancels"
-                } else {
-                    "Use 204xxxx scrolls, then select gear in Equipped"
-                },
-                18,
-                460,
-                9.0,
-                WIDTH - 36,
-                15,
-                if pending_scroll_slot.is_some() {
-                    [255, 220, 152]
-                } else {
-                    [153, 153, 147]
-                },
+                ui_archive,
+                "UIWindow.img/Item/BtGather/normal/0",
+                148,
+                276,
             );
+            let _ = composite_nx_ui_bitmap(
+                &mut pixels,
+                WIDTH,
+                HEIGHT,
+                ui_archive,
+                "UIWindow.img/Item/BtSort/normal/0",
+                166,
+                276,
+            );
+            if pending_scroll_slot.is_some() {
+                draw_dialogue_text(
+                    font,
+                    &mut pixels,
+                    WIDTH,
+                    HEIGHT,
+                    "Select gear to scroll · Esc cancels",
+                    10,
+                    257,
+                    7.0,
+                    WIDTH - 20,
+                    11,
+                    [136, 83, 39],
+                );
+            }
         }
-        if maximum_slot == 0 {
-            draw_dialogue_text(
-                font,
-                &mut pixels,
-                WIDTH,
-                HEIGHT,
-                "No slots available",
-                76,
-                274,
-                15.0,
-                WIDTH - 152,
-                22,
-                [182, 182, 182],
-            );
-        }
+        draw_dialogue_text(
+            font,
+            &mut pixels,
+            WIDTH,
+            HEIGHT,
+            "PET",
+            111,
+            270,
+            8.0,
+            22,
+            12,
+            [58, 54, 46],
+        );
+        let _ = composite_nx_ui_bitmap(
+            &mut pixels,
+            WIDTH,
+            HEIGHT,
+            ui_archive,
+            "UIWindow.img/Item/BtGather/normal/0",
+            148,
+            276,
+        );
+        let _ = composite_nx_ui_bitmap(
+            &mut pixels,
+            WIDTH,
+            HEIGHT,
+            ui_archive,
+            "UIWindow.img/Item/BtSort/normal/0",
+            166,
+            276,
+        );
         pixels
     }
 
@@ -26529,6 +34240,7 @@ mod native {
         string_archive: &NxArchive,
         icon_cache: &mut HashMap<i32, Option<(u32, u32, Arc<[u8]>)>>,
         name_cache: &mut HashMap<i32, Option<String>>,
+        scroll_row: usize,
     ) -> Vec<u8> {
         const WIDTH: usize = 390;
         const HEIGHT: usize = 480;
@@ -26734,12 +34446,25 @@ mod native {
             19,
             [246, 226, 185],
         );
+        let gear = pet_equipment_items(inventory);
+        let maximum_scroll = gear.len().saturating_sub(5);
+        let scroll_row = scroll_row.min(maximum_scroll);
+        let browse_hint = if gear.is_empty() {
+            "No pet gear available.".to_owned()
+        } else {
+            format!(
+                "Items {}-{} of {} | Scroll or Page Up/Down",
+                scroll_row + 1,
+                (scroll_row + 5).min(gear.len()),
+                gear.len()
+            )
+        };
         draw_dialogue_text(
             font,
             &mut pixels,
             WIDTH,
             HEIGHT,
-            "Summon the pet you want to equip, then choose an item.",
+            &browse_hint,
             16,
             198,
             10.0,
@@ -26747,7 +34472,6 @@ mod native {
             15,
             [190, 190, 185],
         );
-        let gear = pet_equipment_items(inventory);
         if gear.is_empty() {
             draw_dialogue_text(
                 font,
@@ -26763,7 +34487,7 @@ mod native {
                 [184, 184, 184],
             );
         }
-        for (index, item) in gear.iter().take(5).enumerate() {
+        for (index, item) in gear.iter().skip(scroll_row).take(5).enumerate() {
             let y = 220 + index * 49;
             fill_dialogue_rect(
                 &mut pixels,
@@ -26906,1014 +34630,6 @@ mod native {
             8 => (182..190).contains(&item_prefix) || item_prefix == 212,
             _ => false,
         }
-    }
-
-    fn render_cash_shop_panel(
-        font: &fontdue::Font,
-        state: &CashShopUi,
-        products: &[CashShopProduct],
-        item_archive: &NxArchive,
-        character_archive: &NxArchive,
-        string_archive: &NxArchive,
-        icon_cache: &mut HashMap<i32, Option<(u32, u32, Arc<[u8]>)>>,
-        name_cache: &mut HashMap<i32, Option<String>>,
-    ) -> Vec<u8> {
-        const WIDTH: usize = 1024;
-        const HEIGHT: usize = 768;
-        let mut pixels = vec![0_u8; WIDTH * HEIGHT * 4];
-        fill_dialogue_rect(
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            0,
-            0,
-            WIDTH,
-            HEIGHT,
-            [21, 24, 29, 255],
-        );
-        fill_dialogue_rect(
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            0,
-            0,
-            WIDTH,
-            58,
-            [37, 41, 47, 255],
-        );
-        fill_dialogue_rect(
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            0,
-            56,
-            WIDTH,
-            2,
-            [192, 164, 112, 255],
-        );
-        draw_dialogue_text(
-            font,
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            "OPENSTORYRS  /  CASH SHOP",
-            24,
-            15,
-            20.0,
-            350,
-            28,
-            [246, 226, 185],
-        );
-
-        fill_dialogue_rect(
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            204,
-            13,
-            450,
-            34,
-            [25, 27, 31, 255],
-        );
-        draw_dialogue_text(
-            font,
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            if state.query.is_empty() && !state.search_focused {
-                "Search the catalog"
-            } else {
-                &state.query
-            },
-            217,
-            21,
-            13.0,
-            420,
-            18,
-            if state.query.is_empty() && !state.search_focused {
-                [137, 139, 143]
-            } else {
-                [235, 235, 235]
-            },
-        );
-
-        for (view, label, x, width) in [
-            (CashShopView::Catalog, "CATALOG", 773, 114),
-            (CashShopView::Locker, "MY LOCKER", 894, 108),
-        ] {
-            fill_dialogue_rect(
-                &mut pixels,
-                WIDTH,
-                HEIGHT,
-                x,
-                13,
-                width,
-                34,
-                if state.view == view {
-                    [103, 78, 47, 255]
-                } else {
-                    [49, 52, 58, 255]
-                },
-            );
-            draw_dialogue_text(
-                font,
-                &mut pixels,
-                WIDTH,
-                HEIGHT,
-                label,
-                (x + 12) as i32,
-                22,
-                12.0,
-                width - 20,
-                18,
-                [245, 235, 214],
-            );
-        }
-        fill_dialogue_rect(
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            976,
-            13,
-            34,
-            34,
-            [79, 48, 42, 255],
-        );
-        draw_dialogue_text(
-            font,
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            "X",
-            987,
-            19,
-            17.0,
-            17,
-            22,
-            [255, 225, 210],
-        );
-
-        fill_dialogue_rect(
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            20,
-            78,
-            165,
-            532,
-            [29, 32, 37, 255],
-        );
-        fill_dialogue_rect(
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            20,
-            78,
-            165,
-            2,
-            [109, 91, 65, 255],
-        );
-        if state.view == CashShopView::Catalog {
-            draw_dialogue_text(
-                font,
-                &mut pixels,
-                WIDTH,
-                HEIGHT,
-                "CATEGORIES",
-                32,
-                84,
-                11.0,
-                140,
-                16,
-                [176, 176, 170],
-            );
-            for (index, label) in CASH_SHOP_CATEGORIES.iter().enumerate() {
-                let y = 105 + index * 36;
-                fill_dialogue_rect(
-                    &mut pixels,
-                    WIDTH,
-                    HEIGHT,
-                    27,
-                    y,
-                    151,
-                    30,
-                    if state.category == index {
-                        [82, 67, 47, 255]
-                    } else {
-                        [38, 41, 46, 255]
-                    },
-                );
-                draw_dialogue_text(
-                    font,
-                    &mut pixels,
-                    WIDTH,
-                    HEIGHT,
-                    label,
-                    39,
-                    (y + 7) as i32,
-                    12.0,
-                    125,
-                    17,
-                    if state.category == index {
-                        [255, 236, 192]
-                    } else {
-                        [212, 212, 207]
-                    },
-                );
-            }
-        } else {
-            draw_dialogue_text(
-                font,
-                &mut pixels,
-                WIDTH,
-                HEIGHT,
-                "Your purchased items",
-                32,
-                92,
-                12.0,
-                140,
-                30,
-                [208, 208, 202],
-            );
-            draw_dialogue_text(
-                font,
-                &mut pixels,
-                WIDTH,
-                HEIGHT,
-                &format!("Item slots: {}", state.locker_slots),
-                32,
-                128,
-                11.0,
-                140,
-                16,
-                [174, 174, 169],
-            );
-        }
-
-        fill_dialogue_rect(
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            198,
-            78,
-            496,
-            532,
-            [27, 30, 35, 255],
-        );
-        fill_dialogue_rect(
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            198,
-            78,
-            496,
-            2,
-            [109, 91, 65, 255],
-        );
-        fill_dialogue_rect(
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            711,
-            78,
-            293,
-            532,
-            [29, 32, 37, 255],
-        );
-        fill_dialogue_rect(
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            711,
-            78,
-            293,
-            2,
-            [109, 91, 65, 255],
-        );
-
-        if state.view == CashShopView::Catalog {
-            let visible = cash_filtered_indices(products, state, string_archive, name_cache);
-            let max_page = visible.len().saturating_sub(1) / CASH_SHOP_PAGE_SIZE;
-            let page = state.page.min(max_page);
-            for (cell, product_index) in visible
-                .iter()
-                .skip(page * CASH_SHOP_PAGE_SIZE)
-                .take(CASH_SHOP_PAGE_SIZE)
-                .enumerate()
-            {
-                let product = &products[*product_index];
-                let column = cell % 3;
-                let row = cell / 3;
-                let x = 207 + column * 162;
-                let y = 91 + row * 218;
-                let selected = state.selected_sn == Some(product.sn);
-                fill_dialogue_rect(
-                    &mut pixels,
-                    WIDTH,
-                    HEIGHT,
-                    x,
-                    y,
-                    151,
-                    207,
-                    if selected {
-                        [57, 49, 38, 255]
-                    } else {
-                        [36, 39, 44, 255]
-                    },
-                );
-                fill_dialogue_rect(
-                    &mut pixels,
-                    WIDTH,
-                    HEIGHT,
-                    x,
-                    y,
-                    151,
-                    2,
-                    if selected {
-                        [226, 183, 104, 255]
-                    } else {
-                        [81, 79, 72, 255]
-                    },
-                );
-                if let Some((icon_width, icon_height, icon_pixels)) = inventory_item_icon(
-                    product.item_id,
-                    item_archive,
-                    character_archive,
-                    icon_cache,
-                ) {
-                    composite_inventory_icon(
-                        &mut pixels,
-                        WIDTH,
-                        HEIGHT,
-                        &icon_pixels,
-                        icon_width as usize,
-                        icon_height as usize,
-                        x + 48,
-                        y + 9,
-                        54,
-                    );
-                }
-                draw_dialogue_text(
-                    font,
-                    &mut pixels,
-                    WIDTH,
-                    HEIGHT,
-                    &item_name(product.item_id, string_archive, name_cache),
-                    (x + 9) as i32,
-                    (y + 74) as i32,
-                    12.0,
-                    132,
-                    40,
-                    [235, 233, 226],
-                );
-                draw_dialogue_text(
-                    font,
-                    &mut pixels,
-                    WIDTH,
-                    HEIGHT,
-                    &format!("{} NX", product.price),
-                    (x + 9) as i32,
-                    (y + 132) as i32,
-                    13.0,
-                    130,
-                    18,
-                    [241, 200, 118],
-                );
-                draw_dialogue_text(
-                    font,
-                    &mut pixels,
-                    WIDTH,
-                    HEIGHT,
-                    &format!(
-                        "{} item{}  ·  SN {}",
-                        product.count,
-                        if product.count == 1 { "" } else { "s" },
-                        product.sn
-                    ),
-                    (x + 9) as i32,
-                    (y + 158) as i32,
-                    9.0,
-                    135,
-                    15,
-                    [171, 172, 175],
-                );
-            }
-            if visible.is_empty() {
-                draw_dialogue_text(
-                    font,
-                    &mut pixels,
-                    WIDTH,
-                    HEIGHT,
-                    "No on-sale products match this search.",
-                    290,
-                    298,
-                    15.0,
-                    330,
-                    28,
-                    [192, 192, 187],
-                );
-            }
-            let first = if visible.is_empty() {
-                0
-            } else {
-                page * CASH_SHOP_PAGE_SIZE + 1
-            };
-            let last = visible.len().min((page + 1) * CASH_SHOP_PAGE_SIZE);
-            fill_dialogue_rect(
-                &mut pixels,
-                WIDTH,
-                HEIGHT,
-                207,
-                557,
-                76,
-                37,
-                [49, 52, 58, 255],
-            );
-            draw_dialogue_text(
-                font,
-                &mut pixels,
-                WIDTH,
-                HEIGHT,
-                "PREV",
-                222,
-                568,
-                11.0,
-                48,
-                16,
-                [230, 230, 226],
-            );
-            draw_dialogue_text(
-                font,
-                &mut pixels,
-                WIDTH,
-                HEIGHT,
-                &format!(
-                    "{first}-{last} of {}  ·  page {}/{}",
-                    visible.len(),
-                    page + 1,
-                    max_page + 1
-                ),
-                290,
-                568,
-                11.0,
-                260,
-                16,
-                [193, 193, 188],
-            );
-            fill_dialogue_rect(
-                &mut pixels,
-                WIDTH,
-                HEIGHT,
-                610,
-                557,
-                76,
-                37,
-                [49, 52, 58, 255],
-            );
-            draw_dialogue_text(
-                font,
-                &mut pixels,
-                WIDTH,
-                HEIGHT,
-                "NEXT",
-                629,
-                568,
-                11.0,
-                44,
-                16,
-                [230, 230, 226],
-            );
-
-            let selected = state
-                .selected_sn
-                .and_then(|sn| products.iter().find(|product| product.sn == sn));
-            draw_dialogue_text(
-                font,
-                &mut pixels,
-                WIDTH,
-                HEIGHT,
-                "ITEM DETAILS",
-                730,
-                91,
-                11.0,
-                250,
-                18,
-                [176, 176, 170],
-            );
-            if let Some(product) = selected {
-                if let Some((icon_width, icon_height, icon_pixels)) = inventory_item_icon(
-                    product.item_id,
-                    item_archive,
-                    character_archive,
-                    icon_cache,
-                ) {
-                    composite_inventory_icon(
-                        &mut pixels,
-                        WIDTH,
-                        HEIGHT,
-                        &icon_pixels,
-                        icon_width as usize,
-                        icon_height as usize,
-                        810,
-                        119,
-                        90,
-                    );
-                }
-                draw_dialogue_text(
-                    font,
-                    &mut pixels,
-                    WIDTH,
-                    HEIGHT,
-                    &item_name(product.item_id, string_archive, name_cache),
-                    728,
-                    220,
-                    14.0,
-                    258,
-                    42,
-                    [241, 238, 230],
-                );
-                draw_dialogue_text(
-                    font,
-                    &mut pixels,
-                    WIDTH,
-                    HEIGHT,
-                    &format!("Price: {} NX", product.price),
-                    730,
-                    270,
-                    13.0,
-                    240,
-                    18,
-                    [241, 200, 118],
-                );
-                draw_dialogue_text(
-                    font,
-                    &mut pixels,
-                    WIDTH,
-                    HEIGHT,
-                    &format!(
-                        "Bundle: {}  ·  Duration: {}",
-                        product.count,
-                        if product.period > 0 {
-                            format!("{} days", product.period)
-                        } else {
-                            "Permanent".to_owned()
-                        }
-                    ),
-                    730,
-                    298,
-                    11.0,
-                    250,
-                    16,
-                    [194, 194, 189],
-                );
-                draw_dialogue_text(
-                    font,
-                    &mut pixels,
-                    WIDTH,
-                    HEIGHT,
-                    &format!(
-                        "Gender restriction: {}",
-                        match product.gender {
-                            0 => "male",
-                            1 => "female",
-                            _ => "none",
-                        }
-                    ),
-                    730,
-                    320,
-                    11.0,
-                    250,
-                    16,
-                    [194, 194, 189],
-                );
-                draw_dialogue_text(
-                    font,
-                    &mut pixels,
-                    WIDTH,
-                    HEIGHT,
-                    &format!("Server commodity SN: {}", product.sn),
-                    730,
-                    342,
-                    10.0,
-                    250,
-                    15,
-                    [157, 158, 162],
-                );
-                fill_dialogue_rect(
-                    &mut pixels,
-                    WIDTH,
-                    HEIGHT,
-                    754,
-                    420,
-                    222,
-                    45,
-                    [97, 68, 38, 255],
-                );
-                draw_dialogue_text(
-                    font,
-                    &mut pixels,
-                    WIDTH,
-                    HEIGHT,
-                    if state.entered {
-                        "BUY ITEM"
-                    } else {
-                        "CONNECTING…"
-                    },
-                    819,
-                    433,
-                    13.0,
-                    102,
-                    18,
-                    [255, 236, 192],
-                );
-            } else {
-                draw_dialogue_text(
-                    font,
-                    &mut pixels,
-                    WIDTH,
-                    HEIGHT,
-                    "Select a product to see its details and preview.",
-                    735,
-                    235,
-                    13.0,
-                    240,
-                    44,
-                    [180, 180, 176],
-                );
-            }
-            for (index, (label, balance)) in ["CREDIT", "POINTS", "PREPAID"]
-                .into_iter()
-                .zip(state.balances)
-                .enumerate()
-            {
-                let x = 714 + index * 95;
-                fill_dialogue_rect(
-                    &mut pixels,
-                    WIDTH,
-                    HEIGHT,
-                    x,
-                    478,
-                    90,
-                    44,
-                    if state.currency == index {
-                        [86, 69, 47, 255]
-                    } else {
-                        [44, 47, 53, 255]
-                    },
-                );
-                draw_dialogue_text(
-                    font,
-                    &mut pixels,
-                    WIDTH,
-                    HEIGHT,
-                    label,
-                    (x + 8) as i32,
-                    482,
-                    9.0,
-                    74,
-                    13,
-                    [201, 199, 191],
-                );
-                draw_dialogue_text(
-                    font,
-                    &mut pixels,
-                    WIDTH,
-                    HEIGHT,
-                    &balance.to_string(),
-                    (x + 8) as i32,
-                    498,
-                    11.0,
-                    74,
-                    16,
-                    [244, 227, 189],
-                );
-            }
-        } else {
-            let mut locker = state.locker.clone();
-            locker.sort_by_key(|item| item.instance_id);
-            if locker.is_empty() {
-                draw_dialogue_text(
-                    font,
-                    &mut pixels,
-                    WIDTH,
-                    HEIGHT,
-                    "Your Cash Shop locker is empty.",
-                    365,
-                    300,
-                    17.0,
-                    360,
-                    30,
-                    [200, 200, 195],
-                );
-            }
-            let max_page = locker.len().saturating_sub(1) / 8;
-            let page = state.page.min(max_page);
-            for (index, item) in locker.iter().skip(page * 8).take(8).enumerate() {
-                let y = 91 + index * 58;
-                fill_dialogue_rect(
-                    &mut pixels,
-                    WIDTH,
-                    HEIGHT,
-                    208,
-                    y,
-                    470,
-                    51,
-                    [36, 39, 44, 255],
-                );
-                if let Some((icon_width, icon_height, icon_pixels)) =
-                    inventory_item_icon(item.item_id, item_archive, character_archive, icon_cache)
-                {
-                    composite_inventory_icon(
-                        &mut pixels,
-                        WIDTH,
-                        HEIGHT,
-                        &icon_pixels,
-                        icon_width as usize,
-                        icon_height as usize,
-                        216,
-                        y + 7,
-                        36,
-                    );
-                }
-                draw_dialogue_text(
-                    font,
-                    &mut pixels,
-                    WIDTH,
-                    HEIGHT,
-                    &item_name(item.item_id, string_archive, name_cache),
-                    260,
-                    (y + 9) as i32,
-                    12.0,
-                    365,
-                    18,
-                    [234, 233, 226],
-                );
-                draw_dialogue_text(
-                    font,
-                    &mut pixels,
-                    WIDTH,
-                    HEIGHT,
-                    &format!("Count {}  ·  SN {}", item.count, item.commodity_sn),
-                    260,
-                    (y + 29) as i32,
-                    10.0,
-                    365,
-                    15,
-                    [176, 177, 180],
-                );
-                fill_dialogue_rect(
-                    &mut pixels,
-                    WIDTH,
-                    HEIGHT,
-                    870,
-                    y + 9,
-                    104,
-                    32,
-                    if state.pending_withdrawal == Some(item.instance_id) {
-                        [55, 56, 58, 255]
-                    } else {
-                        [75, 68, 51, 255]
-                    },
-                );
-                draw_dialogue_text(
-                    font,
-                    &mut pixels,
-                    WIDTH,
-                    HEIGHT,
-                    if state.pending_withdrawal == Some(item.instance_id) {
-                        "WAITING"
-                    } else {
-                        "WITHDRAW"
-                    },
-                    879,
-                    (y + 18) as i32,
-                    10.0,
-                    86,
-                    16,
-                    [242, 229, 198],
-                );
-            }
-            fill_dialogue_rect(
-                &mut pixels,
-                WIDTH,
-                HEIGHT,
-                207,
-                557,
-                76,
-                37,
-                [49, 52, 58, 255],
-            );
-            draw_dialogue_text(
-                font,
-                &mut pixels,
-                WIDTH,
-                HEIGHT,
-                "PREV",
-                222,
-                568,
-                11.0,
-                48,
-                16,
-                [230, 230, 226],
-            );
-            draw_dialogue_text(
-                font,
-                &mut pixels,
-                WIDTH,
-                HEIGHT,
-                &format!(
-                    "{} items  ·  page {}/{}",
-                    locker.len(),
-                    page + 1,
-                    max_page + 1
-                ),
-                290,
-                568,
-                11.0,
-                260,
-                16,
-                [193, 193, 188],
-            );
-            fill_dialogue_rect(
-                &mut pixels,
-                WIDTH,
-                HEIGHT,
-                610,
-                557,
-                76,
-                37,
-                [49, 52, 58, 255],
-            );
-            draw_dialogue_text(
-                font,
-                &mut pixels,
-                WIDTH,
-                HEIGHT,
-                "NEXT",
-                629,
-                568,
-                11.0,
-                44,
-                16,
-                [230, 230, 226],
-            );
-        }
-
-        for (index, (label, balance)) in ["NX Credit", "Maple Points", "NX Prepaid"]
-            .into_iter()
-            .zip(state.balances)
-            .enumerate()
-        {
-            let x = 205 + index * 220;
-            draw_dialogue_text(
-                font,
-                &mut pixels,
-                WIDTH,
-                HEIGHT,
-                &format!("{label}: {balance}"),
-                x as i32,
-                632,
-                12.0,
-                200,
-                18,
-                [209, 202, 184],
-            );
-        }
-        draw_dialogue_text(
-            font,
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            state.notice.as_deref().unwrap_or(if state.entered {
-                "Purchases and locker changes are confirmed by the server."
-            } else {
-                "Waiting for Cash Shop data from the server…"
-            }),
-            205,
-            672,
-            12.0,
-            780,
-            22,
-            [204, 204, 198],
-        );
-
-        if state.confirmation {
-            fill_dialogue_rect(
-                &mut pixels,
-                WIDTH,
-                HEIGHT,
-                0,
-                0,
-                WIDTH,
-                HEIGHT,
-                [0, 0, 0, 150],
-            );
-            fill_dialogue_rect(
-                &mut pixels,
-                WIDTH,
-                HEIGHT,
-                312,
-                263,
-                400,
-                216,
-                [35, 38, 43, 255],
-            );
-            fill_dialogue_rect(
-                &mut pixels,
-                WIDTH,
-                HEIGHT,
-                312,
-                263,
-                400,
-                2,
-                [221, 184, 118, 255],
-            );
-            let selected = state
-                .selected_sn
-                .and_then(|sn| products.iter().find(|product| product.sn == sn));
-            draw_dialogue_text(
-                font,
-                &mut pixels,
-                WIDTH,
-                HEIGHT,
-                "Confirm purchase",
-                338,
-                292,
-                19.0,
-                348,
-                26,
-                [246, 226, 185],
-            );
-            draw_dialogue_text(
-                font,
-                &mut pixels,
-                WIDTH,
-                HEIGHT,
-                &selected.map_or_else(
-                    || "Select a product first".to_owned(),
-                    |product| {
-                        format!(
-                            "{} for {} NX?",
-                            item_name(product.item_id, string_archive, name_cache),
-                            product.price
-                        )
-                    },
-                ),
-                338,
-                335,
-                13.0,
-                348,
-                32,
-                [226, 226, 220],
-            );
-            fill_dialogue_rect(
-                &mut pixels,
-                WIDTH,
-                HEIGHT,
-                390,
-                420,
-                120,
-                42,
-                [91, 67, 39, 255],
-            );
-            fill_dialogue_rect(
-                &mut pixels,
-                WIDTH,
-                HEIGHT,
-                514,
-                420,
-                120,
-                42,
-                [52, 55, 60, 255],
-            );
-            draw_dialogue_text(
-                font,
-                &mut pixels,
-                WIDTH,
-                HEIGHT,
-                "CONFIRM",
-                418,
-                432,
-                11.0,
-                72,
-                17,
-                [255, 236, 192],
-            );
-            draw_dialogue_text(
-                font,
-                &mut pixels,
-                WIDTH,
-                HEIGHT,
-                "CANCEL",
-                546,
-                432,
-                11.0,
-                70,
-                17,
-                [226, 226, 220],
-            );
-        }
-        pixels
     }
 
     fn storage_tabs() -> [openstory_protocol::InventoryType; 5] {
@@ -28629,6 +35345,46 @@ mod native {
                 [245, 239, 223],
             );
         }
+        let fame_actions = if ui.fame_pending {
+            [
+                (20, "WAITING…", [72, 65, 55, 255]),
+                (118, "WAITING…", [72, 65, 55, 255]),
+            ]
+        } else {
+            [
+                (20, "RAISE FAME", [56, 78, 62, 255]),
+                (118, "LOWER FAME", [83, 67, 52, 255]),
+            ]
+        };
+        for (x, label, color) in fame_actions {
+            fill_dialogue_rect(&mut pixels, WIDTH, HEIGHT, x, 440, 92, 30, color);
+            draw_dialogue_text(
+                font,
+                &mut pixels,
+                WIDTH,
+                HEIGHT,
+                label,
+                x as i32 + 9,
+                449,
+                9.0,
+                74,
+                15,
+                [245, 239, 223],
+            );
+        }
+        draw_dialogue_text(
+            font,
+            &mut pixels,
+            WIDTH,
+            HEIGHT,
+            "Level 15 · once per day",
+            218,
+            448,
+            8.0,
+            160,
+            15,
+            [185, 183, 175],
+        );
         draw_dialogue_text(
             font,
             &mut pixels,
@@ -28636,7 +35392,7 @@ mod native {
             HEIGHT,
             "Esc closes · click X to dismiss",
             20,
-            436,
+            478,
             8.0,
             348,
             12,
@@ -29770,14 +36526,13 @@ mod native {
         pixels
     }
 
-    fn inventory_tabs() -> [openstory_protocol::InventoryType; 6] {
+    fn inventory_tabs() -> [openstory_protocol::InventoryType; 5] {
         [
             openstory_protocol::InventoryType::Equip,
             openstory_protocol::InventoryType::Use,
-            openstory_protocol::InventoryType::Setup,
             openstory_protocol::InventoryType::Etc,
+            openstory_protocol::InventoryType::Setup,
             openstory_protocol::InventoryType::Cash,
-            openstory_protocol::InventoryType::Equipped,
         ]
     }
 
@@ -29798,34 +36553,38 @@ mod native {
     }
 
     fn inventory_tab_at(cursor: Point) -> Option<openstory_protocol::InventoryType> {
-        let local_x = cursor.x - 618.0;
-        let local_y = cursor.y - 128.0;
-        if !(75.0..103.0).contains(&local_y) || local_x < 12.0 {
+        let local_x = cursor.x - INVENTORY_PANEL_X;
+        let local_y = cursor.y - INVENTORY_PANEL_Y;
+        if !(27.0..43.0).contains(&local_y) || !(10.0..165.0).contains(&local_x) {
             return None;
         }
-        let index = ((local_x - 12.0) / 61.0).floor() as usize;
-        let tab_left = 12.0 + index as f32 * 61.0;
-        if local_x - tab_left >= 58.0 {
+        let index = ((local_x - 10.0) / 31.0).floor() as usize;
+        let tab_left = 10.0 + index as f32 * 31.0;
+        if index >= inventory_tabs().len() || local_x - tab_left >= 31.0 {
             return None;
         }
         inventory_tabs().get(index).copied()
     }
 
     fn inventory_slot_at(cursor: Point, scroll_row: u16) -> Option<u16> {
-        let local_x = cursor.x - 618.0 - 35.0;
-        let local_y = cursor.y - 128.0 - 120.0;
+        let local_x = cursor.x - INVENTORY_PANEL_X - INVENTORY_SLOT_X as f32;
+        let local_y = cursor.y - INVENTORY_PANEL_Y - INVENTORY_SLOT_Y as f32;
         if local_x < 0.0 || local_y < 0.0 {
             return None;
         }
-        let column = (local_x / 80.0).floor() as u16;
-        let row = (local_y / 52.0).floor() as u16;
-        if column >= 4 || row >= 6 || local_x % 80.0 >= 72.0 || local_y % 52.0 >= 48.0 {
+        let column = (local_x / INVENTORY_SLOT_STEP_X as f32).floor() as u16;
+        let row = (local_y / INVENTORY_SLOT_STEP_Y as f32).floor() as u16;
+        if column >= INVENTORY_SLOT_COLUMNS as u16
+            || row >= INVENTORY_SLOT_ROWS as u16
+            || local_x % INVENTORY_SLOT_STEP_X as f32 >= 34.0
+            || local_y % INVENTORY_SLOT_STEP_Y as f32 >= 33.0
+        {
             return None;
         }
         Some(
             scroll_row
-                .saturating_mul(4)
-                .saturating_add(row * 4 + column + 1),
+                .saturating_mul(INVENTORY_SLOT_COLUMNS as u16)
+                .saturating_add(row * INVENTORY_SLOT_COLUMNS as u16 + column + 1),
         )
     }
 
@@ -31343,18 +38102,77 @@ mod native {
         )
     }
 
+    fn npc_dialogue_text_view_height(message_type: i8) -> usize {
+        match message_type {
+            2 | 3 => 112,
+            4 => 58,
+            _ => 145,
+        }
+    }
+
+    fn dialogue_text_content_height(
+        font: &fontdue::Font,
+        text: &str,
+        size: f32,
+        max_width: usize,
+        inline_icons: &NpcInlineIcons,
+    ) -> usize {
+        let line_height = size.ceil() as usize + 4;
+        let mut line_y = 0_usize;
+        let mut pen_x = 0.0_f32;
+        let mut previous = None;
+        let mut has_content = false;
+        for character in text.chars() {
+            has_content = true;
+            if character == '\n' {
+                line_y = line_y.saturating_add(line_height);
+                pen_x = 0.0;
+                previous = None;
+                continue;
+            }
+            if inline_icons.contains_key(&character) {
+                let icon_size = (size.ceil() as usize + 4).clamp(16, 32);
+                if pen_x + icon_size as f32 > max_width as f32 {
+                    line_y = line_y.saturating_add(line_height);
+                    pen_x = 0.0;
+                }
+                pen_x += icon_size as f32;
+                previous = None;
+                continue;
+            }
+            if let Some(previous) = previous {
+                pen_x += font
+                    .horizontal_kern(previous, character, size)
+                    .unwrap_or(0.0);
+            }
+            let advance_width = font.metrics(character, size).advance_width;
+            if pen_x + advance_width > max_width as f32 {
+                line_y = line_y.saturating_add(line_height);
+                pen_x = 0.0;
+            }
+            pen_x += advance_width;
+            previous = Some(character);
+        }
+        if has_content {
+            line_y.saturating_add(line_height)
+        } else {
+            0
+        }
+    }
+
     fn render_npc_dialogue(
         font: &fontdue::Font,
         npc_id: i32,
         speaker: i8,
         message_type: i8,
         text: &str,
+        text_scroll: usize,
         inline_icons: &NpcInlineIcons,
         selections: &[(i32, String)],
         selected_selection: usize,
         first_visible_selection: usize,
         input: &str,
-    ) -> (Vec<u8>, SpriteRect, Vec<NpcDialogueButton>) {
+    ) -> (Vec<u8>, SpriteRect, Vec<NpcDialogueButton>, usize) {
         const WIDTH: usize = 600;
         const HEIGHT: usize = 260;
         const PANEL_X: f32 = 212.0;
@@ -31459,7 +38277,15 @@ mod native {
             18,
             [229, 208, 166],
         );
-        draw_dialogue_text_with_icons(
+        let text_view_height = npc_dialogue_text_view_height(message_type);
+        let text_content_height = dialogue_text_content_height(font, text, 16.0, 548, inline_icons);
+        let text_max_scroll = if message_type == 4 {
+            0
+        } else {
+            text_content_height.saturating_sub(text_view_height)
+        };
+        let text_scroll = text_scroll.min(text_max_scroll);
+        draw_dialogue_text_with_icons_scrolled(
             font,
             &mut pixels,
             WIDTH,
@@ -31469,10 +38295,41 @@ mod native {
             50,
             16.0,
             548,
-            if message_type == 4 { 58 } else { 125 },
+            text_view_height,
             [235, 235, 235],
             inline_icons,
+            text_scroll,
         );
+        if text_max_scroll > 0 {
+            const SCROLL_TRACK_X: usize = 582;
+            const SCROLL_TRACK_Y: usize = 50;
+            const SCROLL_TRACK_WIDTH: usize = 5;
+            fill_dialogue_rect(
+                &mut pixels,
+                WIDTH,
+                HEIGHT,
+                SCROLL_TRACK_X,
+                SCROLL_TRACK_Y,
+                SCROLL_TRACK_WIDTH,
+                text_view_height,
+                [56, 53, 48, 255],
+            );
+            let content_height = text_view_height.saturating_add(text_max_scroll);
+            let thumb_height =
+                (text_view_height * text_view_height / content_height).clamp(18, text_view_height);
+            let thumb_range = text_view_height.saturating_sub(thumb_height);
+            let thumb_y = SCROLL_TRACK_Y + thumb_range * text_scroll / text_max_scroll;
+            fill_dialogue_rect(
+                &mut pixels,
+                WIDTH,
+                HEIGHT,
+                SCROLL_TRACK_X,
+                thumb_y,
+                SCROLL_TRACK_WIDTH,
+                thumb_height,
+                [198, 169, 116, 255],
+            );
+        }
 
         let mut buttons = Vec::new();
         if message_type == 4 {
@@ -31622,6 +38479,7 @@ mod native {
                 blend_mode: BlendMode::Alpha,
             },
             buttons,
+            text_max_scroll,
         )
     }
 
@@ -31733,6 +38591,78 @@ mod native {
         width
     }
 
+    fn rasterize_maple_tv_text(
+        font: &fontdue::Font,
+        lines: &[String],
+        start_x: i32,
+        color: [u8; 3],
+    ) -> Vec<u8> {
+        const WIDTH: usize = 240;
+        const HEIGHT: usize = 90;
+        const FONT_SIZE: f32 = 11.0;
+        const LINE_HEIGHT: i32 = 16;
+        let mut pixels = vec![0; WIDTH * HEIGHT * 4];
+        let right = WIDTH as f32 - 5.0;
+        let mut y = 8_i32;
+
+        for line in lines.iter().take(5) {
+            let mut x = start_x as f32;
+            let mut previous = None;
+            for character in line.chars() {
+                if y + LINE_HEIGHT > HEIGHT as i32 {
+                    break;
+                }
+                if character == '\r' {
+                    continue;
+                }
+                if character == '\n' {
+                    x = start_x as f32;
+                    y += LINE_HEIGHT;
+                    previous = None;
+                    continue;
+                }
+                let kern = previous.map_or(0.0, |previous| {
+                    font.horizontal_kern(previous, character, FONT_SIZE)
+                        .unwrap_or(0.0)
+                });
+                let (metrics, coverage) = rasterize_ui_glyph(font, character, FONT_SIZE);
+                let mut glyph_kern = kern;
+                if x + glyph_kern + metrics.advance_width > right {
+                    x = start_x as f32;
+                    y += LINE_HEIGHT;
+                    glyph_kern = 0.0;
+                }
+                if y + LINE_HEIGHT > HEIGHT as i32 {
+                    break;
+                }
+                x += glyph_kern;
+                let left = x.round() as i32 + metrics.xmin;
+                let baseline = y + FONT_SIZE.ceil() as i32 + 1;
+                let top = baseline - metrics.ymin - metrics.height as i32;
+                for row in 0..metrics.height {
+                    for column in 0..metrics.width {
+                        let px = left + column as i32;
+                        let py = top + row as i32;
+                        if px < start_x || px >= WIDTH as i32 || py < 0 || py >= HEIGHT as i32 {
+                            continue;
+                        }
+                        let alpha = coverage[row * metrics.width + column];
+                        if alpha == 0 {
+                            continue;
+                        }
+                        let index = (py as usize * WIDTH + px as usize) * 4;
+                        pixels[index..index + 4]
+                            .copy_from_slice(&[color[2], color[1], color[0], alpha]);
+                    }
+                }
+                x += metrics.advance_width;
+                previous = Some(character);
+            }
+            y += LINE_HEIGHT;
+        }
+        pixels
+    }
+
     fn draw_dialogue_text(
         font: &fontdue::Font,
         pixels: &mut [u8],
@@ -31776,6 +38706,38 @@ mod native {
         color: [u8; 3],
         inline_icons: &NpcInlineIcons,
     ) {
+        draw_dialogue_text_with_icons_scrolled(
+            font,
+            pixels,
+            width,
+            height,
+            text,
+            x,
+            y,
+            size,
+            max_width,
+            max_height,
+            color,
+            inline_icons,
+            0,
+        );
+    }
+
+    fn draw_dialogue_text_with_icons_scrolled(
+        font: &fontdue::Font,
+        pixels: &mut [u8],
+        width: usize,
+        height: usize,
+        text: &str,
+        x: i32,
+        y: i32,
+        size: f32,
+        max_width: usize,
+        max_height: usize,
+        color: [u8; 3],
+        inline_icons: &NpcInlineIcons,
+        vertical_offset: usize,
+    ) {
         let line_height = size.ceil() as i32 + 4;
         let mut pen_x = x as f32;
         let mut line_y = y;
@@ -31785,9 +38747,6 @@ mod native {
                 pen_x = x as f32;
                 line_y += line_height;
                 previous = None;
-                if line_y as usize >= max_height + y as usize {
-                    break;
-                }
                 continue;
             }
             if let Some((icon_width, icon_height, icon_pixels)) = inline_icons.get(&character) {
@@ -31795,21 +38754,21 @@ mod native {
                 if pen_x + icon_size as f32 > (x as usize + max_width) as f32 {
                     pen_x = x as f32;
                     line_y += line_height;
-                    if line_y as usize >= max_height + y as usize {
-                        break;
-                    }
                 }
-                composite_inventory_icon(
-                    pixels,
-                    width,
-                    height,
-                    icon_pixels,
-                    *icon_width as usize,
-                    *icon_height as usize,
-                    pen_x.round().max(0.0) as usize,
-                    line_y.max(0) as usize,
-                    icon_size,
-                );
+                let icon_y = line_y - vertical_offset as i32;
+                if icon_y >= y && icon_y + icon_size as i32 <= y + max_height as i32 {
+                    composite_inventory_icon(
+                        pixels,
+                        width,
+                        height,
+                        icon_pixels,
+                        *icon_width as usize,
+                        *icon_height as usize,
+                        pen_x.round().max(0.0) as usize,
+                        icon_y.max(0) as usize,
+                        icon_size,
+                    );
+                }
                 pen_x += icon_size as f32;
                 previous = None;
                 continue;
@@ -31823,18 +38782,20 @@ mod native {
             if pen_x + metrics.advance_width > (x as usize + max_width) as f32 {
                 pen_x = x as f32;
                 line_y += line_height;
-                if line_y as usize >= max_height + y as usize {
-                    break;
-                }
             }
+            let display_line_y = line_y - vertical_offset as i32;
             let left = pen_x.round() as i32 + metrics.xmin;
-            let baseline = line_y + size.ceil() as i32 + 1;
+            let baseline = display_line_y + size.ceil() as i32 + 1;
             let top = baseline - metrics.ymin - metrics.height as i32;
             for row in 0..metrics.height {
                 for column in 0..metrics.width {
                     let px = left + column as i32;
                     let py = top + row as i32;
-                    if px < 0 || py < 0 || px >= width as i32 || py >= height as i32 {
+                    if px < 0
+                        || py < y
+                        || px >= width as i32
+                        || py >= (y + max_height as i32).min(height as i32)
+                    {
                         continue;
                     }
                     let alpha = coverage[row * metrics.width + column];
@@ -31842,14 +38803,22 @@ mod native {
                         continue;
                     }
                     let index = (py as usize * width + px as usize) * 4;
-                    let inverse = u16::from(255 - alpha);
+                    let source_alpha = u32::from(alpha);
+                    let destination_alpha = u32::from(pixels[index + 3]);
+                    let inverse = 255 - source_alpha;
+                    let output_alpha = source_alpha + destination_alpha * inverse / 255;
+                    if output_alpha == 0 {
+                        continue;
+                    }
                     for (channel, foreground) in
                         [color[2], color[1], color[0]].into_iter().enumerate()
                     {
-                        pixels[index + channel] = ((u16::from(foreground) * u16::from(alpha)
-                            + u16::from(pixels[index + channel]) * inverse)
-                            / 255) as u8;
+                        let destination = u32::from(pixels[index + channel]);
+                        let premultiplied = u32::from(foreground) * source_alpha
+                            + destination * destination_alpha * inverse / 255;
+                        pixels[index + channel] = (premultiplied / output_alpha) as u8;
                     }
+                    pixels[index + 3] = output_alpha as u8;
                 }
             }
             pen_x += metrics.advance_width;
@@ -31877,6 +38846,76 @@ mod native {
         }
     }
 
+    fn composite_nx_ui_bitmap(
+        pixels: &mut [u8],
+        canvas_width: usize,
+        canvas_height: usize,
+        archive: &NxArchive,
+        path: &str,
+        anchor_x: i32,
+        anchor_y: i32,
+    ) -> Result<(), String> {
+        let node = archive
+            .root()
+            .resolve(path)
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| format!("missing v83 UI asset {path:?}"))?;
+        let bitmap = node
+            .bitmap()
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| format!("v83 UI asset {path:?} is not a bitmap"))?;
+        let source = bitmap
+            .decode_bgra_shared()
+            .map_err(|error| error.to_string())?;
+        let origin = node
+            .child("origin")
+            .map_err(|error| error.to_string())?
+            .map(|origin| origin.value())
+            .transpose()
+            .map_err(|error| error.to_string())?;
+        let (origin_x, origin_y) = match origin {
+            Some(NodeValue::Vector { x, y }) => (x, y),
+            Some(_) => return Err(format!("v83 UI asset {path:?} has a malformed origin")),
+            None => (0, 0),
+        };
+        let left = anchor_x - origin_x;
+        let top = anchor_y - origin_y;
+        let source_width = usize::from(bitmap.width());
+        let source_height = usize::from(bitmap.height());
+        for source_y in 0..source_height {
+            let destination_y = top + source_y as i32;
+            if !(0..canvas_height as i32).contains(&destination_y) {
+                continue;
+            }
+            for source_x in 0..source_width {
+                let destination_x = left + source_x as i32;
+                if !(0..canvas_width as i32).contains(&destination_x) {
+                    continue;
+                }
+                let source_index = (source_y * source_width + source_x) * 4;
+                let destination_index =
+                    (destination_y as usize * canvas_width + destination_x as usize) * 4;
+                let source_alpha = u32::from(source[source_index + 3]);
+                if source_alpha == 0 {
+                    continue;
+                }
+                let destination_alpha = u32::from(pixels[destination_index + 3]);
+                let inverse = 255 - source_alpha;
+                let output_alpha = source_alpha + destination_alpha * inverse / 255;
+                for channel in 0..3 {
+                    let foreground = u32::from(source[source_index + channel]);
+                    let background = u32::from(pixels[destination_index + channel]);
+                    let premultiplied =
+                        foreground * source_alpha + background * destination_alpha * inverse / 255;
+                    pixels[destination_index + channel] =
+                        (premultiplied / output_alpha.max(1)) as u8;
+                }
+                pixels[destination_index + 3] = output_alpha as u8;
+            }
+        }
+        Ok(())
+    }
+
     fn rect_contains(rect: SpriteRect, point: Point) -> bool {
         point.x >= rect.x
             && point.y >= rect.y
@@ -31893,6 +38932,214 @@ mod native {
         blend_mode: BlendMode,
     }
 
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum StatusBarLayout {
+        Modern,
+        V83,
+    }
+
+    impl StatusBarLayout {
+        fn top(self) -> f32 {
+            match self {
+                Self::Modern => 683.0,
+                Self::V83 => 697.0,
+            }
+        }
+
+        fn height(self) -> u32 {
+            match self {
+                Self::Modern => 85,
+                Self::V83 => 71,
+            }
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    struct StatusBarGauge {
+        texture_index: usize,
+        start_texture_index: Option<usize>,
+        end_texture_index: Option<usize>,
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+    }
+
+    #[derive(Clone, Copy)]
+    struct StatusBarGaugeAsset {
+        fill_index: usize,
+        start_index: Option<usize>,
+        end_index: Option<usize>,
+    }
+
+    struct StatusBarNumberGlyph {
+        width: u32,
+        height: u32,
+        origin_x: i32,
+        origin_y: i32,
+        pixels: Arc<[u8]>,
+    }
+
+    struct StatusBarNumberFont {
+        glyphs: HashMap<char, StatusBarNumberGlyph>,
+    }
+
+    fn load_status_bar_number_font(
+        archive: &NxArchive,
+        path: &str,
+    ) -> Result<StatusBarNumberFont, String> {
+        let node = archive
+            .root()
+            .resolve(path)
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| format!("missing {path}"))?;
+        let mut glyphs = HashMap::new();
+        for child in node.children().map_err(|error| error.to_string())? {
+            let name = child.name().map_err(|error| error.to_string())?;
+            let Some(bitmap) = child.bitmap().map_err(|error| error.to_string())? else {
+                continue;
+            };
+            let character = match name.as_str() {
+                "Lbracket" => 'L',
+                "Rbracket" => 'R',
+                "slash" => 's',
+                "percent" => 'p',
+                _ => match name.chars().next() {
+                    Some(character) => character,
+                    None => continue,
+                },
+            };
+            let origin = child
+                .child("origin")
+                .map_err(|error| error.to_string())?
+                .map(|origin| origin.value())
+                .transpose()
+                .map_err(|error| error.to_string())?;
+            let (origin_x, origin_y) = match origin {
+                Some(NodeValue::Vector { x, y }) => (x, y),
+                Some(_) => return Err(format!("malformed origin for status-bar glyph {name:?}")),
+                None => (0, 0),
+            };
+            glyphs.insert(
+                character,
+                StatusBarNumberGlyph {
+                    width: u32::from(bitmap.width()),
+                    height: u32::from(bitmap.height()),
+                    origin_x,
+                    origin_y,
+                    pixels: bitmap
+                        .decode_bgra_shared()
+                        .map_err(|error| error.to_string())?,
+                },
+            );
+        }
+        if !('0'..='9').all(|digit| glyphs.contains_key(&digit)) {
+            return Err("StatusBar.img/number is missing one or more digit glyphs".to_owned());
+        }
+        Ok(StatusBarNumberFont { glyphs })
+    }
+
+    fn draw_status_bar_number(
+        font: &StatusBarNumberFont,
+        pixels: &mut [u8],
+        width: usize,
+        height: usize,
+        text: &str,
+        right: i32,
+        y: i32,
+    ) {
+        let mut shift = 0_i32;
+        for character in text.chars().rev() {
+            let character = match character {
+                '[' => 'L',
+                ']' => 'R',
+                '/' => 's',
+                '%' => 'p',
+                character => character,
+            };
+            let Some(glyph) = font.glyphs.get(&character) else {
+                continue;
+            };
+            shift += glyph.width as i32;
+            let left = right - shift - glyph.origin_x;
+            let top = y - glyph.origin_y;
+            for source_y in 0..glyph.height as i32 {
+                let destination_y = top + source_y;
+                if !(0..height as i32).contains(&destination_y) {
+                    continue;
+                }
+                for source_x in 0..glyph.width as i32 {
+                    let destination_x = left + source_x;
+                    if !(0..width as i32).contains(&destination_x) {
+                        continue;
+                    }
+                    let source = (source_y as usize * glyph.width as usize + source_x as usize) * 4;
+                    let destination = (destination_y as usize * width + destination_x as usize) * 4;
+                    let alpha = u16::from(glyph.pixels[source + 3]);
+                    if alpha == 0 {
+                        continue;
+                    }
+                    let destination_alpha = u16::from(pixels[destination + 3]);
+                    if destination_alpha == 0 {
+                        pixels[destination..destination + 4]
+                            .copy_from_slice(&glyph.pixels[source..source + 4]);
+                        continue;
+                    }
+                    let inverse = 255 - alpha;
+                    let output_alpha = alpha + (destination_alpha * inverse + 127) / 255;
+                    for channel in 0..3 {
+                        let source_color = u32::from(glyph.pixels[source + channel]);
+                        let destination_color = u32::from(pixels[destination + channel]);
+                        let numerator = source_color * u32::from(alpha)
+                            + (destination_color
+                                * u32::from(destination_alpha)
+                                * u32::from(inverse)
+                                + 127)
+                                / 255;
+                        pixels[destination + channel] =
+                            (numerator / u32::from(output_alpha.max(1))) as u8;
+                    }
+                    pixels[destination + 3] = output_alpha as u8;
+                }
+            }
+        }
+    }
+
+    const V83_EXP_TO_NEXT_LEVEL: [i64; 201] = [
+        1, 15, 34, 57, 92, 135, 372, 560, 840, 1242, 1144, 1573, 2144, 2800, 3640, 4700, 5893,
+        7360, 9144, 11120, 13477, 16268, 19320, 22880, 27008, 31477, 36600, 42444, 48720, 55813,
+        63800, 86784, 98208, 110932, 124432, 139372, 155865, 173280, 192400, 213345, 235372,
+        259392, 285532, 312928, 342624, 374760, 408336, 445544, 483532, 524160, 567772, 598886,
+        631704, 666321, 702836, 741351, 781976, 824828, 870028, 917625, 967995, 1021041, 1076994,
+        1136013, 1198266, 1263930, 1333194, 1406252, 1483314, 1564600, 1650340, 1740778, 1836173,
+        1936794, 2042930, 2154882, 2272970, 2397528, 2528912, 2667496, 2813674, 2967863, 3130502,
+        3302053, 3483005, 3673873, 3875201, 4087562, 4311559, 4547832, 4797053, 5059931, 5337215,
+        5629694, 5938202, 6263614, 6606860, 6968915, 7350811, 7753635, 8178534, 8626718, 9099462,
+        9598112, 10124088, 10678888, 11264090, 11881362, 12532461, 13219239, 13943653, 14707765,
+        15513750, 16363902, 17260644, 18206527, 19204245, 20256637, 21366700, 22537594, 23772654,
+        25075395, 26449526, 27898960, 29427822, 31040466, 32741483, 34535716, 36428273, 38424542,
+        40530206, 42751262, 45094030, 47565183, 50171755, 52921167, 55821246, 58880250, 62106888,
+        65510344, 69100311, 72887008, 76881216, 81094306, 85594273, 90225770, 95170142, 100385466,
+        105886589, 111689174, 117809740, 124265714, 131075474, 138258410, 145834970, 153826726,
+        162256430, 171148082, 180526997, 190419876, 200854885, 211861732, 223471711, 223471711,
+        248635353, 262260570, 276632449, 291791906, 307782102, 324648562, 342439302, 361204976,
+        380999008, 401877754, 423900654, 447130410, 471633156, 497478653, 524740482, 553496261,
+        583827855, 615821622, 649568646, 685165008, 722712050, 762316670, 804091623, 848155844,
+        894634784, 943660770, 995373379, 1049919840, 1107455447, 1168144006, 1232158297,
+        1299680571, 1370903066, 1446028554, 1525246918, 1608855764, 1697021059,
+    ];
+
+    fn v83_exp_fraction(level: u8, experience: i32) -> f32 {
+        let Some(required) = V83_EXP_TO_NEXT_LEVEL.get(usize::from(level)) else {
+            return 0.0;
+        };
+        if *required <= 0 {
+            0.0
+        } else {
+            (experience.max(0) as f64 / *required as f64).clamp(0.0, 1.0) as f32
+        }
+    }
+
     struct DecodedSprite {
         texture_key: String,
         rect: SpriteRect,
@@ -31900,6 +39147,425 @@ mod native {
         texture_width: u32,
         texture_height: u32,
         pixels: Arc<[u8]>,
+    }
+
+    fn append_status_bar_bitmap(
+        sprites: &mut Vec<DecodedSprite>,
+        archive: &NxArchive,
+        path: &str,
+        x: f32,
+        y: f32,
+        draw_width: f32,
+        draw_height: f32,
+        crop: Option<(u32, u32, u32, u32)>,
+    ) -> Result<usize, String> {
+        let node = archive
+            .root()
+            .resolve(path)
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| format!("missing native status-bar asset {path:?}"))?;
+        let bitmap = node
+            .bitmap()
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| format!("native status-bar asset {path:?} is not a bitmap"))?;
+        let source_width = u32::from(bitmap.width());
+        let source_height = u32::from(bitmap.height());
+        let source = bitmap
+            .decode_bgra_shared()
+            .map_err(|error| error.to_string())?;
+        let (texture_width, texture_height, pixels, crop_key) = if let Some((
+            crop_x,
+            crop_y,
+            crop_width,
+            crop_height,
+        )) = crop
+        {
+            if crop_width == 0
+                || crop_height == 0
+                || crop_x.saturating_add(crop_width) > source_width
+                || crop_y.saturating_add(crop_height) > source_height
+            {
+                return Err(format!(
+                    "invalid crop {crop_x},{crop_y} {crop_width}x{crop_height} for {path:?} ({source_width}x{source_height})"
+                ));
+            }
+            let mut pixels = vec![0_u8; crop_width as usize * crop_height as usize * 4];
+            for row in 0..crop_height as usize {
+                let source_start =
+                    ((crop_y as usize + row) * source_width as usize + crop_x as usize) * 4;
+                let destination_start = row * crop_width as usize * 4;
+                let row_bytes = crop_width as usize * 4;
+                pixels[destination_start..destination_start + row_bytes]
+                    .copy_from_slice(&source[source_start..source_start + row_bytes]);
+            }
+            (
+                crop_width,
+                crop_height,
+                Arc::<[u8]>::from(pixels),
+                format!("#{crop_x},{crop_y},{crop_width},{crop_height}"),
+            )
+        } else {
+            (source_width, source_height, source, String::new())
+        };
+        let origin = node
+            .child("origin")
+            .map_err(|error| error.to_string())?
+            .map(|origin| origin.value())
+            .transpose()
+            .map_err(|error| error.to_string())?;
+        let (origin_x, origin_y) = match origin {
+            Some(NodeValue::Vector { x, y }) => (x as f32, y as f32),
+            Some(_) => return Err(format!("malformed native status-bar origin in {path:?}")),
+            None => (0.0, 0.0),
+        };
+        let index = sprites.len();
+        sprites.push(DecodedSprite {
+            texture_key: format!("native-status-bar:{path}{crop_key}"),
+            rect: SpriteRect {
+                x: x - origin_x,
+                y: y - origin_y,
+                width: draw_width,
+                height: draw_height,
+                blend_mode: BlendMode::Alpha,
+            },
+            depth_order: 0,
+            texture_width,
+            texture_height,
+            pixels,
+        });
+        Ok(index)
+    }
+
+    fn append_status_bar_nx_sprite(
+        sprites: &mut Vec<DecodedSprite>,
+        archive: &NxArchive,
+        path: &str,
+        anchor_x: f32,
+        anchor_y: f32,
+    ) -> Result<usize, String> {
+        let node = archive
+            .root()
+            .resolve(path)
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| format!("missing native status-bar asset {path:?}"))?;
+        let index = sprites.len();
+        append_node_sprite(sprites, &node, path, anchor_x, anchor_y, 1.0)?;
+        Ok(index)
+    }
+
+    fn build_status_bar_sprites(
+        archive: &NxArchive,
+    ) -> Result<
+        (
+            Vec<DecodedSprite>,
+            [StatusBarGaugeAsset; 3],
+            StatusBarLayout,
+        ),
+        String,
+    > {
+        if archive
+            .root()
+            .resolve("StatusBar2.img/mainBar")
+            .map_err(|error| error.to_string())?
+            .is_some()
+        {
+            return build_modern_status_bar_sprites(archive);
+        }
+        build_v83_status_bar_sprites(archive)
+    }
+
+    fn build_modern_status_bar_sprites(
+        archive: &NxArchive,
+    ) -> Result<
+        (
+            Vec<DecodedSprite>,
+            [StatusBarGaugeAsset; 3],
+            StatusBarLayout,
+        ),
+        String,
+    > {
+        let mut sprites = Vec::with_capacity(24);
+        append_status_bar_bitmap(
+            &mut sprites,
+            archive,
+            "StatusBar2.img/mainBar/backgrnd",
+            512.0,
+            768.0,
+            2048.0,
+            85.0,
+            None,
+        )?;
+        append_status_bar_nx_sprite(
+            &mut sprites,
+            archive,
+            "StatusBar2.img/mainBar/gaugeBackgrd",
+            512.0,
+            768.0,
+        )?;
+        append_status_bar_nx_sprite(
+            &mut sprites,
+            archive,
+            "StatusBar2.img/mainBar/lvBacktrnd",
+            512.0,
+            768.0,
+        )?;
+
+        let mut gauges = [StatusBarGaugeAsset {
+            fill_index: 0,
+            start_index: None,
+            end_index: None,
+        }; 3];
+        for (index, (kind, x, y, width)) in [
+            ("hp", 251.0, 737.0, 137.0),
+            ("mp", 422.0, 737.0, 137.0),
+            ("exp", 251.0, 753.0, 308.0),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let base = format!("StatusBar2.img/mainBar/gauge/{kind}");
+            gauges[index] = StatusBarGaugeAsset {
+                fill_index: append_status_bar_nx_sprite(
+                    &mut sprites,
+                    archive,
+                    &format!("{base}/0"),
+                    x,
+                    y,
+                )?,
+                start_index: Some(append_status_bar_nx_sprite(
+                    &mut sprites,
+                    archive,
+                    &format!("{base}/1"),
+                    x,
+                    y,
+                )?),
+                end_index: Some(append_status_bar_nx_sprite(
+                    &mut sprites,
+                    archive,
+                    &format!("{base}/2"),
+                    x + width,
+                    y,
+                )?),
+            };
+            sprites[gauges[index].fill_index].rect.width = width;
+        }
+
+        append_status_bar_nx_sprite(
+            &mut sprites,
+            archive,
+            "StatusBar2.img/mainBar/lvCover",
+            512.0,
+            768.0,
+        )?;
+        append_status_bar_nx_sprite(
+            &mut sprites,
+            archive,
+            "StatusBar2.img/mainBar/gaugeCover",
+            512.0,
+            768.0,
+        )?;
+
+        for (button, offset_x, offset_y) in [
+            ("BtChat", 0.0, 0.0),
+            ("BtClaim", 0.0, 0.0),
+            ("BtCashShop", 0.0, 0.0),
+            ("BtMTS", 17.0, 0.0),
+            ("BtMenu", 53.0, 0.0),
+            ("BtSystem", 53.0, 0.0),
+            ("BtStat", 0.0, 0.0),
+            ("BtEquip", 0.0, 0.0),
+            ("BtInven", 0.0, 0.0),
+            ("BtSkill", 0.0, 0.0),
+            ("BtKeysetting", 0.0, 0.0),
+            ("BtNotice", 0.0, 0.0),
+            ("BtChannel", 53.0, 0.0),
+        ] {
+            let path = format!("StatusBar2.img/mainBar/{button}/normal/0");
+            let node = archive
+                .root()
+                .resolve(&path)
+                .map_err(|error| error.to_string())?;
+            if let Some(node) = node {
+                append_node_sprite(
+                    &mut sprites,
+                    &node,
+                    &path,
+                    512.0 + offset_x,
+                    768.0 + offset_y,
+                    1.0,
+                )?;
+            }
+        }
+        Ok((sprites, gauges, StatusBarLayout::Modern))
+    }
+
+    fn build_v83_status_bar_sprites(
+        archive: &NxArchive,
+    ) -> Result<
+        (
+            Vec<DecodedSprite>,
+            [StatusBarGaugeAsset; 3],
+            StatusBarLayout,
+        ),
+        String,
+    > {
+        const BAR_TOP: f32 = 697.0;
+        const GAUGE_X: f32 = 156.0;
+        const GAUGE_Y: f32 = 734.0;
+        let mut sprites = Vec::with_capacity(24);
+        let mut add = |path: &str,
+                       x: f32,
+                       y: f32,
+                       width: f32,
+                       height: f32,
+                       crop: Option<(u32, u32, u32, u32)>| {
+            append_status_bar_bitmap(&mut sprites, archive, path, x, y, width, height, crop)
+        };
+
+        add(
+            "StatusBar.img/base/backgrnd",
+            0.0,
+            BAR_TOP,
+            1024.0,
+            71.0,
+            None,
+        )?;
+        add(
+            "StatusBar.img/gauge/graduation",
+            GAUGE_X,
+            GAUGE_Y,
+            340.0,
+            31.0,
+            None,
+        )?;
+        add(
+            "StatusBar.img/gauge/bar",
+            GAUGE_X,
+            GAUGE_Y,
+            340.0,
+            15.0,
+            Some((0, 0, 340, 15)),
+        )?;
+
+        let hp_gauge = add(
+            "StatusBar.img/gauge/bar",
+            GAUGE_X + 2.0,
+            GAUGE_Y + 15.0,
+            105.0,
+            16.0,
+            Some((2, 15, 105, 16)),
+        )?;
+        let mp_gauge = add(
+            "StatusBar.img/gauge/bar",
+            GAUGE_X + 110.0,
+            GAUGE_Y + 15.0,
+            105.0,
+            16.0,
+            Some((110, 15, 105, 16)),
+        )?;
+        let exp_gauge = add(
+            "StatusBar.img/gauge/bar",
+            GAUGE_X + 223.0,
+            GAUGE_Y + 15.0,
+            115.0,
+            16.0,
+            Some((223, 15, 115, 16)),
+        )?;
+
+        let small_x = 1024.0 - 8.0 - (6.0 * 28.0 + 5.0 * 2.0);
+        let small_y = BAR_TOP + 5.0;
+        let small_buttons = [
+            "StatKey",
+            "InvenKey",
+            "EquipKey",
+            "SkillKey",
+            "KeySet",
+            "QuickSlot",
+        ];
+        for (index, button) in small_buttons.into_iter().enumerate() {
+            add(
+                &format!("StatusBar.img/{button}/normal/0"),
+                small_x + index as f32 * 30.0,
+                small_y,
+                28.0,
+                20.0,
+                None,
+            )?;
+        }
+
+        let claim_x = small_x - 28.0;
+        let whisper_x = claim_x - 15.0;
+        let notice_x = whisper_x - 48.0;
+        add(
+            "StatusBar.img/BtClaim/normal/0",
+            claim_x,
+            small_y,
+            20.0,
+            19.0,
+            None,
+        )?;
+        add(
+            "StatusBar.img/BtWhisper/normal/0",
+            whisper_x,
+            small_y,
+            12.0,
+            19.0,
+            None,
+        )?;
+        add(
+            "StatusBar.img/base/box",
+            notice_x,
+            small_y,
+            42.0,
+            19.0,
+            None,
+        )?;
+        add(
+            "StatusBar.img/base/iconMemo",
+            notice_x + 4.0,
+            small_y + 4.0,
+            14.0,
+            11.0,
+            None,
+        )?;
+
+        let big_x = 1024.0 - 8.0 - (4.0 * 54.0 + 3.0 * 2.0);
+        let big_y = BAR_TOP + 35.0;
+        for (index, button) in ["BtMenu", "BtShop", "BtShort", "BtNPT"]
+            .into_iter()
+            .enumerate()
+        {
+            add(
+                &format!("StatusBar.img/{button}/normal/0"),
+                big_x + index as f32 * 56.0,
+                big_y,
+                54.0,
+                34.0,
+                None,
+            )?;
+        }
+
+        Ok((
+            sprites,
+            [
+                StatusBarGaugeAsset {
+                    fill_index: hp_gauge,
+                    start_index: None,
+                    end_index: None,
+                },
+                StatusBarGaugeAsset {
+                    fill_index: mp_gauge,
+                    start_index: None,
+                    end_index: None,
+                },
+                StatusBarGaugeAsset {
+                    fill_index: exp_gauge,
+                    start_index: None,
+                    end_index: None,
+                },
+            ],
+            StatusBarLayout::V83,
+        ))
     }
 
     struct LoginSceneAssets {
@@ -32001,7 +39667,7 @@ mod native {
         face_offset: (f32, f32),
         offset_x: f32,
         offset_y: f32,
-        facing_left: bool,
+        facing_right: bool,
         tint: [f32; 3],
         opacity: f32,
         textures: &'a [GpuTexture],
@@ -32016,7 +39682,7 @@ mod native {
             };
             draws.push(SpriteDraw {
                 texture,
-                x: if facing_left {
+                x: if facing_right {
                     1024.0 - (rect.x + rect.width) + offset_x - face_offset.0
                 } else {
                     rect.x + offset_x + face_offset.0
@@ -32027,7 +39693,7 @@ mod native {
                 uv: [0.0, 0.0, 1.0, 1.0],
                 tint,
                 blend_mode: rect.blend_mode,
-                flip_x: facing_left,
+                flip_x: facing_right,
                 opacity,
             });
         }
@@ -32063,9 +39729,9 @@ mod native {
             draws.push(SpriteDraw {
                 texture,
                 x: if facing_right {
-                    rect.x
-                } else {
                     1024.0 - (rect.x + rect.width)
+                } else {
+                    rect.x
                 },
                 y: rect.y,
                 width: rect.width,
@@ -32073,8 +39739,62 @@ mod native {
                 uv: [0.0, 0.0, 1.0, 1.0],
                 tint,
                 blend_mode: rect.blend_mode,
-                flip_x: !facing_right,
+                flip_x: facing_right,
                 opacity,
+            });
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    enum MapEntityDrawPass {
+        Layer(u8),
+        Overlays,
+    }
+
+    fn map_entity_foothold_layer(scene: &MapSceneRuntime, foothold_id: u16, x: f64, y: f64) -> u8 {
+        scene
+            .footholds
+            .as_ref()
+            .and_then(|footholds| {
+                footholds
+                    .get(foothold_id)
+                    .or_else(|| {
+                        footholds
+                            .find_below(x, y)
+                            .and_then(|(id, _)| footholds.get(id))
+                    })
+                    .map(|foothold| foothold.layer)
+            })
+            .unwrap_or(0)
+    }
+
+    fn append_item_aura_draws<'a>(
+        aura: Option<&PersistentItemAuraRuntime>,
+        below: bool,
+        offset_x: f32,
+        offset_y: f32,
+        textures: &'a [GpuTexture],
+        draws: &mut Vec<SpriteDraw<'a>>,
+    ) {
+        let frame = aura.and_then(|aura| if below { aura.below() } else { aura.above() });
+        let Some(frame) = frame else {
+            return;
+        };
+        for (texture_index, rect) in &frame.sprites {
+            let Some(texture) = textures.get(*texture_index) else {
+                continue;
+            };
+            draws.push(SpriteDraw {
+                texture,
+                x: rect.x + offset_x,
+                y: rect.y + offset_y,
+                width: rect.width,
+                height: rect.height,
+                uv: [0.0, 0.0, 1.0, 1.0],
+                tint: [1.0, 1.0, 1.0],
+                blend_mode: rect.blend_mode,
+                flip_x: false,
+                opacity: 1.0,
             });
         }
     }
@@ -32084,19 +39804,27 @@ mod native {
         active_buffs: &HashMap<openstory_protocol::BuffStatKey, ActiveCharacterBuff>,
         textures: &'a [GpuTexture],
         solid_textures: &'a [GpuTexture],
+        maple_tv_idle_texture: Option<&'a GpuTexture>,
+        maple_tv_ad_texture: Option<&'a GpuTexture>,
+        maple_tv_theme_frames: [Option<&'a MapleTvAnimationFrame>; 2],
+        maple_tv_text_texture: Option<&'a GpuTexture>,
+        maple_tv_broadcast: Option<&MapleTvBroadcastRuntime>,
         damage_texture: Option<&'a GpuTexture>,
         speech_textures: &'a HashMap<i32, GpuTexture>,
         pet_speech_textures: &'a HashMap<(i32, u8), GpuTexture>,
         local_speech_texture: Option<&'a GpuTexture>,
         damage_glyphs: &[DamageGlyph],
+        pass: MapEntityDrawPass,
         draws: &mut Vec<SpriteDraw<'a>>,
     ) {
+        let actor_draw_start = draws.len();
         enum Actor<'a> {
             Drop(&'a MapDropRuntime),
             Reactor(&'a MapReactorRuntime),
             Summon(&'a MapSummonRuntime),
             Pet(&'a MapPetRuntime),
             Mob(&'a MapMobRuntime),
+            Mist(&'a openstory_protocol::MapMistSpawn),
             Npc(&'a MapNpcRuntime),
             HiredMerchant(&'a MapHiredMerchantRuntime),
             CharacterSkillEffect(&'a MapCharacterSkillEffect),
@@ -32119,53 +39847,110 @@ mod native {
                 + scene.projectiles.len()
                 + 1,
         );
+        let local_player_layer = map_entity_foothold_layer(
+            scene,
+            scene.player.foothold_id,
+            scene.player.x,
+            scene.player.y,
+        );
         for (&object_id, drop) in &scene.drops {
-            if drop.frames.get(drop.frame_index).is_some() {
+            let layer = map_entity_foothold_layer(scene, drop.body.foothold_id, drop.x, drop.y);
+            if matches!(pass, MapEntityDrawPass::Layer(pass_layer) if pass_layer == layer)
+                && drop.frames.get(drop.frame_index).is_some()
+            {
                 actors.push((drop.y, 0, object_id, Actor::Drop(drop)));
             }
         }
         for (&object_id, reactor) in &scene.reactors {
-            actors.push((reactor.y, 1, object_id, Actor::Reactor(reactor)));
+            if matches!(pass, MapEntityDrawPass::Layer(layer) if layer == reactor.foothold_layer) {
+                actors.push((reactor.y, 1, object_id, Actor::Reactor(reactor)));
+            }
         }
         for (&object_id, summon) in &scene.summons {
-            if summon.frames.get(summon.frame_index).is_some() {
+            let layer =
+                map_entity_foothold_layer(scene, summon.body.foothold_id, summon.x, summon.y);
+            if matches!(pass, MapEntityDrawPass::Layer(pass_layer) if pass_layer == layer)
+                && summon.frames.get(summon.frame_index).is_some()
+            {
                 actors.push((summon.y, 2, object_id, Actor::Summon(summon)));
             }
         }
         for (&(owner_id, slot), pet) in &scene.pets {
-            if pet.frames().get(pet.frame_index()).is_some() {
+            let layer = map_entity_foothold_layer(scene, pet.body.foothold_id, pet.x, pet.y);
+            if matches!(pass, MapEntityDrawPass::Layer(pass_layer) if pass_layer == layer)
+                && pet.frames().get(pet.frame_index()).is_some()
+            {
                 let sort_id = owner_id.saturating_mul(3).saturating_add(i32::from(slot));
                 actors.push((pet.y, 3, sort_id, Actor::Pet(pet)));
             }
         }
         for (&object_id, mob) in &scene.mobs {
-            if mob
-                .animations
-                .get(&mob.motion)
-                .and_then(|frames| frames.get(mob.frame_index))
-                .is_some()
+            let layer = map_entity_foothold_layer(scene, mob.body.foothold_id, mob.x, mob.y);
+            if matches!(pass, MapEntityDrawPass::Layer(pass_layer) if pass_layer == layer)
+                && mob
+                    .animations
+                    .get(&mob.motion)
+                    .and_then(|frames| frames.get(mob.frame_index))
+                    .is_some()
             {
                 actors.push((mob.y, 3, object_id, Actor::Mob(mob)));
             }
         }
         for (&object_id, npc) in &scene.npcs {
-            if npc.frames().get(npc.frame_index).is_some() {
+            let layer = map_entity_foothold_layer(scene, npc.foothold, npc.x, npc.y);
+            if matches!(pass, MapEntityDrawPass::Layer(pass_layer) if pass_layer == layer)
+                && npc.frames().get(npc.frame_index).is_some()
+            {
                 actors.push((npc.y, 4, object_id, Actor::Npc(npc)));
             }
         }
-        for (&owner_id, merchant) in &scene.hired_merchants {
-            actors.push((merchant.y, 4, owner_id, Actor::HiredMerchant(merchant)));
+        for (&object_id, mist) in &scene.mists {
+            if mist.right <= mist.left || mist.bottom <= mist.top {
+                continue;
+            }
+            let layer = map_entity_foothold_layer(
+                scene,
+                0,
+                (f64::from(mist.left) + f64::from(mist.right)) / 2.0,
+                f64::from(mist.bottom),
+            );
+            if matches!(pass, MapEntityDrawPass::Layer(pass_layer) if pass_layer == layer) {
+                let y = (f64::from(mist.top) + f64::from(mist.bottom)) / 2.0;
+                actors.push((y, 5, object_id, Actor::Mist(mist)));
+            }
+        }
+        let camera_bias_x = scene.camera_offset.0 + scene.player.x as f32 - 512.0;
+        let camera_bias_y =
+            scene.camera_offset.1 + scene.player.y as f32 - GAMEPLAY_CAMERA_CENTER_Y;
+        for draw in &mut draws[actor_draw_start..] {
+            draw.x += camera_bias_x;
+            draw.y += camera_bias_y;
+        }
+
+        if matches!(pass, MapEntityDrawPass::Overlays) {
+            for (&owner_id, merchant) in &scene.hired_merchants {
+                actors.push((merchant.y, 4, owner_id, Actor::HiredMerchant(merchant)));
+            }
         }
         for (index, effect) in scene.character_effects.iter().enumerate() {
-            let actor_y = effect
-                .character_id
-                .map_or(Some(scene.player.y), |character_id| {
+            let (actor_y, foothold, actor_x) = effect.character_id.map_or(
+                (
+                    Some(scene.player.y),
+                    scene.player.foothold_id,
+                    scene.player.x,
+                ),
+                |character_id| {
                     scene
                         .remote_players
                         .get(&character_id)
-                        .map(|player| player.y)
-                });
+                        .map_or((None, 0, 0.0), |player| {
+                            (Some(player.y), player.foothold, player.x)
+                        })
+                },
+            );
+            let layer = map_entity_foothold_layer(scene, foothold, actor_x, actor_y.unwrap_or(0.0));
             if let Some(actor_y) = actor_y
+                && matches!(pass, MapEntityDrawPass::Layer(pass_layer) if pass_layer == layer)
                 && effect.frames.get(effect.frame_index).is_some()
             {
                 actors.push((
@@ -32177,25 +39962,33 @@ mod native {
             }
         }
         for (&character_id, player) in &scene.remote_players {
-            if player
-                .active_avatar_frame
-                .and_then(|index| player.avatar_frames.get(index))
-                .is_some()
+            let layer = map_entity_foothold_layer(scene, player.foothold, player.x, player.y);
+            if matches!(pass, MapEntityDrawPass::Layer(pass_layer) if pass_layer == layer)
+                && player
+                    .active_avatar_frame
+                    .and_then(|index| player.avatar_frames.get(index))
+                    .is_some()
             {
                 actors.push((player.y, 6, character_id, Actor::RemotePlayer(player)));
             }
         }
         if let Some(death_art) = scene.local_death_art.as_ref() {
-            actors.push((scene.player.y, 6, 0, Actor::LocalDeath(death_art)));
+            if matches!(pass, MapEntityDrawPass::Layer(layer) if layer == local_player_layer) {
+                actors.push((scene.player.y, 6, 0, Actor::LocalDeath(death_art)));
+            }
         } else if let Some(frame) = scene
             .active_avatar_frame
             .and_then(|index| scene.avatar_frames.get(index))
         {
-            actors.push((scene.player.y, 6, 0, Actor::LocalPlayer(frame)));
+            if matches!(pass, MapEntityDrawPass::Layer(layer) if layer == local_player_layer) {
+                actors.push((scene.player.y, 6, 0, Actor::LocalPlayer(frame)));
+            }
         }
-        for (index, projectile) in scene.projectiles.iter().enumerate() {
-            if projectile.frames.get(projectile.frame_index).is_some() {
-                actors.push((projectile.y, 8, index as i32, Actor::Projectile(projectile)));
+        if matches!(pass, MapEntityDrawPass::Overlays) {
+            for (index, projectile) in scene.projectiles.iter().enumerate() {
+                if projectile.frames.get(projectile.frame_index).is_some() {
+                    actors.push((projectile.y, 8, index as i32, Actor::Projectile(projectile)));
+                }
             }
         }
         actors.sort_by(|left, right| {
@@ -32339,7 +40132,9 @@ mod native {
                         draws.push(SpriteDraw {
                             texture,
                             x: 512.0 + offset_x - SPEECH_BUBBLE_ANCHOR.0 as f32,
-                            y: 384.0 + offset_y - 48.0 - SPEECH_BUBBLE_ANCHOR.1 as f32,
+                            y: GAMEPLAY_CAMERA_CENTER_Y + offset_y
+                                - 48.0
+                                - SPEECH_BUBBLE_ANCHOR.1 as f32,
                             width: SPEECH_BUBBLE_WIDTH as f32,
                             height: SPEECH_BUBBLE_HEIGHT as f32,
                             uv: [0.0, 0.0, 1.0, 1.0],
@@ -32362,6 +40157,14 @@ mod native {
                     let offset_y = (mob.y - scene.player.y) as f32;
                     let flipped = !mob.no_flip && (mob.server_flip != mob.faces_right);
                     let tint = mob.status_tint();
+                    let opacity = if let Some(remaining) = mob.fade_remaining {
+                        (remaining.as_secs_f32() / MOB_FADE_DURATION.as_secs_f32()).clamp(0.0, 1.0)
+                    } else if let Some(remaining) = mob.fade_in_remaining {
+                        (1.0 - remaining.as_secs_f32() / MOB_FADE_DURATION.as_secs_f32())
+                            .clamp(0.0, 1.0)
+                    } else {
+                        1.0
+                    };
                     append_mob_hit_effect_draws(mob, scene, textures, false, draws);
                     for (texture_index, rect) in &frame.sprites {
                         let Some(texture) = textures.get(*texture_index) else {
@@ -32382,7 +40185,7 @@ mod native {
                             tint,
                             blend_mode: rect.blend_mode,
                             flip_x: flipped,
-                            opacity: 1.0,
+                            opacity,
                         });
                     }
                     append_mob_hit_effect_draws(mob, scene, textures, true, draws);
@@ -32452,6 +40255,134 @@ mod native {
                             });
                         }
                     }
+                    if let Some(anchors) = npc.maple_tv_anchors {
+                        let message_x = 512.0 + offset_x + f32::from(anchors.message_x);
+                        let message_y =
+                            GAMEPLAY_CAMERA_CENTER_Y + offset_y + f32::from(anchors.message_y);
+                        if let Some(texture) = maple_tv_idle_texture {
+                            draws.push(SpriteDraw {
+                                texture,
+                                x: message_x,
+                                y: message_y,
+                                width: texture.width() as f32,
+                                height: texture.height() as f32,
+                                uv: [0.0, 0.0, 1.0, 1.0],
+                                tint: [1.0, 1.0, 1.0],
+                                blend_mode: BlendMode::Alpha,
+                                flip_x: false,
+                                opacity: 1.0,
+                            });
+                        }
+                        if let Some(texture) = maple_tv_ad_texture {
+                            draws.push(SpriteDraw {
+                                texture,
+                                x: 512.0 + offset_x + f32::from(anchors.ad_x),
+                                y: GAMEPLAY_CAMERA_CENTER_Y + offset_y + f32::from(anchors.ad_y),
+                                width: texture.width() as f32,
+                                height: texture.height() as f32,
+                                uv: [0.0, 0.0, 1.0, 1.0],
+                                tint: [1.0, 1.0, 1.0],
+                                blend_mode: BlendMode::Alpha,
+                                flip_x: false,
+                                opacity: 1.0,
+                            });
+                        }
+                        if let Some(broadcast) = maple_tv_broadcast {
+                            let theme_index = match broadcast.type_id % 4 {
+                                1 => Some(0),
+                                2 => Some(1),
+                                _ => None,
+                            };
+                            if let Some(index) = theme_index
+                                && let Some(frame) = maple_tv_theme_frames[index]
+                            {
+                                let texture = &frame.texture;
+                                let origin = frame.origin;
+                                draws.push(SpriteDraw {
+                                    texture,
+                                    x: message_x + 120.0 - f32::from(origin.0),
+                                    y: message_y + 45.0 - f32::from(origin.1),
+                                    width: texture.width() as f32,
+                                    height: texture.height() as f32,
+                                    uv: [0.0, 0.0, 1.0, 1.0],
+                                    tint: [1.0, 1.0, 1.0],
+                                    blend_mode: BlendMode::Alpha,
+                                    flip_x: false,
+                                    opacity: 1.0,
+                                });
+                            }
+                            for (texture_index, rect) in &broadcast.sender_avatar_draws {
+                                if let Some(texture) = textures.get(*texture_index) {
+                                    draws.push(SpriteDraw {
+                                        texture,
+                                        x: message_x + rect.x,
+                                        y: message_y + rect.y,
+                                        width: rect.width,
+                                        height: rect.height,
+                                        uv: [0.0, 0.0, 1.0, 1.0],
+                                        tint: [1.0, 1.0, 1.0],
+                                        blend_mode: rect.blend_mode,
+                                        flip_x: false,
+                                        opacity: 1.0,
+                                    });
+                                }
+                            }
+                            if broadcast.has_partner {
+                                for (texture_index, rect) in &broadcast.partner_avatar_draws {
+                                    if let Some(texture) = textures.get(*texture_index) {
+                                        draws.push(SpriteDraw {
+                                            texture,
+                                            x: message_x + rect.x,
+                                            y: message_y + rect.y,
+                                            width: rect.width,
+                                            height: rect.height,
+                                            uv: [0.0, 0.0, 1.0, 1.0],
+                                            tint: [1.0, 1.0, 1.0],
+                                            blend_mode: rect.blend_mode,
+                                            flip_x: false,
+                                            opacity: 1.0,
+                                        });
+                                    }
+                                }
+                            }
+                            if let Some(texture) = maple_tv_text_texture {
+                                draws.push(SpriteDraw {
+                                    texture,
+                                    x: message_x,
+                                    y: message_y,
+                                    width: 240.0,
+                                    height: 90.0,
+                                    uv: [0.0, 0.0, 1.0, 1.0],
+                                    tint: [1.0, 1.0, 1.0],
+                                    blend_mode: BlendMode::Alpha,
+                                    flip_x: false,
+                                    opacity: 1.0,
+                                });
+                            }
+                        }
+                    }
+                }
+                Actor::Mist(mist) => {
+                    let Some(texture) = solid_textures.get(1) else {
+                        continue;
+                    };
+                    let tint = match mist.mist_type {
+                        1 => [0.60, 0.60, 0.54],
+                        2 => [1.0, 1.0, 1.0],
+                        _ => [0.50, 0.0, 0.50],
+                    };
+                    draws.push(SpriteDraw {
+                        texture,
+                        x: 512.0 + (f64::from(mist.left) - scene.player.x) as f32,
+                        y: GAMEPLAY_CAMERA_CENTER_Y + (f64::from(mist.top) - scene.player.y) as f32,
+                        width: (i64::from(mist.right) - i64::from(mist.left)) as f32,
+                        height: (i64::from(mist.bottom) - i64::from(mist.top)) as f32,
+                        uv: [0.0, 0.0, 1.0, 1.0],
+                        tint,
+                        blend_mode: BlendMode::Alpha,
+                        flip_x: false,
+                        opacity: 0.3,
+                    });
                 }
                 Actor::HiredMerchant(merchant) => {
                     let offset_x = (merchant.x - scene.player.x) as f32;
@@ -32520,10 +40451,10 @@ mod native {
                             (
                                 (player.x - scene.player.x + player.recoil_offset_x) as f32,
                                 (player.y - scene.player.y) as f32,
-                                player.facing_left,
+                                !player.facing_left,
                             )
                         } else {
-                            (0.0, 0.0, !scene.facing_right)
+                            (0.0, 0.0, scene.facing_right)
                         };
                     for (texture_index, rect) in &frame.sprites {
                         let Some(texture) = textures.get(*texture_index) else {
@@ -32556,9 +40487,17 @@ mod native {
                     };
                     let offset_x = (player.x - scene.player.x + player.recoil_offset_x) as f32;
                     let offset_y = (player.y - scene.player.y) as f32;
-                    let facing_left = player.facing_left;
+                    let facing_right = !player.facing_left;
                     let (tint, opacity) =
                         character_damage_tint(player.invincibility_remaining, false);
+                    append_item_aura_draws(
+                        player.item_aura.as_ref(),
+                        true,
+                        offset_x,
+                        offset_y,
+                        textures,
+                        draws,
+                    );
                     for sprite in &frame.sprites {
                         if sprite.is_face
                             && let Some(expression) = player.face_expression.as_ref()
@@ -32568,7 +40507,7 @@ mod native {
                                 frame.face_offset,
                                 offset_x,
                                 offset_y,
-                                facing_left,
+                                facing_right,
                                 tint,
                                 opacity,
                                 textures,
@@ -32580,7 +40519,7 @@ mod native {
                             continue;
                         };
                         let original = &sprite.rect;
-                        let x = if facing_left {
+                        let x = if facing_right {
                             1024.0 - (original.x + original.width) + offset_x
                         } else {
                             original.x + offset_x
@@ -32594,10 +40533,18 @@ mod native {
                             uv: [0.0, 0.0, 1.0, 1.0],
                             tint,
                             blend_mode: original.blend_mode,
-                            flip_x: facing_left,
+                            flip_x: facing_right,
                             opacity,
                         });
                     }
+                    append_item_aura_draws(
+                        player.item_aura.as_ref(),
+                        false,
+                        offset_x,
+                        offset_y,
+                        textures,
+                        draws,
+                    );
                     if let Some((texture_index, rect)) = player.name_label {
                         if let Some(texture) = textures.get(texture_index) {
                             draws.push(SpriteDraw {
@@ -32620,7 +40567,9 @@ mod native {
                         draws.push(SpriteDraw {
                             texture,
                             x: 512.0 + offset_x - SPEECH_BUBBLE_ANCHOR.0 as f32,
-                            y: 384.0 + offset_y - 85.0 - SPEECH_BUBBLE_ANCHOR.1 as f32,
+                            y: GAMEPLAY_CAMERA_CENTER_Y + offset_y
+                                - 85.0
+                                - SPEECH_BUBBLE_ANCHOR.1 as f32,
                             width: SPEECH_BUBBLE_WIDTH as f32,
                             height: SPEECH_BUBBLE_HEIGHT as f32,
                             uv: [0.0, 0.0, 1.0, 1.0],
@@ -32632,7 +40581,7 @@ mod native {
                     }
                 }
                 Actor::LocalPlayer(frame) => {
-                    let facing_left = !scene.facing_right;
+                    let facing_right = scene.facing_right;
                     let hidden = character_has_buff(
                         active_buffs,
                         openstory_protocol::BuffMaskGroup::Second,
@@ -32654,6 +40603,14 @@ mod native {
                             draws,
                         );
                     }
+                    append_item_aura_draws(
+                        scene.local_item_aura.as_ref(),
+                        true,
+                        0.0,
+                        sit_offset_y,
+                        textures,
+                        draws,
+                    );
                     for sprite in &frame.sprites {
                         if sprite.is_face
                             && let Some(expression) = scene.local_face_expression.as_ref()
@@ -32663,7 +40620,7 @@ mod native {
                                 frame.face_offset,
                                 0.0,
                                 sit_offset_y,
-                                facing_left,
+                                facing_right,
                                 tint,
                                 opacity,
                                 textures,
@@ -32676,9 +40633,9 @@ mod native {
                         };
                         let rect = &sprite.rect;
                         let x = if scene.facing_right {
-                            rect.x
-                        } else {
                             1024.0 - (rect.x + rect.width)
+                        } else {
+                            rect.x
                         };
                         draws.push(SpriteDraw {
                             texture,
@@ -32689,7 +40646,7 @@ mod native {
                             uv: [0.0, 0.0, 1.0, 1.0],
                             tint,
                             blend_mode: rect.blend_mode,
-                            flip_x: !scene.facing_right,
+                            flip_x: scene.facing_right,
                             opacity,
                         });
                     }
@@ -32703,13 +40660,21 @@ mod native {
                             draws,
                         );
                     }
+                    append_item_aura_draws(
+                        scene.local_item_aura.as_ref(),
+                        false,
+                        0.0,
+                        sit_offset_y,
+                        textures,
+                        draws,
+                    );
                     if scene.local_speech_bubble_remaining.is_some()
                         && let Some(texture) = local_speech_texture
                     {
                         draws.push(SpriteDraw {
                             texture,
                             x: 512.0 - SPEECH_BUBBLE_ANCHOR.0 as f32,
-                            y: 384.0 - 85.0 - SPEECH_BUBBLE_ANCHOR.1 as f32,
+                            y: GAMEPLAY_CAMERA_CENTER_Y - 85.0 - SPEECH_BUBBLE_ANCHOR.1 as f32,
                             width: SPEECH_BUBBLE_WIDTH as f32,
                             height: SPEECH_BUBBLE_HEIGHT as f32,
                             uv: [0.0, 0.0, 1.0, 1.0],
@@ -32781,7 +40746,8 @@ mod native {
                         continue;
                     };
                     let anchor_x = 512.0 + (projectile.x - scene.player.x) as f32;
-                    let anchor_y = 384.0 + (projectile.y - scene.player.y) as f32;
+                    let anchor_y =
+                        GAMEPLAY_CAMERA_CENTER_Y + (projectile.y - scene.player.y) as f32;
                     for (texture_index, rect) in &frame.sprites {
                         let Some(texture) = textures.get(*texture_index) else {
                             continue;
@@ -32808,92 +40774,69 @@ mod native {
             }
         }
 
-        if let Some(texture) = solid_textures.get(1) {
-            for mist in scene.mists.values() {
-                if mist.right <= mist.left || mist.bottom <= mist.top {
-                    continue;
+        if matches!(pass, MapEntityDrawPass::Overlays) {
+            if let Some(frame) = scene
+                .quest_clear_effect
+                .as_ref()
+                .and_then(|effect| effect.frames.get(effect.frame_index))
+            {
+                for (texture_index, rect) in &frame.sprites {
+                    let Some(texture) = textures.get(*texture_index) else {
+                        continue;
+                    };
+                    draws.push(SpriteDraw {
+                        texture,
+                        x: rect.x,
+                        y: rect.y,
+                        width: rect.width,
+                        height: rect.height,
+                        uv: [0.0, 0.0, 1.0, 1.0],
+                        tint: [1.0, 1.0, 1.0],
+                        blend_mode: rect.blend_mode,
+                        flip_x: false,
+                        opacity: 1.0,
+                    });
                 }
-                let tint = match mist.mist_type {
-                    1 => [0.60, 0.60, 0.54],
-                    2 => [1.0, 1.0, 1.0],
-                    _ => [0.50, 0.0, 0.50],
-                };
-                draws.push(SpriteDraw {
-                    texture,
-                    x: 512.0 + (f64::from(mist.left) - scene.player.x) as f32,
-                    y: 384.0 + (f64::from(mist.top) - scene.player.y) as f32,
-                    width: (i64::from(mist.right) - i64::from(mist.left)) as f32,
-                    height: (i64::from(mist.bottom) - i64::from(mist.top)) as f32,
-                    uv: [0.0, 0.0, 1.0, 1.0],
-                    tint,
-                    blend_mode: BlendMode::Alpha,
-                    flip_x: false,
-                    opacity: 0.3,
-                });
             }
-        }
 
-        if let Some(frame) = scene
-            .quest_clear_effect
-            .as_ref()
-            .and_then(|effect| effect.frames.get(effect.frame_index))
-        {
-            for (texture_index, rect) in &frame.sprites {
-                let Some(texture) = textures.get(*texture_index) else {
+            for portal in &scene.portals {
+                let (frames, frame_index) = match portal.portal_type {
+                    2 => (
+                        &scene.regular_portal_frames,
+                        scene.regular_portal_frame_index,
+                    ),
+                    10 if portal.touched => {
+                        (&scene.hidden_portal_frames, scene.hidden_portal_frame_index)
+                    }
+                    _ => continue,
+                };
+                let Some(frame) = frames.get(frame_index) else {
                     continue;
                 };
-                draws.push(SpriteDraw {
-                    texture,
-                    x: rect.x,
-                    y: rect.y,
-                    width: rect.width,
-                    height: rect.height,
-                    uv: [0.0, 0.0, 1.0, 1.0],
-                    tint: [1.0, 1.0, 1.0],
-                    blend_mode: rect.blend_mode,
-                    flip_x: false,
-                    opacity: 1.0,
-                });
-            }
-        }
-
-        for portal in &scene.portals {
-            let (frames, frame_index) = match portal.portal_type {
-                2 => (
-                    &scene.regular_portal_frames,
-                    scene.regular_portal_frame_index,
-                ),
-                10 if portal.touched => {
-                    (&scene.hidden_portal_frames, scene.hidden_portal_frame_index)
+                let offset_x = (portal.x - scene.player.x) as f32 + camera_bias_x;
+                let offset_y = (portal.y - scene.player.y) as f32 + camera_bias_y;
+                for (texture_index, rect) in &frame.sprites {
+                    let Some(texture) = textures.get(*texture_index) else {
+                        continue;
+                    };
+                    draws.push(SpriteDraw {
+                        texture,
+                        x: rect.x + offset_x,
+                        y: rect.y + offset_y,
+                        width: rect.width,
+                        height: rect.height,
+                        uv: [0.0, 0.0, 1.0, 1.0],
+                        tint: [1.0, 1.0, 1.0],
+                        blend_mode: rect.blend_mode,
+                        flip_x: false,
+                        opacity: 1.0,
+                    });
                 }
-                _ => continue,
-            };
-            let Some(frame) = frames.get(frame_index) else {
-                continue;
-            };
-            let offset_x = (portal.x - scene.player.x) as f32;
-            let offset_y = (portal.y - scene.player.y) as f32;
-            for (texture_index, rect) in &frame.sprites {
-                let Some(texture) = textures.get(*texture_index) else {
-                    continue;
-                };
-                draws.push(SpriteDraw {
-                    texture,
-                    x: rect.x + offset_x,
-                    y: rect.y + offset_y,
-                    width: rect.width,
-                    height: rect.height,
-                    uv: [0.0, 0.0, 1.0, 1.0],
-                    tint: [1.0, 1.0, 1.0],
-                    blend_mode: rect.blend_mode,
-                    flip_x: false,
-                    opacity: 1.0,
-                });
             }
-        }
 
-        if let Some(texture) = damage_texture {
-            append_mob_damage_draws(scene, texture, damage_glyphs, draws);
+            if let Some(texture) = damage_texture {
+                append_mob_damage_draws(scene, texture, damage_glyphs, draws);
+            }
         }
     }
 
@@ -32909,13 +40852,14 @@ mod native {
             let opacity = (1.0 - age / lifetime).clamp(0.0, 1.0);
             let rise = age * number.rise_speed;
             let anchor_x = 512.0 + (number.world_x - scene.player.x) as f32;
-            let anchor_y = 384.0 + (number.world_y - scene.player.y) as f32 - rise;
+            let anchor_y =
+                GAMEPLAY_CAMERA_CENTER_Y + (number.world_y - scene.player.y) as f32 - rise;
 
             if number.miss {
                 if number.critical {
                     continue;
                 }
-                let Some(glyph) = glyphs.get(60) else {
+                let Some(glyph) = glyphs.get(80) else {
                     continue;
                 };
                 draws.push(SpriteDraw {
@@ -32936,8 +40880,13 @@ mod native {
                 continue;
             }
             let leading_digit = usize::from(number.digits[0]);
-            let leading_glyph =
-                damage_glyph_index(leading_digit, number.critical, true, number.heal);
+            let leading_glyph = damage_glyph_index(
+                leading_digit,
+                number.critical,
+                true,
+                number.heal,
+                number.player_damage,
+            );
             if glyphs.get(leading_glyph).is_none() {
                 continue;
             }
@@ -32952,6 +40901,7 @@ mod native {
                     number.critical,
                     index == 0,
                     number.heal,
+                    number.player_damage,
                 );
                 let Some(glyph) = glyphs.get(glyph_index) else {
                     cursor_x +=
@@ -32982,9 +40932,18 @@ mod native {
         }
     }
 
-    fn damage_glyph_index(digit: usize, critical: bool, first: bool, heal: bool) -> usize {
+    fn damage_glyph_index(
+        digit: usize,
+        critical: bool,
+        first: bool,
+        heal: bool,
+        player_damage: bool,
+    ) -> usize {
         if heal {
             return 40 + usize::from(!first) * 10 + digit;
+        }
+        if player_damage {
+            return 60 + usize::from(!first) * 10 + digit;
         }
         match (critical, first) {
             (false, true) => digit,
@@ -33005,6 +40964,36 @@ mod native {
             (current + next) / 2
         } else {
             current
+        }
+    }
+
+    fn append_map_screen_effect_draws<'a>(
+        scene: &MapSceneRuntime,
+        textures: &'a [GpuTexture],
+        draws: &mut Vec<SpriteDraw<'a>>,
+    ) {
+        let Some(effect) = scene.screen_effect.as_ref() else {
+            return;
+        };
+        let Some(frame) = effect.frames.get(effect.frame_index) else {
+            return;
+        };
+        for (texture_index, rect) in &frame.sprites {
+            let Some(texture) = textures.get(*texture_index) else {
+                continue;
+            };
+            draws.push(SpriteDraw {
+                texture,
+                x: rect.x,
+                y: rect.y,
+                width: rect.width,
+                height: rect.height,
+                uv: [0.0, 0.0, 1.0, 1.0],
+                tint: [1.0, 1.0, 1.0],
+                blend_mode: rect.blend_mode,
+                flip_x: false,
+                opacity: 1.0,
+            });
         }
     }
 
@@ -33052,6 +41041,7 @@ mod native {
     #[derive(Clone, Copy)]
     struct LoginButtonAsset {
         hit_rect: SpriteRect,
+        action: Option<LoginAction>,
         normal_draw: usize,
         mouse_over_draw: Option<usize>,
         pressed_draw: Option<usize>,
@@ -33065,7 +41055,15 @@ mod native {
         let mut all_draw_indices = HashSet::new();
         let mut active_draw_indices = HashSet::new();
         for button in &buttons {
-            active_draw_indices.insert(button.normal_draw);
+            // These actions are available before the network handshake, so
+            // their idle art should not look disabled while the server connects.
+            let initial_draw =
+                if matches!(button.action, Some(LoginAction::Login | LoginAction::Guest)) {
+                    button.mouse_over_draw.unwrap_or(button.normal_draw)
+                } else {
+                    button.normal_draw
+                };
+            active_draw_indices.insert(initial_draw);
             all_draw_indices.insert(button.normal_draw);
             for draw_index in [
                 button.mouse_over_draw,
@@ -33091,6 +41089,7 @@ mod native {
         SelectWorld(u8),
         SelectChannel(u8),
         EnterWorld,
+        HighlightCharacter(usize),
         SelectCharacter(usize),
         DeleteCharacter(usize),
         ReturnToWorld,
@@ -33363,11 +41362,11 @@ mod native {
         selected_world: Option<u8>,
         selected_channel: u8,
     ) -> Result<LoginSceneAssets, String> {
-        const OFFSET_X: f32 = 112.0;
-        const OFFSET_Y: f32 = 84.0;
         const UI_SCALE: f32 = 1.28;
+        let design_point = |x: f32, y: f32| (x * UI_SCALE, y * UI_SCALE);
         let mut sprites = Vec::with_capacity(32);
         let mut actions = Vec::with_capacity(24);
+        let mut animated_art = Vec::with_capacity(1);
 
         let backdrop = map
             .root()
@@ -33396,13 +41395,61 @@ mod native {
             384.0,
             UI_SCALE,
         )?;
+
+        if let Some(world_id) = selected_world {
+            let (scroll_x, scroll_y) = design_point(143.0, 100.0);
+            append_sprite(
+                &mut sprites,
+                legacy_ui,
+                "Login.img/WorldSelect/scroll/0/3",
+                scroll_x,
+                scroll_y,
+                UI_SCALE,
+            )?;
+            let (divider_x, divider_y) = design_point(143.0 + 37.0, 100.0 + 136.0);
+            append_optional_sprite_at_top_left(
+                &mut sprites,
+                legacy_ui,
+                "Login.img/WorldSelect/chBackgrn",
+                divider_x,
+                divider_y,
+                UI_SCALE,
+            )?;
+
+            let title_path = format!("Login.img/WorldSelect/world/{world_id}");
+            if let Some(title) = legacy_ui
+                .root()
+                .resolve(&title_path)
+                .map_err(|error| error.to_string())?
+            {
+                let title_width = title
+                    .bitmap()
+                    .map_err(|error| error.to_string())?
+                    .map(|bitmap| f32::from(bitmap.width()))
+                    .unwrap_or(0.0);
+                let title_design_x = 143.0 + 37.0 + (449.0 - title_width) / 2.0;
+                let (title_x, title_y) = design_point(title_design_x, 100.0 + 135.0);
+                append_node_sprite(
+                    &mut sprites,
+                    &title,
+                    &title_path,
+                    title_x,
+                    title_y,
+                    UI_SCALE,
+                )?;
+            }
+        }
+
+        // The hanging rod and world planks render over the scroll in the
+        // legacy client, so keep them above the open parchment here too.
+        let (hanger_x, hanger_y) = design_point(400.0, 80.0);
         append_optional_sprite(
             &mut sprites,
             map,
             "Obj/login.img/WorldSelect/signboard/0/0",
-            512.0,
-            164.0,
-            1.0,
+            hanger_x,
+            hanger_y,
+            UI_SCALE,
         )?;
 
         let mut world_index = 0;
@@ -33412,8 +41459,7 @@ mod native {
             .take(20)
         {
             let path = format!("Login.img/WorldSelect/BtWorld/{}/normal/0", world.id);
-            let anchor_x = 182.0 + world_index as f32 * 27.0 + OFFSET_X;
-            let anchor_y = 158.0 + OFFSET_Y;
+            let (anchor_x, anchor_y) = design_point(182.0 + world_index as f32 * 27.0, 158.0);
             if let Some(rect) = append_optional_sprite(
                 &mut sprites,
                 legacy_ui,
@@ -33431,38 +41477,15 @@ mod native {
         }
 
         if let Some(world_id) = selected_world {
-            append_sprite(
-                &mut sprites,
-                legacy_ui,
-                "Login.img/WorldSelect/scroll/0/3",
-                143.0 + OFFSET_X,
-                100.0 + OFFSET_Y,
-                UI_SCALE,
-            )?;
-            append_optional_sprite(
-                &mut sprites,
-                legacy_ui,
-                "Login.img/WorldSelect/chBackgrn",
-                143.0 + 37.0 + OFFSET_X,
-                100.0 + 136.0 + OFFSET_Y,
-                UI_SCALE,
-            )?;
-            append_optional_sprite(
-                &mut sprites,
-                legacy_ui,
-                &format!("Login.img/WorldSelect/world/{world_id}"),
-                143.0 + 52.0 + OFFSET_X,
-                100.0 + 135.0 + OFFSET_Y,
-                UI_SCALE,
-            )?;
-
             if let Some(world) = worlds.iter().find(|world| world.id == world_id) {
                 for (channel_index, _channel) in world.channels.iter().take(20).enumerate() {
                     let channel_index = channel_index as u8;
                     let column = i16::from(channel_index % 4);
                     let row = i16::from(channel_index / 4);
-                    let anchor_x = 143.0 + 55.0 + f32::from(column * 106) + OFFSET_X;
-                    let anchor_y = 100.0 + 205.0 + f32::from(row * 35) + OFFSET_Y;
+                    let (anchor_x, anchor_y) = design_point(
+                        143.0 + 55.0 + f32::from(column * 106),
+                        100.0 + 205.0 + f32::from(row * 35),
+                    );
                     let path = format!("Login.img/WorldSelect/channel/{channel_index}/normal");
                     if let Some(rect) = append_optional_sprite(
                         &mut sprites,
@@ -33478,23 +41501,33 @@ mod native {
                         });
                     }
                     if channel_index == selected_channel {
-                        append_optional_sprite(
+                        let (highlight_x, highlight_y) = design_point(
+                            143.0 + 55.0 + f32::from(column * 106) + 46.0,
+                            100.0 + 205.0 + f32::from(row * 35) + 15.0,
+                        );
+                        if let Some(mut animation) = append_scaled_ui_animation(
                             &mut sprites,
                             legacy_ui,
-                            "Login.img/WorldSelect/channel/chSelect/3",
-                            anchor_x + 46.0 * UI_SCALE,
-                            anchor_y + 15.0 * UI_SCALE,
+                            "Login.img/WorldSelect/channel/chSelect",
+                            highlight_x,
+                            highlight_y,
                             UI_SCALE,
-                        )?;
+                        )? {
+                            // The native channel highlight animates once on
+                            // selection, then holds its final red swirl frame.
+                            animation.hold_last = true;
+                            animated_art.push(animation);
+                        }
                     }
                 }
             }
+            let (enter_x, enter_y) = design_point(143.0 + 361.0, 100.0 + 344.0);
             if let Some(rect) = append_optional_sprite(
                 &mut sprites,
                 legacy_ui,
                 "Login.img/WorldSelect/BtGoworld/normal/0",
-                143.0 + 361.0 + OFFSET_X,
-                100.0 + 344.0 + OFFSET_Y,
+                enter_x,
+                enter_y,
                 UI_SCALE,
             )? {
                 actions.push(LoginActionRegion {
@@ -33504,12 +41537,13 @@ mod native {
             }
         }
 
+        let (exit_x, exit_y) = design_point(8.0, 515.0);
         if let Some(rect) = append_optional_sprite(
             &mut sprites,
             legacy_ui,
             "Login.img/Common/BtExit/normal/0",
-            8.0 + OFFSET_X,
-            515.0 + OFFSET_Y,
+            exit_x,
+            exit_y,
             UI_SCALE,
         )? {
             actions.push(LoginActionRegion {
@@ -33521,7 +41555,7 @@ mod native {
             sprites,
             actions,
             map_scene: None,
-            animated_art: Vec::new(),
+            animated_art,
             login_buttons: Vec::new(),
             save_id_indicator_draws: None,
         })
@@ -33533,13 +41567,15 @@ mod native {
         character_archive: &NxArchive,
         characters: &openstory_protocol::CharacterList,
         page: usize,
+        selected_character: usize,
+        status: Option<&str>,
         font: &fontdue::Font,
+        action_focus: Option<usize>,
     ) -> Result<LoginSceneAssets, String> {
-        const OFFSET_X: f32 = 112.0;
-        const OFFSET_Y: f32 = 84.0;
         const UI_SCALE: f32 = 1.28;
         let mut sprites = Vec::with_capacity(24);
-        let mut actions = Vec::with_capacity(CHARACTER_PAGE_SIZE * 2 + 3);
+        let mut actions = Vec::with_capacity(CHARACTER_PAGE_SIZE + 7);
+        let mut animated_art = Vec::with_capacity(2);
 
         append_tiled_background(
             &mut sprites,
@@ -33553,185 +41589,280 @@ mod native {
             &mut sprites,
             map,
             "Back/login.img/back/10",
-            77.0 + OFFSET_X,
-            32.0 + OFFSET_Y,
+            77.0 * UI_SCALE,
+            32.0 * UI_SCALE,
             UI_SCALE,
         )?;
         append_optional_sprite(
             &mut sprites,
             map,
             "Back/login.img/back/15",
-            143.0 + OFFSET_X,
-            81.0 + OFFSET_Y,
+            143.0 * UI_SCALE,
+            81.0 * UI_SCALE,
             UI_SCALE,
         )?;
         append_optional_sprite(
             &mut sprites,
             map,
             "Back/login.img/back/13",
-            141.0 + OFFSET_X,
-            695.0 + OFFSET_Y,
+            141.0 * UI_SCALE,
+            695.0 * UI_SCALE,
             UI_SCALE,
         )?;
         append_optional_sprite(
             &mut sprites,
             map,
             "Obj/login.img/CharSelect/signboard/0/0",
-            571.0 + OFFSET_X,
-            257.0 + OFFSET_Y,
+            571.0 * UI_SCALE,
+            257.0 * UI_SCALE,
             UI_SCALE,
         )?;
         append_optional_sprite(
             &mut sprites,
             map,
             "Back/login.img/back/14",
-            315.0 + OFFSET_X,
-            393.0 + OFFSET_Y,
-            UI_SCALE,
-        )?;
-        append_sprite(
-            &mut sprites,
-            legacy_ui,
-            "Login.img/Common/frame",
-            512.0,
-            384.0,
+            315.0 * UI_SCALE,
+            393.0 * UI_SCALE,
             UI_SCALE,
         )?;
 
-        let scroll_x = 170.0 + OFFSET_X;
-        let scroll_y = 125.0 + OFFSET_Y;
-        append_optional_sprite(
-            &mut sprites,
-            legacy_ui,
-            "Login.img/CharSelect/scroll/0/3",
-            scroll_x,
-            scroll_y,
-            UI_SCALE,
-        )?;
-        append_optional_sprite(
-            &mut sprites,
-            legacy_ui,
-            "Login.img/CharSelect/charInfo",
-            scroll_x + (17.0 + 45.0) * UI_SCALE,
-            scroll_y + (36.0 + 57.0) * UI_SCALE,
-            UI_SCALE,
-        )?;
+        if let Some(status) = status {
+            append_text_sprite(&mut sprites, font, status, 300.0, 140.0, 12.0);
+        }
 
-        append_text_sprite(
-            &mut sprites,
-            font,
-            "Select a character",
-            312.0 + OFFSET_X,
-            238.0 + OFFSET_Y,
-            18.0,
-        );
-        if characters.characters.is_empty() {
-            append_text_sprite(
-                &mut sprites,
-                font,
-                "No characters are available on this channel.",
-                262.0 + OFFSET_X,
-                300.0 + OFFSET_Y,
-                15.0,
-            );
-        } else {
-            let mut avatar_cache = MapArtCache::default();
-            let start = page.saturating_mul(CHARACTER_PAGE_SIZE);
-            for (index, character) in characters
-                .characters
-                .iter()
-                .enumerate()
-                .skip(start)
-                .take(CHARACTER_PAGE_SIZE)
-            {
-                let label = format!(
-                    "{}    Lv. {}    Job {}",
-                    character.stats.name, character.stats.level, character.stats.job
-                );
-                let visible_index = index - start;
-                let y = 288.0 + OFFSET_Y + visible_index as f32 * 39.0;
+        let mut avatar_cache = MapArtCache::default();
+        let slots = usize::try_from(characters.slots.max(0))
+            .unwrap_or(0)
+            .max(characters.characters.len());
+        let start = page.saturating_mul(CHARACTER_PAGE_SIZE);
+        for visible_index in 0..CHARACTER_PAGE_SIZE {
+            let index = start + visible_index;
+            if index >= slots {
+                continue;
+            }
+            let feet_x = (278.0 + visible_index as f32 * 72.0) * UI_SCALE;
+            let feet_y = 374.0 * UI_SCALE;
+            if let Some(character) = characters.characters.get(index) {
+                let selected = index == selected_character;
+                if selected {
+                    if let Some(animation) = append_scaled_ui_animation(
+                        &mut sprites,
+                        legacy_ui,
+                        "Login.img/CharSelect/effect/1",
+                        feet_x,
+                        feet_y - 385.0 * UI_SCALE,
+                        UI_SCALE,
+                    )? {
+                        animated_art.push(animation);
+                    }
+
+                    let tall = character.stats.job >= 1000;
+                    let scroll_path = if tall {
+                        "Login.img/CharSelect/scroll/2/3"
+                    } else {
+                        "Login.img/CharSelect/scroll/0/3"
+                    };
+                    let sheet_path = if tall {
+                        "Login.img/CharSelect/charInfo1"
+                    } else {
+                        "Login.img/CharSelect/charInfo"
+                    };
+                    let scroll_x = (278.0 + visible_index as f32 * 72.0 - 108.0) * UI_SCALE;
+                    let scroll_y = 125.0 * UI_SCALE;
+                    append_optional_sprite(
+                        &mut sprites,
+                        legacy_ui,
+                        scroll_path,
+                        scroll_x,
+                        scroll_y,
+                        UI_SCALE,
+                    )?;
+                    let sheet_x = (278.0 + visible_index as f32 * 72.0 - 108.0 + 17.0) * UI_SCALE;
+                    let sheet_y = (125.0 + 36.0) * UI_SCALE;
+                    append_optional_sprite_at_top_left(
+                        &mut sprites,
+                        legacy_ui,
+                        sheet_path,
+                        sheet_x,
+                        sheet_y,
+                        UI_SCALE,
+                    )?;
+
+                    let info_size = 12.0 * UI_SCALE;
+                    let info_color = [112, 79, 55];
+                    let info_value = |sprites: &mut Vec<DecodedSprite>,
+                                      value: &str,
+                                      x: f32,
+                                      y: f32,
+                                      centered: bool| {
+                        let width = measured_text_width(font, value, info_size);
+                        let left = if centered { x - width * 0.5 } else { x - width };
+                        append_character_creation_option_text(
+                            sprites, font, value, left, y, info_size, info_color,
+                        );
+                    };
+                    info_value(
+                        &mut sprites,
+                        &character_job_name(character.stats.job),
+                        sheet_x + 176.0 * UI_SCALE,
+                        sheet_y - UI_SCALE,
+                        false,
+                    );
+                    info_value(
+                        &mut sprites,
+                        &character.stats.level.to_string(),
+                        sheet_x + 88.0 * UI_SCALE,
+                        sheet_y + 18.0 * UI_SCALE,
+                        false,
+                    );
+                    info_value(
+                        &mut sprites,
+                        &character.stats.fame.to_string(),
+                        sheet_x + 176.0 * UI_SCALE,
+                        sheet_y + 18.0 * UI_SCALE,
+                        false,
+                    );
+                    info_value(
+                        &mut sprites,
+                        &character.stats.strength.to_string(),
+                        sheet_x + 88.0 * UI_SCALE,
+                        sheet_y + 37.0 * UI_SCALE,
+                        false,
+                    );
+                    info_value(
+                        &mut sprites,
+                        &character.stats.intelligence.to_string(),
+                        sheet_x + 176.0 * UI_SCALE,
+                        sheet_y + 37.0 * UI_SCALE,
+                        false,
+                    );
+                    info_value(
+                        &mut sprites,
+                        &character.stats.dexterity.to_string(),
+                        sheet_x + 88.0 * UI_SCALE,
+                        sheet_y + 56.0 * UI_SCALE,
+                        false,
+                    );
+                    info_value(
+                        &mut sprites,
+                        &character.stats.luck.to_string(),
+                        sheet_x + 176.0 * UI_SCALE,
+                        sheet_y + 56.0 * UI_SCALE,
+                        false,
+                    );
+                    let rank = character
+                        .stats
+                        .rank
+                        .filter(|(rank, _)| *rank > 0)
+                        .map(|(rank, _)| rank.to_string())
+                        .unwrap_or_else(|| "--".to_owned());
+                    info_value(
+                        &mut sprites,
+                        &rank,
+                        sheet_x + 92.0 * UI_SCALE,
+                        sheet_y + 93.0 * UI_SCALE,
+                        true,
+                    );
+                }
+
                 append_character_preview(
                     &mut sprites,
                     character_archive,
                     &character.look,
-                    385.0,
-                    y + 8.0,
-                    0.42,
+                    feet_x,
+                    feet_y,
+                    UI_SCALE,
+                    true,
                     &mut avatar_cache,
                 )?;
-                let rect = SpriteRect {
-                    x: 300.0 + OFFSET_X,
-                    y: y - 3.0,
-                    width: 330.0,
-                    height: 30.0,
-                    blend_mode: BlendMode::Alpha,
-                };
-                append_text_sprite(&mut sprites, font, &label, rect.x, y, 15.0);
+                append_character_selection_name_tag(
+                    &mut sprites,
+                    legacy_ui,
+                    font,
+                    &character.stats.name,
+                    feet_x,
+                    feet_y,
+                    UI_SCALE,
+                    selected,
+                )?;
+                if selected {
+                    if let Some(animation) = append_scaled_ui_animation(
+                        &mut sprites,
+                        legacy_ui,
+                        "Login.img/CharSelect/effect/0",
+                        feet_x,
+                        feet_y - 385.0 * UI_SCALE,
+                        UI_SCALE,
+                    )? {
+                        animated_art.push(animation);
+                    }
+                }
+
+                let slot_width = 70.0 * UI_SCALE;
                 actions.push(LoginActionRegion {
-                    rect,
-                    action: LoginAction::SelectCharacter(index),
+                    rect: SpriteRect {
+                        // Expand the legacy slot hitbox upward to cover the
+                        // full character preview without overlapping neighbors.
+                        x: feet_x - slot_width * 0.5,
+                        y: feet_y - 150.0,
+                        width: slot_width,
+                        height: 192.0,
+                        blend_mode: BlendMode::Alpha,
+                    },
+                    action: LoginAction::HighlightCharacter(index),
                 });
-                let delete_rect = SpriteRect {
-                    x: 746.0,
-                    y: y - 3.0,
-                    width: 78.0,
-                    height: 30.0,
-                    blend_mode: BlendMode::Alpha,
-                };
-                append_text_sprite(&mut sprites, font, "Delete", 754.0, y, 14.0);
-                actions.push(LoginActionRegion {
-                    rect: delete_rect,
-                    action: LoginAction::DeleteCharacter(index),
-                });
+            } else {
+                append_optional_sprite(
+                    &mut sprites,
+                    legacy_ui,
+                    "Login.img/CharSelect/character/1/0",
+                    feet_x,
+                    feet_y,
+                    UI_SCALE,
+                )?;
             }
         }
 
-        let page_count = characters.characters.len().div_ceil(CHARACTER_PAGE_SIZE);
+        let page_count = slots.max(1).div_ceil(CHARACTER_PAGE_SIZE);
+        // The native arrows frame the three slots even when there is only one
+        // page. They become interactive only when additional slots exist.
+        let previous = append_optional_sprite(
+            &mut sprites,
+            legacy_ui,
+            "Login.img/CharSelect/pageL/0/0",
+            188.0 * UI_SCALE,
+            337.0 * UI_SCALE,
+            UI_SCALE,
+        )?;
+        let next = append_optional_sprite(
+            &mut sprites,
+            legacy_ui,
+            "Login.img/CharSelect/pageR/0/0",
+            499.0 * UI_SCALE,
+            337.0 * UI_SCALE,
+            UI_SCALE,
+        )?;
         if page_count > 1 {
-            let previous = SpriteRect {
-                x: 760.0,
-                y: 341.0,
-                width: 76.0,
-                height: 28.0,
-                blend_mode: BlendMode::Alpha,
-            };
-            let next = SpriteRect {
-                x: 845.0,
-                y: 341.0,
-                width: 76.0,
-                height: 28.0,
-                blend_mode: BlendMode::Alpha,
-            };
-            if page > 0 {
-                append_text_sprite(&mut sprites, font, "< Prev", previous.x, previous.y, 13.0);
+            if let Some(rect) = previous {
                 actions.push(LoginActionRegion {
-                    rect: previous,
+                    rect,
                     action: LoginAction::PreviousCharacterPage,
                 });
             }
-            if page + 1 < page_count {
-                append_text_sprite(&mut sprites, font, "Next >", next.x, next.y, 13.0);
+            if let Some(rect) = next {
                 actions.push(LoginActionRegion {
-                    rect: next,
+                    rect,
                     action: LoginAction::NextCharacterPage,
                 });
             }
-            append_text_sprite(
-                &mut sprites,
-                font,
-                &format!("Page {} / {page_count}", page + 1),
-                760.0,
-                312.0,
-                12.0,
-            );
         }
 
         if let Some(rect) = append_optional_sprite(
             &mut sprites,
             legacy_ui,
             "Login.img/Common/BtStart/normal/0",
-            -6.0 + OFFSET_X,
-            515.0 + OFFSET_Y,
+            -6.0 * UI_SCALE,
+            515.0 * UI_SCALE,
             UI_SCALE,
         )? {
             actions.push(LoginActionRegion {
@@ -33739,27 +41870,133 @@ mod native {
                 action: LoginAction::ReturnToWorld,
             });
         }
-        if characters.characters.len() < usize::try_from(characters.slots.max(0)).unwrap_or(0)
-            && characters.characters.len() < 64
+        let can_create = characters.characters.len()
+            < usize::try_from(characters.slots.max(0)).unwrap_or(0)
+            && characters.characters.len() < 64;
+        if can_create {
+            if let Some(rect) = append_optional_sprite(
+                &mut sprites,
+                legacy_ui,
+                "Login.img/CharSelect/BtNew/normal/0",
+                521.0 * UI_SCALE,
+                192.0 * UI_SCALE,
+                UI_SCALE,
+            )? {
+                if action_focus == Some(1) {
+                    append_ui_outline_rect(
+                        &mut sprites,
+                        "character-action-focus:new",
+                        rect,
+                        3.0,
+                        [255, 220, 132, 255],
+                    );
+                }
+                actions.push(LoginActionRegion {
+                    rect: padded_hit_rect(rect, 16.0, 12.0),
+                    action: LoginAction::BeginCharacterCreation,
+                });
+            }
+        } else {
+            append_optional_sprite(
+                &mut sprites,
+                legacy_ui,
+                "Login.img/CharSelect/BtNew/disabled/0",
+                521.0 * UI_SCALE,
+                192.0 * UI_SCALE,
+                UI_SCALE,
+            )?;
+        }
+        if let Some(index) = characters
+            .characters
+            .get(selected_character)
+            .map(|_| selected_character)
         {
-            let create_rect = SpriteRect {
-                x: 840.0,
-                y: 710.0,
-                width: 170.0,
-                height: 30.0,
-                blend_mode: BlendMode::Alpha,
-            };
-            append_text_sprite(&mut sprites, font, "Create Character", 850.0, 710.0, 15.0);
+            let select_rect = append_optional_sprite(
+                &mut sprites,
+                legacy_ui,
+                "Login.img/CharSelect/BtSelect/normal/0",
+                521.0 * UI_SCALE,
+                154.0 * UI_SCALE,
+                UI_SCALE,
+            )?;
+            // Derive the target from the decoded sprite: NX origins can place
+            // the painted sign well above its anchor, so a separately
+            // hard-coded rectangle can miss the visible button after scaling.
+            // A small margin makes the full wooden sign easy to click.
+            let select_hit_rect = select_rect.map_or(
+                SpriteRect {
+                    x: 632.0,
+                    y: 169.0,
+                    width: 224.0,
+                    height: 82.0,
+                    blend_mode: BlendMode::Alpha,
+                },
+                |rect| SpriteRect {
+                    x: rect.x - 16.0,
+                    y: rect.y - 12.0,
+                    width: rect.width + 32.0,
+                    height: rect.height + 24.0,
+                    blend_mode: BlendMode::Alpha,
+                },
+            );
+            if action_focus == Some(0) {
+                append_ui_outline_rect(
+                    &mut sprites,
+                    "character-action-focus:select",
+                    select_rect.unwrap_or(select_hit_rect),
+                    3.0,
+                    [255, 220, 132, 255],
+                );
+            }
             actions.push(LoginActionRegion {
-                rect: create_rect,
-                action: LoginAction::BeginCharacterCreation,
+                rect: select_hit_rect,
+                action: LoginAction::SelectCharacter(index),
             });
+            if let Some(rect) = append_optional_sprite(
+                &mut sprites,
+                legacy_ui,
+                "Login.img/CharSelect/BtDelete/normal/0",
+                521.0 * UI_SCALE,
+                240.0 * UI_SCALE,
+                UI_SCALE,
+            )? {
+                if action_focus == Some(2) {
+                    append_ui_outline_rect(
+                        &mut sprites,
+                        "character-action-focus:delete",
+                        rect,
+                        3.0,
+                        [255, 220, 132, 255],
+                    );
+                }
+                actions.push(LoginActionRegion {
+                    rect: padded_hit_rect(rect, 16.0, 12.0),
+                    action: LoginAction::DeleteCharacter(index),
+                });
+            }
+        } else {
+            append_optional_sprite(
+                &mut sprites,
+                legacy_ui,
+                "Login.img/CharSelect/BtSelect/disabled/0",
+                521.0 * UI_SCALE,
+                154.0 * UI_SCALE,
+                UI_SCALE,
+            )?;
+            append_optional_sprite(
+                &mut sprites,
+                legacy_ui,
+                "Login.img/CharSelect/BtDelete/disabled/0",
+                521.0 * UI_SCALE,
+                240.0 * UI_SCALE,
+                UI_SCALE,
+            )?;
         }
         Ok(LoginSceneAssets {
             sprites,
             actions,
             map_scene: None,
-            animated_art: Vec::new(),
+            animated_art,
             login_buttons: Vec::new(),
             save_id_indicator_draws: None,
         })
@@ -33772,11 +42009,10 @@ mod native {
     ) -> Result<LoginSceneAssets, String> {
         let mut sprites = Vec::with_capacity(16);
         let mut actions = Vec::with_capacity(4);
-        append_tiled_background(&mut sprites, map, "Back/login.img/back/1", 1024, 768, 1.28)?;
         append_sprite(
             &mut sprites,
-            legacy_ui,
-            "Login.img/Common/frame",
+            map,
+            "Back/login.img/back/11",
             512.0,
             384.0,
             1.28,
@@ -33785,9 +42021,9 @@ mod native {
             &mut sprites,
             font,
             "Choose a character class",
-            350.0,
-            205.0,
-            22.0,
+            270.0,
+            96.0,
+            20.0,
         );
 
         let classes = [
@@ -33795,33 +42031,31 @@ mod native {
             (0_u16, "Cygnus Knight", "knight/BtKnight"),
             (2_u16, "Aran", "aran/BtAran"),
         ];
-        for (index, (job, label, asset)) in classes.into_iter().enumerate() {
-            let x = 265.0 + index as f32 * 245.0;
+        let positions = [(102.0_f32, 192.0_f32), (404.0, 192.0), (673.0, 192.0)];
+        for ((job, label, asset), (x, y)) in classes.into_iter().zip(positions) {
             let base = format!("Login.img/RaceSelect/{asset}/normal/0");
-            append_optional_sprite(&mut sprites, legacy_ui, &base, x, 325.0, 1.0)?;
-            append_text_sprite(&mut sprites, font, label, x + 12.0, 565.0, 17.0);
+            if let Some(rect) = append_optional_sprite(&mut sprites, legacy_ui, &base, x, y, 1.28)?
+            {
+                actions.push(LoginActionRegion {
+                    rect,
+                    action: LoginAction::ChooseCreationClass(job),
+                });
+            }
+            append_text_sprite(&mut sprites, font, label, x + 14.0, y + 290.0, 15.0);
+        }
+        if let Some(rect) = append_optional_sprite(
+            &mut sprites,
+            legacy_ui,
+            "Login.img/Common/BtStart/normal/0",
+            0.0,
+            515.0 * 1.28,
+            1.28,
+        )? {
             actions.push(LoginActionRegion {
-                rect: SpriteRect {
-                    x,
-                    y: 325.0,
-                    width: 223.0,
-                    height: 221.0,
-                    blend_mode: BlendMode::Alpha,
-                },
-                action: LoginAction::ChooseCreationClass(job),
+                rect,
+                action: LoginAction::CancelCharacterCreation,
             });
         }
-        append_text_sprite(&mut sprites, font, "Back", 900.0, 710.0, 15.0);
-        actions.push(LoginActionRegion {
-            rect: SpriteRect {
-                x: 880.0,
-                y: 700.0,
-                width: 100.0,
-                height: 34.0,
-                blend_mode: BlendMode::Alpha,
-            },
-            action: LoginAction::CancelCharacterCreation,
-        });
         Ok(LoginSceneAssets {
             sprites,
             actions,
@@ -33836,6 +42070,9 @@ mod native {
         map: &NxArchive,
         legacy_ui: &NxArchive,
         character_archive: &NxArchive,
+        string_archive: &NxArchive,
+        item_name_cache: &mut HashMap<i32, Option<String>>,
+        caret_visible: bool,
         creation: &CharacterCreationState,
         font: &fontdue::Font,
     ) -> Result<LoginSceneAssets, String> {
@@ -33919,11 +42156,12 @@ mod native {
                 390.0,
                 490.0,
                 1.2,
+                true,
                 &mut avatar_cache,
             )?;
         }
 
-        let gender_y = 220.0;
+        let gender_y = 250.0;
         for (female, label, x) in [(false, "Male", 590.0), (true, "Female", 700.0)] {
             append_text_sprite(&mut sprites, font, label, x, gender_y, 14.0);
             actions.push(LoginActionRegion {
@@ -33949,18 +42187,37 @@ mod native {
             "Weapon",
         ];
         for (index, label) in labels.iter().enumerate() {
-            let y = 258.0 + index as f32 * 31.0;
+            let y = 277.0 + index as f32 * 24.0;
             let value = selected(index).unwrap_or_default();
-            append_text_sprite(
+            let value_name =
+                character_creation_option_name(index, value, string_archive, item_name_cache);
+            append_character_creation_option_text(
                 &mut sprites,
                 font,
-                &format!("{label}: {value}"),
-                583.0,
+                &format!("{label}: {value_name}"),
+                593.0,
                 y,
-                14.0,
+                13.0,
+                [82, 53, 29],
             );
-            append_text_sprite(&mut sprites, font, "<", 808.0, y, 16.0);
-            append_text_sprite(&mut sprites, font, ">", 847.0, y, 16.0);
+            append_character_creation_option_text(
+                &mut sprites,
+                font,
+                "<",
+                808.0,
+                y,
+                16.0,
+                [82, 53, 29],
+            );
+            append_character_creation_option_text(
+                &mut sprites,
+                font,
+                ">",
+                847.0,
+                y,
+                16.0,
+                [82, 53, 29],
+            );
             for (direction, x) in [(-1_i8, 800.0), (1_i8, 839.0)] {
                 actions.push(LoginActionRegion {
                     rect: SpriteRect {
@@ -33975,68 +42232,87 @@ mod native {
             }
         }
 
-        append_text_sprite(
+        let pending = creation.awaiting_name || creation.awaiting_create;
+        let name_text = if creation.name.is_empty() {
+            "Enter name".to_owned()
+        } else {
+            creation.name.clone()
+        };
+        let caret = if creation.name_focused && !pending && caret_visible {
+            "|"
+        } else {
+            ""
+        };
+        append_character_creation_option_text(
             &mut sprites,
             font,
-            &format!("Name: {}", creation.name),
-            584.0,
-            540.0,
-            15.0,
+            "Character name",
+            610.0,
+            539.0,
+            12.0,
+            [82, 53, 29],
+        );
+        append_character_creation_option_text(
+            &mut sprites,
+            font,
+            &format!("{name_text}{caret}"),
+            624.0,
+            578.0,
+            14.0,
+            [54, 39, 26],
         );
         actions.push(LoginActionRegion {
             rect: SpriteRect {
-                x: 572.0,
-                y: 527.0,
-                width: 300.0,
-                height: 38.0,
+                x: 610.0,
+                y: 557.0,
+                width: 228.0,
+                height: 65.0,
                 blend_mode: BlendMode::Alpha,
             },
             action: LoginAction::FocusCreationName,
         });
 
         if let Some(notice) = creation.notice.as_deref() {
-            append_text_sprite(&mut sprites, font, notice, 575.0, 593.0, 14.0);
+            append_character_creation_option_text(
+                &mut sprites,
+                font,
+                notice,
+                584.0,
+                630.0,
+                12.0,
+                [142, 47, 33],
+            );
         }
-        let pending = creation.awaiting_name || creation.awaiting_create;
-        let submit_label = if pending { "Please wait…" } else { "Create" };
-        append_optional_sprite(
+        let yes_state = if pending { "disabled" } else { "normal" };
+        let no_state = if pending { "disabled" } else { "normal" };
+        let yes_rect = append_optional_sprite(
             &mut sprites,
             legacy_ui,
-            &format!("{custom_path}/BtYes/normal/0"),
-            615.0,
-            660.0,
+            &format!("{custom_path}/BtYes/{yes_state}/0"),
+            614.0,
+            477.0,
             1.0,
         )?;
-        append_text_sprite(&mut sprites, font, submit_label, 625.0, 685.0, 14.0);
-        actions.push(LoginActionRegion {
-            rect: SpriteRect {
-                x: 600.0,
-                y: 650.0,
-                width: 110.0,
-                height: 36.0,
-                blend_mode: BlendMode::Alpha,
-            },
-            action: LoginAction::SubmitCharacterCreation,
-        });
-        append_optional_sprite(
+        if !pending && let Some(rect) = yes_rect {
+            actions.push(LoginActionRegion {
+                rect,
+                action: LoginAction::SubmitCharacterCreation,
+            });
+        }
+        let no_rect = append_optional_sprite(
             &mut sprites,
             legacy_ui,
-            &format!("{custom_path}/BtNo/normal/0"),
-            760.0,
-            660.0,
+            &format!("{custom_path}/BtNo/{no_state}/0"),
+            713.0,
+            477.0,
             1.0,
         )?;
-        append_text_sprite(&mut sprites, font, "Cancel", 760.0, 685.0, 14.0);
-        actions.push(LoginActionRegion {
-            rect: SpriteRect {
-                x: 745.0,
-                y: 650.0,
-                width: 110.0,
-                height: 36.0,
-                blend_mode: BlendMode::Alpha,
-            },
-            action: LoginAction::CancelCharacterCreation,
-        });
+        if !pending && let Some(rect) = no_rect {
+            actions.push(LoginActionRegion {
+                rect,
+                action: LoginAction::CancelCharacterCreation,
+            });
+        }
         if pending {
             actions.retain(|action| {
                 !matches!(
@@ -34058,6 +42334,251 @@ mod native {
             login_buttons: Vec::new(),
             save_id_indicator_draws: None,
         })
+    }
+
+    fn append_character_creation_option_text(
+        sprites: &mut Vec<DecodedSprite>,
+        font: &fontdue::Font,
+        text: &str,
+        x: f32,
+        y: f32,
+        font_size: f32,
+        color: [u8; 3],
+    ) {
+        const WIDTH: u32 = 360;
+        const HEIGHT: u32 = 28;
+        let mut pixels = rasterize_label(font, text, font_size, WIDTH, HEIGHT);
+        for pixel in pixels.chunks_exact_mut(4) {
+            if pixel[3] > 0 {
+                pixel[..3].copy_from_slice(&color);
+            }
+        }
+        sprites.push(DecodedSprite {
+            texture_key: format!(
+                "character-create-label:{font_size}:{text}:{:02x}{:02x}{:02x}",
+                color[0], color[1], color[2]
+            ),
+            rect: SpriteRect {
+                x,
+                y,
+                width: WIDTH as f32,
+                height: HEIGHT as f32,
+                blend_mode: BlendMode::Alpha,
+            },
+            depth_order: 0,
+            texture_width: WIDTH,
+            texture_height: HEIGHT,
+            pixels: pixels.into(),
+        });
+    }
+
+    fn append_character_selection_name_tag(
+        sprites: &mut Vec<DecodedSprite>,
+        legacy_ui: &NxArchive,
+        font: &fontdue::Font,
+        name: &str,
+        feet_x: f32,
+        feet_y: f32,
+        ui_scale: f32,
+        selected: bool,
+    ) -> Result<(), String> {
+        let tag_path = if selected {
+            "Login.img/CharSelect/nameTag/1"
+        } else {
+            "Login.img/CharSelect/nameTag/0"
+        };
+        let text_size = 12.0 * ui_scale;
+        let text_width = measured_text_width(font, name, text_size);
+        let tag_center_x = feet_x + 2.0 * ui_scale;
+        let tag_x = tag_center_x - (6.0 * ui_scale + text_width * 0.5);
+        let tag_y = feet_y + 2.0 * ui_scale;
+
+        append_optional_sprite_at_top_left(
+            sprites,
+            legacy_ui,
+            &format!("{tag_path}/0"),
+            tag_x,
+            tag_y,
+            ui_scale,
+        )?;
+        let mut offset = 0.0;
+        while offset < text_width {
+            append_optional_sprite_at_top_left(
+                sprites,
+                legacy_ui,
+                &format!("{tag_path}/1"),
+                tag_x + 6.0 * ui_scale + offset,
+                tag_y,
+                ui_scale,
+            )?;
+            offset += 9.0 * ui_scale;
+        }
+        append_optional_sprite_at_top_left(
+            sprites,
+            legacy_ui,
+            &format!("{tag_path}/2"),
+            tag_x + 6.0 * ui_scale + text_width,
+            tag_y,
+            ui_scale,
+        )?;
+
+        let text_x = tag_center_x - text_width * 0.5;
+        let shadow_color = if selected { [65, 49, 40] } else { [42, 35, 29] };
+        let text_color = if selected {
+            [255, 255, 255]
+        } else {
+            [194, 183, 156]
+        };
+        append_character_creation_option_text(
+            sprites,
+            font,
+            name,
+            text_x + 0.7,
+            tag_y + 0.7,
+            text_size,
+            shadow_color,
+        );
+        append_character_creation_option_text(
+            sprites, font, name, text_x, tag_y, text_size, text_color,
+        );
+        Ok(())
+    }
+
+    fn character_creation_option_name(
+        option: usize,
+        item_id: i32,
+        string_archive: &NxArchive,
+        item_name_cache: &mut HashMap<i32, Option<String>>,
+    ) -> String {
+        fn lookup_name(archive: &NxArchive, path: &str) -> Option<String> {
+            let node = archive.root().resolve(path).ok().flatten()?;
+            match node.value().ok()? {
+                NodeValue::String(value) if !value.trim().is_empty() => Some(value),
+                _ => None,
+            }
+        }
+
+        match option {
+            0 => lookup_name(string_archive, &format!("Eqp.img/Eqp/Face/{item_id}/name"))
+                .unwrap_or_else(|| format!("Face {item_id}")),
+            1 => lookup_name(string_archive, &format!("Eqp.img/Eqp/Hair/{item_id}/name"))
+                .unwrap_or_else(|| format!("Hair {item_id}")),
+            2 => [
+                "Black", "Red", "Orange", "Blonde", "Green", "Blue", "Violet", "Brown",
+            ]
+            .get(usize::try_from(item_id).unwrap_or(usize::MAX))
+            .copied()
+            .unwrap_or("Unknown color")
+            .to_owned(),
+            3 => [
+                "Light",
+                "Tan",
+                "Dark",
+                "Pale",
+                "Blue",
+                "Green",
+                "Unknown skin",
+                "Unknown skin",
+                "Unknown skin",
+                "Grey",
+                "Pink",
+                "Red",
+            ]
+            .get(usize::try_from(item_id).unwrap_or(usize::MAX))
+            .copied()
+            .unwrap_or("Unknown skin")
+            .to_owned(),
+            4..=7 => item_name(item_id, string_archive, item_name_cache),
+            _ => format!("Appearance {item_id}"),
+        }
+    }
+
+    fn append_ui_solid_rect(
+        sprites: &mut Vec<DecodedSprite>,
+        texture_key: &str,
+        x: f32,
+        y: f32,
+        width: u32,
+        height: u32,
+        color: [u8; 4],
+    ) {
+        let mut pixels = vec![0; width as usize * height as usize * 4];
+        for pixel in pixels.chunks_exact_mut(4) {
+            pixel.copy_from_slice(&color);
+        }
+        sprites.push(DecodedSprite {
+            texture_key: texture_key.to_owned(),
+            rect: SpriteRect {
+                x,
+                y,
+                width: width as f32,
+                height: height as f32,
+                blend_mode: BlendMode::Alpha,
+            },
+            depth_order: 0,
+            texture_width: width,
+            texture_height: height,
+            pixels: pixels.into(),
+        });
+    }
+
+    fn padded_hit_rect(rect: SpriteRect, horizontal: f32, vertical: f32) -> SpriteRect {
+        SpriteRect {
+            x: rect.x - horizontal,
+            y: rect.y - vertical,
+            width: rect.width + horizontal * 2.0,
+            height: rect.height + vertical * 2.0,
+            blend_mode: rect.blend_mode,
+        }
+    }
+
+    fn append_ui_outline_rect(
+        sprites: &mut Vec<DecodedSprite>,
+        texture_key: &str,
+        rect: SpriteRect,
+        thickness: f32,
+        color: [u8; 4],
+    ) {
+        let thickness = thickness.ceil().max(1.0) as u32;
+        let width = rect.width.ceil().max(1.0) as u32;
+        let height = rect.height.ceil().max(1.0) as u32;
+        let vertical = height.saturating_sub(thickness * 2);
+        append_ui_solid_rect(
+            sprites,
+            &format!("{texture_key}:top"),
+            rect.x,
+            rect.y,
+            width,
+            thickness,
+            color,
+        );
+        append_ui_solid_rect(
+            sprites,
+            &format!("{texture_key}:bottom"),
+            rect.x,
+            rect.y + height as f32 - thickness as f32,
+            width,
+            thickness,
+            color,
+        );
+        append_ui_solid_rect(
+            sprites,
+            &format!("{texture_key}:left"),
+            rect.x,
+            rect.y + thickness as f32,
+            thickness,
+            vertical,
+            color,
+        );
+        append_ui_solid_rect(
+            sprites,
+            &format!("{texture_key}:right"),
+            rect.x + width as f32 - thickness as f32,
+            rect.y + thickness as f32,
+            thickness,
+            vertical,
+            color,
+        );
     }
 
     fn load_character_creation_options(
@@ -34134,6 +42655,13 @@ mod native {
             .resolve(&map_path)
             .map_err(|error| error.to_string())?
             .ok_or_else(|| format!("map node {map_path:?} was not found"))?;
+        let minimap = match minimap::MiniMapData::load(archive, map_id) {
+            Ok(minimap) => minimap,
+            Err(error) => {
+                eprintln!("OpenStoryRS: could not load minimap for map {map_id}: {error}");
+                None
+            }
+        };
         let spawn = map_spawn_point(&map, portal_id)?;
         let footholds = load_map_footholds(&map)?;
         let spawn_y = footholds
@@ -34141,9 +42669,15 @@ mod native {
             .map(|tree| tree.y_below(spawn.0 as i16, spawn.1 as i16))
             .map(f32::from)
             .unwrap_or(spawn.1);
-        let camera_x = 512.0 - spawn.0;
-        let camera_y = 384.0 - spawn_y;
+        let camera_bounds = map_camera_bounds(&map, footholds.as_ref());
+        let camera_offset = camera_bounds.map_or(
+            (512.0 - spawn.0, GAMEPLAY_CAMERA_CENTER_Y - spawn_y),
+            |bounds| bounds.offset_for(f64::from(spawn.0), f64::from(spawn_y)),
+        );
+        let camera_x = camera_offset.0;
+        let camera_y = camera_offset.1;
         let seats = load_map_seats(&map)?;
+        let ladders = load_map_ladders(&map)?;
         let mut sprites = Vec::with_capacity(64);
         let mut cache = MapArtCache::default();
         let mut map_art_animations = Vec::new();
@@ -34173,7 +42707,7 @@ mod native {
                 }
             }
         }
-        append_map_layers(
+        let layer_insert_indices = append_map_layers(
             &mut sprites,
             archive,
             &map,
@@ -34209,7 +42743,7 @@ mod native {
                     character_archive,
                     &character.look,
                     512.0,
-                    384.0,
+                    GAMEPLAY_CAMERA_CENTER_Y,
                     &mut cache,
                 )?
             } else {
@@ -34294,12 +42828,17 @@ mod native {
                 map_id,
                 footholds,
                 spawn: (f64::from(spawn.0), f64::from(spawn_y)),
+                camera_offset,
+                camera_bounds,
                 seats,
+                ladders,
                 world_draw_indices,
                 map_backgrounds,
+                layer_insert_indices,
                 foreground_start_index,
                 map_art_animations,
                 avatar_frames,
+                minimap,
                 portals,
                 regular_portal_frames,
                 hidden_portal_frames,
@@ -34341,19 +42880,25 @@ mod native {
         let ry = number_property(entry, "ry").unwrap_or(0.0);
         let horizontal_mobile = matches!(kind, 4 | 6) && rx != 0.0;
         let vertical_mobile = matches!(kind, 5 | 7) && ry != 0.0;
+        let tile_width = integer_property(entry, "cx")
+            .filter(|value| *value > 0)
+            .map_or(sample.rect.width, |value| value as f32)
+            .max(1.0);
+        let tile_height = integer_property(entry, "cy")
+            .filter(|value| *value > 0)
+            .map_or(sample.rect.height, |value| value as f32)
+            .max(1.0);
+        let (tile_count_x, tile_count_y) =
+            map_background_tile_counts(kind, tile_width, tile_height);
         Some(MapBackgroundAsset {
             sprites,
             environment_name,
             horizontal_tiled,
             vertical_tiled,
-            tile_width: integer_property(entry, "cx")
-                .filter(|value| *value > 0)
-                .map_or(sample.rect.width, |value| value as f32)
-                .max(1.0),
-            tile_height: integer_property(entry, "cy")
-                .filter(|value| *value > 0)
-                .map_or(sample.rect.height, |value| value as f32)
-                .max(1.0),
+            tile_width,
+            tile_height,
+            tile_count_x,
+            tile_count_y,
             horizontal_mobile,
             vertical_mobile,
             horizontal_speed: if horizontal_mobile { rx / 16.0 } else { 0.0 },
@@ -34363,20 +42908,44 @@ mod native {
         })
     }
 
+    fn map_background_tile_counts(kind: i64, tile_width: f32, tile_height: f32) -> (usize, usize) {
+        let horizontal = matches!(kind, 1 | 3 | 4 | 6);
+        let vertical = matches!(kind, 2 | 3 | 5 | 7);
+        let count_x = if horizontal {
+            ((1024.0 / tile_width.max(1.0)).ceil() as usize + 3).clamp(1, 32)
+        } else {
+            1
+        };
+        let count_y = if vertical {
+            ((768.0 / tile_height.max(1.0)).ceil() as usize + 3).clamp(1, 32)
+        } else {
+            1
+        };
+        (count_x, count_y)
+    }
+
     #[derive(Default)]
     struct MapArtCache {
         entries: HashMap<String, MapArtEntry>,
-        insertion_order: VecDeque<String>,
+        last_access: HashMap<String, u64>,
+        access_clock: u64,
         cached_bytes: usize,
     }
 
     impl MapArtCache {
-        fn get(&self, path: &str) -> Option<MapArtEntry> {
+        fn get(&mut self, path: &str) -> Option<MapArtEntry> {
+            if !self.entries.contains_key(path) {
+                return None;
+            }
+            let access = self.next_access_stamp();
+            self.last_access.insert(path.to_owned(), access);
             self.entries.get(path).cloned()
         }
 
         fn insert(&mut self, path: String, entry: MapArtEntry) {
             if self.entries.contains_key(&path) {
+                let access = self.next_access_stamp();
+                self.last_access.insert(path, access);
                 return;
             }
             let entry_bytes = entry.3.len();
@@ -34386,22 +42955,47 @@ mod native {
             while self.entries.len() >= MAP_ART_CACHE_MAX_ENTRIES
                 || self.cached_bytes.saturating_add(entry_bytes) > MAP_ART_CACHE_MAX_BYTES
             {
-                let Some(evicted_path) = self.insertion_order.pop_front() else {
+                let Some(evicted_path) = self
+                    .last_access
+                    .iter()
+                    .min_by_key(|(_, access)| *access)
+                    .map(|(path, _)| path.clone())
+                else {
                     break;
                 };
+                self.last_access.remove(&evicted_path);
                 if let Some(evicted) = self.entries.remove(&evicted_path) {
                     self.cached_bytes = self.cached_bytes.saturating_sub(evicted.3.len());
                 }
             }
-            self.insertion_order.push_back(path.clone());
+            let access = self.next_access_stamp();
+            self.last_access.insert(path.clone(), access);
             self.cached_bytes += entry_bytes;
             self.entries.insert(path, entry);
         }
 
         fn clear(&mut self) {
             self.entries.clear();
-            self.insertion_order.clear();
+            self.last_access.clear();
+            self.access_clock = 0;
             self.cached_bytes = 0;
+        }
+
+        fn next_access_stamp(&mut self) -> u64 {
+            if self.access_clock == u64::MAX {
+                let mut entries = self
+                    .last_access
+                    .iter()
+                    .map(|(path, access)| (path.clone(), *access))
+                    .collect::<Vec<_>>();
+                entries.sort_by_key(|(_, access)| *access);
+                for (rank, (path, _)) in entries.into_iter().enumerate() {
+                    self.last_access.insert(path, rank as u64);
+                }
+                self.access_clock = self.last_access.len() as u64;
+            }
+            self.access_clock += 1;
+            self.access_clock
         }
     }
 
@@ -34423,7 +43017,10 @@ mod native {
         let mut stance_motions = vec![
             (stand_stance, AvatarMotion::Stand),
             (walk_stance, AvatarMotion::Walk),
+            ("prone", AvatarMotion::Crouch),
             ("jump", AvatarMotion::Jump),
+            ("ladder", AvatarMotion::Ladder),
+            ("rope", AvatarMotion::Rope),
             ("sit", AvatarMotion::Sit),
         ];
         for &(stance_id, stance_name) in character_weapon_attack_stances(archive, look)? {
@@ -34469,6 +43066,7 @@ mod native {
         anchor_x: f32,
         anchor_y: f32,
         scale: f32,
+        facing_right: bool,
         cache: &mut MapArtCache,
     ) -> Result<(), String> {
         let stance = if character_weapon_id(look).is_some_and(is_two_handed_weapon) {
@@ -34483,6 +43081,17 @@ mod native {
             sprite.rect.y = anchor_y + (sprite.rect.y - anchor_y) * scale;
             sprite.rect.width *= scale;
             sprite.rect.height *= scale;
+            if facing_right {
+                sprite.rect.x = 2.0 * anchor_x - (sprite.rect.x + sprite.rect.width);
+                sprite.pixels = prepare_map_pixels(
+                    &sprite.pixels,
+                    sprite.texture_width,
+                    sprite.texture_height,
+                    255,
+                    true,
+                );
+                sprite.texture_key.push_str(":mirror-right");
+            }
         }
         Ok(())
     }
@@ -34494,6 +43103,25 @@ mod native {
             .map(|(_, item_id)| *item_id)
             .find(|item_id| (130..=170).contains(&(item_id / 10_000)))
             .or_else(|| (look.weapon_id > 0).then_some(look.weapon_id))
+    }
+
+    fn equipped_ring_effect_id(
+        look: &openstory_protocol::CharacterLook,
+        effect_archive: &NxArchive,
+    ) -> i32 {
+        look.equips
+            .iter()
+            .filter(|(slot, _)| matches!(slot.unsigned_abs(), 12 | 13 | 15 | 16))
+            .map(|(_, item_id)| *item_id)
+            .find(|item_id| {
+                effect_archive
+                    .root()
+                    .resolve(&format!("ItemEff.img/{item_id}"))
+                    .ok()
+                    .flatten()
+                    .is_some()
+            })
+            .unwrap_or(0)
     }
 
     fn is_weapon_item(item_id: i32) -> bool {
@@ -34636,6 +43264,77 @@ mod native {
         character_buff_value(active_buffs, group, flag) != 0
     }
 
+    fn character_has_mob_skill_buff(
+        active_buffs: &HashMap<openstory_protocol::BuffStatKey, ActiveCharacterBuff>,
+        group: openstory_protocol::BuffMaskGroup,
+        flag: u64,
+        mob_skill_type: u16,
+    ) -> bool {
+        let now = Instant::now();
+        active_buffs
+            .get(&openstory_protocol::BuffStatKey { group, flag })
+            .filter(|buff| buff.expires_at.is_none_or(|expires_at| expires_at > now))
+            .is_some_and(|buff| {
+                // MobSkillId is serialized as a little-endian pair of u16s:
+                // type first, then level. Character skill IDs do not overlap.
+                let encoded_skill_id = buff.skill_id as u32;
+                encoded_skill_id as u16 == mob_skill_type && (encoded_skill_id >> 16) as u16 != 0
+            })
+    }
+
+    fn player_movement_forces(
+        character: &openstory_protocol::CharacterInfo,
+        archive: &NxArchive,
+        active_buffs: &HashMap<openstory_protocol::BuffStatKey, ActiveCharacterBuff>,
+        forced_stats: &ForcedEquipmentStats,
+        is_slowed: bool,
+    ) -> (f64, f64, f64) {
+        let mut speed = 100_i64;
+        let mut jump = 100_i64;
+        let equipped_items = character
+            .look
+            .equips
+            .iter()
+            .map(|(_, item_id)| *item_id)
+            .collect::<HashSet<_>>();
+        for item_id in equipped_items {
+            let Some(category) = character_equip_category(item_id) else {
+                continue;
+            };
+            let info_path = format!("{category}/0{item_id}.img/info");
+            let Some(info) = archive.root().resolve(&info_path).ok().flatten() else {
+                continue;
+            };
+            speed = speed.saturating_add(integer_property(&info, "incSpeed").unwrap_or(0));
+            jump = jump.saturating_add(integer_property(&info, "incJump").unwrap_or(0));
+        }
+        speed = speed.saturating_add(i64::from(character_buff_value(
+            active_buffs,
+            openstory_protocol::BuffMaskGroup::Second,
+            0x0000_0080_0000_0000,
+        )));
+        jump = jump.saturating_add(i64::from(character_buff_value(
+            active_buffs,
+            openstory_protocol::BuffMaskGroup::Second,
+            0x0000_0100_0000_0000,
+        )));
+        if let Some(value) = forced_stats.speed {
+            speed = i64::from(value);
+        }
+        if let Some(value) = forced_stats.jump {
+            jump = i64::from(value);
+        }
+
+        // The legacy stat table caps total speed at 140 and jump at 123.
+        let speed = speed.clamp(0, 140) as f64;
+        let jump = jump.clamp(0, 123) as f64;
+        let mut walk_force = 0.05 + 0.11 * speed / 100.0;
+        if is_slowed {
+            walk_force *= 0.5;
+        }
+        (walk_force, 1.0 + 3.5 * jump / 100.0, speed / 100.0)
+    }
+
     fn calculate_player_touch_damage(
         character: &openstory_protocol::CharacterInfo,
         attack: i32,
@@ -34643,6 +43342,7 @@ mod native {
         skill_archive: &NxArchive,
         skills: &HashMap<i32, openstory_protocol::SkillEntry>,
         active_buffs: &HashMap<openstory_protocol::BuffStatKey, ActiveCharacterBuff>,
+        forced_stats: &ForcedEquipmentStats,
     ) -> i32 {
         let mut weapon_defense = 0_i64;
         let item_ids = character
@@ -34667,6 +43367,9 @@ mod native {
             openstory_protocol::BuffMaskGroup::Second,
             0x0000_0002_0000_0000,
         )));
+        if let Some(value) = forced_stats.weapon_defense {
+            weapon_defense = i64::from(value);
+        }
 
         let achilles = [1_120_004, 1_220_005, 1_320_005]
             .into_iter()
@@ -34694,6 +43397,7 @@ mod native {
         skill_archive: &NxArchive,
         skills: &HashMap<i32, openstory_protocol::SkillEntry>,
         active_buffs: &HashMap<openstory_protocol::BuffStatKey, ActiveCharacterBuff>,
+        forced_stats: &ForcedEquipmentStats,
     ) -> Result<Option<BasicAttackStats>, String> {
         let weapon_id = equipped_weapon_id(&character.look);
         let Some(weapon_id) = weapon_id else {
@@ -34714,9 +43418,16 @@ mod native {
             .and_then(|value| u8::try_from(value).ok())
             .filter(|value| *value != 0)
             .unwrap_or_else(|| fallback_weapon_attack_class(weapon_type));
-        let attack_speed = integer_property(&weapon_info, "attackSpeed")
-            .and_then(|value| u8::try_from(value).ok())
+        let weapon_attack_speed = integer_property(&weapon_info, "attackSpeed")
+            .and_then(|value| i8::try_from(value).ok())
+            .filter(|value| *value != 0)
             .unwrap_or(6);
+        let booster = character_buff_value(
+            active_buffs,
+            openstory_protocol::BuffMaskGroup::Second,
+            0x0000_0800_0000_0000,
+        ) as i8;
+        let attack_speed = weapon_attack_speed.saturating_add(booster);
         let projectile_prefix = weapon_projectile_prefix(weapon_type);
         let projectile = inventory.and_then(|inventory| {
             let prefix = projectile_prefix?;
@@ -34776,6 +43487,13 @@ mod native {
                 accuracy_bonus.saturating_add(integer_property(&info, "incACC").unwrap_or(0));
             maximum_hp = maximum_hp.saturating_add(integer_property(&info, "incMHP").unwrap_or(0));
         }
+        // Cosmic caps the pre-buff total (base INT + equipment INT/MATK) at
+        // 2,000. Maple Warrior changes total INT but intentionally does not
+        // change this magic subtotal.
+        let magic_base_intelligence = intelligence;
+        let mut magic_total = magic_base_intelligence
+            .saturating_add(magic_attack)
+            .min(2000);
         if let Some(projectile) = projectile {
             let projectile_prefix = projectile.item_id / 10_000;
             let projectile_node = format!("0{}", projectile.item_id);
@@ -34810,10 +43528,11 @@ mod native {
             openstory_protocol::BuffMaskGroup::Second,
             0x0000_0001_0000_0000,
         ));
-        magic_attack = magic_attack.saturating_add(buff_value(
+        let magic_attack_buff = buff_value(
             openstory_protocol::BuffMaskGroup::Second,
             0x0000_0004_0000_0000,
-        ));
+        );
+        magic_total = magic_total.saturating_add(magic_attack_buff);
         accuracy_bonus = accuracy_bonus.saturating_add(buff_value(
             openstory_protocol::BuffMaskGroup::Second,
             0x0000_0010_0000_0000,
@@ -34857,9 +43576,18 @@ mod native {
         if let Some(level) = learned_skill_level(skill_archive, skills, 12) {
             weapon_attack =
                 weapon_attack.saturating_add(integer_property(&level, "x").unwrap_or(0));
-            magic_attack = magic_attack.saturating_add(integer_property(&level, "y").unwrap_or(0));
+            let blessing_magic = integer_property(&level, "y").unwrap_or(0);
+            magic_total = magic_total.saturating_add(blessing_magic);
             accuracy_bonus =
                 accuracy_bonus.saturating_add(integer_property(&level, "z").unwrap_or(0));
+        }
+        if let Some(value) = forced_stats.weapon_attack {
+            weapon_attack = i64::from(value);
+        }
+        if let Some(value) = forced_stats.magic_attack {
+            magic_total = magic_base_intelligence
+                .saturating_add(i64::from(value))
+                .min(2000);
         }
 
         // Berserk's damage bonus is active only below its per-level HP threshold.
@@ -34882,11 +43610,17 @@ mod native {
             maximum_damage /= 10.0;
         }
 
-        let mut accuracy = ((dexterity as f64 * 0.8 + luck as f64 * 0.5) as i32)
-            .saturating_add(i32::try_from(accuracy_bonus).unwrap_or(0));
-        if buff_value(openstory_protocol::BuffMaskGroup::Second, STATUS_DARKNESS) != 0 {
-            accuracy /= 2;
-        }
+        let accuracy = forced_stats.accuracy.map_or_else(
+            || {
+                let mut accuracy = ((dexterity as f64 * 0.8 + luck as f64 * 0.5) as i32)
+                    .saturating_add(i32::try_from(accuracy_bonus).unwrap_or(0));
+                if buff_value(openstory_protocol::BuffMaskGroup::Second, STATUS_DARKNESS) != 0 {
+                    accuracy /= 2;
+                }
+                accuracy
+            },
+            i32::from,
+        );
 
         Ok(Some(BasicAttackStats {
             weapon_type,
@@ -34899,7 +43633,7 @@ mod native {
             maximum_damage,
             intelligence,
             luck,
-            magic_attack,
+            magic_total,
             magic_damage: false,
             element: None,
             fixed_damage: None,
@@ -35250,12 +43984,20 @@ mod native {
             .resolve(&face_path)
             .map_err(|error| error.to_string())?
         {
+            // The face's map/brow point must land on the head's brow anchor.
+            // C++ Face::Frame shifts the bitmap by this authored offset before
+            // drawing; account for it here because append_avatar_node only
+            // applies the bitmap origin.
+            let face_brow = vector_path(&face, "map/brow").unwrap_or((0.0, 0.0));
             let first_sprite = sprites.len();
             append_avatar_node(
                 sprites,
                 &face,
                 &face_path,
-                (anchor_x + face_offset.0, anchor_y + face_offset.1),
+                (
+                    anchor_x + face_offset.0 - face_brow.0,
+                    anchor_y + face_offset.1 - face_brow.1,
+                ),
                 cache,
             )?;
             set_sprite_depth(sprites, first_sprite, 19);
@@ -35761,7 +44503,7 @@ mod native {
                 frame,
                 &format!("effect:quest-clear/{index}"),
                 512.0,
-                384.0,
+                GAMEPLAY_CAMERA_CENTER_Y,
                 255,
                 false,
                 cache,
@@ -35822,14 +44564,13 @@ mod native {
             scripted: script_present || has_shop,
         };
         let mut frames = Vec::new();
-        for (state_name, motion) in [
-            ("stand", NpcMotion::Stand),
-            ("move", NpcMotion::Move),
-            ("say", NpcMotion::Say),
-        ] {
-            let Some(state) = npc.child(state_name).map_err(|error| error.to_string())? else {
+        let states = npc.children().map_err(|error| error.to_string())?;
+        for state in states {
+            let state_name = state.name().map_err(|error| error.to_string())?;
+            if state_name == "info" {
                 continue;
-            };
+            }
+            let motion = NpcMotion::from_state_name(state_name.clone());
             let mut frame_nodes = numeric_children(&state)?;
             if frame_nodes.is_empty() {
                 frame_nodes.push(state);
@@ -35841,7 +44582,7 @@ mod native {
                     frame_node,
                     &format!("npc:{resolved_path}/{state_name}/{index}"),
                     512.0,
-                    384.0,
+                    GAMEPLAY_CAMERA_CENTER_Y,
                     255,
                     false,
                     cache,
@@ -35852,7 +44593,7 @@ mod native {
                         .filter(|delay| *delay > 0)
                         .unwrap_or(100);
                     frames.push(NpcFrameAsset {
-                        motion,
+                        motion: motion.clone(),
                         delay_ms,
                         sprites: first_sprite..sprites.len(),
                     });
@@ -35891,7 +44632,7 @@ mod native {
                 frame_node,
                 &format!("merchant:{item_path}/{frame_index}"),
                 512.0,
-                384.0,
+                GAMEPLAY_CAMERA_CENTER_Y,
                 255,
                 false,
                 cache,
@@ -35949,7 +44690,7 @@ mod native {
             let sign_width = sign.rect.width;
             let sign_height = sign.rect.height;
             sign.rect.x = 512.0 - sign_width / 2.0;
-            sign.rect.y = 384.0 - 82.0 - sign_height;
+            sign.rect.y = GAMEPLAY_CAMERA_CENTER_Y - 82.0 - sign_height;
             sign.rect.y + if skin == 0 { 9.0 } else { 68.0 }
         };
 
@@ -36133,6 +44874,24 @@ mod native {
         path: &str,
         cache: &mut MapArtCache,
     ) -> Result<Vec<ProjectileFrameAsset>, String> {
+        append_animation_frames_from_node_at(
+            sprites,
+            node,
+            path,
+            512.0,
+            GAMEPLAY_CAMERA_CENTER_Y,
+            cache,
+        )
+    }
+
+    fn append_animation_frames_from_node_at(
+        sprites: &mut Vec<DecodedSprite>,
+        node: &openstory_assets::NxNode,
+        path: &str,
+        anchor_x: f32,
+        anchor_y: f32,
+        cache: &mut MapArtCache,
+    ) -> Result<Vec<ProjectileFrameAsset>, String> {
         let mut frame_nodes = numeric_children(node)?;
         if frame_nodes.is_empty() {
             if node.bitmap().map_err(|error| error.to_string())?.is_some() {
@@ -36148,8 +44907,8 @@ mod native {
                 sprites,
                 &frame_node,
                 &format!("{path}/{index}"),
-                512.0,
-                384.0,
+                anchor_x,
+                anchor_y,
                 255,
                 false,
                 cache,
@@ -36166,6 +44925,112 @@ mod native {
             }
         }
         Ok(frames)
+    }
+
+    fn append_item_aura_animations(
+        sprites: &mut Vec<DecodedSprite>,
+        archive: &NxArchive,
+        item_id: i32,
+        cache: &mut MapArtCache,
+    ) -> Result<PersistentItemAuraAsset, String> {
+        let path = format!("ItemEff.img/{item_id}");
+        let Some(effect) = archive
+            .root()
+            .resolve(&path)
+            .map_err(|error| error.to_string())?
+        else {
+            return Ok(PersistentItemAuraAsset::default());
+        };
+        let top = numeric_children(&effect)?;
+        let mut aura = PersistentItemAuraAsset::default();
+        let Some(first) = top.first() else {
+            return Ok(aura);
+        };
+        if first.bitmap().map_err(|error| error.to_string())?.is_some() {
+            aura.front = append_animation_frames_from_node_at(
+                sprites,
+                &effect,
+                &format!("item-aura:{item_id}/flat"),
+                512.0,
+                GAMEPLAY_CAMERA_CENTER_Y,
+                cache,
+            )?;
+            return Ok(aura);
+        }
+
+        let inner = numeric_children(first)?;
+        let inner_is_bitmap = inner
+            .first()
+            .map(|node| node.bitmap().map(|bitmap| bitmap.is_some()))
+            .transpose()
+            .map_err(|error| error.to_string())?
+            .unwrap_or(false);
+        if !inner_is_bitmap {
+            aura.front = append_animation_frames_from_node_at(
+                sprites,
+                first,
+                &format!("item-aura:{item_id}/fallback"),
+                512.0,
+                GAMEPLAY_CAMERA_CENTER_Y,
+                cache,
+            )?;
+        } else if top.len() <= 2 {
+            if let Some(back) = effect.child("0").map_err(|error| error.to_string())? {
+                aura.back = append_animation_frames_from_node_at(
+                    sprites,
+                    &back,
+                    &format!("item-aura:{item_id}/back"),
+                    512.0,
+                    GAMEPLAY_CAMERA_CENTER_Y,
+                    cache,
+                )?;
+            }
+            if let Some(front) = effect.child("1").map_err(|error| error.to_string())? {
+                aura.front = append_animation_frames_from_node_at(
+                    sprites,
+                    &front,
+                    &format!("item-aura:{item_id}/front"),
+                    512.0,
+                    GAMEPLAY_CAMERA_CENTER_Y,
+                    cache,
+                )?;
+            }
+        } else {
+            for (index, frame) in top.iter().enumerate() {
+                let delay_ms = integer_property(frame, "delay")
+                    .and_then(|delay| u16::try_from(delay).ok())
+                    .filter(|delay| *delay > 0)
+                    .unwrap_or(100);
+                for (layer_name, target) in [("0", &mut aura.back), ("1", &mut aura.front)] {
+                    let Some(layer) = frame.child(layer_name).map_err(|error| error.to_string())?
+                    else {
+                        continue;
+                    };
+                    if layer.bitmap().map_err(|error| error.to_string())?.is_none() {
+                        continue;
+                    }
+                    let mut layer_frames = append_animation_frames_from_node_at(
+                        sprites,
+                        &layer,
+                        &format!("item-aura:{item_id}/{layer_name}/{index}"),
+                        512.0,
+                        GAMEPLAY_CAMERA_CENTER_Y,
+                        cache,
+                    )?;
+                    for frame in &mut layer_frames {
+                        frame.delay_ms = delay_ms;
+                    }
+                    target.extend(layer_frames);
+                }
+            }
+        }
+
+        aura.split = !aura.back.is_empty() && !aura.front.is_empty();
+        if aura.front.is_empty() {
+            aura.front = std::mem::take(&mut aura.back);
+            aura.split = false;
+        }
+        Ok(aura)
     }
 
     fn append_skill_use_effects(
@@ -36530,7 +45395,16 @@ mod native {
         cache: &mut MapArtCache,
     ) -> Result<Option<ReactorFrameAsset>, String> {
         let first_sprite = sprites.len();
-        append_map_art_sprite(sprites, node, path, 512.0, 384.0, 255, false, cache)?;
+        append_map_art_sprite(
+            sprites,
+            node,
+            path,
+            512.0,
+            GAMEPLAY_CAMERA_CENTER_Y,
+            255,
+            false,
+            cache,
+        )?;
         if sprites.len() == first_sprite {
             return Ok(None);
         }
@@ -36719,7 +45593,7 @@ mod native {
                 frame_node,
                 &format!("drop:{path}/{frame_number}"),
                 512.0,
-                384.0,
+                GAMEPLAY_CAMERA_CENTER_Y,
                 255,
                 false,
                 cache,
@@ -36777,7 +45651,7 @@ mod native {
                 frame,
                 &format!("chair:{item_id}/{part_name}/{index}"),
                 512.0 + offset.0,
-                384.0 + offset.1,
+                GAMEPLAY_CAMERA_CENTER_Y + offset.1,
                 255,
                 false,
                 cache,
@@ -37076,7 +45950,7 @@ mod native {
                     &frame_node,
                     &format!("mob:{resolved_path}/{state}/{frame_name}"),
                     512.0,
-                    384.0,
+                    GAMEPLAY_CAMERA_CENTER_Y,
                     255,
                     false,
                     cache,
@@ -37161,6 +46035,30 @@ mod native {
         Ok(seats)
     }
 
+    fn load_map_ladders(map: &openstory_assets::NxNode) -> Result<Vec<MapLadder>, String> {
+        let Some(ladder_root) = map.child("ladderRope").map_err(|error| error.to_string())? else {
+            return Ok(Vec::new());
+        };
+        let ladders = numeric_children(&ladder_root)?
+            .into_iter()
+            .filter_map(|ladder| {
+                let x =
+                    integer_property(&ladder, "x").and_then(|value| i16::try_from(value).ok())?;
+                let y1 =
+                    integer_property(&ladder, "y1").and_then(|value| i16::try_from(value).ok())?;
+                let y2 =
+                    integer_property(&ladder, "y2").and_then(|value| i16::try_from(value).ok())?;
+                Some(MapLadder {
+                    x,
+                    y1: y1.min(y2),
+                    y2: y1.max(y2),
+                    is_ladder: integer_property(&ladder, "l").unwrap_or(0) != 0,
+                })
+            })
+            .collect();
+        Ok(ladders)
+    }
+
     fn append_portal_animation(
         sprites: &mut Vec<DecodedSprite>,
         archive: &NxArchive,
@@ -37186,7 +46084,7 @@ mod native {
                 frame_node,
                 &format!("portal:{node_path}/{index}"),
                 512.0,
-                384.0,
+                GAMEPLAY_CAMERA_CENTER_Y,
                 255,
                 false,
                 cache,
@@ -37222,61 +46120,65 @@ mod native {
         camera_y: f32,
         cache: &mut MapArtCache,
         animations: &mut Vec<MapArtAnimationAsset>,
-    ) -> Result<(), String> {
+    ) -> Result<[usize; 8], String> {
+        let mut layer_insert_indices = [0; 8];
+        let mut next_layer = 0;
         for layer in numeric_children(map)? {
-            let tile_set = layer
-                .child("info")
+            let layer_id = layer
+                .name()
                 .map_err(|error| error.to_string())?
-                .and_then(|info| string_property(&info, "tS"));
-
-            if let Some(objects) = layer.child("obj").map_err(|error| error.to_string())? {
-                let mut objects = numeric_children(&objects)?;
-                objects.sort_by_key(|object| integer_property(object, "z").unwrap_or(0));
-                for object in objects {
-                    let Some(set) = string_property(&object, "oS") else {
-                        continue;
-                    };
-                    let Some(layer0) = string_property(&object, "l0") else {
-                        continue;
-                    };
-                    let Some(layer1) = string_property(&object, "l1") else {
-                        continue;
-                    };
-                    let Some(layer2) = string_property(&object, "l2") else {
-                        continue;
-                    };
-                    let path = format!("Obj/{set}.img/{layer0}/{layer1}/{layer2}");
-                    let Some(art) = archive
-                        .root()
-                        .resolve(&path)
-                        .map_err(|error| error.to_string())?
-                    else {
-                        continue;
-                    };
-                    let anchor_x = number_property(&object, "x").unwrap_or(0.0) + camera_x;
-                    let anchor_y = number_property(&object, "y").unwrap_or(0.0) + camera_y;
-                    let flipped = integer_property(&object, "f").unwrap_or(0) != 0;
-                    if let Some(animation) = append_map_art_animation(
-                        sprites, &art, &path, anchor_x, anchor_y, 255, flipped, cache,
-                    )? {
-                        animations.push(animation);
-                    }
-                }
+                .parse::<usize>()
+                .map_err(|error| error.to_string())?;
+            while next_layer < 8 && next_layer < layer_id {
+                layer_insert_indices[next_layer] = sprites.len();
+                next_layer += 1;
             }
+            append_map_layer(
+                sprites, archive, &layer, camera_x, camera_y, cache, animations,
+            )?;
+            if layer_id < 8 {
+                layer_insert_indices[layer_id] = sprites.len();
+                next_layer = layer_id + 1;
+            }
+        }
+        while next_layer < 8 {
+            layer_insert_indices[next_layer] = sprites.len();
+            next_layer += 1;
+        }
+        Ok(layer_insert_indices)
+    }
 
-            let (Some(tile_set), Some(tiles)) = (
-                tile_set,
-                layer.child("tile").map_err(|error| error.to_string())?,
-            ) else {
-                continue;
-            };
-            let mut tiles_with_art = Vec::new();
-            for tile in numeric_children(&tiles)? {
-                let Some(category) = string_property(&tile, "u") else {
+    fn append_map_layer(
+        sprites: &mut Vec<DecodedSprite>,
+        archive: &NxArchive,
+        layer: &openstory_assets::NxNode,
+        camera_x: f32,
+        camera_y: f32,
+        cache: &mut MapArtCache,
+        animations: &mut Vec<MapArtAnimationAsset>,
+    ) -> Result<(), String> {
+        let tile_set = layer
+            .child("info")
+            .map_err(|error| error.to_string())?
+            .and_then(|info| string_property(&info, "tS"));
+
+        if let Some(objects) = layer.child("obj").map_err(|error| error.to_string())? {
+            let mut objects = numeric_children(&objects)?;
+            objects.sort_by_key(|object| integer_property(object, "z").unwrap_or(0));
+            for object in objects {
+                let Some(set) = string_property(&object, "oS") else {
                     continue;
                 };
-                let tile_number = integer_property(&tile, "no").unwrap_or(0);
-                let path = format!("Tile/{tile_set}.img/{category}/{tile_number}");
+                let Some(layer0) = string_property(&object, "l0") else {
+                    continue;
+                };
+                let Some(layer1) = string_property(&object, "l1") else {
+                    continue;
+                };
+                let Some(layer2) = string_property(&object, "l2") else {
+                    continue;
+                };
+                let path = format!("Obj/{set}.img/{layer0}/{layer1}/{layer2}");
                 let Some(art) = archive
                     .root()
                     .resolve(&path)
@@ -37284,18 +46186,48 @@ mod native {
                 else {
                     continue;
                 };
-                let depth = integer_property(&art, "z")
-                    .filter(|depth| *depth != 0)
-                    .or_else(|| integer_property(&art, "zM"))
-                    .unwrap_or(0);
-                tiles_with_art.push((depth, tile, path, art));
+                let anchor_x = number_property(&object, "x").unwrap_or(0.0) + camera_x;
+                let anchor_y = number_property(&object, "y").unwrap_or(0.0) + camera_y;
+                let flipped = integer_property(&object, "f").unwrap_or(0) != 0;
+                if let Some(animation) = append_map_art_animation(
+                    sprites, &art, &path, anchor_x, anchor_y, 255, flipped, cache,
+                )? {
+                    animations.push(animation);
+                }
             }
-            tiles_with_art.sort_by_key(|(depth, _, _, _)| *depth);
-            for (_, tile, path, art) in tiles_with_art {
-                let anchor_x = number_property(&tile, "x").unwrap_or(0.0) + camera_x;
-                let anchor_y = number_property(&tile, "y").unwrap_or(0.0) + camera_y;
-                append_map_art_sprite(sprites, &art, &path, anchor_x, anchor_y, 255, false, cache)?;
-            }
+        }
+
+        let (Some(tile_set), Some(tiles)) = (
+            tile_set,
+            layer.child("tile").map_err(|error| error.to_string())?,
+        ) else {
+            return Ok(());
+        };
+        let mut tiles_with_art = Vec::new();
+        for tile in numeric_children(&tiles)? {
+            let Some(category) = string_property(&tile, "u") else {
+                continue;
+            };
+            let tile_number = integer_property(&tile, "no").unwrap_or(0);
+            let path = format!("Tile/{tile_set}.img/{category}/{tile_number}");
+            let Some(art) = archive
+                .root()
+                .resolve(&path)
+                .map_err(|error| error.to_string())?
+            else {
+                continue;
+            };
+            let depth = integer_property(&art, "z")
+                .filter(|depth| *depth != 0)
+                .or_else(|| integer_property(&art, "zM"))
+                .unwrap_or(0);
+            tiles_with_art.push((depth, tile, path, art));
+        }
+        tiles_with_art.sort_by_key(|(depth, _, _, _)| *depth);
+        for (_, tile, path, art) in tiles_with_art {
+            let anchor_x = number_property(&tile, "x").unwrap_or(0.0) + camera_x;
+            let anchor_y = number_property(&tile, "y").unwrap_or(0.0) + camera_y;
+            append_map_art_sprite(sprites, &art, &path, anchor_x, anchor_y, 255, false, cache)?;
         }
         Ok(())
     }
@@ -37349,6 +46281,7 @@ mod native {
         Ok((frames.len() > 1).then_some(MapArtAnimationAsset {
             frames,
             environment_name: None,
+            hold_last: false,
         }))
     }
 
@@ -37445,7 +46378,7 @@ mod native {
                     &frame,
                     &format!("effect:Tomb.img/fall/{frame_name}"),
                     512.0,
-                    384.0,
+                    GAMEPLAY_CAMERA_CENTER_Y,
                     255,
                     false,
                     cache,
@@ -37470,7 +46403,7 @@ mod native {
                 &land,
                 "effect:Tomb.img/land/0",
                 512.0,
-                384.0,
+                GAMEPLAY_CAMERA_CENTER_Y,
                 255,
                 false,
                 cache,
@@ -37581,11 +46514,15 @@ mod native {
                     }
                 }
                 if let Some(face) = face.as_ref() {
+                    let face_brow = vector_path(face, "map/brow").unwrap_or((0.0, 0.0));
                     append_avatar_node(
                         sprites,
                         face,
                         &face_path,
-                        (fake_origin.0 + face_offset.0, fake_origin.1 + face_offset.1),
+                        (
+                            fake_origin.0 + face_offset.0 - face_brow.0,
+                            fake_origin.1 + face_offset.1 - face_brow.1,
+                        ),
                         cache,
                     )?;
                 }
@@ -37633,6 +46570,131 @@ mod native {
             }
         }
         Ok(None)
+    }
+
+    fn decode_nx_icon(archive: &NxArchive, path: &str) -> Option<(u32, u32, Arc<[u8]>)> {
+        let node = archive.root().resolve(path).ok().flatten()?;
+        let bitmap = first_bitmap_node(&node)
+            .ok()
+            .flatten()?
+            .bitmap()
+            .ok()
+            .flatten()?;
+        let width = u32::from(bitmap.width());
+        let height = u32::from(bitmap.height());
+        if width == 0 || height == 0 || width > 256 || height > 256 {
+            return None;
+        }
+        Some((width, height, bitmap.decode_bgra_shared().ok()?))
+    }
+
+    fn quickslot_background_image(archive: &NxArchive) -> Option<(u32, u32, Arc<[u8]>)> {
+        let node = archive
+            .root()
+            .resolve("StatusBar.img/base/quickSlot")
+            .ok()
+            .flatten()?;
+        let bitmap = first_bitmap_node(&node)
+            .ok()
+            .flatten()?
+            .bitmap()
+            .ok()
+            .flatten()?;
+        let width = u32::from(bitmap.width());
+        let height = u32::from(bitmap.height());
+        if width == 0 || height == 0 || width > 512 || height > 512 {
+            return None;
+        }
+        Some((width, height, bitmap.decode_bgra_shared().ok()?))
+    }
+
+    fn render_quickslot_panel_pixels(
+        font: &fontdue::Font,
+        background: Option<(u32, u32, Arc<[u8]>)>,
+        keys: &[u8; 8],
+        icons: &[Option<(u32, u32, Arc<[u8]>)>; 8],
+    ) -> Vec<u8> {
+        const WIDTH: usize = 151;
+        const HEIGHT: usize = 80;
+        let mut pixels = vec![0_u8; WIDTH * HEIGHT * 4];
+        if let Some((source_width, source_height, source)) = background {
+            for y in 0..HEIGHT.min(source_height as usize) {
+                let source_start = y * source_width as usize * 4;
+                let destination_start = y * WIDTH * 4;
+                let row_bytes = WIDTH.min(source_width as usize) * 4;
+                pixels[destination_start..destination_start + row_bytes]
+                    .copy_from_slice(&source[source_start..source_start + row_bytes]);
+            }
+        } else {
+            fill_dialogue_rect(
+                &mut pixels,
+                WIDTH,
+                HEIGHT,
+                0,
+                0,
+                WIDTH,
+                HEIGHT,
+                [42, 38, 31, 245],
+            );
+            fill_dialogue_rect(
+                &mut pixels,
+                WIDTH,
+                HEIGHT,
+                0,
+                0,
+                WIDTH,
+                2,
+                [196, 157, 91, 255],
+            );
+            for row in 0..2 {
+                for column in 0..4 {
+                    fill_dialogue_rect(
+                        &mut pixels,
+                        WIDTH,
+                        HEIGHT,
+                        7 + column * 35,
+                        8 + row * 34,
+                        32,
+                        30,
+                        [67, 61, 49, 255],
+                    );
+                }
+            }
+        }
+
+        for slot in 0..8 {
+            let column = slot % 4;
+            let row = slot / 4;
+            let x = 7 + column * 35;
+            let y = 8 + row * 34;
+            if let Some((icon_width, icon_height, icon)) = &icons[slot] {
+                composite_inventory_icon(
+                    &mut pixels,
+                    WIDTH,
+                    HEIGHT,
+                    icon,
+                    *icon_width as usize,
+                    *icon_height as usize,
+                    x + 5,
+                    y + 1,
+                    22,
+                );
+            }
+            draw_dialogue_text(
+                font,
+                &mut pixels,
+                WIDTH,
+                HEIGHT,
+                &quickslot_short_key_label(keys[slot]),
+                x as i32 + 1,
+                y as i32 + 20,
+                8.0,
+                30,
+                10,
+                [255, 247, 221],
+            );
+        }
+        pixels
     }
 
     fn map_texture_key(path: &str, opacity: u8, flipped: bool) -> String {
@@ -37741,6 +46803,7 @@ mod native {
             animations.push(MapArtAnimationAsset {
                 frames,
                 environment_name: None,
+                hold_last: false,
             });
         }
         Ok(())
@@ -37798,7 +46861,9 @@ mod native {
         let anchor_y = if vertical_mobile {
             camera_y + number_property(entry, "y").unwrap_or(0.0)
         } else {
-            384.0 + number_property(entry, "y").unwrap_or(0.0) + ry * (384.0 - camera_y) / 100.0
+            GAMEPLAY_CAMERA_CENTER_Y
+                + number_property(entry, "y").unwrap_or(0.0)
+                + ry * (GAMEPLAY_CAMERA_CENTER_Y - camera_y) / 100.0
         };
         let tile_x = integer_property(entry, "cx")
             .filter(|value| *value > 0)
@@ -37807,17 +46872,10 @@ mod native {
             .filter(|value| *value > 0)
             .unwrap_or(i64::from(cache_entry.1)) as f32;
         let horizontal = matches!(kind, 1 | 3 | 4 | 6);
-        let vertical = matches!(kind, 2 | 3 | 5 | 6);
-        let count_x = if horizontal {
-            ((1024.0 / tile_x.max(1.0)).ceil() as usize + 3).clamp(1, 32)
-        } else {
-            1
-        };
-        let count_y = if vertical {
-            ((768.0 / tile_y.max(1.0)).ceil() as usize + 3).clamp(1, 32)
-        } else {
-            1
-        };
+        let vertical = matches!(kind, 2 | 3 | 5 | 7);
+        let (count_x, count_y) = map_background_tile_counts(kind, tile_x, tile_y);
+        let horizontal_scrolls = horizontal_mobile || rx != 0.0;
+        let vertical_scrolls = vertical_mobile || ry != 0.0;
         let base_x = if horizontal {
             normalize_tiled_position(anchor_x, tile_x)
         } else {
@@ -37855,10 +46913,14 @@ mod native {
             for y_index in 0..count_y {
                 let x = base_x + x_index as f32 * tile_x - cache_entry.2.0;
                 let y = base_y + y_index as f32 * tile_y - cache_entry.2.1;
-                if x + cache_entry.0 as f32 <= 0.0
-                    || y + cache_entry.1 as f32 <= 0.0
-                    || x >= 1024.0
-                    || y >= 768.0
+                // Keep offscreen copies that can scroll into view; tiled backgrounds recycle
+                // their reserved copies as they leave the viewport.
+                if (!horizontal
+                    && !horizontal_scrolls
+                    && (x + cache_entry.0 as f32 <= 0.0 || x >= 1024.0))
+                    || (!vertical
+                        && !vertical_scrolls
+                        && (y + cache_entry.1 as f32 <= 0.0 || y >= 768.0))
                 {
                     continue;
                 }
@@ -37913,8 +46975,39 @@ mod native {
         };
         Ok((
             number_property(&portal, "x").unwrap_or(0.0),
-            number_property(&portal, "y").unwrap_or(0.0),
+            // The legacy MapPortals::get_portal_by_id spawn point sits 30 px
+            // above the portal anchor before snapping down to a foothold.
+            number_property(&portal, "y").unwrap_or(0.0) - 30.0,
         ))
+    }
+
+    fn map_camera_bounds(
+        map: &openstory_assets::NxNode,
+        footholds: Option<&FootholdTree>,
+    ) -> Option<MapCameraBounds> {
+        let info = map.child("info").ok().flatten();
+        let authored = info.and_then(|info| {
+            Some(MapCameraBounds {
+                left: integer_property(&info, "VRLeft")? as f32,
+                right: integer_property(&info, "VRRight")? as f32,
+                top: integer_property(&info, "VRTop")? as f32,
+                bottom: integer_property(&info, "VRBottom")? as f32,
+            })
+        });
+        if let Some(bounds) = authored.filter(|bounds| {
+            bounds.right > bounds.left && bounds.bottom > bounds.top
+        }) {
+            return Some(bounds);
+        }
+        footholds.map(|footholds| {
+            let bounds = footholds.bounds();
+            MapCameraBounds {
+                left: f32::from(bounds.left_wall),
+                right: f32::from(bounds.right_wall),
+                top: f32::from(bounds.top),
+                bottom: f32::from(bounds.bottom),
+            }
+        })
     }
 
     fn load_map_footholds(map: &openstory_assets::NxNode) -> Result<Option<FootholdTree>, String> {
@@ -38014,6 +47107,16 @@ mod native {
         archive.root().resolve(&path).ok().flatten()
     }
 
+    fn magic_amplification_skill(job: u16) -> Option<i32> {
+        match job {
+            210..=212 => Some(2_110_001),
+            220..=222 => Some(2_210_001),
+            1_111 | 1_112 => Some(12_110_001),
+            2_215..=2_218 => Some(22_150_000),
+            _ => None,
+        }
+    }
+
     fn legacy_y_below(footholds: &FootholdTree, x: i16, y: i16) -> i16 {
         footholds
             .find_below(f64::from(x), f64::from(y))
@@ -38035,6 +47138,63 @@ mod native {
             NodeValue::Integer(value) => Some(value),
             _ => None,
         }
+    }
+
+    fn maple_tv_screen_anchors(archive: &NxArchive, npc_id: i32) -> Option<MapleTvAnchors> {
+        let is_maple_tv_npc = npc_id == 9_201_066
+            || (9_250_020..=9_250_100).contains(&npc_id)
+            || (9_270_000..9_271_000).contains(&npc_id);
+        if !is_maple_tv_npc {
+            return None;
+        }
+        let path = format!("{npc_id:07}.img/info");
+        let info = archive
+            .root()
+            .resolve(&path)
+            .ok()?
+            .and_then(|npc| npc.child("info").ok().flatten())?;
+        let read_short =
+            |name| integer_property(&info, name).map_or(0, |value| value as u16 as i16);
+        let anchors = MapleTvAnchors {
+            message_x: read_short("MapleTVmsgX"),
+            message_y: read_short("MapleTVmsgY"),
+            ad_x: read_short("MapleTVadX"),
+            ad_y: read_short("MapleTVadY"),
+        };
+        (anchors.ad_x != 0 || anchors.ad_y != 0).then_some(anchors)
+    }
+
+    fn read_ui_bitmap(
+        archive: &NxArchive,
+        path: &str,
+    ) -> Result<(u32, u32, Arc<[u8]>, (i16, i16)), String> {
+        let node = archive
+            .root()
+            .resolve(path)
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| format!("UI bitmap {path:?} was not found"))?;
+        let bitmap = node
+            .bitmap()
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| format!("UI node {path:?} is not a bitmap"))?;
+        let origin = match node
+            .child("origin")
+            .map_err(|error| error.to_string())?
+            .map(|origin| origin.value())
+            .transpose()
+            .map_err(|error| error.to_string())?
+        {
+            Some(NodeValue::Vector { x, y }) => (x as i16, y as i16),
+            _ => (0, 0),
+        };
+        Ok((
+            u32::from(bitmap.width()),
+            u32::from(bitmap.height()),
+            bitmap
+                .decode_bgra_shared()
+                .map_err(|error| error.to_string())?,
+            origin,
+        ))
     }
 
     fn number_property(node: &openstory_assets::NxNode, name: &str) -> Option<f32> {
@@ -38098,6 +47258,7 @@ mod native {
         let key_focused_draw = append_state("keyFocused")?;
         buttons.push(LoginButtonAsset {
             hit_rect,
+            action,
             normal_draw,
             mouse_over_draw,
             pressed_draw,
@@ -38143,7 +47304,163 @@ mod native {
         Ok(Some(sprites[index].rect))
     }
 
+    fn append_scaled_ui_animation(
+        sprites: &mut Vec<DecodedSprite>,
+        archive: &NxArchive,
+        path: &str,
+        anchor_x: f32,
+        anchor_y: f32,
+        scale: f32,
+    ) -> Result<Option<MapArtAnimationAsset>, String> {
+        let Some(source) = archive
+            .root()
+            .resolve(path)
+            .map_err(|error| error.to_string())?
+        else {
+            return Ok(None);
+        };
+        let mut frame_nodes = numeric_children(&source)?;
+        if frame_nodes.is_empty() {
+            frame_nodes.push(source);
+        }
+        let mut frames = Vec::new();
+        for frame_node in frame_nodes {
+            let frame_name = frame_node.name().map_err(|error| error.to_string())?;
+            let frame_path = format!("{path}/{frame_name}");
+            let first_sprite = sprites.len();
+            if append_optional_sprite(sprites, archive, &frame_path, anchor_x, anchor_y, scale)?
+                .is_none()
+            {
+                continue;
+            }
+            let delay_ms = integer_property(&frame_node, "delay")
+                .and_then(|delay| u16::try_from(delay).ok())
+                .filter(|delay| *delay > 0)
+                .unwrap_or(100);
+            frames.push(SpriteFrameAsset {
+                delay_ms,
+                sprites: first_sprite..sprites.len(),
+            });
+        }
+        Ok((frames.len() > 1).then_some(MapArtAnimationAsset {
+            frames,
+            environment_name: None,
+            hold_last: false,
+        }))
+    }
+
+    fn append_optional_sprite_at_top_left(
+        sprites: &mut Vec<DecodedSprite>,
+        archive: &NxArchive,
+        path: &str,
+        left: f32,
+        top: f32,
+        scale: f32,
+    ) -> Result<Option<SpriteRect>, String> {
+        let node = archive
+            .root()
+            .resolve(path)
+            .map_err(|error| error.to_string())?;
+        let Some(node) = node else {
+            return Ok(None);
+        };
+        let origin = match node
+            .child("origin")
+            .map_err(|error| error.to_string())?
+            .map(|origin| origin.value())
+            .transpose()
+            .map_err(|error| error.to_string())?
+        {
+            Some(NodeValue::Vector { x, y }) => (x as f32, y as f32),
+            Some(_) => return Err(format!("NX sprite {path:?} has a malformed origin")),
+            None => (0.0, 0.0),
+        };
+        let index = sprites.len();
+        append_node_sprite(
+            sprites,
+            &node,
+            path,
+            left + origin.0 * scale,
+            top + origin.1 * scale,
+            scale,
+        )?;
+        Ok(Some(sprites[index].rect))
+    }
+
+    fn build_quit_confirmation_sprites(
+        archive: &NxArchive,
+    ) -> Result<(Vec<DecodedSprite>, [SpriteRect; 2]), String> {
+        // Prefer the v83 login modal. The larger v83 frame uses different
+        // proportions than the modern login modal, so center its text and
+        // button group from their actual NX dimensions instead of reusing the
+        // modern panel's fixed 17/70/130 offsets.
+        let background_path = "Login.img/Notice/backgrnd/0";
+        let background = archive
+            .root()
+            .resolve(background_path)
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| format!("missing native quit-dialog asset {background_path:?}"))?;
+        let bitmap = background
+            .bitmap()
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| {
+                format!("native quit-dialog asset {background_path:?} is not a bitmap")
+            })?;
+        let panel_width = f32::from(bitmap.width());
+        let panel_height = f32::from(bitmap.height());
+        let left = (1024.0 - panel_width) / 2.0;
+        let top = (768.0 - panel_height) / 2.0;
+        let mut sprites = Vec::with_capacity(4);
+        let mut append_required = |path: &str, x, y| {
+            append_optional_sprite_at_top_left(&mut sprites, archive, path, x, y, 1.0)?
+                .ok_or_else(|| format!("missing native quit-dialog asset {path:?}"))
+        };
+        append_required(background_path, left, top)?;
+
+        let text_path = "Login.img/Notice/text/53";
+        let text_node = archive
+            .root()
+            .resolve(text_path)
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| format!("missing native quit-dialog asset {text_path:?}"))?;
+        let text_bitmap = text_node
+            .bitmap()
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| format!("native quit-dialog asset {text_path:?} is not a bitmap"))?;
+        let text_width = f32::from(text_bitmap.width());
+        let text_left = left + (panel_width - text_width) / 2.0;
+        append_required(text_path, text_left, top + 13.0)?;
+
+        let yes_path = "Login.img/Notice/BtYes/normal/0";
+        let no_path = "Login.img/Notice/BtNo/normal/0";
+        let button_width = |path: &str| -> Result<f32, String> {
+            let node = archive
+                .root()
+                .resolve(path)
+                .map_err(|error| error.to_string())?
+                .ok_or_else(|| format!("missing native quit-dialog asset {path:?}"))?;
+            let bitmap = node
+                .bitmap()
+                .map_err(|error| error.to_string())?
+                .ok_or_else(|| format!("native quit-dialog asset {path:?} is not a bitmap"))?;
+            Ok(f32::from(bitmap.width()))
+        };
+        let yes_width = button_width(yes_path)?;
+        let no_width = button_width(no_path)?;
+        let gap = 8.0_f32;
+        let group_width = yes_width + gap + no_width;
+        let buttons_left = left + (panel_width - group_width) / 2.0;
+        let button_y = top + panel_height - 56.0;
+        let yes = append_required(yes_path, buttons_left, button_y)?;
+        let no = append_required(no_path, buttons_left + yes_width + gap, button_y)?;
+        Ok((sprites, [yes, no]))
+    }
+
     fn centered_text_x(font: &fontdue::Font, text: &str, font_size: f32) -> f32 {
+        512.0 - measured_text_width(font, text, font_size) / 2.0
+    }
+
+    fn measured_text_width(font: &fontdue::Font, text: &str, font_size: f32) -> f32 {
         let mut advance = 0.0_f32;
         let mut previous = None;
         for character in text.chars() {
@@ -38156,7 +47473,7 @@ mod native {
             advance += metrics.advance_width;
             previous = Some(character);
         }
-        512.0 - advance / 2.0
+        advance
     }
 
     fn append_text_sprite(
@@ -38373,8 +47690,17 @@ mod native {
             })
         };
 
-        let mut decoded = Vec::with_capacity(61);
-        for state in ["NoRed1", "NoRed0", "NoCri1", "NoCri0", "NoBlue1", "NoBlue0"] {
+        let mut decoded = Vec::with_capacity(81);
+        for state in [
+            "NoRed1",
+            "NoRed0",
+            "NoCri1",
+            "NoCri0",
+            "NoBlue1",
+            "NoBlue0",
+            "NoViolet1",
+            "NoViolet0",
+        ] {
             for digit in 0..10 {
                 let path = format!("BasicEff.img/{state}/{digit}");
                 decoded.push(load_glyph(path)?);
@@ -38531,6 +47857,7 @@ mod native {
                     }
                     self.window = Some(window.clone());
                     self.renderer = Some(renderer);
+                    self.load_native_status_bar();
                     self.next_frame = Instant::now() + Duration::from_millis(16);
                     self.refresh_login_button_visuals();
                     window.request_redraw();
@@ -38560,6 +47887,7 @@ mod native {
             match event {
                 WindowEvent::CloseRequested => event_loop.exit(),
                 WindowEvent::CursorMoved { position, .. } => {
+                    self.cursor_physical = Some((position.x, position.y));
                     let size = self
                         .window
                         .as_ref()
@@ -38578,8 +47906,31 @@ mod native {
                             y: position.y as f32,
                         })
                     });
+                    if let Some(cursor) = self.cursor {
+                        self.update_messenger_drag(cursor);
+                        if self.update_world_map_hover(cursor)
+                            && let Some(window) = self.window.as_ref()
+                        {
+                            window.request_redraw();
+                        }
+                    }
+                    if self.npc_dialogue_scroll_dragging
+                        && let Some(cursor) = self.cursor
+                        && let Some(panel) =
+                            self.npc_dialogue.as_ref().map(|dialogue| dialogue.panel)
+                    {
+                        let scroll_cursor = Point {
+                            x: panel.x + 584.0,
+                            y: cursor.y,
+                        };
+                        if self.set_npc_dialogue_scroll_from_cursor(scroll_cursor)
+                            && let Some(window) = self.window.as_ref()
+                        {
+                            window.request_redraw();
+                        }
+                    }
                     if let (Some(slider), Some(cursor)) = (self.settings_dragging, self.cursor) {
-                        self.set_audio_setting_from_cursor(slider, cursor.x);
+                        self.set_option_setting_from_cursor(slider, cursor.x);
                         if let Some(window) = self.window.as_ref() {
                             window.request_redraw();
                         }
@@ -38602,6 +47953,8 @@ mod native {
                     button: MouseButton::Left,
                     ..
                 } => {
+                    self.messenger_drag_offset = None;
+                    self.npc_dialogue_scroll_dragging = false;
                     if self.pressed_login_button.take().is_some()
                         && self.refresh_login_button_visuals()
                         && let Some(window) = self.window.as_ref()
@@ -38632,6 +47985,68 @@ mod native {
                     let Some(cursor) = self.cursor else {
                         return;
                     };
+                    if self.quit_confirmation {
+                        let accept = self.quit_confirmation_buttons[0]
+                            .is_some_and(|bounds| rect_contains(bounds, cursor));
+                        let cancel = self.quit_confirmation_buttons[1]
+                            .is_some_and(|bounds| rect_contains(bounds, cursor));
+                        self.quit_confirmation = false;
+                        if accept {
+                            self.quit_requested = true;
+                            event_loop.exit();
+                        } else if !cancel {
+                            // Clicking outside the compact modal dismisses it, matching Escape.
+                        }
+                        if let Some(window) = self.window.as_ref() {
+                            window.request_redraw();
+                        }
+                        return;
+                    }
+                    if self.click_character_selection(cursor) {
+                        return;
+                    }
+                    if self.click_item_megaphone(cursor) {
+                        if let Some(window) = self.window.as_ref() {
+                            window.request_redraw();
+                        }
+                        return;
+                    }
+                    if self.show_key_config {
+                        self.click_key_config(cursor);
+                        if let Some(window) = self.window.as_ref() {
+                            window.request_redraw();
+                        }
+                        return;
+                    }
+                    if self.skill_macro_editor.open {
+                        self.click_skill_macro_editor(cursor);
+                        if let Some(window) = self.window.as_ref() {
+                            window.request_redraw();
+                        }
+                        return;
+                    }
+                    if self.monster_book.open && self.monster_book.search_open {
+                        return;
+                    }
+                    if self.click_channel_switch(cursor) {
+                        if let Some(window) = self.window.as_ref() {
+                            window.request_redraw();
+                        }
+                        return;
+                    }
+                    if self.click_messenger(cursor) {
+                        if let Some(window) = self.window.as_ref() {
+                            window.request_redraw();
+                        }
+                        return;
+                    }
+                    self.messenger_chat_focused = false;
+                    if self.click_minimap(cursor) {
+                        if let Some(window) = self.window.as_ref() {
+                            window.request_redraw();
+                        }
+                        return;
+                    }
                     if self.death_notice {
                         if (464.0..560.0).contains(&cursor.x) && (412.0..448.0).contains(&cursor.y)
                         {
@@ -38649,6 +48064,24 @@ mod native {
                         }
                         return;
                     }
+                    if self.click_monster_book(cursor) {
+                        if let Some(window) = self.window.as_ref() {
+                            window.request_redraw();
+                        }
+                        return;
+                    }
+                    if self.click_party_search(cursor) {
+                        if let Some(window) = self.window.as_ref() {
+                            window.request_redraw();
+                        }
+                        return;
+                    }
+                    if self.click_world_map(cursor) {
+                        if let Some(window) = self.window.as_ref() {
+                            window.request_redraw();
+                        }
+                        return;
+                    }
                     if self.hired_merchant_room.is_some() {
                         if self.show_inventory
                             && self
@@ -38657,10 +48090,10 @@ mod native {
                                 .is_none_or(|room| room.stock_source.is_none())
                             && rect_contains(
                                 SpriteRect {
-                                    x: 618.0,
-                                    y: 128.0,
-                                    width: 390.0,
-                                    height: 512.0,
+                                    x: INVENTORY_PANEL_X,
+                                    y: INVENTORY_PANEL_Y,
+                                    width: INVENTORY_PANEL_WIDTH as f32,
+                                    height: INVENTORY_PANEL_HEIGHT as f32,
                                     blend_mode: BlendMode::Alpha,
                                 },
                                 cursor,
@@ -38684,10 +48117,10 @@ mod native {
                                 .is_none_or(|room| room.pending_item.is_none())
                             && rect_contains(
                                 SpriteRect {
-                                    x: 618.0,
-                                    y: 128.0,
-                                    width: 390.0,
-                                    height: 512.0,
+                                    x: INVENTORY_PANEL_X,
+                                    y: INVENTORY_PANEL_Y,
+                                    width: INVENTORY_PANEL_WIDTH as f32,
+                                    height: INVENTORY_PANEL_HEIGHT as f32,
                                     blend_mode: BlendMode::Alpha,
                                 },
                                 cursor,
@@ -38728,6 +48161,32 @@ mod native {
                         return;
                     }
                     if self.click_whisper_window(cursor) {
+                        return;
+                    }
+                    if self.show_family_tree {
+                        if cursor.x >= 223.0
+                            && cursor.x < 223.0 + FAMILY_TREE_PANEL_WIDTH as f32
+                            && cursor.y >= 191.0
+                            && cursor.y < 191.0 + FAMILY_TREE_PANEL_HEIGHT as f32
+                        {
+                            self.click_family_tree(cursor);
+                        }
+                        if let Some(window) = self.window.as_ref() {
+                            window.request_redraw();
+                        }
+                        return;
+                    }
+                    if self.show_family_panel {
+                        if cursor.x >= 375.0
+                            && cursor.x < 375.0 + FAMILY_PANEL_WIDTH as f32
+                            && cursor.y >= 165.0
+                            && cursor.y < 165.0 + FAMILY_PANEL_HEIGHT as f32
+                        {
+                            self.click_family_panel(cursor);
+                        }
+                        if let Some(window) = self.window.as_ref() {
+                            window.request_redraw();
+                        }
                         return;
                     }
                     if self.guild_bbs.is_some() {
@@ -38777,8 +48236,7 @@ mod native {
                         }
                         return;
                     }
-                    if self.show_quest_log {
-                        self.click_quest_log(cursor);
+                    if self.show_quest_log && self.click_quest_log(cursor) {
                         if let Some(window) = self.window.as_ref() {
                             window.request_redraw();
                         }
@@ -38808,7 +48266,27 @@ mod native {
                     if self.show_inventory && self.begin_inventory_pointer(cursor) {
                         return;
                     }
-                    if self.show_login_fields && self.focus_at(cursor) {
+                    if self.click_native_status_bar(cursor) {
+                        if let Some(window) = self.window.as_ref() {
+                            window.request_redraw();
+                        }
+                        return;
+                    }
+                    if self.click_quickslot(cursor) {
+                        if let Some(window) = self.window.as_ref() {
+                            window.request_redraw();
+                        }
+                        return;
+                    }
+                    // The account field overlaps the left edge of the Login
+                    // button in the legacy layout. Let an explicit button hit
+                    // win so clicks there submit instead of only moving field
+                    // focus.
+                    let login_button_at_cursor = self
+                        .login_buttons
+                        .iter()
+                        .any(|button| rect_contains(button.hit_rect, cursor));
+                    if self.show_login_fields && !login_button_at_cursor && self.focus_at(cursor) {
                         return;
                     }
                     if self.focused_login_button.take().is_some() {
@@ -38824,11 +48302,17 @@ mod native {
                         window.request_redraw();
                     }
                     let action = self
-                        .login_actions
+                        .login_buttons
                         .iter()
-                        .rev()
-                        .find(|hit| rect_contains(hit.rect, cursor))
-                        .map(|hit| hit.action);
+                        .position(|button| rect_contains(button.hit_rect, cursor))
+                        .and_then(|index| self.login_button_action(index))
+                        .or_else(|| {
+                            self.login_actions
+                                .iter()
+                                .rev()
+                                .find(|hit| rect_contains(hit.rect, cursor))
+                                .map(|hit| hit.action)
+                        });
                     if let Some(action) = action {
                         if !self.login_action_enabled(action) {
                             return;
@@ -38843,6 +48327,9 @@ mod native {
                                 self.select_channel(channel_id)
                             }
                             LoginAction::EnterWorld => self.request_characters(),
+                            LoginAction::HighlightCharacter(index) => {
+                                self.click_character_slot(index)
+                            }
                             LoginAction::SelectCharacter(index) => self.select_character(index),
                             LoginAction::DeleteCharacter(index) => self.delete_character(index),
                             LoginAction::PreviousCharacterPage => self.change_character_page(-1),
@@ -38867,6 +48354,7 @@ mod native {
                                 self.cancel_character_creation();
                             }
                             LoginAction::ReturnToWorld => {
+                                self.character_list = None;
                                 self.refresh_world_scene();
                                 self.show_login_fields = false;
                             }
@@ -38903,16 +48391,124 @@ mod native {
                         MouseScrollDelta::LineDelta(_, y) => y,
                         MouseScrollDelta::PixelDelta(position) => position.y as f32,
                     };
+                    if self.show_key_config {
+                        if self.cursor.is_some_and(|cursor| {
+                            rect_contains(
+                                SpriteRect {
+                                    x: KEY_CONFIG_PANEL_X + 14.0,
+                                    y: KEY_CONFIG_PANEL_Y + KEY_CONFIG_ROW_TOP as f32,
+                                    width: KEY_CONFIG_PANEL_WIDTH as f32 - 28.0,
+                                    height: KEY_CONFIG_VISIBLE_ROWS as f32
+                                        * KEY_CONFIG_ROW_HEIGHT as f32,
+                                    blend_mode: BlendMode::Alpha,
+                                },
+                                cursor,
+                            )
+                        }) {
+                            self.scroll_key_config(if amount > 0.0 { -1 } else { 1 });
+                            if let Some(window) = self.window.as_ref() {
+                                window.request_redraw();
+                            }
+                        }
+                        return;
+                    }
+                    if self.skill_macro_editor.open {
+                        if let Some(cursor) = self.cursor {
+                            let local_x = cursor.x - skill_macros::PANEL_X;
+                            let local_y = cursor.y - skill_macros::PANEL_Y;
+                            if skill_macros::skill_list_contains(local_x, local_y) {
+                                self.skill_macro_editor.scroll_skills(
+                                    if amount > 0.0 { -1 } else { 1 },
+                                    self.skill_macro_choices().len(),
+                                );
+                                self.refresh_skill_macro_texture();
+                                if let Some(window) = self.window.as_ref() {
+                                    window.request_redraw();
+                                }
+                            }
+                        }
+                        return;
+                    }
+                    if self
+                        .cursor
+                        .is_some_and(|cursor| self.scroll_world_map_results(cursor, amount))
+                    {
+                        if let Some(window) = self.window.as_ref() {
+                            window.request_redraw();
+                        }
+                        return;
+                    }
+                    if self
+                        .cursor
+                        .is_some_and(|cursor| self.scroll_monster_book_drops(cursor, amount))
+                    {
+                        if let Some(window) = self.window.as_ref() {
+                            window.request_redraw();
+                        }
+                        return;
+                    }
+                    if self.monster_book.search_open {
+                        return;
+                    }
+                    if self.monster_book.open
+                        && self.monster_book.set_effect_open
+                        && self.cursor.is_some_and(|cursor| {
+                            (self.monster_book.x
+                                ..self.monster_book.x + self.monster_book.width as f32)
+                                .contains(&cursor.x)
+                                && (self.monster_book.y
+                                    ..self.monster_book.y + self.monster_book.height as f32)
+                                    .contains(&cursor.y)
+                        })
+                    {
+                        self.monster_book.set_scroll = if amount > 0.0 {
+                            self.monster_book.set_scroll.saturating_sub(1)
+                        } else if amount < 0.0 {
+                            self.monster_book
+                                .set_scroll
+                                .saturating_add(1)
+                                .min(monster_book::set_scroll_max())
+                        } else {
+                            self.monster_book.set_scroll
+                        };
+                        self.refresh_monster_book_texture();
+                        if let Some(window) = self.window.as_ref() {
+                            window.request_redraw();
+                        }
+                        return;
+                    }
+                    if let Some(cursor) = self.cursor
+                        && self.party_search.as_ref().is_some_and(|state| {
+                            (state.x..state.x + party_search::PANEL_WIDTH as f32)
+                                .contains(&cursor.x)
+                                && (state.y..state.y + party_search::PANEL_HEIGHT as f32)
+                                    .contains(&cursor.y)
+                        })
+                    {
+                        let rows = if amount > 0.0 { -1 } else { 1 };
+                        if let Some(state) = self.party_search.as_mut() {
+                            state.scroll_by(rows);
+                        }
+                        self.refresh_party_search_texture();
+                        if let Some(window) = self.window.as_ref() {
+                            window.request_redraw();
+                        }
+                        return;
+                    }
                     if self.hired_merchant_room.is_some() {
                         if let Some(cursor) = self.cursor {
                             if self.show_inventory
-                                && (618.0..1008.0).contains(&cursor.x)
-                                && (194.0..612.0).contains(&cursor.y)
+                                && (INVENTORY_PANEL_X
+                                    ..INVENTORY_PANEL_X + INVENTORY_PANEL_WIDTH as f32)
+                                    .contains(&cursor.x)
+                                && (INVENTORY_PANEL_Y
+                                    ..INVENTORY_PANEL_Y + INVENTORY_PANEL_HEIGHT as f32)
+                                    .contains(&cursor.y)
                             {
                                 if let Some(inventory) = self.inventory.as_ref() {
                                     let maximum = inventory_slot_max(inventory, self.inventory_tab)
-                                        .div_ceil(4)
-                                        .saturating_sub(6);
+                                        .div_ceil(INVENTORY_SLOT_COLUMNS as u16)
+                                        .saturating_sub(INVENTORY_SLOT_ROWS as u16);
                                     self.inventory_scroll_row = if amount > 0.0 {
                                         self.inventory_scroll_row.saturating_sub(1)
                                     } else {
@@ -38930,13 +48526,16 @@ mod native {
                     } else if self.trade_room.is_some() {
                         if let Some(cursor) = self.cursor
                             && self.show_inventory
-                            && (618.0..1008.0).contains(&cursor.x)
-                            && (194.0..612.0).contains(&cursor.y)
+                            && (INVENTORY_PANEL_X..INVENTORY_PANEL_X + INVENTORY_PANEL_WIDTH as f32)
+                                .contains(&cursor.x)
+                            && (INVENTORY_PANEL_Y
+                                ..INVENTORY_PANEL_Y + INVENTORY_PANEL_HEIGHT as f32)
+                                .contains(&cursor.y)
                         {
                             if let Some(inventory) = self.inventory.as_ref() {
                                 let maximum = inventory_slot_max(inventory, self.inventory_tab)
-                                    .div_ceil(4)
-                                    .saturating_sub(6);
+                                    .div_ceil(INVENTORY_SLOT_COLUMNS as u16)
+                                    .saturating_sub(INVENTORY_SLOT_ROWS as u16);
                                 self.inventory_scroll_row = if amount > 0.0 {
                                     self.inventory_scroll_row.saturating_sub(1)
                                 } else {
@@ -38967,6 +48566,25 @@ mod native {
                         }
                         return;
                     }
+                    if self.show_pet_equipment
+                        && self.cursor.is_some_and(|cursor| {
+                            (634.0..1002.0).contains(&cursor.x)
+                                && (348.0..588.0).contains(&cursor.y)
+                        })
+                    {
+                        let scroll = if amount > 0.0 {
+                            -1
+                        } else if amount < 0.0 {
+                            1
+                        } else {
+                            0
+                        };
+                        self.scroll_pet_equipment_by(scroll);
+                        if let Some(window) = self.window.as_ref() {
+                            window.request_redraw();
+                        }
+                        return;
+                    }
                     let scroll_npc_choices = self.npc_dialogue.as_ref().is_some_and(|dialogue| {
                         dialogue.state.message_type == 4
                             && dialogue.selections.len() > 5
@@ -38976,6 +48594,17 @@ mod native {
                     });
                     if scroll_npc_choices {
                         self.move_npc_dialogue_selection(if amount > 0.0 { -1 } else { 1 });
+                        if let Some(window) = self.window.as_ref() {
+                            window.request_redraw();
+                        }
+                    } else if self.npc_dialogue.as_ref().is_some_and(|dialogue| {
+                        dialogue.state.message_type != 4
+                            && dialogue.text_max_scroll > 0
+                            && self
+                                .cursor
+                                .is_some_and(|cursor| rect_contains(dialogue.panel, cursor))
+                    }) {
+                        self.scroll_npc_dialogue_text(if amount > 0.0 { -1 } else { 1 });
                         if let Some(window) = self.window.as_ref() {
                             window.request_redraw();
                         }
@@ -38992,7 +48621,9 @@ mod native {
                         }
                     } else if self.show_quest_log
                         && self.cursor.is_some_and(|cursor| {
-                            (194.0..442.0).contains(&cursor.x) && (192.0..530.0).contains(&cursor.y)
+                            (QUEST_LOG_PANEL_X + 8.0..QUEST_LOG_PANEL_X + 288.0).contains(&cursor.x)
+                                && (QUEST_LOG_PANEL_Y + 50.0..QUEST_LOG_PANEL_Y + 254.0)
+                                    .contains(&cursor.y)
                         })
                     {
                         let count = quest_ids_for_tab(
@@ -39001,7 +48632,7 @@ mod native {
                             self.quest_log_tab,
                         )
                         .len();
-                        let maximum = count.saturating_sub(8);
+                        let maximum = count.saturating_sub(QUEST_LOG_VISIBLE_ROWS);
                         self.quest_log_scroll = if amount > 0.0 {
                             self.quest_log_scroll.saturating_sub(1)
                         } else {
@@ -39059,19 +48690,15 @@ mod native {
                         })
                     {
                         let max_page = self.cash_shop.as_ref().map_or(0, |shop| {
-                            if shop.view == CashShopView::Locker {
-                                shop.locker.len().saturating_sub(1) / 8
-                            } else {
-                                cash_filtered_indices(
-                                    &self.cash_products,
-                                    shop,
-                                    &self.string_archive,
-                                    &mut self.item_name_cache,
-                                )
-                                .len()
-                                .saturating_sub(1)
-                                    / CASH_SHOP_PAGE_SIZE
-                            }
+                            cash_filtered_indices(
+                                &self.cash_products,
+                                shop,
+                                &self.string_archive,
+                                &mut self.item_name_cache,
+                            )
+                            .len()
+                            .saturating_sub(1)
+                                / CASH_SHOP_PAGE_SIZE
                         });
                         if let Some(shop) = self.cash_shop.as_mut() {
                             shop.page = if amount > 0.0 {
@@ -39095,8 +48722,11 @@ mod native {
                         }
                     } else if self.show_inventory
                         && self.cursor.is_some_and(|cursor| {
-                            (618.0..1008.0).contains(&cursor.x)
-                                && (128.0..608.0).contains(&cursor.y)
+                            (INVENTORY_PANEL_X..INVENTORY_PANEL_X + INVENTORY_PANEL_WIDTH as f32)
+                                .contains(&cursor.x)
+                                && (INVENTORY_PANEL_Y
+                                    ..INVENTORY_PANEL_Y + INVENTORY_PANEL_HEIGHT as f32)
+                                    .contains(&cursor.y)
                         })
                     {
                         self.scroll_inventory(amount);
@@ -39106,7 +48736,7 @@ mod native {
                     } else if self.show_skill_book
                         && self.cursor.is_some_and(|cursor| {
                             (586.0..1016.0).contains(&cursor.x)
-                                && (128.0..608.0).contains(&cursor.y)
+                                && (128.0..628.0).contains(&cursor.y)
                         })
                     {
                         let direction = if amount > 0.0 { -1_isize } else { 1 };
@@ -39121,7 +48751,104 @@ mod native {
                         }
                     }
                 }
-                WindowEvent::KeyboardInput { event, .. } => {
+                WindowEvent::KeyboardInput { event: mut event, .. } => {
+                    // Some macOS input paths report the logical Escape key while
+                    // leaving physical_key unidentified. Normalize it once so every
+                    // modal and the gameplay quit handler see the same key.
+                    if matches!(&event.logical_key, Key::Named(NamedKey::Escape)) {
+                        event.physical_key = PhysicalKey::Code(KeyCode::Escape);
+                    }
+                    if event.state == ElementState::Pressed && !event.repeat {
+                        self.show_status_menu = false;
+                    }
+                    // A text event is followed by Ime::Commit on some backends. Keep the
+                    // candidate only until the next keyboard event so a matching commit
+                    // cannot insert ordinary key text twice.
+                    self.login_key_text_for_ime_dedup = None;
+                    self.character_creation_key_text_for_ime_dedup = None;
+                    self.skill_macro_editor.key_text_for_ime_dedup = None;
+                    if let Some(input) = self.family_ui.input.as_mut() {
+                        input.key_text_for_ime_dedup = None;
+                    }
+                    if self.family_ui.input.is_some() || self.family_ui.confirm_leave {
+                        if event.state == ElementState::Pressed {
+                            match event.physical_key {
+                                PhysicalKey::Code(KeyCode::Escape) if !event.repeat => {
+                                    self.family_ui.input = None;
+                                    self.family_ui.confirm_leave = false;
+                                }
+                                PhysicalKey::Code(KeyCode::Enter | KeyCode::NumpadEnter)
+                                    if !event.repeat =>
+                                {
+                                    if self.family_ui.input.is_some() {
+                                        self.submit_family_input();
+                                    } else {
+                                        self.resolve_family_leave(true);
+                                    }
+                                }
+                                PhysicalKey::Code(KeyCode::Backspace)
+                                    if self.family_ui.input.is_some() =>
+                                {
+                                    self.backspace_family_input();
+                                }
+                                _ => {
+                                    if self.family_ui.input.is_some()
+                                        && let Some(text) = event.text.as_deref().filter(|text| {
+                                            text.chars().any(|character| !character.is_control())
+                                        })
+                                    {
+                                        self.edit_family_input(text);
+                                        if let Some(input) = self.family_ui.input.as_mut() {
+                                            input.key_text_for_ime_dedup = Some(text.to_owned());
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        self.refresh_family_texture();
+                        if let Some(window) = self.window.as_ref() {
+                            window.request_redraw();
+                        }
+                        return;
+                    }
+                    if self.skill_macro_editor.open {
+                        self.handle_skill_macro_editor_key(
+                            event.physical_key,
+                            event.state,
+                            event.repeat,
+                            event.text.as_deref(),
+                        );
+                        if let Some(window) = self.window.as_ref() {
+                            window.request_redraw();
+                        }
+                        return;
+                    }
+                    if self.monster_book.open && self.monster_book.search_open {
+                        if event.state == ElementState::Pressed {
+                            match event.physical_key {
+                                PhysicalKey::Code(KeyCode::Escape) if !event.repeat => {
+                                    self.monster_book.search_open = false;
+                                    self.monster_book.search_notice = None;
+                                    self.refresh_monster_book_texture();
+                                }
+                                PhysicalKey::Code(KeyCode::Enter | KeyCode::NumpadEnter)
+                                    if !event.repeat =>
+                                {
+                                    self.submit_monster_book_search();
+                                }
+                                PhysicalKey::Code(KeyCode::Backspace) => {
+                                    self.monster_book.search_query.pop();
+                                    self.monster_book.search_notice = None;
+                                    self.refresh_monster_book_texture();
+                                }
+                                _ => {}
+                            }
+                        }
+                        if let Some(window) = self.window.as_ref() {
+                            window.request_redraw();
+                        }
+                        return;
+                    }
                     if self.death_notice {
                         if event.state == ElementState::Pressed && !event.repeat {
                             match event.physical_key {
@@ -39219,6 +48946,15 @@ mod native {
                                             _ => 1,
                                         };
                                         self.move_npc_dialogue_selection(direction);
+                                    }
+                                    PhysicalKey::Code(KeyCode::PageUp | KeyCode::PageDown)
+                                        if message_type != 4 && !event.repeat =>
+                                    {
+                                        let direction = match event.physical_key {
+                                            PhysicalKey::Code(KeyCode::PageUp) => -1,
+                                            _ => 1,
+                                        };
+                                        self.scroll_npc_dialogue_text(direction * 5);
                                     }
                                     _ => {}
                                 }
@@ -39613,19 +49349,20 @@ mod native {
                                     self.save_settings()
                                 }
                                 PhysicalKey::Code(KeyCode::Tab) => {
-                                    self.settings_selected_slider = match self
-                                        .settings_selected_slider
-                                    {
-                                        AudioSettingSlider::Music => AudioSettingSlider::Effects,
-                                        AudioSettingSlider::Effects => AudioSettingSlider::Music,
-                                    };
+                                    self.settings_selected_slider =
+                                        match self.settings_selected_slider {
+                                            OptionSlider::Music => OptionSlider::Effects,
+                                            OptionSlider::Effects => OptionSlider::HpWarning,
+                                            OptionSlider::HpWarning => OptionSlider::MpWarning,
+                                            OptionSlider::MpWarning => OptionSlider::Music,
+                                        };
                                     self.refresh_settings_texture();
                                 }
                                 PhysicalKey::Code(KeyCode::ArrowLeft | KeyCode::ArrowDown) => {
-                                    self.adjust_selected_audio_setting(-5)
+                                    self.adjust_selected_option_setting(-5)
                                 }
                                 PhysicalKey::Code(KeyCode::ArrowRight | KeyCode::ArrowUp) => {
-                                    self.adjust_selected_audio_setting(5)
+                                    self.adjust_selected_option_setting(5)
                                 }
                                 _ => {}
                             }
@@ -39662,6 +49399,28 @@ mod native {
                         return;
                     }
                     if self.character_creation.is_some() {
+                        let mut creation_name_changed = false;
+                        if event.state == ElementState::Pressed
+                            && !event.repeat
+                            && let Some(text) = event.text.as_deref().filter(|text| {
+                                text.chars().any(|character| character.is_ascii_graphic())
+                            })
+                            && let Some(creation) = self.character_creation.as_mut()
+                            && creation.name_focused
+                            && !creation.awaiting_name
+                            && !creation.awaiting_create
+                        {
+                            self.character_creation_key_text_for_ime_dedup = Some(text.to_owned());
+                            for character in text.chars() {
+                                if character.is_ascii_graphic()
+                                    && creation.name.chars().count() < 12
+                                {
+                                    creation.name.push(character);
+                                }
+                            }
+                            creation.notice = None;
+                            creation_name_changed = true;
+                        }
                         if event.state != ElementState::Pressed || event.repeat {
                             return;
                         }
@@ -39678,11 +49437,16 @@ mod native {
                                     {
                                         creation.name.pop();
                                         creation.notice = None;
+                                        self.reset_login_caret();
                                     }
                                 }
                                 self.refresh_character_creation_scene();
                             }
                             _ => {}
+                        }
+                        if creation_name_changed {
+                            self.reset_login_caret();
+                            self.refresh_character_creation_scene();
                         }
                         if let Some(window) = self.window.as_ref() {
                             window.request_redraw();
@@ -39703,10 +49467,43 @@ mod native {
                                     self.refresh_chat_texture();
                                 }
                                 PhysicalKey::Code(KeyCode::Tab) => {
-                                    if self.cash_item_compose.is_none() {
+                                    let whisper =
+                                        self.cash_item_compose.as_mut().and_then(|compose| {
+                                            if compose.kind.has_whisper_toggle(compose.item_id) {
+                                                compose.whisper = !compose.whisper;
+                                                Some(compose.whisper)
+                                            } else {
+                                                None
+                                            }
+                                        });
+                                    if let Some(enabled) = whisper {
+                                        self.push_chat_line(
+                                            format!(
+                                                "[Megaphone] Whisper icon {}.",
+                                                if enabled { "enabled" } else { "disabled" }
+                                            ),
+                                            [255, 222, 112],
+                                        );
+                                    } else if self.cash_item_compose.is_none() {
                                         self.chat_target = self.chat_target.next();
                                     }
                                     self.refresh_chat_texture();
+                                }
+                                PhysicalKey::Code(KeyCode::KeyI)
+                                    if self.cash_item_compose.as_ref().is_some_and(|compose| {
+                                        compose.awaiting_attachment
+                                            && compose.kind.uses_item_attachment(compose.item_id)
+                                    }) =>
+                                {
+                                    self.show_inventory = !self.show_inventory;
+                                    if self.show_inventory {
+                                        self.inventory_scroll_row = 0;
+                                        self.update_inventory_hover();
+                                        self.refresh_inventory_texture();
+                                    } else {
+                                        self.inventory_drag_source = None;
+                                        self.inventory_hover_slot = None;
+                                    }
                                 }
                                 PhysicalKey::Code(KeyCode::Enter | KeyCode::NumpadEnter) => {
                                     self.submit_chat_message();
@@ -39756,6 +49553,28 @@ mod native {
                             _ => {}
                         }
                     }
+                    if (self.pending_family_join.is_some() || self.pending_family_summon.is_some())
+                        && event.state == ElementState::Pressed
+                        && !event.repeat
+                    {
+                        match event.physical_key {
+                            PhysicalKey::Code(KeyCode::KeyY) => {
+                                self.answer_family_request(true);
+                                if let Some(window) = self.window.as_ref() {
+                                    window.request_redraw();
+                                }
+                                return;
+                            }
+                            PhysicalKey::Code(KeyCode::KeyN) => {
+                                self.answer_family_request(false);
+                                if let Some(window) = self.window.as_ref() {
+                                    window.request_redraw();
+                                }
+                                return;
+                            }
+                            _ => {}
+                        }
+                    }
                     if self.pending_alliance_invite.is_some()
                         && event.state == ElementState::Pressed
                         && !event.repeat
@@ -39777,6 +49596,38 @@ mod native {
                             }
                             _ => {}
                         }
+                    }
+                    if self.world_map.open
+                        && self.world_map.search_focused
+                        && event.state == ElementState::Pressed
+                    {
+                        match event.physical_key {
+                            PhysicalKey::Code(KeyCode::Backspace) => {
+                                self.world_map_key_text_for_ime_dedup = None;
+                                self.backspace_world_map_search();
+                            }
+                            PhysicalKey::Code(KeyCode::Enter | KeyCode::NumpadEnter) => {
+                                self.world_map.search_focused = false;
+                                self.world_map_key_text_for_ime_dedup = None;
+                                self.refresh_world_map_texture();
+                            }
+                            PhysicalKey::Code(KeyCode::Escape) => {
+                                self.world_map_key_text_for_ime_dedup = None;
+                                self.escape_world_map();
+                            }
+                            _ => {
+                                if let Some(text) = event.text.as_deref().filter(|text| {
+                                    text.chars().any(|character| !character.is_control())
+                                }) {
+                                    self.world_map_key_text_for_ime_dedup = Some(text.to_owned());
+                                    self.edit_world_map_search(text);
+                                }
+                            }
+                        }
+                        if let Some(window) = self.window.as_ref() {
+                            window.request_redraw();
+                        }
+                        return;
                     }
                     if self.show_login_fields
                         && event.state == ElementState::Pressed
@@ -39833,7 +49684,71 @@ mod native {
                             return;
                         }
                     }
+                    if self.show_login_fields && event.state == ElementState::Pressed {
+                        if event.physical_key == PhysicalKey::Code(KeyCode::Space)
+                            && self.focused_login_button.is_some()
+                        {
+                            // Space activates a focused login button. Ignore repeats instead
+                            // of letting them turn into a field character.
+                            return;
+                        }
+                        if let Some(text) = event
+                            .text
+                            .as_deref()
+                            .filter(|text| text.chars().any(|character| !character.is_control()))
+                        {
+                            self.login_key_text_for_ime_dedup = Some(text.to_owned());
+                            self.insert_text(text);
+                            if let Some(window) = self.window.as_ref() {
+                                window.request_redraw();
+                            }
+                            return;
+                        }
+                    }
+                    if self.character_list.is_some()
+                        && self.character_creation.is_none()
+                        && !self.show_login_fields
+                        && self.current_field.is_none()
+                    {
+                        if event.state == ElementState::Pressed && !event.repeat {
+                            match event.physical_key {
+                                PhysicalKey::Code(KeyCode::Tab) => {
+                                    self.advance_character_action_focus();
+                                }
+                                PhysicalKey::Code(KeyCode::ArrowLeft | KeyCode::ArrowUp) => {
+                                    self.move_character_selection(-1);
+                                }
+                                PhysicalKey::Code(KeyCode::ArrowRight | KeyCode::ArrowDown) => {
+                                    self.move_character_selection(1);
+                                }
+                                PhysicalKey::Code(KeyCode::PageUp) => {
+                                    self.change_character_page(-1);
+                                }
+                                PhysicalKey::Code(KeyCode::PageDown) => {
+                                    self.change_character_page(1);
+                                }
+                                PhysicalKey::Code(
+                                    KeyCode::Enter | KeyCode::NumpadEnter | KeyCode::Space,
+                                ) => {
+                                    self.activate_focused_character_action();
+                                }
+                                PhysicalKey::Code(KeyCode::Escape) => {
+                                    self.character_list = None;
+                                    self.character_selection_status = None;
+                                    self.refresh_world_scene();
+                                }
+                                _ => {}
+                            }
+                        }
+                        if let Some(window) = self.window.as_ref() {
+                            window.request_redraw();
+                        }
+                        return;
+                    }
                     if self.set_gameplay_key(event.physical_key, event.state, event.repeat) {
+                        if self.quit_requested {
+                            event_loop.exit();
+                        }
                         if let Some(window) = self.window.as_ref() {
                             window.request_redraw();
                         }
@@ -39873,7 +49788,7 @@ mod native {
                                     self.close_npc_shop();
                                 }
                             } else {
-                                self.open_settings();
+                                self.open_quit_confirmation();
                             }
                         }
                         PhysicalKey::Code(KeyCode::Enter | KeyCode::NumpadEnter) => {
@@ -39921,11 +49836,85 @@ mod native {
                     }
                 }
                 WindowEvent::Ime(Ime::Commit(text)) => {
+                    if self.family_ui.input.is_some() {
+                        let duplicate = self
+                            .family_ui
+                            .input
+                            .as_mut()
+                            .and_then(|input| input.key_text_for_ime_dedup.take());
+                        if duplicate.as_deref() == Some(text.as_str()) {
+                            return;
+                        }
+                        self.edit_family_input(&text);
+                        if let Some(window) = self.window.as_ref() {
+                            window.request_redraw();
+                        }
+                        return;
+                    }
+                    if self.skill_macro_editor.open {
+                        if self
+                            .skill_macro_editor
+                            .key_text_for_ime_dedup
+                            .take()
+                            .as_deref()
+                            == Some(text.as_str())
+                        {
+                            return;
+                        }
+                        self.skill_macro_editor.key_text_for_ime_dedup = None;
+                        self.skill_macro_editor.insert_text(&text);
+                        self.refresh_skill_macro_texture();
+                        if let Some(window) = self.window.as_ref() {
+                            window.request_redraw();
+                        }
+                        return;
+                    }
+                    if self.monster_book.open && self.monster_book.search_open {
+                        for character in text.chars() {
+                            if !character.is_control()
+                                && self.monster_book.search_query.chars().count() < 48
+                            {
+                                self.monster_book.search_query.push(character);
+                            }
+                        }
+                        self.monster_book.search_notice = None;
+                        self.refresh_monster_book_texture();
+                        if let Some(window) = self.window.as_ref() {
+                            window.request_redraw();
+                        }
+                        return;
+                    }
+                    if self.world_map.open {
+                        if !self.world_map.search_focused {
+                            return;
+                        }
+                        if self.world_map_key_text_for_ime_dedup.take().as_deref()
+                            == Some(text.as_str())
+                        {
+                            return;
+                        }
+                        self.world_map_key_text_for_ime_dedup = None;
+                        self.edit_world_map_search(&text);
+                        if let Some(window) = self.window.as_ref() {
+                            window.request_redraw();
+                        }
+                        return;
+                    }
+                    if self.show_login_fields
+                        && self.login_key_text_for_ime_dedup.take().as_deref()
+                            == Some(text.as_str())
+                    {
+                        return;
+                    }
+                    self.login_key_text_for_ime_dedup = None;
                     if self.suppress_login_ime_space {
                         self.suppress_login_ime_space = false;
                         if text == " " {
                             return;
                         }
+                    }
+                    if self.handle_messenger_text(&text) {
+                        return;
                     }
                     if self.show_guild_panel
                         && !matches!(&self.guild_panel_mode, GuildPanelMode::Overview)
@@ -40058,19 +50047,35 @@ mod native {
                         self.refresh_inventory_drop_prompt_texture();
                     } else if self.pic_entry.is_some() {
                         self.edit_pic_entry(&text);
-                    } else if let Some(creation) = self.character_creation.as_mut() {
-                        if creation.name_focused
-                            && !creation.awaiting_name
-                            && !creation.awaiting_create
+                    } else if self.character_creation.is_some() {
+                        if self
+                            .character_creation_key_text_for_ime_dedup
+                            .take()
+                            .as_deref()
+                            == Some(text.as_str())
                         {
-                            for character in text.chars() {
-                                if character.is_ascii_graphic()
-                                    && creation.name.chars().count() < 12
-                                {
-                                    creation.name.push(character);
+                            return;
+                        }
+                        self.character_creation_key_text_for_ime_dedup = None;
+                        let mut name_changed = false;
+                        if let Some(creation) = self.character_creation.as_mut() {
+                            if creation.name_focused
+                                && !creation.awaiting_name
+                                && !creation.awaiting_create
+                            {
+                                for character in text.chars() {
+                                    if character.is_ascii_graphic()
+                                        && creation.name.chars().count() < 12
+                                    {
+                                        creation.name.push(character);
+                                        name_changed = true;
+                                    }
                                 }
+                                creation.notice = None;
                             }
-                            creation.notice = None;
+                        }
+                        if name_changed {
+                            self.reset_login_caret();
                         }
                         self.refresh_character_creation_scene();
                     } else if let Some(dialogue) = self.npc_dialogue.as_mut() {
@@ -40116,7 +50121,8 @@ mod native {
                     {
                         let max_chars = self
                             .cash_item_compose
-                            .map_or(MAX_CHAT_MESSAGE_CHARS, |compose| compose.kind.max_chars());
+                            .as_ref()
+                            .map_or(MAX_CHAT_MESSAGE_CHARS, CashItemCompose::input_max_chars);
                         for character in text.chars() {
                             if !character.is_control()
                                 && self.chat_input.chars().count() < max_chars
@@ -40127,7 +50133,16 @@ mod native {
                         self.refresh_chat_texture();
                     } else if self.cash_shop.is_some() {
                         if let Some(shop) = self.cash_shop.as_mut() {
-                            if shop.search_focused {
+                            if shop.coupon_focused {
+                                for character in text.chars() {
+                                    if (character.is_ascii_alphanumeric() || character == '-')
+                                        && shop.coupon_code.chars().count() < 32
+                                    {
+                                        shop.coupon_code.push(character.to_ascii_uppercase());
+                                    }
+                                }
+                                shop.notice = None;
+                            } else if shop.search_focused {
                                 for character in text.chars() {
                                     if !character.is_control() && shop.query.chars().count() < 40 {
                                         shop.query.push(character);
@@ -40154,32 +50169,84 @@ mod native {
                     if let Some(renderer) = self.renderer.as_mut() {
                         renderer.resize(size);
                     }
+                    self.cursor = self.cursor_physical.and_then(|(x, y)| {
+                        Viewport::fit(
+                            LogicalSize::LEGACY_1024X768,
+                            PhysicalSize {
+                                width: size.width,
+                                height: size.height,
+                            },
+                        )
+                        .and_then(|viewport| {
+                            viewport.to_logical(Point {
+                                x: x as f32,
+                                y: y as f32,
+                            })
+                        })
+                    });
+                    self.update_inventory_hover();
                 }
                 WindowEvent::RedrawRequested => {
                     let mut draws = Vec::with_capacity(self.sprite_draws.len() + 128);
-                    let foreground_start = self
-                        .map_scene
-                        .as_ref()
-                        .map(|scene| scene.foreground_start_index);
-                    let mut remote_draws_inserted = false;
+                    let maple_tv_ad_texture = self
+                        .maple_tv_ad_animations
+                        .get(self.maple_tv_ad_index)
+                        .and_then(MapleTvAnimation::current)
+                        .map(|frame| &frame.texture);
+                    let maple_tv_theme_frames = [
+                        self.maple_tv_theme_animations[0].current(),
+                        self.maple_tv_theme_animations[1].current(),
+                    ];
+                    let mut next_map_layer = 0;
+                    let mut map_overlays_inserted = false;
                     for (draw_index, (texture_index, rect)) in self.sprite_draws.iter().enumerate()
                     {
-                        if !remote_draws_inserted && foreground_start == Some(draw_index) {
-                            if let Some(scene) = self.map_scene.as_ref() {
+                        if let Some(scene) = self.map_scene.as_ref() {
+                            while next_map_layer < scene.layer_insert_indices.len()
+                                && scene.layer_insert_indices[next_map_layer] == draw_index
+                            {
                                 append_map_entity_draws(
                                     scene,
                                     &self.active_buffs,
                                     &self.sprite_textures,
                                     &self.solid_textures,
+                                    self.maple_tv_idle_texture.as_ref(),
+                                    maple_tv_ad_texture,
+                                    maple_tv_theme_frames,
+                                    self.maple_tv_text_texture.as_ref(),
+                                    self.maple_tv_broadcast.as_ref(),
                                     self.damage_glyph_texture.as_ref(),
                                     &self.remote_speech_textures,
                                     &self.pet_speech_textures,
                                     self.local_speech_texture.as_ref(),
                                     &self.damage_glyphs,
+                                    MapEntityDrawPass::Layer(next_map_layer as u8),
                                     &mut draws,
                                 );
+                                next_map_layer += 1;
                             }
-                            remote_draws_inserted = true;
+                            if !map_overlays_inserted && scene.foreground_start_index == draw_index
+                            {
+                                append_map_entity_draws(
+                                    scene,
+                                    &self.active_buffs,
+                                    &self.sprite_textures,
+                                    &self.solid_textures,
+                                    self.maple_tv_idle_texture.as_ref(),
+                                    maple_tv_ad_texture,
+                                    maple_tv_theme_frames,
+                                    self.maple_tv_text_texture.as_ref(),
+                                    self.maple_tv_broadcast.as_ref(),
+                                    self.damage_glyph_texture.as_ref(),
+                                    &self.remote_speech_textures,
+                                    &self.pet_speech_textures,
+                                    self.local_speech_texture.as_ref(),
+                                    &self.damage_glyphs,
+                                    MapEntityDrawPass::Overlays,
+                                    &mut draws,
+                                );
+                                map_overlays_inserted = true;
+                            }
                         }
                         if (self.login_animation_draw_indices.contains(&draw_index)
                             && !self
@@ -40214,29 +50281,274 @@ mod native {
                             });
                         }
                     }
-                    if !remote_draws_inserted {
-                        if let Some(scene) = self.map_scene.as_ref() {
+                    if let Some(scene) = self.map_scene.as_ref() {
+                        while next_map_layer < scene.layer_insert_indices.len() {
                             append_map_entity_draws(
                                 scene,
                                 &self.active_buffs,
                                 &self.sprite_textures,
                                 &self.solid_textures,
+                                self.maple_tv_idle_texture.as_ref(),
+                                maple_tv_ad_texture,
+                                maple_tv_theme_frames,
+                                self.maple_tv_text_texture.as_ref(),
+                                self.maple_tv_broadcast.as_ref(),
                                 self.damage_glyph_texture.as_ref(),
                                 &self.remote_speech_textures,
                                 &self.pet_speech_textures,
                                 self.local_speech_texture.as_ref(),
                                 &self.damage_glyphs,
+                                MapEntityDrawPass::Layer(next_map_layer as u8),
+                                &mut draws,
+                            );
+                            next_map_layer += 1;
+                        }
+                        if !map_overlays_inserted {
+                            append_map_entity_draws(
+                                scene,
+                                &self.active_buffs,
+                                &self.sprite_textures,
+                                &self.solid_textures,
+                                self.maple_tv_idle_texture.as_ref(),
+                                maple_tv_ad_texture,
+                                maple_tv_theme_frames,
+                                self.maple_tv_text_texture.as_ref(),
+                                self.maple_tv_broadcast.as_ref(),
+                                self.damage_glyph_texture.as_ref(),
+                                &self.remote_speech_textures,
+                                &self.pet_speech_textures,
+                                self.local_speech_texture.as_ref(),
+                                &self.damage_glyphs,
+                                MapEntityDrawPass::Overlays,
                                 &mut draws,
                             );
                         }
                     }
-                    if let Some(texture) = self.map_hud_texture.as_ref() {
+                    if let Some(scene) = self.map_scene.as_ref() {
+                        append_map_screen_effect_draws(scene, &self.sprite_textures, &mut draws);
+                    }
+                    if self.current_field.is_some()
+                        && let Some(texture) = self.weather_texture.as_ref()
+                    {
+                        self.weather_overlay.append_draws(texture, &mut draws);
+                    }
+                    if self.current_field.is_some()
+                        && let Some(character) = self.active_character.as_ref()
+                        && let Some(white) = self.solid_textures.get(1)
+                    {
+                        let mut warning_stats = character.stats.clone();
+                        let hyperbody_hp = self.active_buff_value(
+                            openstory_protocol::BuffMaskGroup::Second,
+                            0x0000_2000_0000_0000,
+                        );
+                        if hyperbody_hp > 0 {
+                            warning_stats.max_hp = ((i32::from(warning_stats.max_hp)
+                                * (100 + i32::from(hyperbody_hp)))
+                                / 100)
+                                .clamp(0, i32::from(u16::MAX))
+                                as u16;
+                        }
+                        let hyperbody_mp = self.active_buff_value(
+                            openstory_protocol::BuffMaskGroup::Second,
+                            0x0000_4000_0000_0000,
+                        );
+                        if hyperbody_mp > 0 {
+                            warning_stats.max_mp = ((i32::from(warning_stats.max_mp)
+                                * (100 + i32::from(hyperbody_mp)))
+                                / 100)
+                                .clamp(0, i32::from(u16::MAX))
+                                as u16;
+                        }
+                        for (tint, opacity) in [
+                            (
+                                [1.0, 0.0, 0.0],
+                                self.gameplay_settings
+                                    .hp_warning_opacity(warning_stats.hp, warning_stats.max_hp),
+                            ),
+                            (
+                                [0.0, 0.0, 1.0],
+                                self.gameplay_settings
+                                    .mp_warning_opacity(warning_stats.mp, warning_stats.max_mp),
+                            ),
+                        ] {
+                            if let Some(opacity) = opacity {
+                                draws.push(SpriteDraw {
+                                    texture: white,
+                                    x: 0.0,
+                                    y: 0.0,
+                                    width: 1024.0,
+                                    height: 768.0,
+                                    uv: [0.0, 0.0, 1.0, 1.0],
+                                    tint,
+                                    blend_mode: BlendMode::Alpha,
+                                    flip_x: false,
+                                    opacity,
+                                });
+                            }
+                        }
+                    }
+                    if self.current_field.is_some()
+                        && let Some(notice) = self.scrolling_notice.as_ref()
+                    {
+                        if let Some(background) = self.solid_textures.first() {
+                            draws.push(SpriteDraw {
+                                texture: background,
+                                x: 0.0,
+                                y: 0.0,
+                                width: 1024.0,
+                                height: 23.0,
+                                uv: [0.0, 0.0, 1.0, 1.0],
+                                tint: [0.0, 0.0, 0.0],
+                                blend_mode: BlendMode::Alpha,
+                                flip_x: false,
+                                opacity: 0.535,
+                            });
+                        }
+                        draws.push(SpriteDraw {
+                            texture: &notice.texture,
+                            x: notice.x,
+                            y: -1.0,
+                            width: notice.width,
+                            height: 24.0,
+                            uv: [0.0, 0.0, 1.0, 1.0],
+                            tint: [1.0, 1.0, 0.0],
+                            blend_mode: BlendMode::Alpha,
+                            flip_x: false,
+                            opacity: 1.0,
+                        });
+                    }
+                    if self.current_field.is_some() && !self.status_bar_draw_indices.is_empty() {
+                        for (texture_index, rect) in
+                            self.status_bar_draw_indices.iter().take(3).copied()
+                        {
+                            if let Some(texture) = self.sprite_textures.get(texture_index) {
+                                draws.push(SpriteDraw {
+                                    texture,
+                                    x: rect.x,
+                                    y: rect.y,
+                                    width: rect.width,
+                                    height: rect.height,
+                                    uv: [0.0, 0.0, 1.0, 1.0],
+                                    tint: [1.0, 1.0, 1.0],
+                                    blend_mode: rect.blend_mode,
+                                    flip_x: false,
+                                    opacity: 1.0,
+                                });
+                            }
+                        }
+                        if let Some(stats) = self.active_character.as_ref().map(|c| &c.stats) {
+                            for (index, gauge) in self.status_bar_gauges.iter().enumerate() {
+                                let Some(gauge) = gauge else {
+                                    continue;
+                                };
+                                let fraction = match index {
+                                    0 if stats.max_hp > 0 => {
+                                        f32::from(stats.hp.min(stats.max_hp))
+                                            / f32::from(stats.max_hp)
+                                    }
+                                    1 if stats.max_mp > 0 => {
+                                        f32::from(stats.mp.min(stats.max_mp))
+                                            / f32::from(stats.max_mp)
+                                    }
+                                    2 => v83_exp_fraction(stats.level, stats.experience),
+                                    _ => 0.0,
+                                }
+                                .clamp(0.0, 1.0);
+                                if fraction <= 0.0 {
+                                    continue;
+                                }
+                                if let Some(texture) = self.sprite_textures.get(gauge.texture_index)
+                                {
+                                    draws.push(SpriteDraw {
+                                        texture,
+                                        x: gauge.x,
+                                        y: gauge.y,
+                                        width: gauge.width * fraction,
+                                        height: gauge.height,
+                                        uv: [0.0, 0.0, fraction, 1.0],
+                                        tint: [1.0, 1.0, 1.0],
+                                        blend_mode: BlendMode::Alpha,
+                                        flip_x: false,
+                                        opacity: 1.0,
+                                    });
+                                }
+                                if let Some(texture_index) = gauge.start_texture_index
+                                    && let Some(texture) = self.sprite_textures.get(texture_index)
+                                {
+                                    draws.push(SpriteDraw {
+                                        texture,
+                                        x: gauge.x,
+                                        y: gauge.y,
+                                        width: 1.0,
+                                        height: 13.0,
+                                        uv: [0.0, 0.0, 1.0, 1.0],
+                                        tint: [1.0, 1.0, 1.0],
+                                        blend_mode: BlendMode::Alpha,
+                                        flip_x: false,
+                                        opacity: 1.0,
+                                    });
+                                }
+                                if let Some(texture_index) = gauge.end_texture_index
+                                    && let Some(texture) = self.sprite_textures.get(texture_index)
+                                {
+                                    draws.push(SpriteDraw {
+                                        texture,
+                                        x: gauge.x + gauge.width * fraction,
+                                        y: gauge.y,
+                                        width: 2.0,
+                                        height: 13.0,
+                                        uv: [0.0, 0.0, 1.0, 1.0],
+                                        tint: [1.0, 1.0, 1.0],
+                                        blend_mode: BlendMode::Alpha,
+                                        flip_x: false,
+                                        opacity: 1.0,
+                                    });
+                                }
+                            }
+                        }
+                        for (texture_index, rect) in
+                            self.status_bar_draw_indices.iter().skip(3).copied()
+                        {
+                            if let Some(texture) = self.sprite_textures.get(texture_index) {
+                                draws.push(SpriteDraw {
+                                    texture,
+                                    x: rect.x,
+                                    y: rect.y,
+                                    width: rect.width,
+                                    height: rect.height,
+                                    uv: [0.0, 0.0, 1.0, 1.0],
+                                    tint: [1.0, 1.0, 1.0],
+                                    blend_mode: rect.blend_mode,
+                                    flip_x: false,
+                                    opacity: 1.0,
+                                });
+                            }
+                        }
+                        if let Some(texture) = self.map_hud_texture.as_ref() {
+                            draws.push(SpriteDraw {
+                                texture,
+                                x: 0.0,
+                                y: self.status_bar_layout.top(),
+                                width: 1024.0,
+                                height: self.status_bar_layout.height() as f32,
+                                uv: [0.0, 0.0, 1.0, 1.0],
+                                tint: [1.0, 1.0, 1.0],
+                                blend_mode: BlendMode::Alpha,
+                                flip_x: false,
+                                opacity: 1.0,
+                            });
+                        }
+                    }
+                    if self.current_field.is_some()
+                        && self.show_quickslots
+                        && let Some(texture) = self.quickslot_texture.as_ref()
+                    {
                         draws.push(SpriteDraw {
                             texture,
-                            x: 292.0,
-                            y: 682.0,
-                            width: 440.0,
-                            height: 76.0,
+                            x: 865.0,
+                            y: 615.0,
+                            width: 151.0,
+                            height: 80.0,
                             uv: [0.0, 0.0, 1.0, 1.0],
                             tint: [1.0, 1.0, 1.0],
                             blend_mode: BlendMode::Alpha,
@@ -40245,6 +50557,24 @@ mod native {
                         });
                     }
                     if self.current_field.is_some()
+                        && self.show_status_menu
+                        && let Some(texture) = self.status_menu_texture.as_ref()
+                    {
+                        draws.push(SpriteDraw {
+                            texture,
+                            x: STATUS_MENU_X,
+                            y: STATUS_MENU_Y,
+                            width: STATUS_MENU_WIDTH as f32,
+                            height: STATUS_MENU_HEIGHT as f32,
+                            uv: [0.0, 0.0, 1.0, 1.0],
+                            tint: [1.0, 1.0, 1.0],
+                            blend_mode: BlendMode::Alpha,
+                            flip_x: false,
+                            opacity: 1.0,
+                        });
+                    }
+                    if self.current_field.is_some()
+                        && self.chat_open
                         && let Some(texture) = self.chat_texture.as_ref()
                     {
                         draws.push(SpriteDraw {
@@ -40253,6 +50583,26 @@ mod native {
                             y: 506.0,
                             width: CHAT_WIDTH as f32,
                             height: CHAT_HEIGHT as f32,
+                            uv: [0.0, 0.0, 1.0, 1.0],
+                            tint: [1.0, 1.0, 1.0],
+                            blend_mode: BlendMode::Alpha,
+                            flip_x: false,
+                            opacity: 1.0,
+                        });
+                    }
+                    if self.current_field.is_some()
+                        && self
+                            .cash_item_compose
+                            .as_ref()
+                            .is_some_and(|compose| compose.kind.is_item_megaphone(compose.item_id))
+                        && let Some(texture) = self.item_megaphone_texture.as_ref()
+                    {
+                        draws.push(SpriteDraw {
+                            texture,
+                            x: ITEM_MEGAPHONE_X,
+                            y: ITEM_MEGAPHONE_Y,
+                            width: texture.width() as f32,
+                            height: texture.height() as f32,
                             uv: [0.0, 0.0, 1.0, 1.0],
                             tint: [1.0, 1.0, 1.0],
                             blend_mode: BlendMode::Alpha,
@@ -40329,6 +50679,40 @@ mod native {
                         });
                     }
                     if self.current_field.is_some()
+                        && self.show_family_panel
+                        && let Some(texture) = self.family_texture.as_ref()
+                    {
+                        draws.push(SpriteDraw {
+                            texture,
+                            x: 375.0,
+                            y: 165.0,
+                            width: FAMILY_PANEL_WIDTH as f32,
+                            height: FAMILY_PANEL_HEIGHT as f32,
+                            uv: [0.0, 0.0, 1.0, 1.0],
+                            tint: [1.0, 1.0, 1.0],
+                            blend_mode: BlendMode::Alpha,
+                            flip_x: false,
+                            opacity: 1.0,
+                        });
+                    }
+                    if self.current_field.is_some()
+                        && self.show_family_tree
+                        && let Some(texture) = self.family_tree_texture.as_ref()
+                    {
+                        draws.push(SpriteDraw {
+                            texture,
+                            x: 223.0,
+                            y: 191.0,
+                            width: FAMILY_TREE_PANEL_WIDTH as f32,
+                            height: FAMILY_TREE_PANEL_HEIGHT as f32,
+                            uv: [0.0, 0.0, 1.0, 1.0],
+                            tint: [1.0, 1.0, 1.0],
+                            blend_mode: BlendMode::Alpha,
+                            flip_x: false,
+                            opacity: 1.0,
+                        });
+                    }
+                    if self.current_field.is_some()
                         && self.guild_bbs.is_some()
                         && let Some(texture) = self.guild_bbs_texture.as_ref()
                     {
@@ -40349,10 +50733,10 @@ mod native {
                         if let Some(texture) = self.inventory_texture.as_ref() {
                             draws.push(SpriteDraw {
                                 texture,
-                                x: 618.0,
-                                y: 128.0,
-                                width: 390.0,
-                                height: 512.0,
+                                x: INVENTORY_PANEL_X,
+                                y: INVENTORY_PANEL_Y,
+                                width: INVENTORY_PANEL_WIDTH as f32,
+                                height: INVENTORY_PANEL_HEIGHT as f32,
                                 uv: [0.0, 0.0, 1.0, 1.0],
                                 tint: [1.0, 1.0, 1.0],
                                 blend_mode: BlendMode::Alpha,
@@ -40384,7 +50768,7 @@ mod native {
                                 x: 586.0,
                                 y: 128.0,
                                 width: 430.0,
-                                height: 480.0,
+                                height: 500.0,
                                 uv: [0.0, 0.0, 1.0, 1.0],
                                 tint: [1.0, 1.0, 1.0],
                                 blend_mode: BlendMode::Alpha,
@@ -40397,10 +50781,10 @@ mod native {
                         if let Some(texture) = self.quest_log_texture.as_ref() {
                             draws.push(SpriteDraw {
                                 texture,
-                                x: 180.0,
-                                y: 110.0,
-                                width: 664.0,
-                                height: 548.0,
+                                x: QUEST_LOG_PANEL_X,
+                                y: QUEST_LOG_PANEL_Y,
+                                width: QUEST_LOG_PANEL_WIDTH as f32,
+                                height: QUEST_LOG_PANEL_HEIGHT as f32,
                                 uv: [0.0, 0.0, 1.0, 1.0],
                                 tint: [1.0, 1.0, 1.0],
                                 blend_mode: BlendMode::Alpha,
@@ -40417,6 +50801,22 @@ mod native {
                                 y: STATUS_PANEL_Y,
                                 width: STATUS_PANEL_WIDTH as f32,
                                 height: STATUS_PANEL_HEIGHT as f32,
+                                uv: [0.0, 0.0, 1.0, 1.0],
+                                tint: [1.0, 1.0, 1.0],
+                                blend_mode: BlendMode::Alpha,
+                                flip_x: false,
+                                opacity: 1.0,
+                            });
+                        }
+                    }
+                    if self.show_key_config {
+                        if let Some(texture) = self.key_config_texture.as_ref() {
+                            draws.push(SpriteDraw {
+                                texture,
+                                x: KEY_CONFIG_PANEL_X,
+                                y: KEY_CONFIG_PANEL_Y,
+                                width: KEY_CONFIG_PANEL_WIDTH as f32,
+                                height: KEY_CONFIG_PANEL_HEIGHT as f32,
                                 uv: [0.0, 0.0, 1.0, 1.0],
                                 tint: [1.0, 1.0, 1.0],
                                 blend_mode: BlendMode::Alpha,
@@ -40561,10 +50961,10 @@ mod native {
                     {
                         draws.push(SpriteDraw {
                             texture,
-                            x: 618.0,
-                            y: 128.0,
-                            width: 390.0,
-                            height: 512.0,
+                            x: INVENTORY_PANEL_X,
+                            y: INVENTORY_PANEL_Y,
+                            width: INVENTORY_PANEL_WIDTH as f32,
+                            height: INVENTORY_PANEL_HEIGHT as f32,
                             uv: [0.0, 0.0, 1.0, 1.0],
                             tint: [1.0, 1.0, 1.0],
                             blend_mode: BlendMode::Alpha,
@@ -40594,10 +50994,10 @@ mod native {
                     {
                         draws.push(SpriteDraw {
                             texture,
-                            x: 618.0,
-                            y: 128.0,
-                            width: 390.0,
-                            height: 512.0,
+                            x: INVENTORY_PANEL_X,
+                            y: INVENTORY_PANEL_Y,
+                            width: INVENTORY_PANEL_WIDTH as f32,
+                            height: INVENTORY_PANEL_HEIGHT as f32,
                             uv: [0.0, 0.0, 1.0, 1.0],
                             tint: [1.0, 1.0, 1.0],
                             blend_mode: BlendMode::Alpha,
@@ -40768,6 +51168,182 @@ mod native {
                             });
                         }
                     }
+                    if self.world_map.open
+                        && let Some(texture) = self.world_map.texture.as_ref()
+                    {
+                        draws.push(SpriteDraw {
+                            texture,
+                            x: self.world_map.x,
+                            y: self.world_map.y,
+                            width: self.world_map.width as f32,
+                            height: self.world_map.height as f32,
+                            uv: [0.0, 0.0, 1.0, 1.0],
+                            tint: [1.0, 1.0, 1.0],
+                            blend_mode: BlendMode::Alpha,
+                            flip_x: false,
+                            opacity: 1.0,
+                        });
+                    }
+                    if let Some(state) = self.party_search.as_ref()
+                        && let Some(texture) = self.party_search_texture.as_ref()
+                    {
+                        draws.push(SpriteDraw {
+                            texture,
+                            x: state.x,
+                            y: state.y,
+                            width: party_search::PANEL_WIDTH as f32,
+                            height: party_search::PANEL_HEIGHT as f32,
+                            uv: [0.0, 0.0, 1.0, 1.0],
+                            tint: [1.0, 1.0, 1.0],
+                            blend_mode: BlendMode::Alpha,
+                            flip_x: false,
+                            opacity: 1.0,
+                        });
+                    }
+                    if self.monster_book.open
+                        && let Some(texture) = self.monster_book.texture.as_ref()
+                    {
+                        draws.push(SpriteDraw {
+                            texture,
+                            x: self.monster_book.x,
+                            y: self.monster_book.y,
+                            width: self.monster_book.width as f32,
+                            height: self.monster_book.height as f32,
+                            uv: [0.0, 0.0, 1.0, 1.0],
+                            tint: [1.0, 1.0, 1.0],
+                            blend_mode: BlendMode::Alpha,
+                            flip_x: false,
+                            opacity: 1.0,
+                        });
+                    }
+                    if self.monster_book.open
+                        && let Some(sprite) = self.monster_book.current_detail_animation_draw()
+                        && let Some(texture) = self.monster_book_animation_texture.as_ref()
+                    {
+                        draws.push(SpriteDraw {
+                            texture,
+                            x: sprite.x,
+                            y: sprite.y,
+                            width: sprite.width,
+                            height: sprite.height,
+                            uv: [0.0, 0.0, 1.0, 1.0],
+                            tint: [1.0, 1.0, 1.0],
+                            blend_mode: BlendMode::Alpha,
+                            flip_x: false,
+                            opacity: sprite.opacity,
+                        });
+                    }
+                    if let (Some(texture), Some(bounds)) =
+                        (self.minimap_texture.as_ref(), self.minimap_bounds)
+                    {
+                        draws.push(SpriteDraw {
+                            texture,
+                            x: bounds.x,
+                            y: bounds.y,
+                            width: bounds.width,
+                            height: bounds.height,
+                            uv: [0.0, 0.0, 1.0, 1.0],
+                            tint: [1.0, 1.0, 1.0],
+                            blend_mode: BlendMode::Alpha,
+                            flip_x: false,
+                            opacity: 1.0,
+                        });
+                    }
+                    if self.channel_switch_open
+                        && let Some(texture) = self.channel_switch_texture.as_ref()
+                    {
+                        draws.push(SpriteDraw {
+                            texture,
+                            x: channel_switch::DEFAULT_X,
+                            y: channel_switch::DEFAULT_Y,
+                            width: channel_switch::PANEL_WIDTH as f32,
+                            height: channel_switch::PANEL_HEIGHT as f32,
+                            uv: [0.0, 0.0, 1.0, 1.0],
+                            tint: [1.0, 1.0, 1.0],
+                            blend_mode: BlendMode::Alpha,
+                            flip_x: false,
+                            opacity: 1.0,
+                        });
+                    }
+                    if let Some(state) = self.messenger.as_ref()
+                        && let Some(texture) = self.messenger_texture.as_ref()
+                        && let Some(bounds) = self.messenger_bounds
+                    {
+                        draws.push(SpriteDraw {
+                            texture,
+                            x: state.x,
+                            y: state.y,
+                            width: bounds.width,
+                            height: bounds.height,
+                            uv: [0.0, 0.0, 1.0, 1.0],
+                            tint: [1.0, 1.0, 1.0],
+                            blend_mode: BlendMode::Alpha,
+                            flip_x: false,
+                            opacity: 1.0,
+                        });
+                    }
+                    if self.skill_macro_editor.open {
+                        if let Some(black) = self.solid_textures.first() {
+                            draws.push(SpriteDraw {
+                                texture: black,
+                                x: 0.0,
+                                y: 0.0,
+                                width: 1024.0,
+                                height: 768.0,
+                                uv: [0.0, 0.0, 1.0, 1.0],
+                                tint: [0.0, 0.0, 0.0],
+                                blend_mode: BlendMode::Alpha,
+                                flip_x: false,
+                                opacity: 0.48,
+                            });
+                        }
+                        if let Some(texture) = self.skill_macro_texture.as_ref() {
+                            draws.push(SpriteDraw {
+                                texture,
+                                x: skill_macros::PANEL_X,
+                                y: skill_macros::PANEL_Y,
+                                width: skill_macros::PANEL_WIDTH as f32,
+                                height: skill_macros::PANEL_HEIGHT as f32,
+                                uv: [0.0, 0.0, 1.0, 1.0],
+                                tint: [1.0, 1.0, 1.0],
+                                blend_mode: BlendMode::Alpha,
+                                flip_x: false,
+                                opacity: 1.0,
+                            });
+                        }
+                    }
+                    if self.quit_confirmation {
+                        if let Some(black) = self.solid_textures.first() {
+                            draws.push(SpriteDraw {
+                                texture: black,
+                                x: 0.0,
+                                y: 0.0,
+                                width: 1024.0,
+                                height: 768.0,
+                                uv: [0.0, 0.0, 1.0, 1.0],
+                                tint: [0.0, 0.0, 0.0],
+                                blend_mode: BlendMode::Alpha,
+                                flip_x: false,
+                                opacity: 0.52,
+                            });
+                        }
+                        for (texture_index, rect) in self.quit_confirmation_draws.iter().copied() {
+                            if let Some(texture) = self.sprite_textures.get(texture_index) {
+                                draws.push(SpriteDraw {
+                                    texture,
+                                    x: rect.x,
+                                    y: rect.y,
+                                    width: rect.width,
+                                    height: rect.height,
+                                    uv: [0.0, 0.0, 1.0, 1.0],
+                                    tint: [1.0, 1.0, 1.0],
+                                    blend_mode: rect.blend_mode,
+                                    flip_x: false,
+                                    opacity: 1.0,
+                                });
+                            }
+                        }
+                    }
                     if let Some(renderer) = self.renderer.as_mut() {
                         let result = renderer.render_sprites(&draws);
                         if let Err(error) = result {
@@ -40788,13 +51364,66 @@ mod native {
                 self.debug_event_loop_logged = true;
             }
             self.process_network_events();
+            if self.world_map.open
+                && self.current_field.map(|(map_id, _)| map_id) != self.world_map.map_id
+            {
+                self.refresh_world_map_texture();
+                if let Some(window) = self.window.as_ref() {
+                    window.request_redraw();
+                }
+            }
             let now = Instant::now();
+            if now >= self.next_login_caret_toggle {
+                self.next_login_caret_toggle = now + LOGIN_CARET_BLINK_INTERVAL;
+                let login_caret_active =
+                    self.show_login_fields && self.focused_login_button.is_none();
+                let creation_caret_active =
+                    self.character_creation.as_ref().is_some_and(|creation| {
+                        creation.name_focused
+                            && !creation.awaiting_name
+                            && !creation.awaiting_create
+                    });
+                let item_megaphone_caret_active = self
+                    .cash_item_compose
+                    .as_ref()
+                    .is_some_and(|compose| compose.kind.is_item_megaphone(compose.item_id));
+                if login_caret_active || creation_caret_active || item_megaphone_caret_active {
+                    self.login_caret_visible = !self.login_caret_visible;
+                    if login_caret_active {
+                        self.refresh_field_texture(self.focused_field);
+                    }
+                    if creation_caret_active {
+                        self.refresh_character_creation_scene();
+                    }
+                    if item_megaphone_caret_active {
+                        self.refresh_chat_texture();
+                    }
+                    if let Some(window) = self.window.as_ref() {
+                        window.request_redraw();
+                    }
+                }
+            }
+            self.expire_maple_tv_broadcast(now);
             self.expire_character_buffs(now);
             let elapsed = now.saturating_duration_since(self.last_simulation_update);
             self.last_simulation_update = now;
+            self.advance_maple_tv_animations(elapsed);
             self.advance_npc_dialogue_text(elapsed);
             self.advance_login_animations(elapsed);
+            if self.monster_book.open
+                && !self.monster_book.search_open
+                && self
+                    .monster_book
+                    .advance_detail_animation(elapsed.as_millis().min(1_000) as u64)
+            {
+                self.refresh_monster_book_animation_texture();
+            }
             self.update_map_simulation(elapsed);
+            self.advance_skill_macro();
+            if now >= self.next_minimap_refresh {
+                self.refresh_minimap_texture();
+                self.next_minimap_refresh = now + Duration::from_millis(100);
+            }
             if now >= self.next_frame {
                 if let Some(window) = self.window.as_ref() {
                     window.request_redraw();

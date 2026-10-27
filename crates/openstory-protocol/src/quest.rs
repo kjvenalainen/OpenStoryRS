@@ -35,6 +35,27 @@ pub enum QuestUpdate {
     Completed { id: i16, timestamp: i64 },
 }
 
+/// A server-reported reason a quest action could not be completed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QuestActionFailure {
+    RequirementsNotMet { quest_id: i16 },
+    NotEnoughMesos,
+    ItemEquipped,
+    MissingRequiredItem,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QuestTimer {
+    pub quest_id: i16,
+    pub time_ms: i32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum QuestTimerUpdate {
+    Set { timers: Vec<QuestTimer> },
+    Lifted { position: i16, quest_id: i16 },
+}
+
 impl QuestLog {
     pub fn apply(&mut self, update: QuestUpdate) {
         match update {
@@ -138,6 +159,48 @@ pub fn parse_expired_quest(bytes: &[u8]) -> Result<Option<i16>, PacketError> {
     } else {
         Ok(None)
     }
+}
+
+/// Parses `UPDATE_QUEST_INFO` failure modes that explain why a quest action failed.
+/// Mode `0x0A` includes a quest ID; modes `0x0B`, `0x0D`, and `0x0E` have no payload.
+pub fn parse_quest_action_failure(bytes: &[u8]) -> Result<Option<QuestActionFailure>, PacketError> {
+    let mut packet = PacketReader::new(bytes);
+    expect_opcode(&mut packet, OPCODE_UPDATE_QUEST_INFO)?;
+    let failure = match packet.read_u8()? {
+        0x0a => Some(QuestActionFailure::RequirementsNotMet {
+            quest_id: packet.read_i16()?,
+        }),
+        0x0b => Some(QuestActionFailure::NotEnoughMesos),
+        0x0d => Some(QuestActionFailure::ItemEquipped),
+        0x0e => Some(QuestActionFailure::MissingRequiredItem),
+        _ => None,
+    };
+    Ok(failure)
+}
+
+/// Parses timed-quest variants of `UPDATE_QUEST_INFO` (modes 6 and 7).
+pub fn parse_quest_timer_update(bytes: &[u8]) -> Result<Option<QuestTimerUpdate>, PacketError> {
+    let mut packet = PacketReader::new(bytes);
+    expect_opcode(&mut packet, OPCODE_UPDATE_QUEST_INFO)?;
+    let update = match packet.read_u8()? {
+        6 => {
+            let count = read_count(&mut packet)?;
+            let mut timers = Vec::with_capacity(count);
+            for _ in 0..count {
+                timers.push(QuestTimer {
+                    quest_id: packet.read_i16()?,
+                    time_ms: packet.read_i32()?,
+                });
+            }
+            Some(QuestTimerUpdate::Set { timers })
+        }
+        7 => Some(QuestTimerUpdate::Lifted {
+            position: packet.read_i16()?,
+            quest_id: packet.read_i16()?,
+        }),
+        _ => None,
+    };
+    Ok(update)
 }
 
 pub fn start_quest_packet(id: i16, npc_id: i32, scripted: bool) -> Vec<u8> {

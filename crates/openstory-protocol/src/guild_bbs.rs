@@ -120,7 +120,9 @@ pub fn parse_guild_bbs_packet(bytes: &[u8]) -> Result<GuildBbsEvent, PacketError
 pub fn guild_bbs_list_packet(page: i32) -> Vec<u8> {
     let mut packet = PacketWriter::new(OPCODE_BBS_OPERATION);
     packet.write_u8(2);
-    packet.write_i32(page.max(0));
+    // Cosmic multiplies this page number by ten before querying the result
+    // set. Keep that server-side multiplication within signed i32 range.
+    packet.write_i32(page.clamp(0, i32::MAX / MAX_THREADS_PER_PAGE as i32));
     packet.into_bytes()
 }
 

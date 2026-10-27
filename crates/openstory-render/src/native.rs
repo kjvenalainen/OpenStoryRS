@@ -168,9 +168,9 @@ pub struct GpuRenderer {
     sampler: wgpu::Sampler,
     sprite_pipeline_alpha: wgpu::RenderPipeline,
     sprite_pipeline_additive: wgpu::RenderPipeline,
-    vertex_buffer: wgpu::Buffer,
-    vertex_buffer_capacity: u64,
-    vertices: Vec<[f32; 8]>,
+    instance_buffer: wgpu::Buffer,
+    instance_buffer_capacity: u64,
+    instances: Vec<[f32; 12]>,
     draw_ranges: Vec<(std::ops::Range<u32>, usize)>,
 }
 
@@ -272,10 +272,10 @@ impl GpuRenderer {
             },
             "openstory-sprite-additive-pipeline",
         );
-        let vertex_buffer_capacity = 16;
-        let vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("openstory-sprite-vertices"),
-            size: vertex_buffer_capacity,
+        let instance_buffer_capacity = 16;
+        let instance_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("openstory-sprite-instances"),
+            size: instance_buffer_capacity,
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -292,9 +292,9 @@ impl GpuRenderer {
             sampler,
             sprite_pipeline_alpha,
             sprite_pipeline_additive,
-            vertex_buffer,
-            vertex_buffer_capacity,
-            vertices: Vec::with_capacity(256 * 6),
+            instance_buffer,
+            instance_buffer_capacity,
+            instances: Vec::with_capacity(256),
             draw_ranges: Vec::with_capacity(256),
         })
     }
@@ -411,6 +411,15 @@ impl GpuRenderer {
                 standalone.push(index);
             }
         }
+        // Shelf packing wastes less vertical space when tall images are placed first.
+        // The returned texture list is still indexed in source order, so draw order is
+        // independent of this upload-time packing order.
+        order.sort_by(|left, right| {
+            images[*right]
+                .height
+                .cmp(&images[*left].height)
+                .then_with(|| images[*right].width.cmp(&images[*left].width))
+        });
         let mut pages = Vec::<AtlasPage>::new();
         for image_index in order {
             let image = images[image_index];
@@ -560,7 +569,29 @@ impl GpuRenderer {
             return Ok(());
         };
 
-        self.vertices.clear();
+        // Do not traverse a potentially large map scene or upload its instance
+        // buffer when the surface cannot present this frame (for example, while
+        // the window is occluded or the drawable is timing out).
+        let mut reconfigured = false;
+        let (frame, suboptimal) = loop {
+            match self.surface.get_current_texture() {
+                CurrentSurfaceTexture::Success(frame) => break (frame, false),
+                CurrentSurfaceTexture::Suboptimal(frame) => break (frame, true),
+                CurrentSurfaceTexture::Lost | CurrentSurfaceTexture::Outdated if !reconfigured => {
+                    self.surface.configure(&self.device, &self.config);
+                    reconfigured = true;
+                }
+                CurrentSurfaceTexture::Lost | CurrentSurfaceTexture::Outdated => return Ok(()),
+                CurrentSurfaceTexture::Timeout | CurrentSurfaceTexture::Occluded => return Ok(()),
+                CurrentSurfaceTexture::Validation => {
+                    return Err(RendererError::SurfaceFrame(
+                        "surface validation failed while acquiring a frame",
+                    ));
+                }
+            }
+        };
+
+        self.instances.clear();
         self.draw_ranges.clear();
         for (sprite_index, sprite) in sprites.iter().enumerate() {
             if !sprite.x.is_finite()
@@ -606,22 +637,10 @@ impl GpuRenderer {
             } else {
                 (u_min, u_max)
             };
-            let start = self.vertices.len() as u32;
-            self.vertices.extend_from_slice(&[
-                [left, top, left_u, v_min, opacity, tint[0], tint[1], tint[2]],
-                [
-                    left, bottom, left_u, v_max, opacity, tint[0], tint[1], tint[2],
-                ],
-                [
-                    right, bottom, right_u, v_max, opacity, tint[0], tint[1], tint[2],
-                ],
-                [left, top, left_u, v_min, opacity, tint[0], tint[1], tint[2]],
-                [
-                    right, bottom, right_u, v_max, opacity, tint[0], tint[1], tint[2],
-                ],
-                [
-                    right, top, right_u, v_min, opacity, tint[0], tint[1], tint[2],
-                ],
+            let start = self.instances.len() as u32;
+            self.instances.push([
+                left, top, right, bottom, left_u, v_min, right_u, v_max, opacity, tint[0], tint[1],
+                tint[2],
             ]);
             let shares_batch_with_previous =
                 self.draw_ranges.last().is_some_and(|(_, previous_sprite)| {
@@ -634,43 +653,28 @@ impl GpuRenderer {
                     .last_mut()
                     .expect("last draw range was checked")
                     .0
-                    .end = start + 6;
+                    .end = start + 1;
             } else {
-                self.draw_ranges.push((start..start + 6, sprite_index));
+                self.draw_ranges.push((start..start + 1, sprite_index));
             }
         }
 
-        let vertex_bytes = cast_slice(&self.vertices);
-        let needed = vertex_bytes.len().max(16) as u64;
-        if needed > self.vertex_buffer_capacity {
-            self.vertex_buffer_capacity = needed.next_power_of_two();
-            self.vertex_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("openstory-sprite-vertices"),
-                size: self.vertex_buffer_capacity,
+        let instance_bytes = cast_slice(&self.instances);
+        let needed = instance_bytes.len().max(16) as u64;
+        if needed > self.instance_buffer_capacity {
+            self.instance_buffer_capacity = needed.next_power_of_two();
+            self.instance_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("openstory-sprite-instances"),
+                size: self.instance_buffer_capacity,
                 usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             });
         }
-        if !vertex_bytes.is_empty() {
+        if !instance_bytes.is_empty() {
             self.queue
-                .write_buffer(&self.vertex_buffer, 0, vertex_bytes);
+                .write_buffer(&self.instance_buffer, 0, instance_bytes);
         }
 
-        let acquired = match self.surface.get_current_texture() {
-            CurrentSurfaceTexture::Success(frame) => (frame, false),
-            CurrentSurfaceTexture::Suboptimal(frame) => (frame, true),
-            CurrentSurfaceTexture::Lost | CurrentSurfaceTexture::Outdated => {
-                self.surface.configure(&self.device, &self.config);
-                return Ok(());
-            }
-            CurrentSurfaceTexture::Timeout | CurrentSurfaceTexture::Occluded => return Ok(()),
-            CurrentSurfaceTexture::Validation => {
-                return Err(RendererError::SurfaceFrame(
-                    "surface validation failed while acquiring a frame",
-                ));
-            }
-        };
-        let (frame, suboptimal) = acquired;
         let view = frame
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
@@ -711,7 +715,7 @@ impl GpuRenderer {
                 1.0,
             );
             if !self.draw_ranges.is_empty() {
-                pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+                pass.set_vertex_buffer(0, self.instance_buffer.slice(..));
                 for (range, sprite_index) in &self.draw_ranges {
                     let pipeline = match sprites[*sprite_index].blend_mode {
                         BlendMode::Alpha => &self.sprite_pipeline_alpha,
@@ -719,7 +723,7 @@ impl GpuRenderer {
                     };
                     pass.set_pipeline(pipeline);
                     pass.set_bind_group(0, &sprites[*sprite_index].texture.inner.bind_group, &[]);
-                    pass.draw(range.clone(), 0..1);
+                    pass.draw(0..6, range.clone());
                 }
             }
         }
@@ -747,10 +751,10 @@ fn create_sprite_pipeline(
     label: &'static str,
 ) -> wgpu::RenderPipeline {
     const ATTRIBUTES: [wgpu::VertexAttribute; 4] =
-        wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Float32, 3 => Float32x3];
+        wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4, 2 => Float32, 3 => Float32x3];
     let vertex_layout = wgpu::VertexBufferLayout {
-        array_stride: std::mem::size_of::<[f32; 8]>() as wgpu::BufferAddress,
-        step_mode: wgpu::VertexStepMode::Vertex,
+        array_stride: std::mem::size_of::<[f32; 12]>() as wgpu::BufferAddress,
+        step_mode: wgpu::VertexStepMode::Instance,
         attributes: &ATTRIBUTES,
     };
     let color_targets = [Some(wgpu::ColorTargetState {

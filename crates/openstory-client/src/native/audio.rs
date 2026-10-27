@@ -22,9 +22,15 @@ pub(super) struct AudioEngine {
     music_volume: f32,
     sound_volume: f32,
     listener: (i16, i16),
-    audio_cache: HashMap<String, Arc<[u8]>>,
-    audio_cache_order: VecDeque<String>,
+    audio_cache: HashMap<String, CachedAudio>,
+    audio_cache_access_order: VecDeque<(u64, String)>,
     cached_audio_bytes: usize,
+    audio_cache_access_clock: u64,
+}
+
+struct CachedAudio {
+    payload: Arc<[u8]>,
+    last_access: u64,
 }
 
 impl AudioEngine {
@@ -44,8 +50,9 @@ impl AudioEngine {
             sound_volume: 1.0,
             listener: (0, 0),
             audio_cache: HashMap::new(),
-            audio_cache_order: VecDeque::new(),
+            audio_cache_access_order: VecDeque::new(),
             cached_audio_bytes: 0,
+            audio_cache_access_clock: 0,
         };
         engine.set_music_volume(configured_volume("OPENSTORY_BGM_VOLUME"));
         engine.set_sound_volume(configured_volume("OPENSTORY_SFX_VOLUME"));
@@ -122,6 +129,32 @@ impl AudioEngine {
         player.detach();
     }
 
+    pub(super) fn play_field_effect_sound(&mut self, archive: &NxArchive, path: &str) {
+        let Some((category, name)) = path.split_once('/') else {
+            return;
+        };
+        let mut candidates = vec![
+            format!("Field.img/{category}/{name}"),
+            format!("{category}.img/{name}"),
+        ];
+        if category == "Party1" {
+            candidates.push(format!(
+                "Game.img/{}",
+                if name == "Clear" {
+                    "QuestClear"
+                } else {
+                    "QuestAlert"
+                }
+            ));
+        }
+        for candidate in candidates {
+            if matches!(resolve_relaxed(archive, &candidate), Ok(Some(_))) {
+                self.play_ui_sound(archive, &candidate);
+                return;
+            }
+        }
+    }
+
     pub(super) fn play_world_sound(
         &mut self,
         archive: &NxArchive,
@@ -188,8 +221,16 @@ impl AudioEngine {
         path: &str,
     ) -> Result<Option<Arc<[u8]>>, String> {
         let key = path.to_lowercase();
-        if let Some(payload) = self.audio_cache.get(&key) {
-            return Ok(Some(payload.clone()));
+        if self.audio_cache.contains_key(&key) {
+            let last_access = self.next_audio_cache_access();
+            if let Some(cached) = self.audio_cache.get_mut(&key) {
+                cached.last_access = last_access;
+                let payload = cached.payload.clone();
+                self.audio_cache_access_order
+                    .push_back((last_access, key.clone()));
+                self.compact_audio_cache_access_order();
+                return Ok(Some(payload));
+            }
         }
         let Some(node) = resolve_relaxed(archive, path)? else {
             return Ok(None);
@@ -205,11 +246,20 @@ impl AudioEngine {
             while self.audio_cache.len() >= MAX_AUDIO_CACHE_ENTRIES
                 || self.cached_audio_bytes.saturating_add(payload.len()) > MAX_AUDIO_CACHE_BYTES
             {
-                let Some(evicted_key) = self.audio_cache_order.pop_front() else {
+                let Some((access, evicted_key)) = self.audio_cache_access_order.pop_front() else {
                     break;
                 };
+                if !self
+                    .audio_cache
+                    .get(&evicted_key)
+                    .is_some_and(|cached| cached.last_access == access)
+                {
+                    continue;
+                }
                 if let Some(evicted) = self.audio_cache.remove(&evicted_key) {
-                    self.cached_audio_bytes = self.cached_audio_bytes.saturating_sub(evicted.len());
+                    self.cached_audio_bytes = self
+                        .cached_audio_bytes
+                        .saturating_sub(evicted.payload.len());
                 }
             }
         }
@@ -217,11 +267,53 @@ impl AudioEngine {
             && self.audio_cache.len() < MAX_AUDIO_CACHE_ENTRIES
             && self.cached_audio_bytes.saturating_add(payload.len()) <= MAX_AUDIO_CACHE_BYTES
         {
+            let last_access = self.next_audio_cache_access();
             self.cached_audio_bytes += payload.len();
-            self.audio_cache_order.push_back(key.clone());
-            self.audio_cache.insert(key, payload.clone());
+            self.audio_cache.insert(
+                key.clone(),
+                CachedAudio {
+                    payload: payload.clone(),
+                    last_access,
+                },
+            );
+            self.audio_cache_access_order.push_back((last_access, key));
+            self.compact_audio_cache_access_order();
         }
         Ok(Some(payload))
+    }
+
+    fn compact_audio_cache_access_order(&mut self) {
+        if self.audio_cache_access_order.len() <= MAX_AUDIO_CACHE_ENTRIES.saturating_mul(2) {
+            return;
+        }
+        self.audio_cache_access_order.retain(|(access, key)| {
+            self.audio_cache
+                .get(key)
+                .is_some_and(|cached| cached.last_access == *access)
+        });
+    }
+
+    fn next_audio_cache_access(&mut self) -> u64 {
+        if self.audio_cache_access_clock == u64::MAX {
+            // Rebase while retaining the order of the least to most recent entries.
+            let mut recency: Vec<_> = self
+                .audio_cache
+                .iter()
+                .map(|(key, cached)| (key.clone(), cached.last_access))
+                .collect();
+            recency.sort_unstable_by_key(|(_, last_access)| *last_access);
+            self.audio_cache_access_order.clear();
+            for (access, (key, _)) in recency.into_iter().enumerate() {
+                if let Some(cached) = self.audio_cache.get_mut(&key) {
+                    cached.last_access = access as u64;
+                }
+                self.audio_cache_access_order
+                    .push_back((access as u64, key));
+            }
+            self.audio_cache_access_clock = self.audio_cache.len() as u64;
+        }
+        self.audio_cache_access_clock += 1;
+        self.audio_cache_access_clock
     }
 }
 

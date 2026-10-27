@@ -88,7 +88,9 @@ pub fn parse_alliance_operation(bytes: &[u8]) -> Result<Option<AllianceEvent>, P
             })
         }
         0x0c => {
-            if packet.read_u8()? == 0 {
+            // The legacy client reads this as an int8 and only accepts the
+            // exact value 1 as "has alliance".
+            if packet.read_i8()? != 1 {
                 Some(AllianceEvent::Snapshot(AllianceInfo {
                     id: 0,
                     name: String::new(),
@@ -101,7 +103,7 @@ pub fn parse_alliance_operation(bytes: &[u8]) -> Result<Option<AllianceEvent>, P
                 let id = packet.read_i32()?;
                 let name = packet.read_string()?;
                 let rank_titles = read_rank_titles(&mut packet)?;
-                let count = read_guild_count_u8(&mut packet)?;
+                let count = read_guild_count_i8(&mut packet)?;
                 let capacity = packet.read_i32()?;
                 let mut guilds = Vec::with_capacity(count);
                 for _ in 0..count {
@@ -137,13 +139,14 @@ pub fn parse_alliance_operation(bytes: &[u8]) -> Result<Option<AllianceEvent>, P
             alliance_id: packet.read_i32()?,
             guild_id: packet.read_i32()?,
             character_id: packet.read_i32()?,
-            online: packet.read_u8()? != 0,
+            // C++ InPacket::read_bool() tests byte == 1, not nonzero.
+            online: packet.read_u8()? == 1,
         }),
         0x0f => {
             let id = packet.read_i32()?;
             let name = packet.read_string()?;
             let rank_titles = read_rank_titles(&mut packet)?;
-            let count = read_guild_count_u8(&mut packet)?;
+            let count = read_guild_count_i8(&mut packet)?;
             let mut guild_ids = Vec::with_capacity(count);
             for _ in 0..count {
                 guild_ids.push(packet.read_i32()?);
@@ -165,7 +168,7 @@ pub fn parse_alliance_operation(bytes: &[u8]) -> Result<Option<AllianceEvent>, P
             let id = packet.read_i32()?;
             let name = packet.read_string()?;
             let rank_titles = read_rank_titles(&mut packet)?;
-            let count = read_guild_count_u8(&mut packet)?;
+            let count = read_guild_count_i8(&mut packet)?;
             let mut guilds = Vec::with_capacity(count);
             for _ in 0..count {
                 guilds.push(AllianceGuild {
@@ -192,7 +195,7 @@ pub fn parse_alliance_operation(bytes: &[u8]) -> Result<Option<AllianceEvent>, P
             let id = packet.read_i32()?;
             let name = packet.read_string()?;
             let rank_titles = read_rank_titles(&mut packet)?;
-            let count = read_guild_count_u8(&mut packet)?;
+            let count = read_guild_count_i8(&mut packet)?;
             let mut guilds = Vec::with_capacity(count);
             for _ in 0..count {
                 guilds.push(AllianceGuild {
@@ -326,8 +329,12 @@ fn merge_guild_ids(guilds: &mut Vec<AllianceGuild>, ids: Vec<i32>) {
     }
 }
 
-fn read_guild_count_u8(packet: &mut PacketReader<'_>) -> Result<usize, PacketError> {
-    let count = usize::from(packet.read_u8()?);
+fn read_guild_count_i8(packet: &mut PacketReader<'_>) -> Result<usize, PacketError> {
+    let raw_count = packet.read_i8()?;
+    if raw_count < 0 {
+        return Err(PacketError::InvalidAllianceGuildCount(i32::from(raw_count)));
+    }
+    let count = raw_count as usize;
     validate_guild_count(count)?;
     Ok(count)
 }

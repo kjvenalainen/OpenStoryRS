@@ -95,7 +95,7 @@ pub struct MapleCipher {
 }
 
 impl MapleCipher {
-    /// Reads the v83 IVs from the standard 15-byte handshake prefix.
+    /// Reads the v83 IVs from the standard 16-byte handshake prefix.
     pub fn from_handshake(handshake: &[u8]) -> Result<Self, PacketError> {
         if handshake.len() < 16 {
             return Err(PacketError::InvalidHandshakeLength(handshake.len()));

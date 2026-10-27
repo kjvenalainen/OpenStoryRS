@@ -159,7 +159,7 @@ impl PhysicsEngine {
     fn update_ground_state(self, tree: &FootholdTree, body: &mut PhysicsBody, check_slope: bool) {
         let current = tree.get(body.foothold_id).copied();
         let ground = current
-            .and_then(|foothold| foothold.ground_y(body.x))
+            .map(|foothold| foothold.ground_y_extrapolated(body.x))
             .unwrap_or(f64::from(tree.bounds().bottom));
         body.foothold_slope = current.map_or(0.0, |foothold| foothold.slope());
 
@@ -222,11 +222,11 @@ impl PhysicsEngine {
         let next_y = body.y + body.vertical_speed;
         let ground_current = tree
             .get(body.foothold_id)
-            .and_then(|foothold| foothold.ground_y(body.x))
+            .map(|foothold| foothold.ground_y_extrapolated(body.x))
             .unwrap_or(f64::from(tree.bounds().bottom));
         let ground_next = tree
             .get(body.foothold_id)
-            .and_then(|foothold| foothold.ground_y(body.x + body.horizontal_speed))
+            .map(|foothold| foothold.ground_y_extrapolated(body.x + body.horizontal_speed))
             .unwrap_or(f64::from(tree.bounds().bottom));
         let top_ground = ground_current.min(ground_next);
         let bottom_ground = ground_current.max(ground_next);
