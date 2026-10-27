@@ -1,6 +1,64 @@
 use super::*;
 
 impl ClientApp {
+    pub(super) fn update_boss_hp_gauge(&mut self, mob_id: i32, percentage: u8) {
+        if percentage == 0 {
+            self.clear_boss_hp_gauge();
+            return;
+        }
+        let name_path = format!("Mob.img/{mob_id}/name");
+        let name = self
+            .string_archive
+            .root()
+            .resolve(&name_path)
+            .ok()
+            .flatten()
+            .and_then(|node| match node.value().ok()? {
+                NodeValue::String(value) if !value.trim().is_empty() => Some(value),
+                _ => None,
+            })
+            .unwrap_or_else(|| format!("Monster {mob_id}"));
+        let panel = match build_boss_hp_gauge_panel(
+            &self.legacy_ui_archive,
+            &self.font,
+            mob_id,
+            &name,
+            percentage,
+        ) {
+            Ok(panel) => panel,
+            Err(error) => {
+                eprintln!("OpenStoryRS: could not render v83 boss HP gauge: {error}");
+                self.clear_boss_hp_gauge();
+                return;
+            }
+        };
+        let Some(renderer) = self.renderer.as_ref() else {
+            return;
+        };
+        if let Some(texture) = self.boss_hp_gauge_texture.as_ref() {
+            if let Err(error) = renderer.update_bgra(texture, &panel.pixels) {
+                eprintln!("OpenStoryRS: could not update boss HP gauge: {error}");
+                self.clear_boss_hp_gauge();
+                return;
+            }
+        } else {
+            match renderer.upload_bgra(panel.width, panel.height, &panel.pixels) {
+                Ok(texture) => self.boss_hp_gauge_texture = Some(texture),
+                Err(error) => {
+                    eprintln!("OpenStoryRS: could not upload boss HP gauge: {error}");
+                    self.clear_boss_hp_gauge();
+                    return;
+                }
+            }
+        }
+        self.boss_hp_gauge_remaining = Duration::from_secs(4);
+    }
+
+    pub(super) fn clear_boss_hp_gauge(&mut self) {
+        self.boss_hp_gauge_texture = None;
+        self.boss_hp_gauge_remaining = Duration::ZERO;
+    }
+
     pub(super) fn enter_death_state(&mut self) {
         if self.death_notice {
             return;
@@ -18,29 +76,33 @@ impl ClientApp {
             .as_ref()
             .map(|character| character.look.clone())
         {
-            let mut sprites = Vec::new();
-            match append_local_death_art(
-                &mut sprites,
-                &self.effect_archive,
-                &self.character_archive,
-                &look,
-                &mut self.remote_art_cache,
-            ) {
-                Ok(Some(assets)) => match self.upload_dynamic_sprites(sprites) {
-                    Ok(draws) => {
-                        if let Some(scene) = self.map_scene.as_mut() {
-                            scene.local_death_art = local_death_art_runtime(assets, &draws);
-                        }
-                    }
-                    Err(error) => {
-                        eprintln!("OpenStoryRS: could not upload death art: {error}");
-                    }
-                },
-                Ok(None) => {}
-                Err(error) => eprintln!("OpenStoryRS: could not load death art: {error}"),
+            let death_art = self.load_character_death_art(&look);
+            if let Some(scene) = self.map_scene.as_mut() {
+                scene.local_death_art = death_art;
             }
         }
         if let Some(scene) = self.map_scene.as_mut() {
+            if !scene.player.on_ground
+                && let Some((foothold_id, ground_y)) = scene
+                    .footholds
+                    .as_ref()
+                    .and_then(|tree| tree.find_below(scene.player.x, scene.player.y))
+            {
+                scene.player.y = ground_y;
+                scene.player.previous_x = scene.player.x;
+                scene.player.previous_y = ground_y;
+                scene.player.foothold_id = foothold_id;
+                if let Some(foothold) = scene
+                    .footholds
+                    .as_ref()
+                    .and_then(|tree| tree.get(foothold_id))
+                {
+                    scene.player.foothold_layer = foothold.layer;
+                    scene.player.foothold_slope = foothold.slope();
+                }
+                scene.player.ground_below = ground_y;
+                scene.player.on_ground = true;
+            }
             scene.player.horizontal_speed = 0.0;
             scene.player.vertical_speed = 0.0;
             scene.attack_stance = None;
@@ -110,25 +172,40 @@ impl ClientApp {
         &mut self,
         update: openstory_protocol::CharacterBuffUpdate,
     ) {
+        let mount_changed = update.entries.iter().any(|entry| {
+            entry.key.group == openstory_protocol::BuffMaskGroup::First
+                && entry.key.flag == STATUS_MONSTER_RIDING
+        });
         let disease_effects = update
             .entries
             .iter()
             .filter_map(|entry| mob_disease_skill_parts(entry.skill_id))
             .collect::<HashSet<_>>();
+        let now = Instant::now();
         for entry in update.entries {
             let expires_at = (entry.duration_ms > 0)
-                .then(|| Instant::now() + Duration::from_millis(entry.duration_ms as u64));
+                .then(|| now + Duration::from_millis(entry.duration_ms as u64));
             self.active_buffs.insert(
                 entry.key,
                 ActiveCharacterBuff {
                     value: entry.value,
                     skill_id: entry.skill_id,
+                    duration_ms: entry.duration_ms,
+                    applied_at: now,
                     expires_at,
                 },
             );
         }
         for (skill_type, skill_level) in disease_effects {
             self.show_mob_disease_effect(None, skill_type, skill_level);
+        }
+        if mount_changed
+            && let Some(look) = self
+                .active_character
+                .as_ref()
+                .map(|character| character.look.clone())
+        {
+            self.refresh_local_mount(&look);
         }
         self.refresh_map_hud();
     }
@@ -160,6 +237,7 @@ impl ClientApp {
         &mut self,
         update: openstory_protocol::CharacterBuffCancel,
     ) {
+        let mount_cancelled = update.first_mask & STATUS_MONSTER_RIDING != 0;
         self.active_buffs.retain(|key, _| {
             let mask = match key.group {
                 openstory_protocol::BuffMaskGroup::First => update.first_mask,
@@ -167,6 +245,14 @@ impl ClientApp {
             };
             mask & key.flag == 0
         });
+        if mount_cancelled
+            && let Some(look) = self
+                .active_character
+                .as_ref()
+                .map(|character| character.look.clone())
+        {
+            self.refresh_local_mount(&look);
+        }
         self.refresh_map_hud();
     }
 
@@ -186,20 +272,93 @@ impl ClientApp {
 
     pub(super) fn expire_character_buffs(&mut self, now: Instant) {
         let initial_count = self.active_buffs.len();
+        let was_riding = self
+            .active_buffs
+            .get(&openstory_protocol::BuffStatKey {
+                group: openstory_protocol::BuffMaskGroup::First,
+                flag: STATUS_MONSTER_RIDING,
+            })
+            .is_some_and(|buff| buff.value > 0);
         self.active_buffs
             .retain(|_, buff| buff.expires_at.is_none_or(|expires_at| expires_at > now));
         if self.active_buffs.len() != initial_count {
             self.refresh_map_hud();
+        }
+        if self
+            .buff_list_refreshed_at
+            .is_none_or(|last| now.saturating_duration_since(last) >= Duration::from_millis(125))
+        {
+            self.refresh_buff_list_texture(now);
+        }
+        if was_riding
+            && !self
+                .active_buffs
+                .contains_key(&openstory_protocol::BuffStatKey {
+                    group: openstory_protocol::BuffMaskGroup::First,
+                    flag: STATUS_MONSTER_RIDING,
+                })
+            && let Some(look) = self
+                .active_character
+                .as_ref()
+                .map(|character| character.look.clone())
+        {
+            self.refresh_local_mount(&look);
+        }
+    }
+
+    pub(super) fn schedule_skill_hit_sounds(
+        &mut self,
+        skill_id: i32,
+        events: &[((i16, i16), Duration)],
+    ) {
+        if skill_id <= 0 {
+            return;
+        }
+        let start = Instant::now();
+        for (position, delay) in events {
+            if delay.is_zero() {
+                self.audio
+                    .play_skill_hit(&self.sound_archive, skill_id, *position);
+                continue;
+            }
+            if self.pending_skill_hit_sounds.len() >= 512 {
+                self.pending_skill_hit_sounds.remove(0);
+            }
+            if let Some(play_at) = start.checked_add(*delay) {
+                self.pending_skill_hit_sounds.push(PendingSkillHitSound {
+                    skill_id,
+                    position: *position,
+                    play_at,
+                });
+            }
+        }
+    }
+
+    pub(super) fn play_due_skill_hit_sounds(&mut self, now: Instant) {
+        let mut due = Vec::new();
+        self.pending_skill_hit_sounds.retain(|sound| {
+            if sound.play_at <= now {
+                due.push(*sound);
+                false
+            } else {
+                true
+            }
+        });
+        for sound in due {
+            self.audio
+                .play_skill_hit(&self.sound_archive, sound.skill_id, sound.position);
         }
     }
 
     pub(super) fn refresh_map_hud(&mut self) {
         if self.map_scene.is_none() {
             self.map_hud_texture = None;
+            self.buff_list_texture = None;
             return;
         }
         let Some(character) = self.active_character.as_ref() else {
             self.map_hud_texture = None;
+            self.buff_list_texture = None;
             return;
         };
         let mut stats = character.stats.clone();
@@ -245,6 +404,66 @@ impl ClientApp {
             Ok(Some(texture)) => self.map_hud_texture = Some(texture),
             Ok(None) => {}
             Err(error) => eprintln!("OpenStory: could not update map HUD: {error}"),
+        }
+        self.refresh_buff_list_texture(Instant::now());
+    }
+
+    pub(super) fn refresh_buff_list_texture(&mut self, now: Instant) {
+        self.buff_list_refreshed_at = Some(now);
+        if self.map_scene.is_none() || self.active_character.is_none() {
+            self.buff_list_texture = None;
+            return;
+        }
+
+        let mut unique_buffs = std::collections::BTreeMap::new();
+        for buff in self.active_buffs.values().copied().filter(|buff| {
+            buff.expires_at.is_none_or(|expires_at| expires_at > now) && buff.skill_id != 0
+        }) {
+            unique_buffs.entry(buff.skill_id).or_insert(buff);
+        }
+        let mut icons = Vec::with_capacity(unique_buffs.len());
+        for (buff_id, buff) in unique_buffs {
+            let Some(action) = buff_id.checked_abs() else {
+                continue;
+            };
+            let kind = if buff_id > 0 { 1 } else { 2 };
+            let Some((width, height, pixels)) =
+                self.quickslot_icon_pixels(openstory_protocol::KeyBinding { kind, action })
+            else {
+                continue;
+            };
+            let remaining = buff
+                .expires_at
+                .map(|expires_at| expires_at.saturating_duration_since(now));
+            icons.push((
+                width,
+                height,
+                pixels,
+                remaining,
+                buff.duration_ms,
+                now.saturating_duration_since(buff.applied_at),
+            ));
+        }
+        if icons.is_empty() {
+            self.buff_list_texture = None;
+            return;
+        }
+
+        let pixels = render_buff_list_pixels(&icons);
+        let Some(renderer) = self.renderer.as_ref() else {
+            return;
+        };
+        let result = if let Some(texture) = self.buff_list_texture.as_ref() {
+            renderer.update_bgra(texture, &pixels).map(|()| None)
+        } else {
+            renderer
+                .upload_bgra(1024, BUFF_LIST_HEIGHT, &pixels)
+                .map(Some)
+        };
+        match result {
+            Ok(Some(texture)) => self.buff_list_texture = Some(texture),
+            Ok(None) => {}
+            Err(error) => eprintln!("OpenStoryRS: could not update buff icons: {error}"),
         }
     }
 

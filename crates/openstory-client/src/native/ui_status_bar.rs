@@ -5,6 +5,43 @@ fn rect_contains(rect: SpriteRect, point: Point) -> bool {
         && point.y < rect.y + rect.height
 }
 
+fn render_status_message_line(font: &fontdue::Font, text: &str, color: [u8; 3]) -> Vec<u8> {
+    const TEXT_SIZE: f32 = 12.0;
+    let width = STATUS_MESSAGE_WIDTH as usize;
+    let height = STATUS_MESSAGE_HEIGHT as usize;
+    let mut pixels = vec![0_u8; width * height * 4];
+    let text_width = dialogue_text_width(font, text, TEXT_SIZE).ceil() as usize;
+    let x = width.saturating_sub(text_width.saturating_add(2));
+    let max_width = width.saturating_sub(x + 1);
+    draw_dialogue_text(
+        font,
+        &mut pixels,
+        width,
+        height,
+        text,
+        x as i32 + 1,
+        2,
+        TEXT_SIZE,
+        max_width,
+        height.saturating_sub(2),
+        [0, 0, 0],
+    );
+    draw_dialogue_text(
+        font,
+        &mut pixels,
+        width,
+        height,
+        text,
+        x as i32,
+        1,
+        TEXT_SIZE,
+        max_width,
+        height.saturating_sub(2),
+        color,
+    );
+    pixels
+}
+
 #[derive(Clone, Copy)]
 struct SpriteRect {
     x: f32,
@@ -52,6 +89,237 @@ struct StatusBarGaugeAsset {
     fill_index: usize,
     start_index: Option<usize>,
     end_index: Option<usize>,
+}
+
+struct BossHpGaugePanel {
+    width: u32,
+    height: u32,
+    pixels: Vec<u8>,
+}
+
+fn build_boss_hp_gauge_panel(
+    archive: &NxArchive,
+    font: &fontdue::Font,
+    mob_id: i32,
+    name: &str,
+    percentage: u8,
+) -> Result<BossHpGaugePanel, String> {
+    const WIDTH: usize = 420;
+    const HEIGHT: usize = 56;
+    const BAR_X: i32 = 60;
+    const BAR_Y: i32 = 29;
+    const BAR_WIDTH: i32 = 348;
+
+    let mut pixels = vec![0_u8; WIDTH * HEIGHT * 4];
+    composite_ui_bitmap(&mut pixels, WIDTH, HEIGHT, archive, "UIWindow.img/MobGage/backgrnd", 12, 9)?;
+    let icon_path = format!("UIWindow.img/MobGage/Mob/{mob_id}");
+    if archive
+        .root()
+        .resolve(&icon_path)
+        .map_err(|error| error.to_string())?
+        .is_some()
+    {
+        composite_ui_bitmap(&mut pixels, WIDTH, HEIGHT, archive, &icon_path, 17, 15)?;
+    }
+
+    composite_ui_bitmap(
+        &mut pixels,
+        WIDTH,
+        HEIGHT,
+        archive,
+        "UIWindow.img/MobGage/backgrnd2",
+        BAR_X,
+        BAR_Y,
+    )?;
+    composite_tiled_ui_bitmap(
+        &mut pixels,
+        WIDTH,
+        HEIGHT,
+        archive,
+        "UIWindow.img/MobGage/backgrnd3",
+        BAR_X + 4,
+        BAR_X + BAR_WIDTH - 5,
+        BAR_Y,
+    )?;
+    composite_ui_bitmap(
+        &mut pixels,
+        WIDTH,
+        HEIGHT,
+        archive,
+        "UIWindow.img/MobGage/backgrnd4",
+        BAR_X + BAR_WIDTH - 5,
+        BAR_Y,
+    )?;
+
+    let fill_start = BAR_X + 4;
+    let fill_width = (BAR_WIDTH - 9) * i32::from(percentage) / 100;
+    let gauge_base = "UIWindow.img/MobGage/Gage/1/0";
+    let gauge_highlight = "UIWindow.img/MobGage/Gage/1/1";
+    composite_tiled_ui_bitmap(
+        &mut pixels,
+        WIDTH,
+        HEIGHT,
+        archive,
+        gauge_base,
+        fill_start,
+        fill_start + fill_width,
+        BAR_Y + 5,
+    )?;
+    composite_tiled_ui_bitmap(
+        &mut pixels,
+        WIDTH,
+        HEIGHT,
+        archive,
+        gauge_highlight,
+        fill_start,
+        fill_start + fill_width,
+        BAR_Y + 4,
+    )?;
+
+    let label = rasterize_label_color(font, name, 14.0, 345, 20, [255, 255, 255]);
+    composite_bgra_pixels(&mut pixels, WIDTH, HEIGHT, &label, 345, 20, BAR_X, 4);
+
+    Ok(BossHpGaugePanel {
+        width: WIDTH as u32,
+        height: HEIGHT as u32,
+        pixels,
+    })
+}
+
+fn composite_ui_bitmap(
+    destination: &mut [u8],
+    canvas_width: usize,
+    canvas_height: usize,
+    archive: &NxArchive,
+    path: &str,
+    anchor_x: i32,
+    anchor_y: i32,
+) -> Result<(), String> {
+    let node = archive
+        .root()
+        .resolve(path)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| format!("missing v83 UI asset {path:?}"))?;
+    let bitmap = node
+        .bitmap()
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| format!("v83 UI asset {path:?} is not a bitmap"))?;
+    let origin = node
+        .child("origin")
+        .map_err(|error| error.to_string())?
+        .map(|origin| origin.value())
+        .transpose()
+        .map_err(|error| error.to_string())?;
+    let (origin_x, origin_y) = match origin {
+        Some(NodeValue::Vector { x, y }) => (x, y),
+        Some(_) => return Err(format!("v83 UI asset {path:?} has a malformed origin")),
+        None => (0, 0),
+    };
+    composite_bgra_pixels(
+        destination,
+        canvas_width,
+        canvas_height,
+        &bitmap
+            .decode_bgra_shared()
+            .map_err(|error| error.to_string())?,
+        usize::from(bitmap.width()),
+        usize::from(bitmap.height()),
+        anchor_x - origin_x,
+        anchor_y - origin_y,
+    );
+    Ok(())
+}
+
+fn composite_tiled_ui_bitmap(
+    destination: &mut [u8],
+    canvas_width: usize,
+    canvas_height: usize,
+    archive: &NxArchive,
+    path: &str,
+    start_x: i32,
+    end_x: i32,
+    anchor_y: i32,
+) -> Result<(), String> {
+    let node = archive
+        .root()
+        .resolve(path)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| format!("missing v83 UI asset {path:?}"))?;
+    let bitmap = node
+        .bitmap()
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| format!("v83 UI asset {path:?} is not a bitmap"))?;
+    let origin = node
+        .child("origin")
+        .map_err(|error| error.to_string())?
+        .map(|origin| origin.value())
+        .transpose()
+        .map_err(|error| error.to_string())?;
+    let (origin_x, origin_y) = match origin {
+        Some(NodeValue::Vector { x, y }) => (x, y),
+        Some(_) => return Err(format!("v83 UI asset {path:?} has a malformed origin")),
+        None => (0, 0),
+    };
+    let pixels = bitmap
+        .decode_bgra_shared()
+        .map_err(|error| error.to_string())?;
+    for anchor_x in start_x..end_x {
+        composite_bgra_pixels(
+            destination,
+            canvas_width,
+            canvas_height,
+            &pixels,
+            usize::from(bitmap.width()),
+            usize::from(bitmap.height()),
+            anchor_x - origin_x,
+            anchor_y - origin_y,
+        );
+    }
+    Ok(())
+}
+
+fn composite_bgra_pixels(
+    destination: &mut [u8],
+    canvas_width: usize,
+    canvas_height: usize,
+    source: &[u8],
+    source_width: usize,
+    source_height: usize,
+    left: i32,
+    top: i32,
+) {
+    for source_y in 0..source_height {
+        let destination_y = top + source_y as i32;
+        if !(0..canvas_height as i32).contains(&destination_y) {
+            continue;
+        }
+        for source_x in 0..source_width {
+            let destination_x = left + source_x as i32;
+            if !(0..canvas_width as i32).contains(&destination_x) {
+                continue;
+            }
+            let source_index = (source_y * source_width + source_x) * 4;
+            let destination_index = (destination_y as usize * canvas_width
+                + destination_x as usize)
+                * 4;
+            let source_alpha = u32::from(source[source_index + 3]);
+            if source_alpha == 0 {
+                continue;
+            }
+            let destination_alpha = u32::from(destination[destination_index + 3]);
+            let inverse = 255 - source_alpha;
+            let output_alpha = source_alpha + destination_alpha * inverse / 255;
+            for channel in 0..3 {
+                let foreground = u32::from(source[source_index + channel]);
+                let background = u32::from(destination[destination_index + channel]);
+                let premultiplied = foreground * source_alpha
+                    + background * destination_alpha * inverse / 255;
+                destination[destination_index + channel] =
+                    (premultiplied / output_alpha.max(1)) as u8;
+            }
+            destination[destination_index + 3] = output_alpha as u8;
+        }
+    }
 }
 
 struct StatusBarNumberGlyph {

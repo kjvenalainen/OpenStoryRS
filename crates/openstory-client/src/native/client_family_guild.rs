@@ -30,6 +30,7 @@ impl ClientApp {
         let (background_preview, mark_preview) = self.guild_emblem_preview_bitmaps();
         let pixels = render_guild_panel(
             &self.font,
+            &self.ui_archive,
             self.guild_info.as_ref(),
             self.pending_guild_invite.as_ref(),
             self.pending_guild_creation_invite.as_ref(),
@@ -172,6 +173,9 @@ impl ClientApp {
                 self.push_chat_line(format!("[Family] {message}"), [255, 222, 112]);
             }
             FamilyEvent::JoinRequest { character_id, name } => {
+                if !self.social_settings.allow_family_invite {
+                    return;
+                }
                 self.pending_family_join = Some((character_id, name.clone()));
                 self.push_chat_line(
                     format!("[Family] {name} wants to join. Press Y to accept or N to decline."),
@@ -791,6 +795,7 @@ impl ClientApp {
     pub(super) fn refresh_alliance_texture(&mut self) {
         let pixels = render_alliance_panel(
             &self.font,
+            &self.ui_archive,
             self.guild_info.as_ref(),
             self.alliance_info.as_ref(),
             self.pending_alliance_invite.as_ref(),
@@ -1090,6 +1095,9 @@ impl ClientApp {
                 alliance_id,
                 inviter,
             } => {
+                if !self.social_settings.allow_alliance_invite {
+                    return;
+                }
                 self.pending_alliance_invite = Some((alliance_id, inviter.clone()));
                 self.open_alliance_panel();
                 self.push_chat_line(
@@ -1598,6 +1606,9 @@ impl ClientApp {
                 }
             }
             GuildEvent::Invite { guild_id, inviter } => {
+                if !self.social_settings.allow_guild_invite {
+                    return;
+                }
                 self.pending_guild_invite = Some((guild_id, inviter.clone()));
                 self.show_guild_panel = true;
                 self.show_party_panel = false;
@@ -1609,6 +1620,9 @@ impl ClientApp {
                 );
             }
             GuildEvent::CreationInvite { leader, guild_name } => {
+                if !self.social_settings.allow_guild_invite {
+                    return;
+                }
                 self.pending_guild_creation_invite = Some((leader.clone(), guild_name.clone()));
                 self.show_guild_panel = true;
                 self.show_party_panel = false;

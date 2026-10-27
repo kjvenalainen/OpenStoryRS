@@ -25,9 +25,10 @@ use winit::window::{Window, WindowId};
 
 const FIELD_WIDTH: u32 = 150;
 const FIELD_HEIGHT: u32 = 45;
-// Keep the player in the lower third of the field so platforms and
-// footholds below the camera target do not dominate the view.
-const GAMEPLAY_CAMERA_CENTER_Y: f32 = 640.0;
+// Keep the player's foot anchor lower in the view so maps settle toward their
+// lower edge while leaving the character visible above the HUD. All map actors
+// use this same anchor when translating their world coordinates to screen space.
+const GAMEPLAY_CAMERA_CENTER_Y: f32 = 680.0;
 const LOGIN_CARET_BLINK_INTERVAL: Duration = Duration::from_millis(530);
 const FIELD_X: f32 = 567.0;
 const ACCOUNT_Y: f32 = 319.0;
@@ -65,13 +66,13 @@ const MAX_WHISPER_LINES: usize = 100;
 const MAX_WHISPER_LINE_CHARS: usize = 200;
 const PARTY_PANEL_WIDTH: u32 = 284;
 const PARTY_PANEL_HEIGHT: u32 = 238;
-const GUILD_PANEL_WIDTH: u32 = 336;
+const GUILD_PANEL_WIDTH: u32 = 322;
 const GUILD_PANEL_HEIGHT: u32 = 420;
 const FAMILY_PANEL_WIDTH: u32 = 274;
 const FAMILY_PANEL_HEIGHT: u32 = 439;
 const FAMILY_TREE_PANEL_WIDTH: u32 = 578;
 const FAMILY_TREE_PANEL_HEIGHT: u32 = 386;
-const ALLIANCE_PANEL_WIDTH: u32 = 420;
+const ALLIANCE_PANEL_WIDTH: u32 = 296;
 const ALLIANCE_PANEL_HEIGHT: u32 = 386;
 const GUILD_BBS_PANEL_WIDTH: u32 = 824;
 const GUILD_BBS_PANEL_HEIGHT: u32 = 548;
@@ -80,18 +81,38 @@ const GUILD_BBS_CONTENT_LIMIT: usize = openstory_protocol::MAX_BBS_CONTENT_LENGT
 const GUILD_BBS_REPLY_LIMIT: usize = openstory_protocol::MAX_BBS_REPLY_LENGTH;
 const BUDDY_PANEL_WIDTH: u32 = 284;
 const BUDDY_PANEL_HEIGHT: u32 = 292;
-const SETTINGS_PANEL_X: f32 = 272.0;
-const SETTINGS_PANEL_Y: f32 = 219.0;
-const SETTINGS_PANEL_WIDTH: u32 = 480;
-const SETTINGS_PANEL_HEIGHT: u32 = 330;
-const STATUS_PANEL_WIDTH: u32 = 212;
-const STATUS_PANEL_HEIGHT: u32 = 318;
+const SETTINGS_PANEL_X: f32 = 212.0;
+const SETTINGS_PANEL_Y: f32 = 64.0;
+const SETTINGS_PANEL_WIDTH: u32 = 600;
+const SETTINGS_PANEL_HEIGHT: u32 = 640;
+const STATUS_PANEL_WIDTH: u32 = 175;
+const STATUS_PANEL_HEIGHT: u32 = 347;
 const STATUS_PANEL_X: f32 = 212.0;
 const STATUS_PANEL_Y: f32 = 20.0;
+const STATUS_DETAIL_WIDTH: u32 = 177;
+const STATUS_DETAIL_HEIGHT: u32 = 313;
+const STATUS_DETAIL_OFFSET_X: f32 = 180.0;
+const STATUS_DETAIL_OFFSET_Y: f32 = 40.0;
+const STATUS_MESSAGE_LIMIT: usize = 6;
+const STATUS_MESSAGE_DURATION: Duration = Duration::from_secs(8);
+const STATUS_MESSAGE_WIDTH: u32 = 520;
+const STATUS_MESSAGE_HEIGHT: u32 = 18;
+const STATUS_MESSAGE_RIGHT: f32 = 1018.0;
+const STATUS_MESSAGE_Y: f32 = 660.0;
+const STATUS_MESSAGE_ROW_STEP: f32 = 14.0;
+const RPS_GAME_PANEL_WIDTH: u32 = 310;
+const RPS_GAME_PANEL_X: f32 = 512.0;
+const RPS_GAME_PANEL_Y: f32 = 334.0;
 const INVENTORY_PANEL_X: f32 = 172.0;
 const INVENTORY_PANEL_Y: f32 = 20.0;
 const INVENTORY_PANEL_WIDTH: u32 = 175;
 const INVENTORY_PANEL_HEIGHT: u32 = 289;
+const EQUIPMENT_INVENTORY_PANEL_X: f32 = 184.0;
+const EQUIPMENT_INVENTORY_PANEL_Y: f32 = 20.0;
+const EQUIPMENT_INVENTORY_PANEL_WIDTH: u32 = 175;
+const EQUIPMENT_INVENTORY_PANEL_HEIGHT: u32 = 304;
+const INVENTORY_TOOLTIP_WIDTH: u32 = 300;
+const INVENTORY_TOOLTIP_HEIGHT: u32 = 144;
 const INVENTORY_SLOT_COLUMNS: usize = 4;
 const INVENTORY_SLOT_ROWS: usize = 6;
 const INVENTORY_SLOT_X: usize = 10;
@@ -116,10 +137,11 @@ const MAX_CHAT_MESSAGE_CHARS: usize = 100;
 const STATUS_BAR_TOP: f32 = 697.0;
 const STATUS_MENU_WIDTH: u32 = 126;
 const STATUS_MENU_ROW_HEIGHT: usize = 18;
-const STATUS_MENU_ROWS: [&str; 12] = [
+const STATUS_MENU_ROWS: [&str; 14] = [
     "Stats",
     "Skills",
     "Quests",
+    "Event List",
     "Inventory",
     "Equipment",
     "Party",
@@ -129,14 +151,19 @@ const STATUS_MENU_ROWS: [&str; 12] = [
     "World Map",
     "Key Settings",
     "Options",
+    "Quit Game",
 ];
 const STATUS_MENU_HEIGHT: u32 = STATUS_MENU_ROWS.len() as u32 * STATUS_MENU_ROW_HEIGHT as u32 + 8;
 const STATUS_MENU_X: f32 = 794.0;
 const STATUS_MENU_Y: f32 = STATUS_BAR_TOP - STATUS_MENU_HEIGHT as f32;
+const EVENT_LIST_PANEL_X: f32 = (1024.0 - EVENT_LIST_PANEL_WIDTH as f32) * 0.5;
+const EVENT_LIST_PANEL_Y: f32 = (768.0 - EVENT_LIST_PANEL_HEIGHT as f32) * 0.5;
 const SPEECH_BUBBLE_WIDTH: u32 = 360;
 const SPEECH_BUBBLE_HEIGHT: u32 = 132;
 const SPEECH_BUBBLE_ANCHOR: (i32, i32) = (180, 110);
 const SPEECH_BUBBLE_DURATION: Duration = Duration::from_secs(4);
+const CHALKBOARD_WIDTH: u32 = 360;
+const CHALKBOARD_HEIGHT: u32 = 52;
 // Mob.cpp advances opacity by 0.025 per 8 ms client update, which is a
 // 40-step (320 ms) full-opacity transition on the fixed simulation clock.
 const MOB_FADE_DURATION: Duration = Duration::from_millis(320);
@@ -156,6 +183,7 @@ const STATUS_DARKNESS: u64 = 0x0010_0000_0000_0000;
 const STATUS_WEAKEN: u64 = 0x4000_0000_0000_0000;
 const STATUS_CURSE: u64 = 0x8000_0000_0000_0000;
 const STATUS_DARKSIGHT: u64 = 0x0000_0400_0000_0000;
+const STATUS_MONSTER_RIDING: u64 = 0x0020_0000_0000_0000;
 fn mob_disease_skill_parts(encoded_skill_id: i32) -> Option<(u16, u16)> {
     let encoded = encoded_skill_id as u32;
     let skill_type = encoded as u16;

@@ -1041,8 +1041,8 @@ fn load_character_customization_scene(
     append_text_sprite(&mut sprites, font, job_name, 385.0, 155.0, 16.0);
 
     // These are the actual v83 class-specific customization boards. The
-    // newer C++ branch refers to a `CustomizeChar` node absent from the
-    // supplied UI-v83.nx; these `NewChar*` assets are the compatible nodes.
+    // newer C++ branch refers to a `CustomizeChar` node absent from the v83
+    // archive; these `NewChar*` assets are the compatible nodes.
     append_optional_sprite(
         &mut sprites,
         legacy_ui,

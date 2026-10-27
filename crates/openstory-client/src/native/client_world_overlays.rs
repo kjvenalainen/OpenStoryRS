@@ -577,6 +577,9 @@ impl ClientApp {
                 }
             }
             openstory_protocol::MessengerEvent::Invite { from, .. } => {
+                if !self.social_settings.allow_chat_invite {
+                    return;
+                }
                 self.messenger
                     .get_or_insert_with(messenger::State::default)
                     .prompt_incoming_invite(&from);
@@ -1260,6 +1263,7 @@ impl ClientApp {
             return;
         }
         self.show_status = !self.show_status;
+        self.show_status_detail = false;
         self.status_auto_confirmation = false;
         if self.show_status {
             self.show_inventory = false;
@@ -1282,6 +1286,7 @@ impl ClientApp {
         }
         let Some(character) = self.active_character.as_ref() else {
             self.status_texture = None;
+            self.status_detail_texture = None;
             return;
         };
         let pixels = render_status_panel(
@@ -1305,6 +1310,26 @@ impl ClientApp {
             Ok(Some(texture)) => self.status_texture = Some(texture),
             Ok(None) => {}
             Err(error) => eprintln!("OpenStoryRS: could not update stats panel: {error}"),
+        }
+
+        if self.show_status_detail {
+            let pixels = render_status_detail_panel(&self.font, &self.ui_archive);
+            let result = if let Some(texture) = self.status_detail_texture.as_ref() {
+                renderer.update_bgra(texture, &pixels).map(|()| None)
+            } else {
+                renderer
+                    .upload_bgra(STATUS_DETAIL_WIDTH, STATUS_DETAIL_HEIGHT, &pixels)
+                    .map(Some)
+            };
+            match result {
+                Ok(Some(texture)) => self.status_detail_texture = Some(texture),
+                Ok(None) => {}
+                Err(error) => {
+                    eprintln!("OpenStoryRS: could not update detailed stats panel: {error}")
+                }
+            }
+        } else {
+            self.status_detail_texture = None;
         }
     }
 
@@ -1356,38 +1381,24 @@ impl ClientApp {
         let x = cursor.x - STATUS_PANEL_X;
         let y = cursor.y - STATUS_PANEL_Y;
         if self.status_auto_confirmation {
-            if (184.0..216.0).contains(&y) && (27.0..96.0).contains(&x) {
+            if (185.0..215.0).contains(&y) && (20.0..80.0).contains(&x) {
                 self.resolve_status_auto_allocate(true);
-            } else if (184.0..216.0).contains(&y) && (116.0..185.0).contains(&x) {
+            } else if (185.0..215.0).contains(&y) && (93.0..153.0).contains(&x) {
                 self.resolve_status_auto_allocate(false);
             }
             return;
         }
-        if (6.0..20.0).contains(&y) && (190.0..204.0).contains(&x) {
+        if (5.0..22.0).contains(&y) && (153.0..174.0).contains(&x) {
             self.show_status = false;
+            self.show_status_detail = false;
             return;
         }
-        if self.status_waiting_for_stats {
+        if (323.0..342.0).contains(&y) && (124.0..173.0).contains(&x) {
+            self.show_status_detail = !self.show_status_detail;
+            self.refresh_status_texture();
             return;
         }
-        let stat = if (121.0..134.0).contains(&y) && (187.0..200.0).contains(&x) {
-            Some(openstory_protocol::AbilityStat::Hp)
-        } else if (139.0..152.0).contains(&y) && (187.0..200.0).contains(&x) {
-            Some(openstory_protocol::AbilityStat::Mp)
-        } else if (208.0..221.0).contains(&y) && (187.0..200.0).contains(&x) {
-            Some(openstory_protocol::AbilityStat::Strength)
-        } else if (226.0..239.0).contains(&y) && (187.0..200.0).contains(&x) {
-            Some(openstory_protocol::AbilityStat::Dexterity)
-        } else if (244.0..257.0).contains(&y) && (187.0..200.0).contains(&x) {
-            Some(openstory_protocol::AbilityStat::Intelligence)
-        } else if (262.0..275.0).contains(&y) && (187.0..200.0).contains(&x) {
-            Some(openstory_protocol::AbilityStat::Luck)
-        } else {
-            None
-        };
-        if let Some(stat) = stat {
-            self.send_ability_point_requests(stat, 1);
-        } else if (162.0..197.0).contains(&y) && (128.0..196.0).contains(&x) {
+        if (203.0..238.0).contains(&y) && (98.0..171.0).contains(&x) {
             if self
                 .active_character
                 .as_ref()
@@ -1396,6 +1407,28 @@ impl ClientApp {
                 self.status_auto_confirmation = true;
                 self.refresh_status_texture();
             }
+            return;
+        }
+        if self.status_waiting_for_stats {
+            return;
+        }
+        let stat = if (114.0..132.0).contains(&y) && (56.0..171.0).contains(&x) {
+            Some(openstory_protocol::AbilityStat::Hp)
+        } else if (132.0..150.0).contains(&y) && (56.0..171.0).contains(&x) {
+            Some(openstory_protocol::AbilityStat::Mp)
+        } else if (244.0..262.0).contains(&y) && (56.0..171.0).contains(&x) {
+            Some(openstory_protocol::AbilityStat::Strength)
+        } else if (262.0..280.0).contains(&y) && (56.0..171.0).contains(&x) {
+            Some(openstory_protocol::AbilityStat::Dexterity)
+        } else if (280.0..298.0).contains(&y) && (56.0..171.0).contains(&x) {
+            Some(openstory_protocol::AbilityStat::Intelligence)
+        } else if (298.0..316.0).contains(&y) && (56.0..171.0).contains(&x) {
+            Some(openstory_protocol::AbilityStat::Luck)
+        } else {
+            None
+        };
+        if let Some(stat) = stat {
+            self.send_ability_point_requests(stat, 1);
         }
     }
 }

@@ -356,6 +356,52 @@ fn append_summon_animation(
     Ok(Vec::new())
 }
 
+fn append_dragon_animation(
+    sprites: &mut Vec<DecodedSprite>,
+    archive: &NxArchive,
+    job: i16,
+    cache: &mut MapArtCache,
+) -> Result<Vec<ProjectileFrameAsset>, String> {
+    let mob_id = if job >= 2215 {
+        9_300_093
+    } else if job >= 2213 {
+        9_300_092
+    } else if job >= 2211 {
+        9_300_091
+    } else if job >= 2210 {
+        9_300_090
+    } else {
+        9_300_089
+    };
+    let image_path = format!("{mob_id:07}.img");
+    let Some(dragon) = archive
+        .root()
+        .resolve(&image_path)
+        .map_err(|error| error.to_string())?
+    else {
+        return Ok(Vec::new());
+    };
+
+    for state_name in ["stand", "fly", "move"] {
+        let Some(state) = dragon
+            .child(state_name)
+            .map_err(|error| error.to_string())?
+        else {
+            continue;
+        };
+        let frames = append_summon_frames_from_node(
+            sprites,
+            &state,
+            &format!("dragon:{image_path}/{state_name}"),
+            cache,
+        )?;
+        if !frames.is_empty() {
+            return Ok(frames);
+        }
+    }
+    Ok(Vec::new())
+}
+
 fn append_pet_animations(
     sprites: &mut Vec<DecodedSprite>,
     archive: &NxArchive,
@@ -908,12 +954,12 @@ fn teleport_skill_range(archive: &NxArchive, skill_id: i32, skill_level: u8) -> 
     range.unwrap_or(130)
 }
 
-fn character_skill_action_stance(
+fn character_skill_action_name(
     archive: &NxArchive,
     look: &openstory_protocol::CharacterLook,
     skill_id: i32,
     skill_level: u8,
-) -> Result<Option<u8>, String> {
+) -> Result<Option<String>, String> {
     let skill_path = format!("{:03}.img/skill/{skill_id:07}", skill_id / 10_000);
     let Some(skill) = archive
         .root()
@@ -955,6 +1001,24 @@ fn character_skill_action_stance(
                     _ => None,
                 })
         });
+    Ok(action)
+}
+
+fn character_skill_action_stance(
+    archive: &NxArchive,
+    look: &openstory_protocol::CharacterLook,
+    skill_id: i32,
+    skill_level: u8,
+) -> Result<Option<u8>, String> {
+    let skill_path = format!("{:03}.img/skill/{skill_id:07}", skill_id / 10_000);
+    let Some(skill) = archive
+        .root()
+        .resolve(&skill_path)
+        .map_err(|error| error.to_string())?
+    else {
+        return Ok(None);
+    };
+    let action = character_skill_action_name(archive, look, skill_id, skill_level)?;
     let stances = character_weapon_attack_stances(archive, look)?;
     let action_stance = action.as_deref().and_then(|action| {
         stances
@@ -975,6 +1039,189 @@ fn character_skill_action_stance(
     Ok((is_known_attack_skill(skill_id) || attack_count > 0)
         .then(|| stances.first().map(|(stance, _)| *stance))
         .flatten())
+}
+
+fn attack_hit_delays(
+    character_archive: &NxArchive,
+    skill_archive: &NxArchive,
+    look: &openstory_protocol::CharacterLook,
+    skill_id: i32,
+    skill_level: u8,
+    stance: u8,
+    attack_speed: i8,
+    hit_count: usize,
+) -> Vec<Duration> {
+    let action = character_skill_action_name(skill_archive, look, skill_id, skill_level)
+        .ok()
+        .flatten();
+    let hit_delays_ms = if let Some(action) = action {
+        body_action_hit_delays_ms(character_archive, &action).unwrap_or_default()
+    } else {
+        vec![
+            afterimage_hit_delay_ms(
+                character_archive,
+                skill_archive,
+                look,
+                skill_id,
+                stance,
+            )
+            .unwrap_or(0);
+            hit_count
+        ]
+    };
+    let real_speed = (1.7_f32 - f32::from(attack_speed) / 10.0).max(0.01);
+    (0..hit_count)
+        .map(|index| {
+            let delay_ms = hit_delays_ms.get(index).copied().unwrap_or(0);
+            Duration::from_millis((delay_ms as f32 / real_speed).max(0.0) as u64)
+        })
+        .collect()
+}
+
+fn body_action_hit_delays_ms(archive: &NxArchive, action: &str) -> Option<Vec<u32>> {
+    let action_path = format!("00002000.img/{action}");
+    let action_node = archive.root().resolve(&action_path).ok().flatten()?;
+    let frames = numeric_children(&action_node).ok()?;
+    let mut elapsed_ms = 0_u32;
+    let mut hits = Vec::new();
+    for frame in frames {
+        if string_property(&frame, "action").is_none() {
+            continue;
+        }
+        let signed_delay = integer_property(&frame, "delay").unwrap_or(0);
+        let signed_delay = if signed_delay == 0 {
+            100
+        } else {
+            signed_delay
+        };
+        if signed_delay > 0 {
+            hits.push(elapsed_ms);
+        }
+        elapsed_ms = elapsed_ms.saturating_add(
+            u32::try_from(signed_delay.unsigned_abs()).unwrap_or(u32::MAX),
+        );
+    }
+    Some(hits)
+}
+
+fn afterimage_hit_delay_ms(
+    character_archive: &NxArchive,
+    skill_archive: &NxArchive,
+    look: &openstory_protocol::CharacterLook,
+    skill_id: i32,
+    stance: u8,
+) -> Option<u32> {
+    let weapon_id = character_weapon_id(look)?;
+    let weapon_info_path = format!("Weapon/0{weapon_id}.img/info");
+    let weapon_info = character_archive
+        .root()
+        .resolve(&weapon_info_path)
+        .ok()
+        .flatten();
+    let weapon_type = weapon_id / 10_000;
+    let afterimage_name = weapon_info
+        .as_ref()
+        .and_then(|info| string_property(info, "afterImage"))
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| default_weapon_afterimage(weapon_type).to_owned());
+    let stance_name = attack_stance_name(stance)?;
+
+    let skill_afterimage = (skill_id > 0)
+        .then(|| {
+            skill_archive
+                .root()
+                .resolve(&format!(
+                    "{:03}.img/skill/{skill_id:07}/afterimage/{afterimage_name}/{stance_name}",
+                    skill_id / 10_000
+                ))
+                .ok()
+                .flatten()
+        })
+        .flatten();
+    let afterimage = skill_afterimage.or_else(|| {
+        let weapon_level = weapon_info
+            .as_ref()
+            .and_then(|info| integer_property(info, "reqLevel"))
+            .unwrap_or(0)
+            .max(0)
+            / 10;
+        character_archive
+            .root()
+            .resolve(&format!(
+                "Afterimage/{afterimage_name}.img/{weapon_level}/{stance_name}"
+            ))
+            .ok()
+            .flatten()
+    });
+    let first_frame = afterimage
+        .as_ref()
+        .and_then(|node| numeric_children(node).ok())
+        .and_then(|frames| {
+            frames
+                .iter()
+                .filter_map(|frame| frame.name().ok()?.parse::<u8>().ok())
+                .max()
+        })
+        .unwrap_or(0);
+
+    let mut delay_ms = 0_u32;
+    for frame in 0..first_frame {
+        let frame_path = format!("00002000.img/{stance_name}/{frame}");
+        let delay = character_archive
+            .root()
+            .resolve(&frame_path)
+            .ok()
+            .flatten()
+            .and_then(|frame| integer_property(&frame, "delay"))
+            .filter(|delay| *delay > 0)
+            .unwrap_or(100);
+        delay_ms = delay_ms.saturating_add(u32::try_from(delay).unwrap_or(u32::MAX));
+    }
+    Some(delay_ms)
+}
+
+fn attack_stance_name(stance: u8) -> Option<&'static str> {
+    Some(match stance {
+        8 => "proneStab",
+        10 => "shot",
+        11 => "shoot1",
+        12 => "shoot2",
+        13 => "shootF",
+        15 => "stabO1",
+        16 => "stabO2",
+        17 => "stabOF",
+        18 => "stabT1",
+        19 => "stabT2",
+        20 => "stabTF",
+        23 => "swingO1",
+        24 => "swingO2",
+        25 => "swingO3",
+        26 => "swingOF",
+        27 => "swingP1",
+        28 => "swingP2",
+        29 => "swingPF",
+        30 => "swingT1",
+        31 => "swingT2",
+        32 => "swingT3",
+        33 => "swingTF",
+        _ => return None,
+    })
+}
+
+fn default_weapon_afterimage(weapon_type: i32) -> &'static str {
+    match weapon_type {
+        130 | 133 | 147 => "swordOL",
+        140 => "swordTS",
+        131 | 141 => "axe",
+        132 | 137 | 138 | 142 => "mace",
+        143 => "spear",
+        144 => "poleArm",
+        145 => "bow",
+        146 => "crossBow",
+        148 => "knuckle",
+        149 => "gun",
+        _ => "swordOL",
+    }
 }
 
 fn append_reactor_frame(
@@ -1473,6 +1720,11 @@ fn append_mob_animations(
         body_attack: info
             .as_ref()
             .and_then(|node| integer_property(node, "bodyAttack"))
+            .unwrap_or(0)
+            != 0,
+        boss: info
+            .as_ref()
+            .and_then(|node| integer_property(node, "boss"))
             .unwrap_or(0)
             != 0,
         speed,

@@ -24,6 +24,7 @@ pub enum PacketError {
     TooManyRecommendedWorlds(u8),
     TooManyEquipmentSlots(usize),
     InvalidMovementCommand(u8),
+    InvalidClockType(u8),
     InvalidAttackCounts {
         targets: usize,
         hits: usize,
@@ -34,6 +35,7 @@ pub enum PacketError {
     },
     InvalidAttackDamage(i32),
     InvalidForcedStatMask(u32),
+    InvalidTraction,
     TooManyChatRecipients(usize),
     InvalidBuddyGroupLength(usize),
     InvalidInventoryType(i8),
@@ -58,6 +60,14 @@ pub enum PacketError {
     InvalidQuestCount(i16),
     TooManyQuestEntries(usize),
     TooManyCooldowns(usize),
+    InvalidInitialSetFieldCount {
+        section: &'static str,
+        count: i16,
+    },
+    TooManyInitialSetFieldEntries {
+        section: &'static str,
+        maximum: usize,
+    },
     TooManyGuildMembers(usize),
     InvalidAllianceGuildCount(i32),
     TooManyAllianceGuilds(usize),
@@ -71,6 +81,8 @@ pub enum PacketError {
     InvalidNpcShopCount(i16),
     InvalidFieldObstacleCount(i32),
     TooManyCashShopItems(usize),
+    InvalidCashShopWorldCount(i32),
+    TooManyCashShopWorlds(usize),
     InvalidCashShopInventorySlot(i16),
     InvalidStorageInventoryType(i16),
     InvalidStorageItemId(i32),
@@ -89,6 +101,7 @@ pub enum PacketError {
     InvalidOwlItemId(i32),
     TooManyOwlResults(usize),
     TooManyOwlTopItems(usize),
+    TooManyMakerEntries(usize),
     InvalidMerchantCount(i16),
     TooManyMerchantEntries(usize),
     MissingMiniRoomTerminator,
@@ -104,6 +117,10 @@ pub enum PacketError {
         section: &'static str,
         count: i32,
     },
+    InvalidEventCount(i16),
+    TooManyEventEntries(usize),
+    InvalidEventRewardCount(i16),
+    TooManyEventRewards(usize),
 }
 
 impl fmt::Display for PacketError {
@@ -151,6 +168,7 @@ impl fmt::Display for PacketError {
             Self::InvalidMovementCommand(command) => {
                 write!(f, "unknown movement fragment command {command}")
             }
+            Self::InvalidClockType(kind) => write!(f, "unknown v83 clock packet type {kind}"),
             Self::InvalidAttackCounts { targets, hits } => write!(
                 f,
                 "attack has {targets} targets and {hits} hits; v83 permits 0..=15 targets and 1..=15 hits"
@@ -167,6 +185,9 @@ impl fmt::Display for PacketError {
                     f,
                     "forced-stat packet contains unsupported mask {mask:#010x}"
                 )
+            }
+            Self::InvalidTraction => {
+                write!(f, "field traction must be a finite v83 double")
             }
             Self::TooManyChatRecipients(count) => {
                 write!(
@@ -253,6 +274,15 @@ impl fmt::Display for PacketError {
                     "initial character state exceeds {maximum} cooldown entries"
                 )
             }
+            Self::InvalidInitialSetFieldCount { section, count } => {
+                write!(
+                    f,
+                    "initial SET_FIELD {section} has a negative count: {count}"
+                )
+            }
+            Self::TooManyInitialSetFieldEntries { section, maximum } => {
+                write!(f, "initial SET_FIELD {section} exceeds {maximum} entries")
+            }
             Self::TooManyGuildMembers(maximum) => {
                 write!(f, "guild roster exceeds {maximum} members")
             }
@@ -291,6 +321,15 @@ impl fmt::Display for PacketError {
             }
             Self::TooManyCashShopItems(maximum) => {
                 write!(f, "cash shop locker exceeds {maximum} items")
+            }
+            Self::InvalidCashShopWorldCount(count) => {
+                write!(
+                    f,
+                    "cash shop transfer contains an invalid world count: {count}"
+                )
+            }
+            Self::TooManyCashShopWorlds(maximum) => {
+                write!(f, "cash shop transfer exceeds {maximum} worlds")
             }
             Self::InvalidCashShopInventorySlot(slot) => {
                 write!(f, "invalid inventory slot {slot} in cash shop withdrawal")
@@ -341,6 +380,9 @@ impl fmt::Display for PacketError {
                 f,
                 "Owl top-item response returned {count} entries; maximum is 10"
             ),
+            Self::TooManyMakerEntries(count) => {
+                write!(f, "Maker result contains an invalid item count: {count}")
+            }
             Self::InvalidMerchantCount(count) => {
                 write!(f, "hired merchant room returned an invalid count: {count}")
             }
@@ -373,6 +415,18 @@ impl fmt::Display for PacketError {
             }
             Self::InvalidFamilyCount { section, count } => {
                 write!(f, "family {section} count {count} is invalid")
+            }
+            Self::InvalidEventCount(count) => {
+                write!(f, "event list contains a negative event count: {count}")
+            }
+            Self::TooManyEventEntries(count) => {
+                write!(f, "event list contains {count} entries; maximum is 64")
+            }
+            Self::InvalidEventRewardCount(count) => {
+                write!(f, "event contains a negative reward count: {count}")
+            }
+            Self::TooManyEventRewards(count) => {
+                write!(f, "event contains {count} rewards; maximum is 64")
             }
         }
     }

@@ -15,6 +15,12 @@ fn load_map_scene(
         .resolve(&map_path)
         .map_err(|error| error.to_string())?
         .ok_or_else(|| format!("map node {map_path:?} was not found"))?;
+    let underwater = map
+        .child("info")
+        .map_err(|error| error.to_string())?
+        .and_then(|info| integer_property(&info, "swim"))
+        .unwrap_or(0)
+        != 0;
     let minimap = match minimap::MiniMapData::load(archive, map_id) {
         Ok(minimap) => minimap,
         Err(error) => {
@@ -96,6 +102,22 @@ fn load_map_scene(
     } else {
         Vec::new()
     };
+    let mut door_frames = append_portal_animation(
+        &mut sprites,
+        archive,
+        "MapHelper.img/portal/game/portal",
+        &mut cache,
+    )?;
+    // The supplied v83 Map.nx has no dedicated `portal` node under `game`;
+    // reuse the authored visible-portal animation so server doors remain visible.
+    if door_frames.is_empty() {
+        door_frames = append_portal_animation(
+            &mut sprites,
+            archive,
+            "MapHelper.img/portal/game/pv",
+            &mut cache,
+        )?;
+    }
     let avatar_frames =
         if let (Some(character_archive), Some(character)) = (character_archive, character) {
             append_character_animations(
@@ -186,6 +208,7 @@ fn load_map_scene(
         actions: Vec::new(),
         map_scene: Some(MapSceneData {
             map_id,
+            underwater,
             footholds,
             spawn: (f64::from(spawn.0), f64::from(spawn_y)),
             camera_offset,
@@ -202,6 +225,7 @@ fn load_map_scene(
             portals,
             regular_portal_frames,
             hidden_portal_frames,
+            door_frames,
         }),
         animated_art: Vec::new(),
         login_buttons: Vec::new(),

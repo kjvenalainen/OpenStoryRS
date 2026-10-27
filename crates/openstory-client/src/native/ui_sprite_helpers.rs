@@ -1,3 +1,47 @@
+/// Resolves UI window art across the v83 and newer NX layouts. The v83 archive
+/// puts these windows in `UIWindow.img`; newer archives split them into
+/// `UIWindow2.img`/`UIWindow4.img` and rename several window groups.
+fn resolve_ui_path(root: &NxNode, path: &str) -> Result<Option<NxNode>, String> {
+    if let Some(node) = root.resolve(path).map_err(|error| error.to_string())? {
+        return Ok(Some(node));
+    }
+
+    let Some(suffix) = ["UIWindow2.img/", "UIWindow3.img/", "UIWindow4.img/"]
+        .iter()
+        .find_map(|prefix| path.strip_prefix(prefix))
+    else {
+        return Ok(None);
+    };
+
+    let aliases = [
+        ("Equip/character/", "Equip/"),
+        ("Skill/main/", "Skill/"),
+        ("Shop2/", "Shop/"),
+        ("OptionMenu/", "GameOpt/"),
+        ("Stat/main/", "Stat/"),
+        ("UserList/Main/Party/partyOn", "UserList/Party/party0"),
+        ("UserList/Main/Friend/title", "UserList/Friend/friend0"),
+        ("UserList/Sheet2/0", "UserList/Party/party0"),
+        ("UserList/Sheet2/1", "UserList/Party/party1"),
+        ("UserList/line", "UserList/Friend/line"),
+        ("UserList/Main/", "UserList/"),
+    ];
+    for (from, to) in aliases {
+        if let Some(rest) = suffix.strip_prefix(from) {
+            let candidate = format!("UIWindow.img/{to}{rest}");
+            if let Some(node) = root
+                .resolve(&candidate)
+                .map_err(|error| error.to_string())?
+            {
+                return Ok(Some(node));
+            }
+        }
+    }
+
+    let candidate = format!("UIWindow.img/{suffix}");
+    root.resolve(&candidate).map_err(|error| error.to_string())
+}
+
 fn append_login_button(
     sprites: &mut Vec<DecodedSprite>,
     actions: &mut Vec<LoginActionRegion>,
@@ -54,10 +98,7 @@ fn append_sprite(
     anchor_y: f32,
     scale: f32,
 ) -> Result<(), String> {
-    let node = archive
-        .root()
-        .resolve(path)
-        .map_err(|error| error.to_string())?
+    let node = resolve_ui_path(&archive.root(), path)?
         .ok_or_else(|| format!("NX node {path:?} was not found"))?;
     append_node_sprite(sprites, &node, path, anchor_x, anchor_y, scale)
 }
@@ -70,10 +111,7 @@ fn append_optional_sprite(
     anchor_y: f32,
     scale: f32,
 ) -> Result<Option<SpriteRect>, String> {
-    let node = archive
-        .root()
-        .resolve(path)
-        .map_err(|error| error.to_string())?;
+    let node = resolve_ui_path(&archive.root(), path)?;
     let Some(node) = node else {
         return Ok(None);
     };
@@ -90,11 +128,7 @@ fn append_scaled_ui_animation(
     anchor_y: f32,
     scale: f32,
 ) -> Result<Option<MapArtAnimationAsset>, String> {
-    let Some(source) = archive
-        .root()
-        .resolve(path)
-        .map_err(|error| error.to_string())?
-    else {
+    let Some(source) = resolve_ui_path(&archive.root(), path)? else {
         return Ok(None);
     };
     let mut frame_nodes = numeric_children(&source)?;
@@ -135,10 +169,7 @@ fn append_optional_sprite_at_top_left(
     top: f32,
     scale: f32,
 ) -> Result<Option<SpriteRect>, String> {
-    let node = archive
-        .root()
-        .resolve(path)
-        .map_err(|error| error.to_string())?;
+    let node = resolve_ui_path(&archive.root(), path)?;
     let Some(node) = node else {
         return Ok(None);
     };
@@ -232,6 +263,251 @@ fn build_quit_confirmation_sprites(
     Ok((sprites, [yes, no]))
 }
 
+fn build_server_notice_art(
+    archive: &NxArchive,
+    font: &fontdue::Font,
+    message: &str,
+) -> Result<(u32, u32, Vec<u8>, SpriteRect, SpriteRect), String> {
+    let background_path = "Login.img/Notice/backgrnd/0";
+    let background = archive
+        .root()
+        .resolve(background_path)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| format!("missing v83 server-notice asset {background_path:?}"))?;
+    let bitmap = background
+        .bitmap()
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| format!("v83 server-notice asset {background_path:?} is not a bitmap"))?;
+    let width = u32::from(bitmap.width());
+    let height = u32::from(bitmap.height());
+    let mut pixels = bitmap
+        .decode_bgra_shared()
+        .map_err(|error| error.to_string())?
+        .to_vec();
+    let panel = SpriteRect {
+        x: (1024.0 - width as f32) / 2.0,
+        y: (768.0 - height as f32) / 2.0,
+        width: width as f32,
+        height: height as f32,
+        blend_mode: BlendMode::Alpha,
+    };
+    let button_width = 76_u32.min(width.saturating_sub(24));
+    let button_height = 34_u32.min(height.saturating_sub(24));
+    let button = SpriteRect {
+        x: panel.x + (width - button_width) as f32 / 2.0,
+        y: panel.y + height as f32 - button_height as f32 - 22.0,
+        width: button_width as f32,
+        height: button_height as f32,
+        blend_mode: BlendMode::Alpha,
+    };
+
+    let font_size = 14.0;
+    let text_left = 104_u32.min(width.saturating_sub(24));
+    let content_width = width.saturating_sub(text_left + 24);
+    let lines = wrap_server_notice(font, message, font_size, content_width as f32, 4);
+    let line_height = font_size.ceil() as u32 + 5;
+    let text_top = 30;
+    for (line_index, line) in lines.iter().enumerate() {
+        let line_width = measured_text_width(font, line, font_size)
+            .ceil()
+            .clamp(1.0, content_width as f32) as u32
+            + 2;
+        let label = rasterize_label_color(
+            font,
+            line,
+            font_size,
+            line_width,
+            line_height,
+            [55, 40, 29],
+        );
+        let top = text_top + line_index as u32 * line_height;
+        blend_notice_label(
+            &mut pixels,
+            width,
+            height,
+            text_left,
+            top,
+            &label,
+            line_width,
+            line_height,
+        );
+    }
+
+    let button_x = (button.x - panel.x) as u32;
+    let button_y = (button.y - panel.y) as u32;
+    fill_notice_rect(
+        &mut pixels,
+        width,
+        height,
+        button_x,
+        button_y,
+        button_width,
+        button_height,
+        [165, 194, 221, 255],
+    );
+    stroke_notice_rect(
+        &mut pixels,
+        width,
+        height,
+        button_x,
+        button_y,
+        button_width,
+        button_height,
+        [55, 93, 130, 255],
+    );
+    let label_width = measured_text_width(font, "OK", font_size)
+        .ceil()
+        .max(1.0) as u32
+        + 2;
+    let label_height = font_size.ceil() as u32 + 5;
+    let label = rasterize_label_color(
+        font,
+        "OK",
+        font_size,
+        label_width,
+        label_height,
+        [35, 48, 69],
+    );
+    let label_left = button_x + button_width.saturating_sub(label_width) / 2;
+    let label_top = button_y + button_height.saturating_sub(label_height) / 2;
+    blend_notice_label(
+        &mut pixels,
+        width,
+        height,
+        label_left,
+        label_top,
+        &label,
+        label_width,
+        label_height,
+    );
+    Ok((width, height, pixels, panel, button))
+}
+
+fn wrap_server_notice(
+    font: &fontdue::Font,
+    message: &str,
+    font_size: f32,
+    max_width: f32,
+    max_lines: usize,
+) -> Vec<String> {
+    let bounded_message = message.chars().take(512).collect::<String>();
+    let mut lines = Vec::new();
+    for paragraph in bounded_message.replace('\r', "").split('\n') {
+        let mut line = String::new();
+        for word in paragraph.split_whitespace() {
+            let candidate = if line.is_empty() {
+                word.to_owned()
+            } else {
+                format!("{line} {word}")
+            };
+            if measured_text_width(font, &candidate, font_size) <= max_width {
+                line = candidate;
+                continue;
+            }
+            if !line.is_empty() {
+                lines.push(std::mem::take(&mut line));
+                if lines.len() >= max_lines {
+                    return lines;
+                }
+            }
+            for character in word.chars() {
+                let candidate = format!("{line}{character}");
+                if !line.is_empty() && measured_text_width(font, &candidate, font_size) > max_width {
+                    lines.push(std::mem::take(&mut line));
+                    if lines.len() >= max_lines {
+                        return lines;
+                    }
+                }
+                line.push(character);
+            }
+        }
+        if !line.is_empty() || paragraph.is_empty() {
+            lines.push(line);
+            if lines.len() >= max_lines {
+                return lines;
+            }
+        }
+    }
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
+    lines
+}
+
+fn blend_notice_label(
+    pixels: &mut [u8],
+    width: u32,
+    height: u32,
+    left: u32,
+    top: u32,
+    label: &[u8],
+    label_width: u32,
+    label_height: u32,
+) {
+    for y in 0..label_height.min(height.saturating_sub(top)) {
+        for x in 0..label_width.min(width.saturating_sub(left)) {
+            let source = ((y * label_width + x) * 4) as usize;
+            let destination = (((top + y) * width + left + x) * 4) as usize;
+            let alpha = u16::from(label[source + 3]);
+            if alpha == 0 {
+                continue;
+            }
+            for channel in 0..3 {
+                pixels[destination + channel] = ((u16::from(label[source + channel]) * alpha
+                    + u16::from(pixels[destination + channel]) * (255 - alpha))
+                    / 255) as u8;
+            }
+            pixels[destination + 3] = 255;
+        }
+    }
+}
+
+fn fill_notice_rect(
+    pixels: &mut [u8],
+    canvas_width: u32,
+    canvas_height: u32,
+    left: u32,
+    top: u32,
+    width: u32,
+    height: u32,
+    color: [u8; 4],
+) {
+    for y in top..top.saturating_add(height).min(canvas_height) {
+        for x in left..left.saturating_add(width).min(canvas_width) {
+            let offset = ((y * canvas_width + x) * 4) as usize;
+            pixels[offset..offset + 4].copy_from_slice(&color);
+        }
+    }
+}
+
+fn stroke_notice_rect(
+    pixels: &mut [u8],
+    canvas_width: u32,
+    canvas_height: u32,
+    left: u32,
+    top: u32,
+    width: u32,
+    height: u32,
+    color: [u8; 4],
+) {
+    for x in left..left.saturating_add(width).min(canvas_width) {
+        for y in [top, top.saturating_add(height.saturating_sub(1))] {
+            if y < canvas_height {
+                let offset = ((y * canvas_width + x) * 4) as usize;
+                pixels[offset..offset + 4].copy_from_slice(&color);
+            }
+        }
+    }
+    for y in top..top.saturating_add(height).min(canvas_height) {
+        for x in [left, left.saturating_add(width.saturating_sub(1))] {
+            if x < canvas_width {
+                let offset = ((y * canvas_width + x) * 4) as usize;
+                pixels[offset..offset + 4].copy_from_slice(&color);
+            }
+        }
+    }
+}
+
 fn centered_text_x(font: &fontdue::Font, text: &str, font_size: f32) -> f32 {
     512.0 - measured_text_width(font, text, font_size) / 2.0
 }
@@ -286,6 +562,17 @@ fn rasterize_label(
     width: u32,
     height: u32,
 ) -> Vec<u8> {
+    rasterize_label_color(font, text, font_size, width, height, [255, 255, 255])
+}
+
+fn rasterize_label_color(
+    font: &fontdue::Font,
+    text: &str,
+    font_size: f32,
+    width: u32,
+    height: u32,
+    color: [u8; 3],
+) -> Vec<u8> {
     let mut pixels = vec![0; width as usize * height as usize * 4];
     let mut pen_x = 0.0_f32;
     let baseline = font_size.ceil() as i32 + 2;
@@ -308,7 +595,8 @@ fn rasterize_label(
                 }
                 let src = row * metrics.width + column;
                 let dst = (y as usize * width as usize + x as usize) * 4;
-                pixels[dst..dst + 4].copy_from_slice(&[255, 255, 255, coverage[src]]);
+                pixels[dst..dst + 4]
+                    .copy_from_slice(&[color[0], color[1], color[2], coverage[src]]);
             }
         }
         pen_x += metrics.advance_width;

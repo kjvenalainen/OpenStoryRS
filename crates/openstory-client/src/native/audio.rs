@@ -129,6 +129,31 @@ impl AudioEngine {
         player.detach();
     }
 
+    pub(super) fn play_item_sound(&mut self, archive: &NxArchive, item_id: i32) {
+        if item_id <= 0 {
+            return;
+        }
+        let exact_id = format!("{item_id:08}");
+        let category_id = format!("{:08}", (item_id / 10_000) * 10_000);
+        let candidates = [exact_id, category_id, String::from("02000000")];
+        for (index, sound_id) in candidates.iter().enumerate() {
+            if candidates[..index].contains(sound_id) {
+                continue;
+            }
+            let path = format!("Item.img/{sound_id}/Use");
+            match self.audio_payload(archive, &path) {
+                Ok(Some(_)) => {
+                    self.play_ui_sound(archive, &path);
+                    return;
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    eprintln!("OpenStory audio: could not load item sound {path:?}: {error}");
+                }
+            }
+        }
+    }
+
     pub(super) fn play_field_effect_sound(&mut self, archive: &NxArchive, path: &str) {
         let Some((category, name)) = path.split_once('/') else {
             return;
@@ -213,6 +238,19 @@ impl AudioEngine {
         }
         let skill_name = format!("{skill_id:07}");
         self.play_world_sound(archive, &format!("Skill.img/{skill_name}/Use"), position);
+    }
+
+    pub(super) fn play_skill_hit(
+        &mut self,
+        archive: &NxArchive,
+        skill_id: i32,
+        position: (i16, i16),
+    ) {
+        if skill_id <= 0 {
+            return;
+        }
+        let skill_name = format!("{skill_id:07}");
+        self.play_world_sound(archive, &format!("Skill.img/{skill_name}/Hit"), position);
     }
 
     fn audio_payload(

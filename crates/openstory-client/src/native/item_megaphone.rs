@@ -265,10 +265,7 @@ fn sprite_rect(archive: &NxArchive, path: &str) -> Result<Option<SpriteRect>, St
 }
 
 fn load_sprite(archive: &NxArchive, path: &str) -> Result<Option<Sprite>, String> {
-    let node = archive
-        .root()
-        .resolve(path)
-        .map_err(|error| error.to_string())?;
+    let node = super::resolve_ui_path(&archive.root(), path)?;
     let Some(node) = node else {
         return Ok(None);
     };

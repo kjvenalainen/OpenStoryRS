@@ -2,12 +2,17 @@ use super::*;
 
 impl ClientApp {
     pub(super) fn refresh_inventory_texture(&mut self) {
+        if self.show_equipment_inventory {
+            self.refresh_equipment_inventory_texture();
+        }
         if !self.show_inventory {
+            self.inventory_tooltip_texture = None;
             return;
         }
         self.update_inventory_hover();
         let Some(inventory) = self.inventory.as_ref() else {
             self.inventory_texture = None;
+            self.inventory_tooltip_texture = None;
             return;
         };
         if self.pending_scroll_slot.is_some_and(|slot| {
@@ -53,6 +58,81 @@ impl ClientApp {
             Ok(Some(texture)) => self.inventory_texture = Some(texture),
             Ok(None) => {}
             Err(error) => eprintln!("OpenStory: could not update inventory panel: {error}"),
+        }
+        self.refresh_inventory_tooltip_texture();
+    }
+
+    pub(super) fn refresh_equipment_inventory_texture(&mut self) {
+        if !self.show_equipment_inventory {
+            return;
+        }
+        let empty_inventory = openstory_protocol::InventorySnapshot::default();
+        let inventory = self.inventory.as_ref().unwrap_or(&empty_inventory);
+        let pixels = render_equipment_inventory_panel(
+            inventory,
+            &self.legacy_ui_archive,
+            &self.item_archive,
+            &self.character_archive,
+            &mut self.inventory_icon_cache,
+        );
+        let Some(renderer) = self.renderer.as_ref() else {
+            return;
+        };
+        const WIDTH: u32 = EQUIPMENT_INVENTORY_PANEL_WIDTH;
+        const HEIGHT: u32 = EQUIPMENT_INVENTORY_PANEL_HEIGHT;
+        let result = if let Some(texture) = self.equipment_inventory_texture.as_ref() {
+            renderer.update_bgra(texture, &pixels).map(|()| None)
+        } else {
+            renderer.upload_bgra(WIDTH, HEIGHT, &pixels).map(Some)
+        };
+        match result {
+            Ok(Some(texture)) => self.equipment_inventory_texture = Some(texture),
+            Ok(None) => {}
+            Err(error) => {
+                eprintln!("OpenStory: could not update equipment inventory panel: {error}")
+            }
+        }
+    }
+
+    fn refresh_inventory_tooltip_texture(&mut self) {
+        let Some(slot) = self.inventory_hover_slot else {
+            self.inventory_tooltip_texture = None;
+            return;
+        };
+        let Some(item) = self.inventory.as_ref().and_then(|inventory| {
+            inventory
+                .items
+                .iter()
+                .find(|item| item.inventory_type == self.inventory_tab && item.slot == slot)
+                .cloned()
+        }) else {
+            self.inventory_tooltip_texture = None;
+            return;
+        };
+        let pixels = render_inventory_tooltip(
+            &self.font,
+            &item,
+            &self.legacy_ui_archive,
+            &self.item_archive,
+            &self.character_archive,
+            &self.string_archive,
+            &mut self.inventory_icon_cache,
+            &mut self.item_name_cache,
+        );
+        let Some(renderer) = self.renderer.as_ref() else {
+            return;
+        };
+        let result = if let Some(texture) = self.inventory_tooltip_texture.as_ref() {
+            renderer.update_bgra(texture, &pixels).map(|()| None)
+        } else {
+            renderer
+                .upload_bgra(INVENTORY_TOOLTIP_WIDTH, INVENTORY_TOOLTIP_HEIGHT, &pixels)
+                .map(Some)
+        };
+        match result {
+            Ok(Some(texture)) => self.inventory_tooltip_texture = Some(texture),
+            Ok(None) => {}
+            Err(error) => eprintln!("OpenStory: could not update inventory item tooltip: {error}"),
         }
     }
 
@@ -288,6 +368,16 @@ impl ClientApp {
         {
             return;
         }
+        if let Some(reason) =
+            merchant_stock_block_reason(item, &self.item_archive, &self.character_archive)
+        {
+            if let Some(room) = self.hired_merchant_room.as_mut() {
+                room.stock_source = None;
+                room.notice = Some(reason.to_owned());
+            }
+            self.refresh_hired_merchant_room_texture();
+            return;
+        }
         let source = HiredMerchantStockSource {
             inventory_type,
             slot,
@@ -304,6 +394,18 @@ impl ClientApp {
     }
 
     pub(super) fn submit_hired_merchant_stock(&mut self) {
+        if self
+            .hired_merchant_room
+            .as_ref()
+            .is_none_or(|room| room.state.my_slot != 0)
+        {
+            if let Some(room) = self.hired_merchant_room.as_mut() {
+                room.stock_source = None;
+                room.notice = Some("Only the shop owner can list items".to_owned());
+            }
+            self.refresh_hired_merchant_room_texture();
+            return;
+        }
         let Some((source, price)) = self
             .hired_merchant_room
             .as_ref()
@@ -320,6 +422,20 @@ impl ClientApp {
                 item.inventory_type == source.inventory_type && item.slot == source.slot
             })
         });
+        if let Some(reason) = current.and_then(|item| {
+            (item.item_id == source.item_id && item.count >= source.count)
+                .then(|| {
+                    merchant_stock_block_reason(item, &self.item_archive, &self.character_archive)
+                })
+                .flatten()
+        }) {
+            if let Some(room) = self.hired_merchant_room.as_mut() {
+                room.notice = Some(reason.to_owned());
+                room.stock_source = None;
+            }
+            self.refresh_hired_merchant_room_texture();
+            return;
+        }
         if !current.is_some_and(|item| item.item_id == source.item_id && item.count >= source.count)
         {
             if let Some(room) = self.hired_merchant_room.as_mut() {

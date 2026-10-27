@@ -8,7 +8,10 @@ impl ClientApp {
         let pixels = render_options_panel(
             &self.font,
             self.settings,
+            self.display_settings,
+            self.input_settings,
             self.gameplay_settings,
+            self.social_settings,
             self.settings_selected_slider,
             self.settings_notice.as_deref(),
         );
@@ -31,8 +34,11 @@ impl ClientApp {
 
     pub(super) fn open_settings(&mut self) {
         self.settings_original = self.settings;
+        self.display_settings_original = self.display_settings;
+        self.input_settings_original = self.input_settings;
         self.gameplay_settings_original = self.gameplay_settings;
-        self.settings_selected_slider = OptionSlider::Music;
+        self.social_settings_original = self.social_settings;
+        self.settings_selected_slider = OptionControl::Music;
         self.settings_dragging = None;
         self.settings_notice = None;
         self.show_settings = true;
@@ -70,9 +76,14 @@ impl ClientApp {
 
     pub(super) fn cancel_settings(&mut self) {
         self.settings = self.settings_original;
+        self.display_settings = self.display_settings_original;
+        self.input_settings = self.input_settings_original;
         self.gameplay_settings = self.gameplay_settings_original;
-        self.audio.set_music_volume(self.settings.music_volume);
-        self.audio.set_sound_volume(self.settings.effects_volume);
+        self.social_settings = self.social_settings_original;
+        self.audio
+            .set_music_volume(self.settings.effective_music_volume());
+        self.audio
+            .set_sound_volume(self.settings.effective_effects_volume());
         self.show_settings = false;
         self.settings_dragging = None;
         self.settings_notice = None;
@@ -80,10 +91,21 @@ impl ClientApp {
     }
 
     pub(super) fn save_settings(&mut self) {
-        match save_settings(self.settings, self.gameplay_settings) {
+        match save_settings(
+            self.settings,
+            self.display_settings,
+            self.input_settings,
+            self.gameplay_settings,
+            self.social_settings,
+        ) {
             Ok(path) => {
                 self.settings_original = self.settings;
+                self.display_settings_original = self.display_settings;
+                self.input_settings_original = self.input_settings;
                 self.gameplay_settings_original = self.gameplay_settings;
+                self.social_settings_original = self.social_settings;
+                self.apply_display_settings();
+                apply_mouse_speed(self.input_settings.mouse_speed);
                 self.show_settings = false;
                 self.settings_dragging = None;
                 self.settings_notice = None;
@@ -97,41 +119,184 @@ impl ClientApp {
         }
     }
 
-    pub(super) fn set_option_setting(&mut self, slider: OptionSlider, value: u8) {
-        match slider {
-            OptionSlider::Music => {
+    fn apply_display_settings(&self) {
+        let Some(window) = self.window.as_ref() else {
+            return;
+        };
+        if self.display_settings.fullscreen {
+            window.set_fullscreen(Some(winit::window::Fullscreen::Borderless(
+                window.current_monitor(),
+            )));
+        } else {
+            window.set_fullscreen(None);
+            let _ = window.request_inner_size(winit::dpi::LogicalSize::new(
+                f64::from(self.display_settings.width),
+                f64::from(self.display_settings.height),
+            ));
+        }
+    }
+
+    pub(super) fn set_option_setting(&mut self, control: OptionControl, value: u8) {
+        match control {
+            OptionControl::GraphicsQuality => {
+                self.gameplay_settings.graphics_quality = value.min(100);
+            }
+            OptionControl::EffectsQuality => {
+                self.gameplay_settings.effects_quality = value.min(100);
+            }
+            OptionControl::Music => {
                 self.settings.music_volume = value.min(100);
-                self.audio.set_music_volume(self.settings.music_volume);
+                self.audio
+                    .set_music_volume(self.settings.effective_music_volume());
             }
-            OptionSlider::Effects => {
+            OptionControl::MuteMusic => {
+                self.settings.mute_music = value >= 50;
+                self.audio
+                    .set_music_volume(self.settings.effective_music_volume());
+            }
+            OptionControl::SoundEffects => {
                 self.settings.effects_volume = value.min(100);
-                self.audio.set_sound_volume(self.settings.effects_volume);
+                self.audio
+                    .set_sound_volume(self.settings.effective_effects_volume());
             }
-            OptionSlider::HpWarning => {
+            OptionControl::MuteEffects => {
+                self.settings.mute_effects = value >= 50;
+                self.audio
+                    .set_sound_volume(self.settings.effective_effects_volume());
+            }
+            OptionControl::HpWarning => {
                 self.gameplay_settings.hp_warning = value.min(100);
             }
-            OptionSlider::MpWarning => {
+            OptionControl::MpWarning => {
                 self.gameplay_settings.mp_warning = value.min(100);
             }
+            OptionControl::MouseSpeed => {
+                self.input_settings.mouse_speed = value.min(100);
+            }
+            OptionControl::ScreenShake => {
+                self.gameplay_settings.screen_shake_enabled = value >= 50;
+            }
+            OptionControl::Windowed => self.display_settings.fullscreen = value < 50,
+            OptionControl::Resolution800 if value >= 50 => {
+                self.display_settings.width = 800;
+                self.display_settings.height = 600;
+            }
+            OptionControl::Resolution1024 if value >= 50 => {
+                self.display_settings.width = 1024;
+                self.display_settings.height = 768;
+            }
+            OptionControl::Resolution800 | OptionControl::Resolution1024 => {}
+            OptionControl::AllowWhisper => self.social_settings.allow_whisper = value >= 50,
+            OptionControl::AllowChatInvite => self.social_settings.allow_chat_invite = value >= 50,
+            OptionControl::AllowPartyInvite => {
+                self.social_settings.allow_party_invite = value >= 50
+            }
+            OptionControl::AllowGuildChat => self.social_settings.allow_guild_chat = value >= 50,
+            OptionControl::AllowAllianceChat => {
+                self.social_settings.allow_alliance_chat = value >= 50
+            }
+            OptionControl::AllowFamilyInvite => {
+                self.social_settings.allow_family_invite = value >= 50
+            }
+            OptionControl::AllowFriendChat => self.social_settings.allow_friend_chat = value >= 50,
+            OptionControl::AllowTradeRequest => {
+                self.social_settings.allow_trade_request = value >= 50
+            }
+            OptionControl::AllowExpeditionInvite => {
+                self.social_settings.allow_expedition_invite = value >= 50
+            }
+            OptionControl::AllowGuildInvite => {
+                self.social_settings.allow_guild_invite = value >= 50
+            }
+            OptionControl::AllowAllianceInvite => {
+                self.social_settings.allow_alliance_invite = value >= 50
+            }
+            OptionControl::AllowFollow => self.social_settings.allow_follow = value >= 50,
         }
         self.settings_notice = None;
         self.refresh_settings_texture();
     }
 
     pub(super) fn adjust_selected_option_setting(&mut self, amount: i16) {
-        let current = match self.settings_selected_slider {
-            OptionSlider::Music => self.settings.music_volume,
-            OptionSlider::Effects => self.settings.effects_volume,
-            OptionSlider::HpWarning => self.gameplay_settings.hp_warning,
-            OptionSlider::MpWarning => self.gameplay_settings.mp_warning,
+        let value = if self.settings_selected_slider.is_toggle() {
+            if amount < 0 { 0 } else { 100 }
+        } else {
+            let current = self.option_setting_value(self.settings_selected_slider);
+            (i16::from(current) + amount).clamp(0, 100) as u8
         };
-        let value = (i16::from(current) + amount).clamp(0, 100) as u8;
         self.set_option_setting(self.settings_selected_slider, value);
     }
 
-    pub(super) fn set_option_setting_from_cursor(&mut self, slider: OptionSlider, x: f32) {
+    pub(super) fn toggle_selected_option_setting(&mut self) {
+        if self.settings_selected_slider.is_toggle() {
+            let current = self.option_setting_value(self.settings_selected_slider);
+            self.set_option_setting(
+                self.settings_selected_slider,
+                if current >= 50 { 0 } else { 100 },
+            );
+        }
+    }
+
+    fn option_setting_value(&self, control: OptionControl) -> u8 {
+        match control {
+            OptionControl::GraphicsQuality => self.gameplay_settings.graphics_quality,
+            OptionControl::EffectsQuality => self.gameplay_settings.effects_quality,
+            OptionControl::Music => self.settings.music_volume,
+            OptionControl::MuteMusic => bool_to_percent(self.settings.mute_music),
+            OptionControl::SoundEffects => self.settings.effects_volume,
+            OptionControl::MuteEffects => bool_to_percent(self.settings.mute_effects),
+            OptionControl::HpWarning => self.gameplay_settings.hp_warning,
+            OptionControl::MpWarning => self.gameplay_settings.mp_warning,
+            OptionControl::MouseSpeed => self.input_settings.mouse_speed,
+            OptionControl::ScreenShake => {
+                bool_to_percent(self.gameplay_settings.screen_shake_enabled)
+            }
+            OptionControl::Windowed => bool_to_percent(!self.display_settings.fullscreen),
+            OptionControl::Resolution800 => bool_to_percent(
+                self.display_settings.width == 800 && self.display_settings.height == 600,
+            ),
+            OptionControl::Resolution1024 => bool_to_percent(
+                self.display_settings.width == 1024 && self.display_settings.height == 768,
+            ),
+            OptionControl::AllowWhisper => bool_to_percent(self.social_settings.allow_whisper),
+            OptionControl::AllowChatInvite => {
+                bool_to_percent(self.social_settings.allow_chat_invite)
+            }
+            OptionControl::AllowPartyInvite => {
+                bool_to_percent(self.social_settings.allow_party_invite)
+            }
+            OptionControl::AllowGuildChat => bool_to_percent(self.social_settings.allow_guild_chat),
+            OptionControl::AllowAllianceChat => {
+                bool_to_percent(self.social_settings.allow_alliance_chat)
+            }
+            OptionControl::AllowFamilyInvite => {
+                bool_to_percent(self.social_settings.allow_family_invite)
+            }
+            OptionControl::AllowFriendChat => {
+                bool_to_percent(self.social_settings.allow_friend_chat)
+            }
+            OptionControl::AllowTradeRequest => {
+                bool_to_percent(self.social_settings.allow_trade_request)
+            }
+            OptionControl::AllowExpeditionInvite => {
+                bool_to_percent(self.social_settings.allow_expedition_invite)
+            }
+            OptionControl::AllowGuildInvite => {
+                bool_to_percent(self.social_settings.allow_guild_invite)
+            }
+            OptionControl::AllowAllianceInvite => {
+                bool_to_percent(self.social_settings.allow_alliance_invite)
+            }
+            OptionControl::AllowFollow => bool_to_percent(self.social_settings.allow_follow),
+        }
+    }
+
+    pub(super) fn set_option_setting_from_cursor(&mut self, slider: OptionControl, x: f32) {
         const TRACK_LEFT: f32 = SETTINGS_PANEL_X + 148.0;
         const TRACK_WIDTH: f32 = 280.0;
+        if slider.track_y().is_none() {
+            return;
+        }
         let percent = ((x - TRACK_LEFT) / TRACK_WIDTH * 100.0)
             .round()
             .clamp(0.0, 100.0);
@@ -148,21 +313,50 @@ impl ClientApp {
         }
         let local_x = cursor.x - SETTINGS_PANEL_X;
         let local_y = cursor.y - SETTINGS_PANEL_Y;
-        if (49.0..83.0).contains(&local_y) && (138.0..438.0).contains(&local_x) {
-            self.settings_dragging = Some(OptionSlider::Music);
-            self.set_option_setting_from_cursor(OptionSlider::Music, cursor.x);
-        } else if (91.0..125.0).contains(&local_y) && (138.0..438.0).contains(&local_x) {
-            self.settings_dragging = Some(OptionSlider::Effects);
-            self.set_option_setting_from_cursor(OptionSlider::Effects, cursor.x);
-        } else if (152.0..186.0).contains(&local_y) && (138.0..438.0).contains(&local_x) {
-            self.settings_dragging = Some(OptionSlider::HpWarning);
-            self.set_option_setting_from_cursor(OptionSlider::HpWarning, cursor.x);
-        } else if (194.0..228.0).contains(&local_y) && (138.0..438.0).contains(&local_x) {
-            self.settings_dragging = Some(OptionSlider::MpWarning);
-            self.set_option_setting_from_cursor(OptionSlider::MpWarning, cursor.x);
-        } else if (278.0..314.0).contains(&local_y) && (266.0..362.0).contains(&local_x) {
+        if (138.0..438.0).contains(&local_x)
+            && let Some(slider) = [
+                OptionControl::GraphicsQuality,
+                OptionControl::EffectsQuality,
+                OptionControl::Music,
+                OptionControl::SoundEffects,
+                OptionControl::HpWarning,
+                OptionControl::MpWarning,
+                OptionControl::MouseSpeed,
+            ]
+            .into_iter()
+            .find(|slider| {
+                slider
+                    .track_y()
+                    .is_some_and(|y| (y as f32 - 17.0..y as f32 + 18.0).contains(&local_y))
+            })
+        {
+            self.settings_selected_slider = slider;
+            self.settings_dragging = Some(slider);
+            self.set_option_setting_from_cursor(slider, cursor.x);
+        } else if (266.0..296.0).contains(&local_y) && (24.0..218.0).contains(&local_x) {
+            self.settings_selected_slider = OptionControl::ScreenShake;
+            self.toggle_selected_option_setting();
+        } else if (107.0..139.0).contains(&local_y) && (478.0..590.0).contains(&local_x) {
+            self.settings_selected_slider = OptionControl::MuteMusic;
+            self.toggle_selected_option_setting();
+        } else if (137.0..169.0).contains(&local_y) && (478.0..590.0).contains(&local_x) {
+            self.settings_selected_slider = OptionControl::MuteEffects;
+            self.toggle_selected_option_setting();
+        } else if (298.0..326.0).contains(&local_y) && (20.0..145.0).contains(&local_x) {
+            self.settings_selected_slider = OptionControl::Windowed;
+            self.toggle_selected_option_setting();
+        } else if (298.0..326.0).contains(&local_y) && (263.0..387.0).contains(&local_x) {
+            self.settings_selected_slider = OptionControl::Resolution800;
+            self.set_option_setting(OptionControl::Resolution800, 100);
+        } else if (298.0..326.0).contains(&local_y) && (393.0..525.0).contains(&local_x) {
+            self.settings_selected_slider = OptionControl::Resolution1024;
+            self.set_option_setting(OptionControl::Resolution1024, 100);
+        } else if let Some(control) = option_permission_at(local_x, local_y) {
+            self.settings_selected_slider = control;
+            self.toggle_selected_option_setting();
+        } else if (584.0..620.0).contains(&local_y) && (204.0..300.0).contains(&local_x) {
             self.save_settings();
-        } else if (278.0..314.0).contains(&local_y) && (370.0..466.0).contains(&local_x) {
+        } else if (584.0..620.0).contains(&local_y) && (312.0..408.0).contains(&local_x) {
             self.cancel_settings();
         }
     }
@@ -615,6 +809,41 @@ impl ClientApp {
         true
     }
 
+    pub(super) fn show_status_message(&mut self, text: String, color: [u8; 3]) {
+        if text.is_empty() {
+            return;
+        }
+        self.status_messages.push_front(StatusMessageRuntime {
+            text,
+            color,
+            created_at: Instant::now(),
+            texture: None,
+        });
+        while self.status_messages.len() > STATUS_MESSAGE_LIMIT {
+            self.status_messages.pop_back();
+        }
+        self.refresh_status_message_textures();
+        if let Some(window) = self.window.as_ref() {
+            window.request_redraw();
+        }
+    }
+
+    pub(super) fn refresh_status_message_textures(&mut self) {
+        let Some(renderer) = self.renderer.as_ref() else {
+            return;
+        };
+        for message in &mut self.status_messages {
+            if message.texture.is_some() {
+                continue;
+            }
+            let pixels = render_status_message_line(&self.font, &message.text, message.color);
+            match renderer.upload_bgra(STATUS_MESSAGE_WIDTH, STATUS_MESSAGE_HEIGHT, &pixels) {
+                Ok(texture) => message.texture = Some(texture),
+                Err(error) => eprintln!("OpenStoryRS: could not upload status message: {error}"),
+            }
+        }
+    }
+
     pub(super) fn push_chat_line(&mut self, text: String, color: [u8; 3]) {
         self.chat_lines.push_back(ChatLine { text, color });
         while self.chat_lines.len() > 100 {
@@ -625,4 +854,38 @@ impl ClientApp {
             window.request_redraw();
         }
     }
+}
+
+fn bool_to_percent(value: bool) -> u8 {
+    if value { 100 } else { 0 }
+}
+
+fn option_permission_at(x: f32, y: f32) -> Option<OptionControl> {
+    [
+        OptionControl::AllowWhisper,
+        OptionControl::AllowChatInvite,
+        OptionControl::AllowPartyInvite,
+        OptionControl::AllowGuildChat,
+        OptionControl::AllowAllianceChat,
+        OptionControl::AllowFamilyInvite,
+        OptionControl::AllowFriendChat,
+        OptionControl::AllowTradeRequest,
+        OptionControl::AllowExpeditionInvite,
+        OptionControl::AllowGuildInvite,
+        OptionControl::AllowAllianceInvite,
+        OptionControl::AllowFollow,
+    ]
+    .into_iter()
+    .enumerate()
+    .find_map(|(index, control)| {
+        let column = index / 6;
+        let row = index % 6;
+        let left = 24.0 + column as f32 * 286.0;
+        let top = 422.0 + row as f32 * 25.0;
+        (left - 3.0..left + 274.0)
+            .contains(&x)
+            .then_some(())
+            .filter(|()| (top - 3.0..top + 23.0).contains(&y))
+            .map(|()| control)
+    })
 }

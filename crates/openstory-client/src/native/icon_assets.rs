@@ -13,7 +13,7 @@ fn first_bitmap_node(
 }
 
 fn decode_nx_icon(archive: &NxArchive, path: &str) -> Option<(u32, u32, Arc<[u8]>)> {
-    let node = archive.root().resolve(path).ok().flatten()?;
+    let node = resolve_ui_path(&archive.root(), path).ok().flatten()?;
     let bitmap = first_bitmap_node(&node)
         .ok()
         .flatten()?
@@ -541,7 +541,7 @@ fn learned_skill_level(
         "{:03}.img/skill/{skill_id:07}/level/{level}",
         skill_id / 10_000
     );
-    archive.root().resolve(&path).ok().flatten()
+    resolve_ui_path(&archive.root(), &path).ok().flatten()
 }
 
 fn magic_amplification_skill(job: u16) -> Option<i32> {
@@ -604,10 +604,7 @@ fn read_ui_bitmap(
     archive: &NxArchive,
     path: &str,
 ) -> Result<(u32, u32, Arc<[u8]>, (i16, i16)), String> {
-    let node = archive
-        .root()
-        .resolve(path)
-        .map_err(|error| error.to_string())?
+    let node = resolve_ui_path(&archive.root(), path)?
         .ok_or_else(|| format!("UI bitmap {path:?} was not found"))?;
     let bitmap = node
         .bitmap()

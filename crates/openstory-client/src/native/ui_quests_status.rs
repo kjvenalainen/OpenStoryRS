@@ -979,6 +979,184 @@ fn character_job_name(job: u16) -> String {
     }
 }
 
+fn draw_v83_status_panel_background(
+    font: &fontdue::Font,
+    pixels: &mut [u8],
+    width: usize,
+    height: usize,
+) {
+    fill_dialogue_rect(pixels, width, height, 0, 0, width, height, [25, 25, 27, 255]);
+    fill_dialogue_rect(pixels, width, height, 1, 1, width - 2, height - 2, [112, 114, 116, 255]);
+    fill_dialogue_rect(pixels, width, height, 2, 2, width - 4, height - 4, [222, 225, 226, 255]);
+    fill_dialogue_rect(pixels, width, height, 3, 3, width - 6, height - 6, [244, 246, 246, 255]);
+    fill_v83_status_gradient(
+        pixels,
+        width,
+        height,
+        3,
+        3,
+        width - 6,
+        21,
+        [78, 64, 49, 255],
+        [29, 22, 15, 255],
+    );
+    fill_dialogue_rect(pixels, width, height, 4, 4, width - 8, 1, [174, 164, 147, 255]);
+    let title = "CHARACTER STAT";
+    let title_width = dialogue_text_width(font, title, 9.0).ceil() as usize;
+    draw_dialogue_text(
+        font,
+        pixels,
+        width,
+        height,
+        title,
+        ((width.saturating_sub(title_width)) / 2) as i32,
+        6,
+        9.0,
+        width - 12,
+        14,
+        [235, 196, 64],
+    );
+
+    let left = 7;
+    let row_width = width - 17;
+    let label_width = 61;
+    let value_x = left + label_width;
+    let value_width = row_width - label_width;
+    let draw_row = |pixels: &mut [u8], y: usize, label: &str| {
+        fill_dialogue_rect(pixels, width, height, left, y, row_width, 17, [166, 167, 166, 255]);
+        fill_v83_status_gradient(
+            pixels,
+            width,
+            height,
+            left + 1,
+            y + 1,
+            label_width - 1,
+            15,
+            [0, 220, 142, 255],
+            [0, 168, 91, 255],
+        );
+        fill_dialogue_rect(pixels, width, height, left + 2, y + 2, label_width - 3, 1, [18, 238, 172, 255]);
+        fill_v83_status_gradient(
+            pixels,
+            width,
+            height,
+            value_x,
+            y + 1,
+            value_width - 1,
+            15,
+            [254, 254, 252, 255],
+            [244, 245, 244, 255],
+        );
+        draw_dialogue_text(
+            font,
+            pixels,
+            width,
+            height,
+            label,
+            (left + 4) as i32,
+            (y + 3) as i32,
+            9.0,
+            label_width - 7,
+            12,
+            [255, 255, 255],
+        );
+    };
+
+    for (index, label) in ["NAME", "CLASS", "GUILD", "FAME", "DAMAGE", "HP", "MP"]
+        .into_iter()
+        .enumerate()
+    {
+        draw_row(pixels, 28 + index * 18, label);
+    }
+
+    fill_v83_status_gradient(
+        pixels,
+        width,
+        height,
+        2,
+        156,
+        width - 4,
+        46,
+        [226, 178, 57, 255],
+        [208, 143, 26, 255],
+    );
+    fill_dialogue_rect(pixels, width, height, 3, 156, width - 6, 1, [238, 202, 94, 255]);
+    draw_dialogue_text(
+        font,
+        pixels,
+        width,
+        height,
+        "ABILITY POINT",
+        18,
+        159,
+        11.0,
+        width - 36,
+        16,
+        [255, 255, 255],
+    );
+    fill_dialogue_rect(pixels, width, height, 65, 178, 31, 18, [150, 150, 150, 255]);
+    fill_dialogue_rect(pixels, width, height, 66, 179, 29, 16, [255, 255, 255, 255]);
+
+    for (index, label) in ["STR", "DEX", "INT", "LUK"].into_iter().enumerate() {
+        draw_row(pixels, 206 + index * 18, label);
+    }
+}
+
+fn fill_v83_status_gradient(
+    pixels: &mut [u8],
+    width: usize,
+    height: usize,
+    x: usize,
+    y: usize,
+    rect_width: usize,
+    rect_height: usize,
+    top: [u8; 4],
+    bottom: [u8; 4],
+) {
+    for row in 0..rect_height {
+        let blend = if rect_height <= 1 {
+            0.0
+        } else {
+            row as f32 / (rect_height - 1) as f32
+        };
+        let color = std::array::from_fn(|channel| {
+            (top[channel] as f32 * (1.0 - blend) + bottom[channel] as f32 * blend).round() as u8
+        });
+        fill_dialogue_rect(
+            pixels,
+            width,
+            height,
+            x,
+            y + row,
+            rect_width,
+            1,
+            color,
+        );
+    }
+}
+
+fn round_status_panel_corners(pixels: &mut [u8], width: usize, height: usize) {
+    const RADIUS: usize = 10;
+    let radius_squared = (RADIUS * RADIUS) as f32;
+    for y in 0..RADIUS {
+        for x in 0..RADIUS {
+            let dx = RADIUS as f32 - x as f32 - 0.5;
+            let dy = RADIUS as f32 - y as f32 - 0.5;
+            if dx * dx + dy * dy <= radius_squared {
+                continue;
+            }
+            for (px, py) in [
+                (x, y),
+                (width - x - 1, y),
+                (x, height - y - 1),
+                (width - x - 1, height - y - 1),
+            ] {
+                pixels[(py * width + px) * 4 + 3] = 0;
+            }
+        }
+    }
+}
+
 fn render_status_panel(
     font: &fontdue::Font,
     ui_archive: &NxArchive,
@@ -989,171 +1167,141 @@ fn render_status_panel(
     const WIDTH: usize = STATUS_PANEL_WIDTH as usize;
     const HEIGHT: usize = STATUS_PANEL_HEIGHT as usize;
     let mut pixels = vec![0_u8; WIDTH * HEIGHT * 4];
-    for path in [
-        "UIWindow4.img/Stat/main/backgrnd",
-        "UIWindow4.img/Stat/main/backgrnd2",
-        "UIWindow4.img/Stat/main/backgrnd3",
-    ] {
-        if let Err(error) =
-            composite_nx_ui_bitmap(&mut pixels, WIDTH, HEIGHT, ui_archive, path, 0, 0)
-        {
-            eprintln!("OpenStoryRS: could not draw native stats art {path}: {error}");
-        }
-    }
-
-    let stats = &character.stats;
-    let color = [56, 42, 31];
-    draw_dialogue_text(
-        font,
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        &stats.name,
-        73,
-        26,
-        11.0,
-        132,
-        15,
-        color,
-    );
-    let job = character_job_name(stats.job);
-    draw_dialogue_text(
-        font,
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        &job,
-        74,
-        44,
-        11.0,
-        132,
-        15,
-        color,
-    );
-    draw_dialogue_text(
-        font,
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        "-",
-        74,
-        63,
-        11.0,
-        132,
-        15,
-        color,
-    );
-    draw_dialogue_text(
-        font,
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        &stats.fame.to_string(),
-        74,
-        80,
-        11.0,
-        120,
-        15,
-        color,
-    );
-    // Damage range is not included in the server's character-info packet.
-    draw_dialogue_text(
-        font,
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        "—",
-        74,
-        98,
-        11.0,
-        120,
-        15,
-        color,
-    );
-    for (value, y, x) in [
-        (format!("{} / {}", stats.hp, stats.max_hp), 116, 74),
-        (format!("{} / {}", stats.mp, stats.max_mp), 134, 74),
-        (stats.ability_points.to_string(), 175, 91),
-        (stats.strength.to_string(), 201, 73),
-        (stats.dexterity.to_string(), 219, 73),
-        (stats.intelligence.to_string(), 237, 73),
-        (stats.luck.to_string(), 255, 73),
-    ] {
+    let v83_stat_art = ui_archive
+        .root()
+        .resolve("UIWindow.img/Stat/backgrnd")
+        .ok()
+        .flatten()
+        .is_some();
+    if v83_stat_art {
+        let _ = composite_nx_ui_bitmap(
+            &mut pixels,
+            WIDTH,
+            HEIGHT,
+            ui_archive,
+            "UIWindow.img/Stat/backgrnd",
+            0,
+            0,
+        );
+        recolor_v83_status_art(&mut pixels, WIDTH, HEIGHT);
+        fill_v83_status_gradient(
+            &mut pixels,
+            WIDTH,
+            HEIGHT,
+            3,
+            191,
+            WIDTH - 6,
+            48,
+            [229, 181, 57, 255],
+            [207, 143, 26, 255],
+        );
+        fill_dialogue_rect(&mut pixels, WIDTH, HEIGHT, 4, 192, WIDTH - 8, 1, [238, 202, 94, 255]);
         draw_dialogue_text(
             font,
             &mut pixels,
             WIDTH,
             HEIGHT,
-            &value,
-            x,
-            y,
+            "ABILITY POINT",
+            13,
+            196,
             11.0,
-            116,
-            15,
-            color,
+            WIDTH - 26,
+            16,
+            [255, 255, 255],
         );
+        fill_dialogue_rect(&mut pixels, WIDTH, HEIGHT, 60, 214, 31, 18, [150, 150, 150, 255]);
+        fill_dialogue_rect(&mut pixels, WIDTH, HEIGHT, 61, 215, 29, 16, [255, 255, 255, 255]);
+        let auto_state = if character.stats.ability_points > 0 && !waiting_for_stats {
+            "normal"
+        } else {
+            "disabled"
+        };
+        let _ = composite_nx_ui_bitmap(
+            &mut pixels,
+            WIDTH,
+            HEIGHT,
+            ui_archive,
+            &format!("UIWindow.img/Stat/BtAuto/{auto_state}/0"),
+            98,
+            203,
+        );
+        let _ = composite_nx_ui_bitmap(
+            &mut pixels,
+            WIDTH,
+            HEIGHT,
+            ui_archive,
+            "UIWindow.img/Stat/BtDetail/normal/0",
+            124,
+            323,
+        );
+        let _ = composite_nx_ui_bitmap(
+            &mut pixels,
+            WIDTH,
+            HEIGHT,
+            ui_archive,
+            "Basic.img/BtClose3/normal/0",
+            155,
+            6,
+        );
+    } else {
+        for path in [
+            "UIWindow4.img/Stat/main/backgrnd",
+            "UIWindow4.img/Stat/main/backgrnd2",
+            "UIWindow4.img/Stat/main/backgrnd3",
+        ] {
+            let _ = composite_nx_ui_bitmap(&mut pixels, WIDTH, HEIGHT, ui_archive, path, 0, 0);
+        }
+        draw_v83_status_panel_background(font, &mut pixels, WIDTH, HEIGHT);
     }
 
-    let enabled = stats.ability_points > 0 && !waiting_for_stats;
-    for button in [
-        "BtHpUp", "BtMpUp", "BtStrUp", "BtDexUp", "BtIntUp", "BtLukUp", "BtAuto",
-    ] {
-        let state = if enabled { "normal" } else { "disabled" };
-        let path = format!("UIWindow4.img/Stat/main/{button}/{state}/0");
-        if let Err(error) =
-            composite_nx_ui_bitmap(&mut pixels, WIDTH, HEIGHT, ui_archive, &path, 0, 0)
-        {
-            if !enabled {
-                // Some v83 UI packs omit disabled artwork. Keep the NX button visible.
-                let normal = format!("UIWindow4.img/Stat/main/{button}/normal/0");
-                let _ =
-                    composite_nx_ui_bitmap(&mut pixels, WIDTH, HEIGHT, ui_archive, &normal, 0, 0);
-            } else {
-                eprintln!("OpenStoryRS: could not draw native stats button {path}: {error}");
-            }
-        }
+    let stats = &character.stats;
+    let color = [56, 42, 31];
+    let values = [
+        (stats.name.clone(), 59, 30),
+        (character_job_name(stats.job), 59, 48),
+        (stats.level.to_string(), 59, 66),
+        ("-".to_owned(), 59, 84),
+        (format!("{} / {}", stats.hp, stats.max_hp), 59, 102),
+        (format!("{} / {}", stats.mp, stats.max_mp), 59, 120),
+        (stats.experience.to_string(), 59, 138),
+        (stats.fame.to_string(), 59, 156),
+        (stats.strength.to_string(), 59, 244),
+        (stats.dexterity.to_string(), 59, 262),
+        (stats.intelligence.to_string(), 59, 280),
+        (stats.luck.to_string(), 59, 298),
+    ];
+    for (value, x, y) in values {
+        draw_dialogue_text(font, &mut pixels, WIDTH, HEIGHT, &value, x, y, 11.0, 111, 16, color);
     }
-    let _ = composite_nx_ui_bitmap(
+    let ability_points = stats.ability_points.to_string();
+    let ability_points_width = dialogue_text_width(font, &ability_points, 11.0).ceil() as i32;
+    draw_dialogue_text(
+        font,
         &mut pixels,
         WIDTH,
         HEIGHT,
-        ui_archive,
-        "Basic.img/BtClose3/normal/0",
-        190,
-        6,
+        &ability_points,
+        61 + (29 - ability_points_width) / 2,
+        214,
+        11.0,
+        29,
+        15,
+        color,
     );
 
     if auto_confirmation {
-        fill_dialogue_rect(
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            0,
-            0,
-            WIDTH,
-            HEIGHT,
-            [0, 0, 0, 190],
-        );
-        fill_dialogue_rect(
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            32,
-            96,
-            148,
-            124,
-            [245, 239, 224, 255],
-        );
+        fill_dialogue_rect(&mut pixels, WIDTH, HEIGHT, 0, 0, WIDTH, HEIGHT, [0, 0, 0, 190]);
+        fill_dialogue_rect(&mut pixels, WIDTH, HEIGHT, 14, 106, 147, 124, [245, 239, 224, 255]);
         draw_dialogue_text(
             font,
             &mut pixels,
             WIDTH,
             HEIGHT,
             "Auto-allocate AP?",
-            43,
-            112,
+            22,
+            121,
             12.0,
-            138,
+            132,
             18,
             color,
         );
@@ -1171,31 +1319,22 @@ fn render_status_panel(
             WIDTH,
             HEIGHT,
             &format!("{} points to {primary}.", stats.ability_points),
-            43,
-            139,
+            22,
+            148,
             10.0,
-            138,
+            132,
             20,
             color,
         );
-        for (x, label) in [(27, "Yes"), (116, "No")] {
-            fill_dialogue_rect(
-                &mut pixels,
-                WIDTH,
-                HEIGHT,
-                x,
-                184,
-                69,
-                32,
-                [120, 87, 46, 255],
-            );
+        for (x, label) in [(20, "Yes"), (93, "No")] {
+            fill_dialogue_rect(&mut pixels, WIDTH, HEIGHT, x, 185, 60, 30, [120, 87, 46, 255]);
             draw_dialogue_text(
                 font,
                 &mut pixels,
                 WIDTH,
                 HEIGHT,
                 label,
-                x as i32 + 22,
+                x as i32 + 19,
                 191,
                 11.0,
                 40,
@@ -1207,57 +1346,155 @@ fn render_status_panel(
     pixels
 }
 
-const KEY_CONFIG_ACTIONS: [(&str, u8, i32); 40] = [
-    ("Equipment", 4, 0),
-    ("Items", 4, 1),
-    ("Stats", 4, 2),
-    ("Skills", 4, 3),
-    ("Friends", 4, 4),
-    ("World map", 4, 5),
-    ("Public chat", 4, 6),
-    ("Mini map", 4, 7),
-    ("Quest log", 4, 8),
-    ("Key bindings", 4, 9),
-    ("Say", 4, 10),
-    ("Whisper", 4, 11),
-    ("Party chat", 4, 12),
-    ("Friends chat", 4, 13),
-    ("Quick slots", 4, 15),
-    ("Toggle chat", 4, 16),
-    ("Guild", 4, 17),
-    ("Guild chat", 4, 18),
-    ("Party", 4, 19),
-    ("Character info", 4, 21),
-    ("Monster Book", 4, 22),
-    ("Cash Shop", 4, 23),
-    ("Alliance chat", 4, 24),
-    ("Change channel", 4, 25),
-    ("Messenger", 4, 26),
-    ("Party search", 4, 27),
-    ("Settings", 4, 28),
-    ("Family", 4, 42),
-    ("Pick up", 5, 50),
-    ("Sit", 5, 51),
-    ("Attack", 5, 52),
-    ("Jump", 5, 53),
-    ("NPC interaction", 5, 54),
-    ("Face 1", 6, 100),
-    ("Face 2", 6, 101),
-    ("Face 3", 6, 102),
-    ("Face 4", 6, 103),
-    ("Face 5", 6, 104),
-    ("Face 6", 6, 105),
-    ("Face 7", 6, 106),
+fn recolor_v83_status_art(pixels: &mut [u8], width: usize, height: usize) {
+    for y in 31..184.min(height) {
+        for x in 6..56.min(width) {
+            let index = (y * width + x) * 4;
+            let [blue, green, red, alpha] = pixels[index..index + 4] else {
+                continue;
+            };
+            if alpha == 0 || red < green.saturating_add(24) || blue < green.saturating_add(16) {
+                continue;
+            }
+            let brightness = red.max(green).max(blue);
+            pixels[index] = brightness / 12;
+            pixels[index + 1] = brightness;
+            pixels[index + 2] = (u16::from(brightness) * 3 / 5) as u8;
+        }
+    }
+
+    for y in 4..20.min(height) {
+        let blend = (y - 4) as f32 / 15.0;
+        let background = [
+            (76.0 * (1.0 - blend) + 24.0 * blend) as u8,
+            (62.0 * (1.0 - blend) + 19.0 * blend) as u8,
+            (48.0 * (1.0 - blend) + 13.0 * blend) as u8,
+            255,
+        ];
+        for x in 5..width.saturating_sub(5) {
+            let index = (y * width + x) * 4;
+            let brightness = (u16::from(pixels[index])
+                + u16::from(pixels[index + 1])
+                + u16::from(pixels[index + 2]))
+                / 3;
+            let pixel = if brightness < 135 {
+                [58, 190, 235, 255]
+            } else {
+                background
+            };
+            pixels[index..index + 4].copy_from_slice(&pixel);
+        }
+    }
+}
+
+fn render_status_detail_panel(
+    font: &fontdue::Font,
+    ui_archive: &NxArchive,
+) -> Vec<u8> {
+    const WIDTH: usize = STATUS_DETAIL_WIDTH as usize;
+    const HEIGHT: usize = STATUS_DETAIL_HEIGHT as usize;
+    let mut pixels = vec![0_u8; WIDTH * HEIGHT * 4];
+    let _ = composite_nx_ui_bitmap(
+        &mut pixels,
+        WIDTH,
+        HEIGHT,
+        ui_archive,
+        "UIWindow.img/Stat/backgrnd2",
+        0,
+        0,
+    );
+
+    fill_dialogue_rect(&mut pixels, WIDTH, HEIGHT, 0, 202, WIDTH, HEIGHT - 202, [25, 25, 27, 255]);
+    fill_dialogue_rect(&mut pixels, WIDTH, HEIGHT, 1, 203, WIDTH - 2, HEIGHT - 203, [112, 114, 116, 255]);
+    fill_dialogue_rect(&mut pixels, WIDTH, HEIGHT, 3, 205, WIDTH - 6, HEIGHT - 205, [244, 246, 246, 255]);
+    fill_dialogue_rect(&mut pixels, WIDTH, HEIGHT, 4, 205, WIDTH - 8, 1, [254, 254, 254, 255]);
+    fill_dialogue_rect(&mut pixels, WIDTH, HEIGHT, 5, 203, WIDTH - 10, 2, [194, 198, 198, 255]);
+    fill_dialogue_rect(&mut pixels, WIDTH, HEIGHT, 6, 203, WIDTH - 12, 102, [166, 167, 166, 255]);
+    fill_dialogue_rect(&mut pixels, WIDTH, HEIGHT, 7, 204, WIDTH - 14, 100, [250, 250, 248, 255]);
+
+    fill_v83_status_gradient(
+        &mut pixels,
+        WIDTH,
+        HEIGHT,
+        3,
+        180,
+        WIDTH - 6,
+        22,
+        [229, 181, 57, 255],
+        [207, 143, 26, 255],
+    );
+    draw_dialogue_text(
+        font,
+        &mut pixels,
+        WIDTH,
+        HEIGHT,
+        "HYPER ABILITY",
+        18,
+        183,
+        10.0,
+        WIDTH - 36,
+        16,
+        [255, 255, 255],
+    );
+    fill_dialogue_rect(&mut pixels, WIDTH, HEIGHT, 10, 186, 7, 7, [225, 235, 245, 255]);
+    fill_dialogue_rect(&mut pixels, WIDTH, HEIGHT, 12, 188, 3, 3, [80, 140, 190, 255]);
+    round_status_panel_corners(&mut pixels, WIDTH, HEIGHT);
+    pixels
+}
+
+const KEY_CONFIG_ACTIONS: [(&str, u8, i32, bool); 41] = [
+    ("Equipment", 4, 0, true),
+    ("Items", 4, 1, true),
+    ("Stats", 4, 2, true),
+    ("Skills", 4, 3, true),
+    ("Friends", 4, 4, true),
+    ("World map", 4, 5, true),
+    ("Public chat", 4, 6, true),
+    ("Mini map", 4, 7, true),
+    ("Quest log", 4, 8, true),
+    ("Key bindings", 4, 9, true),
+    ("Say", 4, 10, true),
+    ("Whisper", 4, 11, true),
+    ("Party chat", 4, 12, true),
+    ("Friends chat", 4, 13, true),
+    ("Status menu", 4, 14, true),
+    ("Quick slots", 4, 15, true),
+    ("Toggle chat", 4, 16, true),
+    ("Guild", 4, 17, true),
+    ("Guild chat", 4, 18, true),
+    ("Party", 4, 19, true),
+    ("Character info", 4, 21, true),
+    ("Monster Book", 4, 22, true),
+    ("Cash Shop", 4, 23, true),
+    ("Alliance chat", 4, 24, true),
+    ("Change channel", 4, 25, true),
+    // v83's action 26 is the Family shortcut. Do not reuse it for newer UI.
+    ("Family", 4, 26, true),
+    ("Boss party (unsupported)", 4, 27, false),
+    ("Settings", 4, 28, true),
+    ("Family (extended)", 4, 42, true),
+    ("Pick up", 5, 50, true),
+    ("Sit", 5, 51, true),
+    ("Attack", 5, 52, true),
+    ("Jump", 5, 53, true),
+    ("NPC interaction", 5, 54, true),
+    ("Face 1", 6, 100, true),
+    ("Face 2", 6, 101, true),
+    ("Face 3", 6, 102, true),
+    ("Face 4", 6, 103, true),
+    ("Face 5", 6, 104, true),
+    ("Face 6", 6, 105, true),
+    ("Face 7", 6, 106, true),
 ];
 
 fn static_key_config_actions() -> Vec<KeyConfigAction> {
     KEY_CONFIG_ACTIONS
         .iter()
-        .map(|(label, kind, action)| KeyConfigAction {
+        .map(|(label, kind, action, assignable)| KeyConfigAction {
             label: (*label).to_owned(),
             kind: *kind,
             action: *action,
-            assignable: true,
+            assignable: *assignable,
         })
         .collect()
 }
@@ -1290,6 +1527,19 @@ fn build_key_config_actions(
     if let Some(bindings) = server_keymap {
         for binding in bindings {
             match (binding.kind, binding.action) {
+                (4, action)
+                    if !actions
+                        .iter()
+                        .any(|entry| entry.kind == binding.kind && entry.action == action) =>
+                {
+                    let label = legacy_menu_action_label(action).unwrap_or("Unknown menu action");
+                    actions.push(KeyConfigAction {
+                        label: format!("{label} (unsupported)"),
+                        kind: binding.kind,
+                        action,
+                        assignable: false,
+                    });
+                }
                 (1, skill_id) if skill_id > 0 => {
                     let name = key_config_skill_name(skill_id, string_archive);
                     skill_actions.entry(skill_id).or_insert(KeyConfigAction {
@@ -1396,6 +1646,29 @@ fn build_key_config_actions(
     }
     actions.extend(macro_actions.into_values());
     actions
+}
+
+fn legacy_menu_action_label(action: i32) -> Option<&'static str> {
+    Some(match action {
+        14 => "Menu",
+        20 => "Notifier",
+        26 => "Family",
+        27 => "Boss party",
+        29 => "Screenshot",
+        30 => "Profession",
+        31 => "Item pot",
+        32 => "Event",
+        33 => "Silent Crusade",
+        34 => "Legion",
+        35 => "Battle analysis",
+        36 => "Bits",
+        37 => "Guide",
+        38 => "Enhance equipment",
+        39 => "Monster collection",
+        40 => "Soul weapon",
+        41 => "Maple news",
+        _ => return None,
+    })
 }
 
 fn default_keymap_bindings() -> Vec<openstory_protocol::KeyBinding> {

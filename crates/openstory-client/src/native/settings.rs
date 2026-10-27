@@ -5,6 +5,8 @@ use std::path::PathBuf;
 pub(super) struct AudioSettings {
     pub music_volume: u8,
     pub effects_volume: u8,
+    pub mute_music: bool,
+    pub mute_effects: bool,
 }
 
 impl AudioSettings {
@@ -43,8 +45,128 @@ impl AudioSettings {
                 .or(effects_volume)
                 .or(legacy_effects_volume)
                 .unwrap_or(50),
+            mute_music: false,
+            mute_effects: false,
         }
     }
+
+    pub(super) fn effective_music_volume(self) -> u8 {
+        if self.mute_music {
+            0
+        } else {
+            self.music_volume
+        }
+    }
+
+    pub(super) fn effective_effects_volume(self) -> u8 {
+        if self.mute_effects {
+            0
+        } else {
+            self.effects_volume
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct DisplaySettings {
+    pub width: u32,
+    pub height: u32,
+    pub fullscreen: bool,
+}
+
+impl DisplaySettings {
+    pub(super) fn load() -> Self {
+        let mut settings = Self::default();
+        let Some(path) = settings_path() else {
+            return settings;
+        };
+        let Ok(contents) = fs::read_to_string(path) else {
+            return settings;
+        };
+        for line in contents.lines() {
+            let Some((name, value)) = line.split_once('=') else {
+                continue;
+            };
+            match name.trim() {
+                "Width" => {
+                    if let Some(width) = parse_dimension(value.trim(), 640, 7680) {
+                        settings.width = width;
+                    }
+                }
+                "Height" => {
+                    if let Some(height) = parse_dimension(value.trim(), 480, 4320) {
+                        settings.height = height;
+                    }
+                }
+                "Fullscreen" => {
+                    if let Some(fullscreen) = parse_bool(value.trim()) {
+                        settings.fullscreen = fullscreen;
+                    }
+                }
+                _ => {}
+            }
+        }
+        settings
+    }
+}
+
+impl Default for DisplaySettings {
+    fn default() -> Self {
+        Self {
+            width: 1024,
+            height: 768,
+            fullscreen: false,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct InputSettings {
+    pub mouse_speed: u8,
+}
+
+impl InputSettings {
+    pub(super) fn load() -> Self {
+        let mut mouse_speed = 50;
+        if let Some(path) = settings_path()
+            && let Ok(contents) = fs::read_to_string(path)
+        {
+            for line in contents.lines() {
+                let Some((name, value)) = line.split_once('=') else {
+                    continue;
+                };
+                if name.trim() == "MouseSpeed"
+                    && let Some(speed) = parse_percent(value.trim())
+                {
+                    mouse_speed = speed;
+                }
+            }
+        }
+        Self { mouse_speed }
+    }
+}
+
+pub(super) fn apply_mouse_speed(slider_value: u8) {
+    #[cfg(target_os = "windows")]
+    unsafe {
+        use std::ffi::c_void;
+
+        unsafe extern "system" {
+            fn SystemParametersInfoW(
+                action: u32,
+                ui_param: u32,
+                pv_param: *mut c_void,
+                flags: u32,
+            ) -> i32;
+        }
+
+        let slider_value = u32::from(slider_value.min(100));
+        let system_speed = 1 + ((slider_value * 19 + 50) / 100);
+        let encoded_speed = system_speed as usize as *mut c_void;
+        let _ = SystemParametersInfoW(0x0071, 0, encoded_speed, 0);
+    }
+    #[cfg(not(target_os = "windows"))]
+    let _ = slider_value;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -123,11 +245,92 @@ impl Default for GameplaySettings {
     }
 }
 
-pub(super) fn save(audio: AudioSettings, gameplay: GameplaySettings) -> Result<PathBuf, String> {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct SocialSettings {
+    pub allow_whisper: bool,
+    pub allow_chat_invite: bool,
+    pub allow_party_invite: bool,
+    pub allow_guild_chat: bool,
+    pub allow_alliance_chat: bool,
+    pub allow_family_invite: bool,
+    pub allow_friend_chat: bool,
+    pub allow_trade_request: bool,
+    pub allow_expedition_invite: bool,
+    pub allow_guild_invite: bool,
+    pub allow_alliance_invite: bool,
+    pub allow_follow: bool,
+}
+
+impl SocialSettings {
+    pub(super) fn load() -> Self {
+        let mut settings = Self::default();
+        let Some(path) = settings_path() else {
+            return settings;
+        };
+        let Ok(contents) = fs::read_to_string(path) else {
+            return settings;
+        };
+        for line in contents.lines() {
+            let Some((name, value)) = line.split_once('=') else {
+                continue;
+            };
+            let Some(allowed) = parse_bool(value.trim()) else {
+                continue;
+            };
+            match name.trim() {
+                "AllowWhisper" => settings.allow_whisper = allowed,
+                "AllowChatInvite" => settings.allow_chat_invite = allowed,
+                "AllowPartyInvite" => settings.allow_party_invite = allowed,
+                "AllowGuildChat" => settings.allow_guild_chat = allowed,
+                "AllowAllianceChat" => settings.allow_alliance_chat = allowed,
+                "AllowFamilyInvite" => settings.allow_family_invite = allowed,
+                "AllowFriendChat" => settings.allow_friend_chat = allowed,
+                "AllowTradeRequest" => settings.allow_trade_request = allowed,
+                "AllowExpeditionInvite" => settings.allow_expedition_invite = allowed,
+                "AllowGuildInvite" => settings.allow_guild_invite = allowed,
+                "AllowAllianceInvite" => settings.allow_alliance_invite = allowed,
+                "AllowFollow" => settings.allow_follow = allowed,
+                _ => {}
+            }
+        }
+        settings
+    }
+}
+
+impl Default for SocialSettings {
+    fn default() -> Self {
+        Self {
+            allow_whisper: true,
+            allow_chat_invite: true,
+            allow_party_invite: true,
+            allow_guild_chat: true,
+            allow_alliance_chat: true,
+            allow_family_invite: true,
+            allow_friend_chat: true,
+            allow_trade_request: true,
+            allow_expedition_invite: true,
+            allow_guild_invite: true,
+            allow_alliance_invite: true,
+            allow_follow: true,
+        }
+    }
+}
+
+pub(super) fn save(
+    audio: AudioSettings,
+    display: DisplaySettings,
+    input: InputSettings,
+    gameplay: GameplaySettings,
+    social: SocialSettings,
+) -> Result<PathBuf, String> {
     update_settings_file(
         &[
             ("BGMVolume", audio.music_volume.min(100).to_string()),
             ("SFXVolume", audio.effects_volume.min(100).to_string()),
+            ("Width", display.width.to_string()),
+            ("Height", display.height.to_string()),
+            ("Fullscreen", display.fullscreen.to_string()),
+            ("MouseSpeed", input.mouse_speed.min(100).to_string()),
             ("ScreenShake", gameplay.screen_shake_enabled.to_string()),
             (
                 "GraphicsQuality",
@@ -139,6 +342,24 @@ pub(super) fn save(audio: AudioSettings, gameplay: GameplaySettings) -> Result<P
             ),
             ("HPWarning", gameplay.hp_warning.min(100).to_string()),
             ("MPWarning", gameplay.mp_warning.min(100).to_string()),
+            ("AllowWhisper", social.allow_whisper.to_string()),
+            ("AllowChatInvite", social.allow_chat_invite.to_string()),
+            ("AllowPartyInvite", social.allow_party_invite.to_string()),
+            ("AllowGuildChat", social.allow_guild_chat.to_string()),
+            ("AllowAllianceChat", social.allow_alliance_chat.to_string()),
+            ("AllowFamilyInvite", social.allow_family_invite.to_string()),
+            ("AllowFriendChat", social.allow_friend_chat.to_string()),
+            ("AllowTradeRequest", social.allow_trade_request.to_string()),
+            (
+                "AllowExpeditionInvite",
+                social.allow_expedition_invite.to_string(),
+            ),
+            ("AllowGuildInvite", social.allow_guild_invite.to_string()),
+            (
+                "AllowAllianceInvite",
+                social.allow_alliance_invite.to_string(),
+            ),
+            ("AllowFollow", social.allow_follow.to_string()),
         ],
         &["MusicVolume", "EffectsVolume"],
     )
@@ -284,6 +505,13 @@ fn environment_volume(name: &str) -> Option<u8> {
 
 fn parse_percent(value: &str) -> Option<u8> {
     value.parse::<u8>().ok().filter(|value| *value <= 100)
+}
+
+fn parse_dimension(value: &str, minimum: u32, maximum: u32) -> Option<u32> {
+    value
+        .parse::<u32>()
+        .ok()
+        .filter(|dimension| (minimum..=maximum).contains(dimension))
 }
 
 fn parse_bool(value: &str) -> Option<bool> {

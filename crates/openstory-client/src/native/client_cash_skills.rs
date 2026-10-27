@@ -514,6 +514,9 @@ impl ClientApp {
                 inviter,
                 room_id,
             }) => {
+                if !self.social_settings.allow_trade_request {
+                    return;
+                }
                 self.pending_trade_invite = Some(PendingTradeInvite {
                     inviter: inviter.clone(),
                     room_id,

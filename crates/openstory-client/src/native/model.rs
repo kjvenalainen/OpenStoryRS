@@ -15,12 +15,164 @@ struct ScrollingNoticeState {
     x: f32,
 }
 
+struct ServerNoticePopup {
+    texture: GpuTexture,
+    panel: SpriteRect,
+    button: SpriteRect,
+}
+
+struct EventListEntry {
+    event: openstory_protocol::ServerEventInfo,
+    peak_duration: i32,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RpsGamePhase {
+    Waiting,
+    Selecting,
+    Result,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RpsGameButton {
+    Start,
+    Rock,
+    Paper,
+    Scissor,
+    Continue,
+    Retry,
+    Exit,
+}
+
+struct RpsGameRuntime {
+    phase: RpsGamePhase,
+    player_choice: Option<i8>,
+    opponent_choice: Option<i8>,
+    result: Option<i8>,
+    wins: i16,
+    hovered: Option<RpsGameButton>,
+    texture: Option<GpuTexture>,
+}
+
+impl RpsGameRuntime {
+    fn new() -> Self {
+        Self {
+            phase: RpsGamePhase::Waiting,
+            player_choice: None,
+            opponent_choice: None,
+            result: None,
+            wins: 0,
+            hovered: None,
+            texture: None,
+        }
+    }
+}
+
+struct AvatarMegaphoneUi {
+    animation: MapleTvAnimation,
+    text_texture: GpuTexture,
+    avatar_draws: Vec<(usize, SpriteRect)>,
+    expires_at: Instant,
+}
+
+struct MonsterCarnivalUi {
+    state: monster_carnival::State,
+    texture: Option<GpuTexture>,
+    close: monster_carnival::HitRect,
+    side: monster_carnival::HitRect,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum OptionSlider {
+enum OptionControl {
+    GraphicsQuality,
+    EffectsQuality,
     Music,
-    Effects,
+    MuteMusic,
+    SoundEffects,
+    MuteEffects,
     HpWarning,
     MpWarning,
+    MouseSpeed,
+    ScreenShake,
+    Windowed,
+    Resolution800,
+    Resolution1024,
+    AllowWhisper,
+    AllowChatInvite,
+    AllowPartyInvite,
+    AllowGuildChat,
+    AllowAllianceChat,
+    AllowFamilyInvite,
+    AllowFriendChat,
+    AllowTradeRequest,
+    AllowExpeditionInvite,
+    AllowGuildInvite,
+    AllowAllianceInvite,
+    AllowFollow,
+}
+
+impl OptionControl {
+    fn next(self) -> Self {
+        match self {
+            Self::GraphicsQuality => Self::EffectsQuality,
+            Self::EffectsQuality => Self::Music,
+            Self::Music => Self::MuteMusic,
+            Self::MuteMusic => Self::SoundEffects,
+            Self::SoundEffects => Self::MuteEffects,
+            Self::MuteEffects => Self::HpWarning,
+            Self::HpWarning => Self::MpWarning,
+            Self::MpWarning => Self::MouseSpeed,
+            Self::MouseSpeed => Self::ScreenShake,
+            Self::ScreenShake => Self::Windowed,
+            Self::Windowed => Self::Resolution800,
+            Self::Resolution800 => Self::Resolution1024,
+            Self::Resolution1024 => Self::AllowWhisper,
+            Self::AllowWhisper => Self::AllowChatInvite,
+            Self::AllowChatInvite => Self::AllowPartyInvite,
+            Self::AllowPartyInvite => Self::AllowGuildChat,
+            Self::AllowGuildChat => Self::AllowAllianceChat,
+            Self::AllowAllianceChat => Self::AllowFamilyInvite,
+            Self::AllowFamilyInvite => Self::AllowFriendChat,
+            Self::AllowFriendChat => Self::AllowTradeRequest,
+            Self::AllowTradeRequest => Self::AllowExpeditionInvite,
+            Self::AllowExpeditionInvite => Self::AllowGuildInvite,
+            Self::AllowGuildInvite => Self::AllowAllianceInvite,
+            Self::AllowAllianceInvite => Self::AllowFollow,
+            Self::AllowFollow => Self::GraphicsQuality,
+        }
+    }
+
+    fn track_y(self) -> Option<usize> {
+        match self {
+            Self::GraphicsQuality => Some(56),
+            Self::EffectsQuality => Some(86),
+            Self::Music => Some(116),
+            Self::MuteMusic => None,
+            Self::SoundEffects => Some(146),
+            Self::MuteEffects => None,
+            Self::HpWarning => Some(176),
+            Self::MpWarning => Some(206),
+            Self::MouseSpeed => Some(236),
+            Self::ScreenShake => None,
+            Self::Windowed | Self::Resolution800 | Self::Resolution1024 => None,
+            Self::AllowWhisper
+            | Self::AllowChatInvite
+            | Self::AllowPartyInvite
+            | Self::AllowGuildChat
+            | Self::AllowAllianceChat
+            | Self::AllowFamilyInvite
+            | Self::AllowFriendChat
+            | Self::AllowTradeRequest
+            | Self::AllowExpeditionInvite
+            | Self::AllowGuildInvite
+            | Self::AllowAllianceInvite
+            | Self::AllowFollow => None,
+        }
+    }
+
+    fn is_toggle(self) -> bool {
+        self == Self::ScreenShake || self.track_y().is_none()
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -62,7 +214,16 @@ struct KeyConfigAction {
 struct ActiveCharacterBuff {
     value: i16,
     skill_id: i32,
+    duration_ms: i32,
+    applied_at: Instant,
     expires_at: Option<Instant>,
+}
+
+#[derive(Clone, Copy)]
+struct PendingSkillHitSound {
+    skill_id: i32,
+    position: (i16, i16),
+    play_at: Instant,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -79,6 +240,7 @@ struct ForcedEquipmentStats {
 
 struct MapSceneData {
     map_id: i32,
+    underwater: bool,
     footholds: Option<FootholdTree>,
     spawn: (f64, f64),
     camera_offset: (f32, f32),
@@ -95,6 +257,7 @@ struct MapSceneData {
     portals: Vec<MapPortalAsset>,
     regular_portal_frames: Vec<SpriteFrameAsset>,
     hidden_portal_frames: Vec<SpriteFrameAsset>,
+    door_frames: Vec<SpriteFrameAsset>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -194,8 +357,10 @@ struct MapBackgroundAsset {
 enum AvatarMotion {
     Stand,
     Walk,
+    Alert,
     Crouch,
     Jump,
+    Swim,
     Ladder,
     Rope,
     Sit,
@@ -240,13 +405,15 @@ fn face_expression_index(action: i32) -> Option<u8> {
 
 fn avatar_motion_for_stance(stance: u8) -> AvatarMotion {
     match stance & !1 {
+        2 => AvatarMotion::Walk,
+        4 | 18 => AvatarMotion::Stand,
+        6 => AvatarMotion::Jump,
+        8 => AvatarMotion::Alert,
+        10 => AvatarMotion::Crouch,
+        12 => AvatarMotion::Swim,
         14 => AvatarMotion::Ladder,
         16 => AvatarMotion::Rope,
         20 => AvatarMotion::Sit,
-        10 => AvatarMotion::Crouch,
-        _ if matches!(stance, 8 | 11..=13 | 15..=19 | 23..=33) => AvatarMotion::Attack(stance),
-        2 => AvatarMotion::Walk,
-        6 => AvatarMotion::Jump,
         _ => AvatarMotion::Stand,
     }
 }
@@ -259,7 +426,9 @@ fn first_avatar_frame(frames: &[AvatarFrameRuntime], motion: AvatarMotion) -> Op
             let fallback = match motion {
                 AvatarMotion::Stand => AvatarMotion::Walk,
                 AvatarMotion::Sit => AvatarMotion::Stand,
-                AvatarMotion::Crouch => AvatarMotion::Stand,
+                AvatarMotion::Alert | AvatarMotion::Crouch | AvatarMotion::Swim => {
+                    AvatarMotion::Stand
+                }
                 AvatarMotion::Walk
                 | AvatarMotion::Jump
                 | AvatarMotion::Ladder
@@ -293,6 +462,99 @@ struct AvatarSpriteRuntime {
     is_face: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum MountMotion {
+    Stand,
+    Walk,
+    Jump,
+    Rope,
+    Ladder,
+    Prone,
+    Fly,
+}
+
+struct MountFrameRuntime {
+    delay: Duration,
+    sprites: Vec<(usize, SpriteRect)>,
+    navel: (f32, f32),
+}
+
+struct MountFrameAsset {
+    delay_ms: u16,
+    sprites: Range<usize>,
+    navel: (f32, f32),
+}
+
+struct MountAnimationRuntime {
+    frames: Vec<MountFrameRuntime>,
+    frame_index: usize,
+    elapsed: Duration,
+}
+
+struct MountLookRuntime {
+    animations: HashMap<MountMotion, MountAnimationRuntime>,
+}
+
+impl MountLookRuntime {
+    fn motion_for_avatar(motion: AvatarMotion) -> MountMotion {
+        match motion {
+            AvatarMotion::Walk => MountMotion::Walk,
+            AvatarMotion::Jump => MountMotion::Jump,
+            AvatarMotion::Swim => MountMotion::Fly,
+            AvatarMotion::Rope => MountMotion::Rope,
+            AvatarMotion::Ladder => MountMotion::Ladder,
+            AvatarMotion::Crouch => MountMotion::Prone,
+            AvatarMotion::Stand
+            | AvatarMotion::Alert
+            | AvatarMotion::Sit
+            | AvatarMotion::Attack(_) => MountMotion::Stand,
+        }
+    }
+
+    fn current_animation(&self, motion: MountMotion) -> Option<&MountAnimationRuntime> {
+        self.animations
+            .get(&motion)
+            .filter(|animation| !animation.frames.is_empty())
+            .or_else(|| self.animations.get(&MountMotion::Stand))
+    }
+
+    fn current_frame(&self, motion: MountMotion) -> Option<&MountFrameRuntime> {
+        let animation = self.current_animation(motion)?;
+        animation.frames.get(animation.frame_index)
+    }
+
+    fn seat_offset(&self, motion: MountMotion) -> (f32, f32) {
+        self.current_frame(motion)
+            .map_or((0.0, -16.0), |frame| (frame.navel.0, frame.navel.1 + 14.0))
+    }
+
+    fn advance(&mut self, motion: MountMotion, elapsed: Duration) {
+        let active_motion = if self.animations.contains_key(&motion) {
+            motion
+        } else {
+            MountMotion::Stand
+        };
+        let Some(animation) = self.animations.get_mut(&active_motion) else {
+            return;
+        };
+        if animation.frames.len() < 2 {
+            return;
+        }
+        animation.elapsed = animation.elapsed.saturating_add(elapsed);
+        loop {
+            let Some(frame) = animation.frames.get(animation.frame_index) else {
+                animation.frame_index = 0;
+                break;
+            };
+            if animation.elapsed < frame.delay {
+                break;
+            }
+            animation.elapsed -= frame.delay;
+            animation.frame_index = (animation.frame_index + 1) % animation.frames.len();
+        }
+    }
+}
+
 struct LocalDeathFrameAsset {
     delay_ms: u16,
     sprites: Range<usize>,
@@ -320,6 +582,63 @@ struct LocalDeathArtRuntime {
     ghost_frame_index: usize,
     ghost_elapsed: Duration,
     ghost_ticks: u64,
+}
+
+impl LocalDeathArtRuntime {
+    fn reset(&mut self) {
+        self.tomb_y_offset = -420.0;
+        self.tomb_landed = false;
+        self.tomb_frame_index = 0;
+        self.tomb_elapsed = Duration::ZERO;
+        self.ghost_frame_index = 0;
+        self.ghost_elapsed = Duration::ZERO;
+        self.ghost_ticks = 0;
+    }
+
+    fn advance(&mut self, updates: u8) {
+        for _ in 0..updates {
+            if !self.tomb_landed {
+                self.tomb_y_offset += 9.0;
+                self.tomb_elapsed += Duration::from_millis(8);
+                if self.tomb_elapsed >= Duration::from_millis(30) {
+                    self.tomb_elapsed = Duration::ZERO;
+                    if !self.fall_frames.is_empty() {
+                        self.tomb_frame_index = (self.tomb_frame_index + 1) % self.fall_frames.len();
+                    }
+                }
+                if self.tomb_y_offset >= 0.0 {
+                    self.tomb_y_offset = 0.0;
+                    self.tomb_landed = true;
+                }
+            }
+            if let Some(frame) = self.ghost_frames.get(self.ghost_frame_index) {
+                self.ghost_ticks = self.ghost_ticks.wrapping_add(1);
+                self.ghost_elapsed += Duration::from_millis(8);
+                if self.ghost_elapsed >= frame.delay {
+                    self.ghost_elapsed = Duration::ZERO;
+                    self.ghost_frame_index = (self.ghost_frame_index + 1) % self.ghost_frames.len();
+                }
+            }
+        }
+    }
+
+    fn retain_timeline_from(&mut self, previous: &Self) {
+        self.tomb_y_offset = previous.tomb_y_offset;
+        self.tomb_landed = previous.tomb_landed;
+        self.tomb_frame_index = if self.fall_frames.is_empty() {
+            0
+        } else {
+            previous.tomb_frame_index % self.fall_frames.len()
+        };
+        self.tomb_elapsed = previous.tomb_elapsed;
+        self.ghost_frame_index = if self.ghost_frames.is_empty() {
+            0
+        } else {
+            previous.ghost_frame_index % self.ghost_frames.len()
+        };
+        self.ghost_elapsed = previous.ghost_elapsed;
+        self.ghost_ticks = previous.ghost_ticks;
+    }
 }
 
 #[derive(Clone)]
@@ -418,8 +737,8 @@ fn local_death_art_runtime(
         return None;
     }
     Some(LocalDeathArtRuntime {
-        tomb_y_offset: if fall_frames.is_empty() { 0.0 } else { -420.0 },
-        tomb_landed: fall_frames.is_empty(),
+        tomb_y_offset: -420.0,
+        tomb_landed: false,
         fall_frames,
         landed_sprites,
         ghost_frames,
@@ -532,6 +851,7 @@ fn mob_frames_runtime(
 
 struct MapSceneRuntime {
     map_id: i32,
+    underwater: bool,
     camera_offset: (f32, f32),
     camera_bounds: Option<MapCameraBounds>,
     minimap: Option<minimap::MiniMapData>,
@@ -552,6 +872,7 @@ struct MapSceneRuntime {
     avatar_indices: HashSet<usize>,
     active_avatar_frame: Option<usize>,
     local_death_art: Option<LocalDeathArtRuntime>,
+    local_mount: Option<MountLookRuntime>,
     desired_avatar_motion: AvatarMotion,
     attack_stance: Option<u8>,
     attack_count: u32,
@@ -563,6 +884,7 @@ struct MapSceneRuntime {
     local_item_aura: Option<PersistentItemAuraRuntime>,
     local_face_expression: Option<FaceExpressionRuntime>,
     local_speech_bubble_remaining: Option<Duration>,
+    local_chalkboard: Option<String>,
     npcs: HashMap<i32, MapNpcRuntime>,
     hired_merchants: HashMap<i32, MapHiredMerchantRuntime>,
     scriptable_npc_ids: HashSet<i32>,
@@ -570,14 +892,17 @@ struct MapSceneRuntime {
     mobs: HashMap<i32, MapMobRuntime>,
     mists: HashMap<i32, openstory_protocol::MapMistSpawn>,
     summons: HashMap<i32, MapSummonRuntime>,
+    dragons: HashMap<i32, MapDragonRuntime>,
     pets: HashMap<(i32, u8), MapPetRuntime>,
     pet_loot_cooldown: u8,
     character_effects: Vec<MapCharacterSkillEffect>,
     screen_effect: Option<MapScreenEffect>,
     reactors: HashMap<i32, MapReactorRuntime>,
+    doors: HashMap<i32, MapDoorRuntime>,
     portals: Vec<MapPortalRuntime>,
     regular_portal_frames: Vec<PortalFrameRuntime>,
     hidden_portal_frames: Vec<PortalFrameRuntime>,
+    door_frames: Vec<PortalFrameRuntime>,
     portal_frame_indices: HashSet<usize>,
     regular_portal_frame_index: usize,
     regular_portal_elapsed: Duration,
@@ -592,6 +917,7 @@ struct MapSceneRuntime {
     local_chair: Option<LocalChairRuntime>,
     local_map_seat: Option<(i16, i16)>,
     damage_numbers: Vec<MobDamageNumber>,
+    pending_mob_attack_impacts: Vec<PendingMobAttackImpact>,
     quest_clear_effect: Option<QuestClearEffectRuntime>,
     projectiles: Vec<MapProjectileRuntime>,
     layer_insert_indices: [usize; 8],
@@ -687,6 +1013,7 @@ struct SkillHitEffectAsset {
 
 struct MapCharacterSkillEffect {
     character_id: Option<i32>,
+    point_position: Option<(f64, f64)>,
     z: i8,
     speed_factor: f32,
     frames: Vec<ProjectileFrameRuntime>,
@@ -708,6 +1035,14 @@ struct MapMobHitEffect {
     frames: Vec<ProjectileFrameRuntime>,
     frame_index: usize,
     elapsed: Duration,
+}
+
+struct PendingMobAttackImpact {
+    object_id: i32,
+    remaining: Duration,
+    hit_effects: Arc<Vec<SkillHitEffectAnimation>>,
+    hit_effect_flip: bool,
+    damage: Option<(openstory_protocol::MobDamage, bool, f32)>,
 }
 
 struct MapProjectileRuntime {
@@ -868,6 +1203,13 @@ struct PortalFrameRuntime {
     sprites: Vec<(usize, SpriteRect)>,
 }
 
+struct MapDoorRuntime {
+    x: f64,
+    y: f64,
+    frame_index: usize,
+    elapsed: Duration,
+}
+
 enum PortalWarp {
     SameMap { x: f64, y: f64 },
     ChangeMap { map_id: i32, portal_name: String },
@@ -922,6 +1264,13 @@ struct MobDamageNumber {
 struct ChatLine {
     text: String,
     color: [u8; 3],
+}
+
+struct StatusMessageRuntime {
+    text: String,
+    color: [u8; 3],
+    created_at: Instant,
+    texture: Option<GpuTexture>,
 }
 
 #[derive(Clone, Copy)]
@@ -1493,6 +1842,7 @@ struct MapNpcRuntime {
     flipped: bool,
     animations: HashMap<NpcMotion, Vec<NpcFrameRuntime>>,
     animation_order: Vec<NpcMotion>,
+    imitated_look_sprites: Option<Vec<(usize, SpriteRect)>>,
     random_state: u32,
     motion: NpcMotion,
     frame_index: usize,
@@ -2261,6 +2611,16 @@ struct MapSummonRuntime {
     elapsed: Duration,
 }
 
+struct MapDragonRuntime {
+    x: f64,
+    y: f64,
+    body: PhysicsBody,
+    flipped: bool,
+    frames: Vec<ProjectileFrameRuntime>,
+    frame_index: usize,
+    elapsed: Duration,
+}
+
 struct MapPetRuntime {
     owner_id: i32,
     slot: u8,
@@ -2527,6 +2887,7 @@ struct MobTraits {
     can_jump: bool,
     can_fly: bool,
     body_attack: bool,
+    boss: bool,
     speed: f64,
     fly_speed: f64,
     physical_attack: i32,
@@ -2566,6 +2927,11 @@ struct BasicAttackStats {
 }
 
 impl MapMobRuntime {
+    fn is_frozen(&self) -> bool {
+        self.statuses
+            .contains(&(openstory_protocol::MobStatusMaskGroup::Second, 0x100))
+    }
+
     fn is_immobilized(&self) -> bool {
         [0x80, 0x100, 0x20000].into_iter().any(|flag| {
             self.statuses
@@ -2733,6 +3099,8 @@ fn mob_movement_packet(object_id: i32, mob: &MapMobRuntime, nibble: i8) -> Vec<u
 
 struct RemotePlayerState {
     name: String,
+    guild_name: String,
+    _guild_mark: openstory_protocol::GuildMark,
     level: u8,
     job: u16,
     look: openstory_protocol::CharacterLook,
@@ -2746,10 +3114,15 @@ struct RemotePlayerState {
     previous_y: f64,
     foothold: u16,
     stance: u8,
+    dead: bool,
+    death_art: Option<LocalDeathArtRuntime>,
     facing_left: bool,
+    hidden: bool,
+    mount: Option<MountLookRuntime>,
     attack_speed: i8,
     attack_stance: Option<u8>,
     speech_bubble_remaining: Option<Duration>,
+    chalkboard: Option<String>,
     invincibility_remaining: Duration,
     mini_room: Option<openstory_protocol::CharacterMiniRoom>,
     face_expression: Option<FaceExpressionRuntime>,
@@ -2759,15 +3132,60 @@ struct RemotePlayerState {
     desired_avatar_motion: AvatarMotion,
     avatar_elapsed: Duration,
     name_label: Option<(usize, SpriteRect)>,
+    guild_label: Option<(usize, SpriteRect)>,
+}
+
+impl RemotePlayerState {
+    fn snap_to_ground_if_needed(&mut self, footholds: Option<&FootholdTree>) {
+        let Some(footholds) = footholds else {
+            return;
+        };
+        let grounded_here = footholds
+            .get(self.foothold)
+            .and_then(|foothold| foothold.ground_y(self.target_x))
+            .is_some_and(|ground_y| (ground_y - self.target_y).abs() <= 2.0);
+        if grounded_here {
+            return;
+        }
+        let Some((foothold, ground_y)) = footholds.find_below(self.target_x, self.target_y) else {
+            return;
+        };
+        self.foothold = foothold;
+        self.target_y = ground_y;
+        self.x = self.target_x;
+        self.y = ground_y;
+        self.recoil_velocity_x = 0.0;
+    }
 }
 
 impl MapSceneRuntime {
+    fn set_player_traction(&mut self, traction: f64) {
+        self.player.traction = traction;
+    }
+
+    fn spawn_door(&mut self, owner_id: i32, x: i16, y: i16) {
+        self.doors.insert(
+            owner_id,
+            MapDoorRuntime {
+                x: f64::from(x),
+                y: f64::from(y),
+                frame_index: 0,
+                elapsed: Duration::ZERO,
+            },
+        );
+    }
+
+    fn remove_door(&mut self, owner_id: i32) {
+        self.doors.remove(&owner_id);
+    }
+
     fn new(scene: MapSceneData, draws: &mut [(usize, SpriteRect)]) -> Self {
         let avatar_frames = avatar_frames_runtime(scene.avatar_frames, draws);
         let portal_frame_indices = scene
             .regular_portal_frames
             .iter()
             .chain(&scene.hidden_portal_frames)
+            .chain(&scene.door_frames)
             .flat_map(|frame| frame.sprites.clone())
             .collect();
         let regular_portal_frames = scene
@@ -2777,6 +3195,11 @@ impl MapSceneRuntime {
             .collect();
         let hidden_portal_frames = scene
             .hidden_portal_frames
+            .iter()
+            .map(|frame| portal_frame_runtime(frame, draws))
+            .collect();
+        let door_frames = scene
+            .door_frames
             .iter()
             .map(|frame| portal_frame_runtime(frame, draws))
             .collect();
@@ -2801,17 +3224,12 @@ impl MapSceneRuntime {
             .iter()
             .position(|frame| frame.motion == AvatarMotion::Stand)
             .or_else(|| (!avatar_frames.is_empty()).then_some(0));
-        let minimap_presentation =
-            scene
-                .minimap
-                .as_ref()
-                .map_or(minimap::Presentation::Collapsed, |data| {
-                    if data.town {
-                        minimap::Presentation::Expanded
-                    } else {
-                        minimap::Presentation::Normal
-                    }
-                });
+        let minimap_presentation = scene
+            .minimap
+            .as_ref()
+            .map_or(minimap::Presentation::Collapsed, |_| {
+                minimap::Presentation::Normal
+            });
         let (map_art_animations, map_art_animation_draw_indices, active_map_art_draw_indices) =
             prepare_map_art_animations(scene.map_art_animations);
         let map_backgrounds = scene
@@ -2839,6 +3257,7 @@ impl MapSceneRuntime {
             .collect();
         let runtime = Self {
             map_id: scene.map_id,
+            underwater: scene.underwater,
             camera_offset: scene.camera_offset,
             camera_bounds: scene.camera_bounds,
             minimap: scene.minimap,
@@ -2859,6 +3278,7 @@ impl MapSceneRuntime {
             avatar_indices,
             active_avatar_frame,
             local_death_art: None,
+            local_mount: None,
             desired_avatar_motion: AvatarMotion::Stand,
             attack_stance: None,
             attack_count: 0,
@@ -2873,6 +3293,7 @@ impl MapSceneRuntime {
             local_item_aura: None,
             local_face_expression: None,
             local_speech_bubble_remaining: None,
+            local_chalkboard: None,
             npcs: HashMap::new(),
             hired_merchants: HashMap::new(),
             scriptable_npc_ids: HashSet::new(),
@@ -2880,14 +3301,17 @@ impl MapSceneRuntime {
             mobs: HashMap::new(),
             mists: HashMap::new(),
             summons: HashMap::new(),
+            dragons: HashMap::new(),
             pets: HashMap::new(),
             pet_loot_cooldown: 0,
             character_effects: Vec::with_capacity(8),
             screen_effect: None,
             reactors: HashMap::new(),
+            doors: HashMap::new(),
             portals,
             regular_portal_frames,
             hidden_portal_frames,
+            door_frames,
             portal_frame_indices,
             regular_portal_frame_index: 0,
             regular_portal_elapsed: Duration::ZERO,
@@ -2902,6 +3326,7 @@ impl MapSceneRuntime {
             local_chair: None,
             local_map_seat: None,
             damage_numbers: Vec::with_capacity(64),
+            pending_mob_attack_impacts: Vec::with_capacity(64),
             quest_clear_effect: None,
             projectiles: Vec::with_capacity(8),
             layer_insert_indices: scene.layer_insert_indices,
@@ -3062,6 +3487,9 @@ impl MapSceneRuntime {
                 &mut self.hidden_portal_frame_index,
                 &mut self.hidden_portal_elapsed,
             );
+            for door in self.doors.values_mut() {
+                advance_portal_animation(&self.door_frames, &mut door.frame_index, &mut door.elapsed);
+            }
             self.portal_cooldown = self.portal_cooldown.saturating_sub(1);
             self.teleport_cooldown = self.teleport_cooldown.saturating_sub(1);
             for portal in &mut self.portals {
@@ -3330,41 +3758,13 @@ impl MapSceneRuntime {
     }
 
     fn advance_local_death_art(&mut self, updates: u8) {
-        let Some(art) = self.local_death_art.as_mut() else {
-            return;
-        };
-        for _ in 0..updates {
-            if !art.tomb_landed {
-                art.tomb_y_offset += 9.0;
-                art.tomb_elapsed += Duration::from_millis(8);
-                while art.tomb_elapsed >= Duration::from_millis(30) {
-                    art.tomb_elapsed -= Duration::from_millis(30);
-                    if !art.fall_frames.is_empty() {
-                        art.tomb_frame_index = (art.tomb_frame_index + 1) % art.fall_frames.len();
-                    }
-                }
-                if art.tomb_y_offset >= 0.0 {
-                    art.tomb_y_offset = 0.0;
-                    art.tomb_landed = true;
-                }
-            }
-            art.ghost_ticks = art.ghost_ticks.wrapping_add(1);
-            art.ghost_elapsed += Duration::from_millis(8);
-            while let Some(frame) = art.ghost_frames.get(art.ghost_frame_index) {
-                if art.ghost_elapsed < frame.delay {
-                    break;
-                }
-                art.ghost_elapsed -= frame.delay;
-                if !art.ghost_frames.is_empty() {
-                    art.ghost_frame_index = (art.ghost_frame_index + 1) % art.ghost_frames.len();
-                } else {
-                    break;
-                }
-            }
+        if let Some(art) = self.local_death_art.as_mut() {
+            art.advance(updates);
         }
     }
 
     fn apply_remote_movement(&mut self, movement: openstory_protocol::RemoteCharacterMovement) {
+        let footholds = self.footholds.as_ref();
         let Some(player) = self.remote_players.get_mut(&movement.id) else {
             return;
         };
@@ -3389,9 +3789,20 @@ impl MapSceneRuntime {
             if fragment.foothold != 0 {
                 player.foothold = fragment.foothold;
             }
+            let was_dead = player.dead;
+            player.dead = fragment.stance & !1 == 18;
+            if player.dead && !was_dead {
+                player.attack_stance = None;
+                if let Some(art) = player.death_art.as_mut() {
+                    art.reset();
+                }
+            }
             player.stance = fragment.stance;
             player.facing_left = fragment.stance & 1 != 0;
             player.attack_stance = None;
+            if player.dead {
+                player.snap_to_ground_if_needed(footholds);
+            }
         }
     }
 
@@ -3400,8 +3811,10 @@ impl MapSceneRuntime {
         attack: openstory_protocol::RemoteCharacterAttack,
         projectile_frames: Option<Vec<ProjectileFrameRuntime>>,
         skill_hit_effects: Vec<SkillHitEffectAnimation>,
+        hit_delays: Vec<Duration>,
     ) {
         let hit_effect_flip = attack.to_left;
+        let skill_hit_effects = Arc::new(skill_hit_effects);
         let source_position = self
             .remote_players
             .get(&attack.attacker_id)
@@ -3448,15 +3861,17 @@ impl MapSceneRuntime {
         }
         for target in attack.targets {
             let mut stack_offset = 0.0;
-            for damage in target.damage_lines {
-                self.show_mob_hit_effects(target.object_id, &skill_hit_effects, hit_effect_flip);
-                self.show_mob_damage_line(
-                    openstory_protocol::MobDamage {
-                        object_id: target.object_id,
-                        damage: damage.damage,
-                    },
-                    damage.critical,
-                    stack_offset,
+            for (hit_index, damage) in target.damage_lines.into_iter().enumerate() {
+                let mob_damage = openstory_protocol::MobDamage {
+                    object_id: target.object_id,
+                    damage: damage.damage,
+                };
+                self.schedule_mob_attack_impact(
+                    target.object_id,
+                    Arc::clone(&skill_hit_effects),
+                    hit_effect_flip,
+                    Some((mob_damage, damage.critical, stack_offset)),
+                    hit_delays.get(hit_index).copied().unwrap_or_default(),
                 );
                 stack_offset += if damage.critical { 36.0 } else { 30.0 };
             }
@@ -3550,11 +3965,22 @@ impl MapSceneRuntime {
     fn advance_remote_players(&mut self, updates: u8) {
         advance_face_expression(&mut self.local_face_expression, updates);
         let aura_elapsed = Duration::from_millis(8 * u64::from(updates));
+        if let Some(mount) = self.local_mount.as_mut() {
+            mount.advance(
+                MountLookRuntime::motion_for_avatar(self.desired_avatar_motion),
+                aura_elapsed,
+            );
+        }
         if let Some(aura) = self.local_item_aura.as_mut() {
             aura.advance(aura_elapsed);
         }
         for player in self.remote_players.values_mut() {
             advance_face_expression(&mut player.face_expression, updates);
+            if player.dead
+                && let Some(art) = player.death_art.as_mut()
+            {
+                art.advance(updates);
+            }
             if let Some(aura) = player.item_aura.as_mut() {
                 aura.advance(aura_elapsed);
             }
@@ -3584,6 +4010,12 @@ impl MapSceneRuntime {
                 .attack_stance
                 .map(AvatarMotion::Attack)
                 .unwrap_or_else(|| avatar_motion_for_stance(player.stance));
+            if let Some(mount) = player.mount.as_mut() {
+                mount.advance(
+                    MountLookRuntime::motion_for_avatar(desired),
+                    Duration::from_millis(8 * u64::from(updates)),
+                );
+            }
             if desired != player.desired_avatar_motion || player.active_avatar_frame.is_none() {
                 player.desired_avatar_motion = desired;
                 player.active_avatar_frame = first_avatar_frame(&player.avatar_frames, desired);
@@ -4402,6 +4834,29 @@ impl MapSceneRuntime {
         }
     }
 
+    fn advance_dragons(&mut self, updates: u8) {
+        let footholds = self.footholds.as_ref();
+        for dragon in self.dragons.values_mut() {
+            for _ in 0..updates {
+                if dragon.frames.len() > 1 {
+                    dragon.elapsed = dragon.elapsed.saturating_add(Duration::from_millis(8));
+                    while let Some(frame) = dragon.frames.get(dragon.frame_index) {
+                        if dragon.elapsed < frame.delay {
+                            break;
+                        }
+                        dragon.elapsed -= frame.delay;
+                        dragon.frame_index = (dragon.frame_index + 1) % dragon.frames.len();
+                    }
+                }
+                if let Some(footholds) = footholds {
+                    PhysicsEngine.move_body(footholds, &mut dragon.body);
+                    dragon.x = dragon.body.x;
+                    dragon.y = dragon.body.y;
+                }
+            }
+        }
+    }
+
     fn advance_pets(&mut self, updates: u8, local_character_id: Option<i32>) -> Vec<Vec<u8>> {
         let owner = (self.player.x, self.player.y);
         let mut packets = Vec::new();
@@ -4486,6 +4941,7 @@ impl MapSceneRuntime {
             if !animation.frames.is_empty() {
                 self.character_effects.push(MapCharacterSkillEffect {
                     character_id,
+                    point_position: None,
                     z: animation.z,
                     speed_factor,
                     frames: animation.frames,
@@ -4493,6 +4949,20 @@ impl MapSceneRuntime {
                     elapsed: Duration::ZERO,
                 });
             }
+        }
+    }
+
+    fn show_point_skill_effect(&mut self, x: f64, y: f64, frames: Vec<ProjectileFrameRuntime>) {
+        if !frames.is_empty() {
+            self.character_effects.push(MapCharacterSkillEffect {
+                character_id: None,
+                point_position: Some((x, y)),
+                z: 0,
+                speed_factor: 1.0,
+                frames,
+                frame_index: 0,
+                elapsed: Duration::ZERO,
+            });
         }
     }
 
@@ -4606,11 +5076,72 @@ impl MapSceneRuntime {
         }
     }
 
+    fn schedule_mob_attack_impact(
+        &mut self,
+        object_id: i32,
+        hit_effects: Arc<Vec<SkillHitEffectAnimation>>,
+        hit_effect_flip: bool,
+        damage: Option<(openstory_protocol::MobDamage, bool, f32)>,
+        delay: Duration,
+    ) {
+        if hit_effects.is_empty() && damage.is_none() {
+            return;
+        }
+        if delay.is_zero() {
+            self.apply_mob_attack_impact(
+                object_id,
+                &hit_effects,
+                hit_effect_flip,
+                damage,
+            );
+            return;
+        }
+        if self.pending_mob_attack_impacts.len() >= 512 {
+            self.pending_mob_attack_impacts.remove(0);
+        }
+        self.pending_mob_attack_impacts.push(PendingMobAttackImpact {
+            object_id,
+            remaining: delay,
+            hit_effects,
+            hit_effect_flip,
+            damage,
+        });
+    }
+
+    fn apply_mob_attack_impact(
+        &mut self,
+        object_id: i32,
+        hit_effects: &[SkillHitEffectAnimation],
+        hit_effect_flip: bool,
+        damage: Option<(openstory_protocol::MobDamage, bool, f32)>,
+    ) {
+        self.show_mob_hit_effects(object_id, hit_effects, hit_effect_flip);
+        if let Some((damage, critical, stack_offset)) = damage {
+            self.show_mob_damage_line(damage, critical, stack_offset);
+        }
+    }
+
     fn advance_mobs(&mut self, updates: u8) -> Vec<Vec<u8>> {
         let elapsed = Duration::from_millis(8 * u64::from(updates));
         self.damage_numbers.retain_mut(|number| {
             number.elapsed = number.elapsed.saturating_add(elapsed);
             number.elapsed < number.lifetime
+        });
+        let mut due_impacts = Vec::new();
+        self.pending_mob_attack_impacts.retain_mut(|impact| {
+            impact.remaining = impact.remaining.saturating_sub(elapsed);
+            if impact.remaining.is_zero() {
+                due_impacts.push(PendingMobAttackImpact {
+                    object_id: impact.object_id,
+                    remaining: impact.remaining,
+                    hit_effects: Arc::clone(&impact.hit_effects),
+                    hit_effect_flip: impact.hit_effect_flip,
+                    damage: impact.damage,
+                });
+                false
+            } else {
+                true
+            }
         });
         let footholds = self.footholds.as_ref();
         let mut packets = Vec::new();
@@ -4745,6 +5276,14 @@ impl MapSceneRuntime {
             }
             true
         });
+        for impact in due_impacts {
+            self.apply_mob_attack_impact(
+                impact.object_id,
+                &impact.hit_effects,
+                impact.hit_effect_flip,
+                impact.damage,
+            );
+        }
         packets
     }
 
@@ -4839,12 +5378,17 @@ impl MapSceneRuntime {
         self.mists.remove(&object_id);
     }
 
-    fn show_mob_hp(&mut self, update: openstory_protocol::MobHpUpdate) {
+    fn show_mob_hp(
+        &mut self,
+        update: openstory_protocol::MobHpUpdate,
+    ) -> Option<(i32, u8)> {
         let Some(mob) = self.mobs.get_mut(&update.object_id) else {
-            return;
+            return None;
         };
-        mob.hp_percent = Some(update.percentage.clamp(0, 100) as u8);
+        let percent = update.percentage.clamp(0, 100) as u8;
+        mob.hp_percent = Some(percent);
         mob.hp_bar_remaining = Duration::from_secs(2);
+        mob.traits.boss.then_some((mob.mob_id, percent))
     }
 
     fn show_mob_damage(&mut self, damage: openstory_protocol::MobDamage) {
@@ -5226,7 +5770,9 @@ impl MapSceneRuntime {
                 let fallback = match motion {
                     AvatarMotion::Stand => AvatarMotion::Walk,
                     AvatarMotion::Sit => AvatarMotion::Stand,
-                    AvatarMotion::Crouch => AvatarMotion::Stand,
+                    AvatarMotion::Alert | AvatarMotion::Crouch | AvatarMotion::Swim => {
+                        AvatarMotion::Stand
+                    }
                     AvatarMotion::Walk
                     | AvatarMotion::Jump
                     | AvatarMotion::Ladder

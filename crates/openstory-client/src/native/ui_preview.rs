@@ -60,8 +60,17 @@ pub(super) fn run(
             "native-monster-book-detail-move",
             "native-monster-book-detail-die",
             "native-status",
+            "native-status-detail",
             "native-status-bar",
+            "native-clock",
+            "native-wedding",
+            "native-rps",
+            "native-event-list",
+            "native-dragon",
+            "native-monster-carnival",
+            "native-avatar-megaphone",
             "native-quit-confirmation",
+            "native-server-notice",
             "native-quest-log",
             "native-quest-log-detail",
             "native-chat",
@@ -103,8 +112,17 @@ pub(super) fn run(
         | "native-monster-book-detail-move"
         | "native-monster-book-detail-die"
         | "native-status"
+        | "native-status-detail"
         | "native-status-bar"
+        | "native-clock"
+        | "native-wedding"
+        | "native-rps"
+        | "native-event-list"
+        | "native-dragon"
+        | "native-monster-carnival"
+        | "native-avatar-megaphone"
         | "native-quit-confirmation"
+        | "native-server-notice"
         | "native-quest-log"
         | "native-quest-log-detail"
         | "native-chat"
@@ -138,13 +156,7 @@ pub(super) fn run(
                 _ => unreachable!("cash shop screen name was validated above"),
             };
             let scene = super::cash_shop_ui::render_preview(
-                variant,
-                ui,
-                font,
-                etc,
-                items,
-                characters,
-                strings,
+                variant, ui, font, etc, items, characters, strings,
             )?;
             let base = scene.pixels;
             let annotated = include_hitboxes.then(|| {
@@ -200,6 +212,288 @@ pub(super) fn run(
             build_inventory_panel_scene(map, legacy_ui, characters, items, strings, font)?
         } else if matches!(*name, "native-quest-log" | "native-quest-log-detail") {
             build_quest_log_panel_scene(name, map, legacy_ui, quests, strings, characters, font)?
+        } else if *name == "native-clock" {
+            let panel = super::ui_clock::render(
+                ui,
+                super::ui_clock::ClockState::Countdown {
+                    remaining_seconds: 83 * 60 + 7,
+                    elapsed_ms: 0,
+                },
+            )?;
+            let mut sprites = gameplay_backdrop(map, characters, font)?;
+            sprites.push(DecodedSprite {
+                texture_key: "native-clock-preview".to_owned(),
+                rect: SpriteRect {
+                    x: panel.x,
+                    y: panel.y,
+                    width: panel.width as f32,
+                    height: panel.height as f32,
+                    blend_mode: BlendMode::Alpha,
+                },
+                depth_order: 0,
+                texture_width: panel.width,
+                texture_height: panel.height,
+                pixels: Arc::from(panel.pixels),
+            });
+            LoginSceneAssets {
+                sprites,
+                actions: Vec::new(),
+                map_scene: None,
+                animated_art: Vec::new(),
+                login_buttons: Vec::new(),
+                save_id_indicator_draws: None,
+            }
+        } else if *name == "native-wedding" {
+            let panel = build_wedding_panel(ui, font, 83)?;
+            let mut sprites = gameplay_backdrop(map, characters, font)?;
+            sprites.push(DecodedSprite {
+                texture_key: "native-wedding-preview".to_owned(),
+                rect: SpriteRect {
+                    x: (CANVAS_WIDTH - WEDDING_PANEL_WIDTH as u32) as f32 * 0.5,
+                    y: (CANVAS_HEIGHT - WEDDING_PANEL_HEIGHT as u32) as f32 * 0.5,
+                    width: WEDDING_PANEL_WIDTH as f32,
+                    height: WEDDING_PANEL_HEIGHT as f32,
+                    blend_mode: BlendMode::Alpha,
+                },
+                depth_order: 0,
+                texture_width: WEDDING_PANEL_WIDTH as u32,
+                texture_height: WEDDING_PANEL_HEIGHT as u32,
+                pixels: Arc::from(panel.pixels),
+            });
+            LoginSceneAssets {
+                sprites,
+                actions: Vec::new(),
+                map_scene: None,
+                animated_art: Vec::new(),
+                login_buttons: Vec::new(),
+                save_id_indicator_draws: None,
+            }
+        } else if *name == "native-rps" {
+            let mut game = RpsGameRuntime::new();
+            game.phase = RpsGamePhase::Result;
+            game.player_choice = Some(0);
+            game.opponent_choice = Some(2);
+            game.result = Some(1);
+            game.wins = 1;
+            game.hovered = Some(RpsGameButton::Retry);
+            let pixels = render_rps_game_panel(ui, font, &game)?;
+            let mut sprites = gameplay_backdrop(map, characters, font)?;
+            sprites.push(DecodedSprite {
+                texture_key: "native-rps-preview".to_owned(),
+                rect: SpriteRect {
+                    x: 0.0,
+                    y: 0.0,
+                    width: CANVAS_WIDTH as f32,
+                    height: CANVAS_HEIGHT as f32,
+                    blend_mode: BlendMode::Alpha,
+                },
+                depth_order: 0,
+                texture_width: CANVAS_WIDTH,
+                texture_height: CANVAS_HEIGHT,
+                pixels: Arc::from(pixels),
+            });
+            LoginSceneAssets {
+                sprites,
+                actions: Vec::new(),
+                map_scene: None,
+                animated_art: Vec::new(),
+                login_buttons: Vec::new(),
+                save_id_indicator_draws: None,
+            }
+        } else if *name == "native-event-list" {
+            let events = vec![
+                EventListEntry {
+                    event: openstory_protocol::ServerEventInfo {
+                        type_id: 0,
+                        name: "Double EXP Weekend".to_owned(),
+                        description: "Earn bonus experience while exploring Maple World."
+                            .to_owned(),
+                        seconds_remaining: 5_840,
+                        multiplier: 200,
+                        has_item_rewards: false,
+                        rewards: Vec::new(),
+                    },
+                    peak_duration: 14_400,
+                },
+                EventListEntry {
+                    event: openstory_protocol::ServerEventInfo {
+                        type_id: 1,
+                        name: "Mushroom Festival".to_owned(),
+                        description: "Collect festival tokens and trade them for prizes."
+                            .to_owned(),
+                        seconds_remaining: 3_000,
+                        multiplier: 100,
+                        has_item_rewards: true,
+                        rewards: vec![
+                            openstory_protocol::EventReward {
+                                item_id: 2_000_000,
+                                quantity: 5,
+                            },
+                            openstory_protocol::EventReward {
+                                item_id: 2_040_000,
+                                quantity: 2,
+                            },
+                        ],
+                    },
+                    peak_duration: 7_200,
+                },
+                EventListEntry {
+                    event: openstory_protocol::ServerEventInfo {
+                        type_id: 2,
+                        name: "Maple Story Anniversary".to_owned(),
+                        description: "A celebration is coming soon to every town.".to_owned(),
+                        seconds_remaining: -1,
+                        multiplier: 100,
+                        has_item_rewards: false,
+                        rewards: Vec::new(),
+                    },
+                    peak_duration: 0,
+                },
+            ];
+            let panel = build_event_list_panel(
+                legacy_ui,
+                font,
+                strings,
+                &mut HashMap::new(),
+                &events,
+                0,
+                Some(0),
+                true,
+            )?;
+            let mut sprites = gameplay_backdrop(map, characters, font)?;
+            sprites.push(DecodedSprite {
+                texture_key: "native-event-list-preview".to_owned(),
+                rect: SpriteRect {
+                    x: EVENT_LIST_PANEL_X,
+                    y: EVENT_LIST_PANEL_Y,
+                    width: EVENT_LIST_PANEL_WIDTH as f32,
+                    height: EVENT_LIST_PANEL_HEIGHT as f32,
+                    blend_mode: BlendMode::Alpha,
+                },
+                depth_order: 0,
+                texture_width: EVENT_LIST_PANEL_WIDTH as u32,
+                texture_height: EVENT_LIST_PANEL_HEIGHT as u32,
+                pixels: Arc::from(panel.pixels),
+            });
+            LoginSceneAssets {
+                sprites,
+                actions: Vec::new(),
+                map_scene: None,
+                animated_art: Vec::new(),
+                login_buttons: Vec::new(),
+                save_id_indicator_draws: None,
+            }
+        } else if *name == "native-dragon" {
+            let mut dragon_sprites = Vec::new();
+            let frames = append_dragon_animation(
+                &mut dragon_sprites,
+                mobs,
+                2215,
+                &mut MapArtCache::default(),
+            )?;
+            let range = frames
+                .first()
+                .map(|frame| frame.sprites.clone())
+                .ok_or_else(|| "v83 Evan dragon has no drawable stand frame".to_owned())?;
+            let mut sprites = gameplay_backdrop(map, characters, font)?;
+            sprites.extend(
+                dragon_sprites
+                    .into_iter()
+                    .skip(range.start)
+                    .take(range.len()),
+            );
+            LoginSceneAssets {
+                sprites,
+                actions: Vec::new(),
+                map_scene: None,
+                animated_art: Vec::new(),
+                login_buttons: Vec::new(),
+                save_id_indicator_draws: None,
+            }
+        } else if *name == "native-monster-carnival" {
+            let mut state = super::monster_carnival::State::default();
+            state.team = Some(0);
+            state.my_cp = 32;
+            state.my_total_cp = 50;
+            state.enemy_cp = 27;
+            state.enemy_total_cp = 50;
+            state.summon_counts = [2, 1, 3, 0];
+            let panel = super::monster_carnival::render_state(legacy_ui, font, &state)?;
+            let mut sprites = gameplay_backdrop(map, characters, font)?;
+            sprites.push(DecodedSprite {
+                texture_key: "native-monster-carnival-preview".to_owned(),
+                rect: SpriteRect {
+                    x: state.x,
+                    y: state.y,
+                    width: panel.width as f32,
+                    height: panel.height as f32,
+                    blend_mode: BlendMode::Alpha,
+                },
+                depth_order: 0,
+                texture_width: panel.width,
+                texture_height: panel.height,
+                pixels: Arc::from(panel.pixels),
+            });
+            LoginSceneAssets {
+                sprites,
+                actions: Vec::new(),
+                map_scene: None,
+                animated_art: Vec::new(),
+                login_buttons: Vec::new(),
+                save_id_indicator_draws: None,
+            }
+        } else if *name == "native-avatar-megaphone" {
+            let mut sprites = gameplay_backdrop(map, characters, font)?;
+            let x = CANVAS_WIDTH as f32 - super::avatar_megaphone::PANEL_WIDTH as f32 + 4.0;
+            let y = 4.0;
+            super::append_sprite(
+                &mut sprites,
+                map,
+                "MapHelper.img/AvatarMegaphone/Burning/0",
+                x,
+                y,
+                1.0,
+            )?;
+            let lines = vec![
+                "Greetings from MapleStory!".to_owned(),
+                "The first three rows appear".to_owned(),
+                "in this v83 banner.".to_owned(),
+                "This fourth line is dropped.".to_owned(),
+            ];
+            let text_pixels =
+                super::avatar_megaphone::render_text(map, font, "PreviewHero", &lines)?;
+            sprites.push(DecodedSprite {
+                texture_key: "native-avatar-megaphone-preview:text".to_owned(),
+                rect: SpriteRect {
+                    x,
+                    y,
+                    width: super::avatar_megaphone::PANEL_WIDTH as f32,
+                    height: super::avatar_megaphone::PANEL_HEIGHT as f32,
+                    blend_mode: BlendMode::Alpha,
+                },
+                depth_order: 0,
+                texture_width: super::avatar_megaphone::PANEL_WIDTH,
+                texture_height: super::avatar_megaphone::PANEL_HEIGHT,
+                pixels: Arc::from(text_pixels),
+            });
+            append_character_preview(
+                &mut sprites,
+                characters,
+                &preview_character().look,
+                x + 70.0,
+                y + 92.0,
+                1.0,
+                false,
+                &mut MapArtCache::default(),
+            )?;
+            LoginSceneAssets {
+                sprites,
+                actions: Vec::new(),
+                map_scene: None,
+                animated_art: Vec::new(),
+                login_buttons: Vec::new(),
+                save_id_indicator_draws: None,
+            }
         } else if *name == "native-quit-confirmation" {
             let mut sprites = gameplay_backdrop(map, characters, font)?;
             let dim_pixels: Arc<[u8]> = Arc::from([0_u8, 0, 0, 140]);
@@ -220,6 +514,43 @@ pub(super) fn run(
             let (dialog, _) = build_quit_confirmation_sprites(legacy_ui)
                 .or_else(|_| build_quit_confirmation_sprites(ui))?;
             sprites.extend(dialog);
+            LoginSceneAssets {
+                sprites,
+                actions: Vec::new(),
+                map_scene: None,
+                animated_art: Vec::new(),
+                login_buttons: Vec::new(),
+                save_id_indicator_draws: None,
+            }
+        } else if *name == "native-server-notice" {
+            let mut sprites = gameplay_backdrop(map, characters, font)?;
+            let dim_pixels: Arc<[u8]> = Arc::from([0_u8, 0, 0, 140]);
+            sprites.push(DecodedSprite {
+                texture_key: "native-server-notice-preview:dim".to_owned(),
+                rect: SpriteRect {
+                    x: 0.0,
+                    y: 0.0,
+                    width: CANVAS_WIDTH as f32,
+                    height: CANVAS_HEIGHT as f32,
+                    blend_mode: BlendMode::Alpha,
+                },
+                depth_order: 0,
+                texture_width: 1,
+                texture_height: 1,
+                pixels: dim_pixels,
+            });
+            let message = "The server will restart in five minutes. Please move to a safe place.";
+            let (width, height, pixels, panel, _) =
+                build_server_notice_art(legacy_ui, font, message)
+                    .or_else(|_| build_server_notice_art(ui, font, message))?;
+            sprites.push(DecodedSprite {
+                texture_key: "native-server-notice-preview:dialog".to_owned(),
+                rect: panel,
+                depth_order: 0,
+                texture_width: width,
+                texture_height: height,
+                pixels: Arc::from(pixels),
+            });
             LoginSceneAssets {
                 sprites,
                 actions: Vec::new(),
@@ -395,9 +726,14 @@ fn build_scene(
                 AudioSettings {
                     music_volume: 50,
                     effects_volume: 70,
+                    mute_music: false,
+                    mute_effects: false,
                 },
+                DisplaySettings::default(),
+                InputSettings { mouse_speed: 50 },
                 GameplaySettings::default(),
-                OptionSlider::Music,
+                SocialSettings::default(),
+                OptionControl::Music,
                 None,
             );
             sprites.push(DecodedSprite {
@@ -732,6 +1068,7 @@ fn build_scene(
         | "native-cash-shop"
         | "native-monster-book"
         | "native-status"
+        | "native-status-detail"
         | "native-quest-log"
         | "native-chat"
         | "native-party"
@@ -1018,6 +1355,7 @@ fn build_inventory_panel_scene(
     let inventory = openstory_protocol::InventorySnapshot {
         meso: 1_234_567,
         slot_maxima: [24; 5],
+        equipped_slot_maximum: 59,
         items: vec![
             openstory_protocol::InventoryItem {
                 inventory_type: openstory_protocol::InventoryType::Use,
@@ -1212,20 +1550,14 @@ fn build_native_window_scene(
         ],
         "native-cash-shop" => &[("CashShop.img/Base/backgrnd", 0.0, 0.0)],
         "native-monster-book" => &[("UIWindow2.img/MonsterBook/backgrnd", 276.5, 20.0)],
-        "native-status" => &[
-            ("UIWindow4.img/Stat/main/backgrnd", 212.0, 20.0),
-            ("UIWindow4.img/Stat/main/backgrnd2", 212.0, 20.0),
-            ("UIWindow4.img/Stat/main/backgrnd3", 212.0, 20.0),
+        "native-status" | "native-status-detail" => &[
+            // Render the live status panel below so the preview audits the same
+            // v83 fallback art and layout that the S key opens in-game.
         ],
         "native-quest-log" => &[("UIWindow.img/Quest/backgrnd3", 280.0, 20.0)],
-        "native-chat" => &[
-            ("StatusBar2.img/mainBar/backgrnd", 512.0, 768.0),
-            ("StatusBar2.img/mainBar/chatEnter", 512.0, 768.0),
-            ("StatusBar2.img/mainBar/chatSpace2", 512.0, 768.0),
-            ("StatusBar2.img/mainBar/chatCover", 512.0, 768.0),
-            ("StatusBar2.img/mainBar/chatTarget/all", 512.0, 770.0),
-            ("StatusBar2.img/chat/tapBarOver", -64.0, 639.0),
-        ],
+        // The v83 UI archive has StatusBar.img, not the newer StatusBar2
+        // chat-bar tree. Preview the live Rust fallback panel below.
+        "native-chat" => &[],
         "native-party" => &[
             ("UIWindow2.img/UserList/Main/backgrnd", 260.0, 20.0),
             ("UIWindow2.img/UserList/Main/backgrnd2", 260.0, 20.0),
@@ -1244,21 +1576,9 @@ fn build_native_window_scene(
             ),
             ("UIWindow2.img/UserList/line", 392.0, 135.0),
         ],
-        "native-guild" => &[
-            ("GuildUI.img/backgrnd1", 200.0, 80.0),
-            ("GuildUI.img/backgrnd2", 200.0, 80.0),
-            ("GuildUI.img/top/flag/0", 200.0, 80.0),
-            ("GuildUI.img/top/noGuildMark", 200.0, 80.0),
-            ("GuildUI.img/guildInfo/layer:cover", 200.0, 80.0),
-            ("GuildUI.img/member/layer:head", 212.0, 196.0),
-            ("GuildUI.img/member/table/list", 225.0, 232.0),
-        ],
-        "native-alliance" => &[
-            ("GuildUI.img/backgrnd1", 200.0, 80.0),
-            ("GuildUI.img/backgrnd2", 200.0, 80.0),
-            ("GuildUI.img/guildInfo/layer:cover", 200.0, 80.0),
-            ("GuildUI.img/union/unionOff/layer:noUnion", 212.0, 196.0),
-        ],
+        // The C++ v83 client uses the UserList tree. Newer GuildUI.img art is
+        // absent from the selected v83 UI-v83.nx archive.
+        "native-guild" | "native-alliance" => &[],
         "native-audio-settings" => &[
             ("UIWindow2.img/OptionMenu/backgrnd", 370.0, 105.0),
             ("UIWindow2.img/OptionMenu/backgrnd2", 370.0, 105.0),
@@ -1274,8 +1594,137 @@ fn build_native_window_scene(
         } else {
             ui_archive
         };
-        append_sprite(&mut sprites, archive, path, *anchor_x, *anchor_y, 1.0)?;
-        sprites[first_sprite].texture_key = format!("nx-window:{path}");
+        let sprite = if name == "native-keybindings" {
+            append_optional_sprite_at_top_left(
+                &mut sprites,
+                archive,
+                path,
+                *anchor_x,
+                *anchor_y,
+                1.0,
+            )?
+        } else {
+            append_optional_sprite(&mut sprites, archive, path, *anchor_x, *anchor_y, 1.0)?
+        };
+        if sprite.is_some() {
+            sprites[first_sprite].texture_key = format!("nx-window:{path}");
+        }
+    }
+
+    // Compose the live Rust panels into previews so v83 assets and dimensions
+    // are audited through the same renderers used in game.
+    if name == "native-guild" {
+        let pixels = render_guild_panel(
+            font,
+            ui_archive,
+            None,
+            None,
+            None,
+            0,
+            &GuildPanelMode::Overview,
+            None,
+            None,
+        );
+        sprites.push(DecodedSprite {
+            texture_key: "nx-window:rendered-v83-guild".to_owned(),
+            rect: SpriteRect {
+                x: 680.0,
+                y: 174.0,
+                width: GUILD_PANEL_WIDTH as f32,
+                height: GUILD_PANEL_HEIGHT as f32,
+                blend_mode: BlendMode::Alpha,
+            },
+            depth_order: 0,
+            texture_width: GUILD_PANEL_WIDTH,
+            texture_height: GUILD_PANEL_HEIGHT,
+            pixels: Arc::from(pixels),
+        });
+    } else if name == "native-alliance" {
+        let pixels = render_alliance_panel(font, ui_archive, None, None, None);
+        sprites.push(DecodedSprite {
+            texture_key: "nx-window:rendered-v83-alliance".to_owned(),
+            rect: SpriteRect {
+                x: 300.0,
+                y: 190.0,
+                width: ALLIANCE_PANEL_WIDTH as f32,
+                height: ALLIANCE_PANEL_HEIGHT as f32,
+                blend_mode: BlendMode::Alpha,
+            },
+            depth_order: 0,
+            texture_width: ALLIANCE_PANEL_WIDTH,
+            texture_height: ALLIANCE_PANEL_HEIGHT,
+            pixels: Arc::from(pixels),
+        });
+    } else if matches!(name, "native-status" | "native-status-detail") {
+        let pixels = render_status_panel(font, ui_archive, &preview_character(), false, false);
+        sprites.push(DecodedSprite {
+            texture_key: "rendered-window:status-panel".to_owned(),
+            rect: SpriteRect {
+                x: STATUS_PANEL_X,
+                y: STATUS_PANEL_Y,
+                width: STATUS_PANEL_WIDTH as f32,
+                height: STATUS_PANEL_HEIGHT as f32,
+                blend_mode: BlendMode::Alpha,
+            },
+            depth_order: 0,
+            texture_width: STATUS_PANEL_WIDTH,
+            texture_height: STATUS_PANEL_HEIGHT,
+            pixels: Arc::from(pixels),
+        });
+        if name == "native-status-detail" {
+            let pixels = render_status_detail_panel(font, ui_archive);
+            sprites.push(DecodedSprite {
+                texture_key: "rendered-window:status-detail-panel".to_owned(),
+                rect: SpriteRect {
+                    x: STATUS_PANEL_X + STATUS_DETAIL_OFFSET_X,
+                    y: STATUS_PANEL_Y + STATUS_DETAIL_OFFSET_Y,
+                    width: STATUS_DETAIL_WIDTH as f32,
+                    height: STATUS_DETAIL_HEIGHT as f32,
+                    blend_mode: BlendMode::Alpha,
+                },
+                depth_order: 0,
+                texture_width: STATUS_DETAIL_WIDTH,
+                texture_height: STATUS_DETAIL_HEIGHT,
+                pixels: Arc::from(pixels),
+            });
+        }
+    } else if name == "native-chat" {
+        let lines = VecDeque::from([
+            ChatLine {
+                text: "System: Welcome to the field.".to_owned(),
+                color: [255, 220, 120],
+            },
+            ChatLine {
+                text: "Maya: Ready to explore?".to_owned(),
+                color: [235, 235, 235],
+            },
+            ChatLine {
+                text: "Party: Meet at the town portal.".to_owned(),
+                color: [160, 210, 255],
+            },
+        ]);
+        let pixels = render_chat_panel(
+            font,
+            &lines,
+            "See you there!",
+            true,
+            ChatTarget::Party,
+            None,
+        );
+        sprites.push(DecodedSprite {
+            texture_key: "rendered-window:chat-panel".to_owned(),
+            rect: SpriteRect {
+                x: 12.0,
+                y: 506.0,
+                width: CHAT_WIDTH as f32,
+                height: CHAT_HEIGHT as f32,
+                blend_mode: BlendMode::Alpha,
+            },
+            depth_order: 0,
+            texture_width: CHAT_WIDTH,
+            texture_height: CHAT_HEIGHT,
+            pixels: Arc::from(pixels),
+        });
     }
 
     if name == "native-quickslots" {
@@ -1646,6 +2095,7 @@ fn geometry_report(name: &str, scene: &LoginSceneAssets, width: u32, height: u32
             | "native-cash-shop"
             | "native-monster-book"
             | "native-status"
+            | "native-status-detail"
             | "native-quest-log"
             | "native-quest-log-detail"
             | "native-chat"
@@ -1662,19 +2112,40 @@ fn geometry_report(name: &str, scene: &LoginSceneAssets, width: u32, height: u32
             .filter(|sprite| sprite.texture_key.starts_with("nx-window:"))
             .count();
         report.push_str(&format!("NX native window layers: {nx_sprite_count}\n"));
+        let rendered_panel_count = scene
+            .sprites
+            .iter()
+            .filter(|sprite| sprite.texture_key.starts_with("rendered-window:"))
+            .count();
+        if rendered_panel_count > 0 {
+            report.push_str(&format!(
+                "Live Rust-rendered panels: {rendered_panel_count}\n"
+            ));
+        }
     }
     let mut outside_count = 0;
     for (index, sprite) in scene.sprites.iter().enumerate() {
-        let is_audited_ui_sprite = sprite.texture_key.starts_with("nx-window:");
+        let is_nx_ui_sprite = sprite.texture_key.starts_with("nx-window:");
+        let is_rendered_ui_panel = sprite.texture_key.starts_with("rendered-window:");
+        let is_audited_ui_sprite = is_nx_ui_sprite || is_rendered_ui_panel;
         if native_window_preview && !is_audited_ui_sprite {
             continue;
         }
         let Some(visible_rect) = visible_sprite_rect(sprite) else {
             continue;
         };
-        if native_window_preview {
+        if native_window_preview && is_nx_ui_sprite {
             report.push_str(&format!(
                 "NX native layer {:?}: {:.1},{:.1} {:.1}x{:.1}\n",
+                sprite.texture_key,
+                visible_rect.x,
+                visible_rect.y,
+                visible_rect.width,
+                visible_rect.height
+            ));
+        } else if native_window_preview && is_rendered_ui_panel {
+            report.push_str(&format!(
+                "Live Rust panel {:?}: {:.1},{:.1} {:.1}x{:.1}\n",
                 sprite.texture_key,
                 visible_rect.x,
                 visible_rect.y,

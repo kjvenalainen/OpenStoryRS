@@ -4,6 +4,8 @@ use crate::login::expect_opcode;
 use crate::{PacketError, PacketReader};
 
 pub const OPCODE_OPEN_UI: u16 = 220;
+pub const OPCODE_LOCK_UI: u16 = 221;
+pub const OPCODE_DISABLE_UI: u16 = 222;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OpenUiRequest {
@@ -38,4 +40,17 @@ pub fn parse_open_ui(bytes: &[u8]) -> Result<OpenUiRequest, PacketError> {
         0x16 => OpenUiRequest::PartySearch,
         kind => OpenUiRequest::Unsupported(kind),
     })
+}
+
+/// Parses v83 `LOCK_UI` and `DISABLE_UI`; both carry one nonzero-disabled byte.
+pub fn parse_ui_disabled(bytes: &[u8]) -> Result<bool, PacketError> {
+    let mut packet = PacketReader::new(bytes);
+    let opcode = packet.read_u16()?;
+    if opcode != OPCODE_LOCK_UI && opcode != OPCODE_DISABLE_UI {
+        return Err(PacketError::UnexpectedOpcode {
+            expected: OPCODE_LOCK_UI,
+            actual: opcode,
+        });
+    }
+    Ok(packet.read_u8()? != 0)
 }

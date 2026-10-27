@@ -1,3 +1,87 @@
+fn append_death_art_draws<'a>(
+    art: &LocalDeathArtRuntime,
+    offset_x: f32,
+    offset_y: f32,
+    facing_left: bool,
+    textures: &'a [GpuTexture],
+    draws: &mut Vec<SpriteDraw<'a>>,
+) {
+    let tomb_sprites = if art.tomb_landed {
+        &art.landed_sprites
+    } else {
+        art.fall_frames
+            .get(art.tomb_frame_index)
+            .map_or(&art.landed_sprites, |frame| &frame.sprites)
+    };
+    for (texture_index, rect) in tomb_sprites {
+        let Some(texture) = textures.get(*texture_index) else {
+            continue;
+        };
+        draws.push(SpriteDraw {
+            texture,
+            x: rect.x + offset_x,
+            y: rect.y
+                + offset_y
+                + if art.tomb_landed {
+                    0.0
+                } else {
+                    art.tomb_y_offset
+                },
+            width: rect.width,
+            height: rect.height,
+            uv: [0.0, 0.0, 1.0, 1.0],
+            tint: [1.0, 1.0, 1.0],
+            blend_mode: rect.blend_mode,
+            flip_x: false,
+            opacity: 1.0,
+        });
+    }
+    let ghost_bob = (art.ghost_ticks as f32 / 45.0).sin() * 5.0;
+    if let Some(frame) = art.ghost_frames.get(art.ghost_frame_index) {
+        for (texture_index, rect) in &frame.sprites {
+            let Some(texture) = textures.get(*texture_index) else {
+                continue;
+            };
+            draws.push(SpriteDraw {
+                texture,
+                x: if facing_left {
+                    1024.0 - (rect.x + rect.width) + offset_x
+                } else {
+                    rect.x + offset_x
+                },
+                y: rect.y + offset_y + ghost_bob,
+                width: rect.width,
+                height: rect.height,
+                uv: [0.0, 0.0, 1.0, 1.0],
+                tint: [1.0, 1.0, 1.0],
+                blend_mode: rect.blend_mode,
+                flip_x: facing_left,
+                opacity: 1.0,
+            });
+        }
+    }
+}
+
+fn append_chalkboard_draw<'a>(
+    texture: &'a GpuTexture,
+    offset_x: f32,
+    offset_y: f32,
+    draws: &mut Vec<SpriteDraw<'a>>,
+) {
+    draws.push(SpriteDraw {
+        texture,
+        x: 512.0 + offset_x - CHALKBOARD_WIDTH as f32 / 2.0,
+        y: GAMEPLAY_CAMERA_CENTER_Y + offset_y - 136.0,
+        width: CHALKBOARD_WIDTH as f32,
+        height: CHALKBOARD_HEIGHT as f32,
+        uv: [0.0, 0.0, 1.0, 1.0],
+        tint: [1.0, 1.0, 1.0],
+        blend_mode: BlendMode::Alpha,
+        flip_x: false,
+        opacity: 1.0,
+    });
+}
+
 fn append_map_entity_draws<'a>(
     scene: &MapSceneRuntime,
     active_buffs: &HashMap<openstory_protocol::BuffStatKey, ActiveCharacterBuff>,
@@ -10,17 +94,23 @@ fn append_map_entity_draws<'a>(
     maple_tv_broadcast: Option<&MapleTvBroadcastRuntime>,
     damage_texture: Option<&'a GpuTexture>,
     speech_textures: &'a HashMap<i32, GpuTexture>,
+    chalkboard_textures: &'a HashMap<i32, GpuTexture>,
     pet_speech_textures: &'a HashMap<(i32, u8), GpuTexture>,
     local_speech_texture: Option<&'a GpuTexture>,
+    local_chalkboard_texture: Option<&'a GpuTexture>,
     damage_glyphs: &[DamageGlyph],
+    graphics_quality: u8,
+    effect_budget: &mut usize,
     pass: MapEntityDrawPass,
     draws: &mut Vec<SpriteDraw<'a>>,
 ) {
     let actor_draw_start = draws.len();
     enum Actor<'a> {
         Drop(&'a MapDropRuntime),
+        Door(&'a MapDoorRuntime),
         Reactor(&'a MapReactorRuntime),
         Summon(&'a MapSummonRuntime),
+        Dragon(&'a MapDragonRuntime),
         Pet(&'a MapPetRuntime),
         Mob(&'a MapMobRuntime),
         Mist(&'a openstory_protocol::MapMistSpawn),
@@ -28,6 +118,7 @@ fn append_map_entity_draws<'a>(
         HiredMerchant(&'a MapHiredMerchantRuntime),
         CharacterSkillEffect(&'a MapCharacterSkillEffect),
         RemotePlayer(&'a RemotePlayerState),
+        RemoteDeath(&'a RemotePlayerState, &'a LocalDeathArtRuntime),
         LocalPlayer(&'a AvatarFrameRuntime),
         LocalDeath(&'a LocalDeathArtRuntime),
         Projectile(&'a MapProjectileRuntime),
@@ -35,8 +126,10 @@ fn append_map_entity_draws<'a>(
 
     let mut actors = Vec::with_capacity(
         scene.drops.len()
+            + scene.doors.len()
             + scene.reactors.len()
             + scene.summons.len()
+            + scene.dragons.len()
             + scene.pets.len()
             + scene.mobs.len()
             + scene.npcs.len()
@@ -65,12 +158,27 @@ fn append_map_entity_draws<'a>(
             actors.push((reactor.y, 1, object_id, Actor::Reactor(reactor)));
         }
     }
+    if matches!(pass, MapEntityDrawPass::Layer(layer) if layer == 7) {
+        for (&owner_id, door) in &scene.doors {
+            if scene.door_frames.get(door.frame_index).is_some() {
+                actors.push((door.y, 5, owner_id, Actor::Door(door)));
+            }
+        }
+    }
     for (&object_id, summon) in &scene.summons {
         let layer = map_entity_foothold_layer(scene, summon.body.foothold_id, summon.x, summon.y);
         if matches!(pass, MapEntityDrawPass::Layer(pass_layer) if pass_layer == layer)
             && summon.frames.get(summon.frame_index).is_some()
         {
             actors.push((summon.y, 2, object_id, Actor::Summon(summon)));
+        }
+    }
+    for (&owner_id, dragon) in &scene.dragons {
+        let layer = map_entity_foothold_layer(scene, dragon.body.foothold_id, dragon.x, dragon.y);
+        if matches!(pass, MapEntityDrawPass::Layer(pass_layer) if pass_layer == layer)
+            && dragon.frames.get(dragon.frame_index).is_some()
+        {
+            actors.push((dragon.y, 2, owner_id, Actor::Dragon(dragon)));
         }
     }
     for (&(owner_id, slot), pet) in &scene.pets {
@@ -97,13 +205,14 @@ fn append_map_entity_draws<'a>(
     for (&object_id, npc) in &scene.npcs {
         let layer = map_entity_foothold_layer(scene, npc.foothold, npc.x, npc.y);
         if matches!(pass, MapEntityDrawPass::Layer(pass_layer) if pass_layer == layer)
-            && npc.frames().get(npc.frame_index).is_some()
+            && (npc.imitated_look_sprites.is_some()
+                || npc.frames().get(npc.frame_index).is_some())
         {
             actors.push((npc.y, 4, object_id, Actor::Npc(npc)));
         }
     }
     for (&object_id, mist) in &scene.mists {
-        if mist.right <= mist.left || mist.bottom <= mist.top {
+        if graphics_quality <= 25 || mist.right <= mist.left || mist.bottom <= mist.top {
             continue;
         }
         let layer = map_entity_foothold_layer(
@@ -123,29 +232,41 @@ fn append_map_entity_draws<'a>(
         }
     }
     for (index, effect) in scene.character_effects.iter().enumerate() {
-        let (actor_y, foothold, actor_x) = effect.character_id.map_or(
-            (
-                Some(scene.player.y),
-                scene.player.foothold_id,
-                scene.player.x,
-            ),
-            |character_id| {
-                scene
-                    .remote_players
-                    .get(&character_id)
-                    .map_or((None, 0, 0.0), |player| {
-                        (Some(player.y), player.foothold, player.x)
-                    })
-            },
-        );
-        let layer = map_entity_foothold_layer(scene, foothold, actor_x, actor_y.unwrap_or(0.0));
+        let (actor_y, foothold, actor_x) = if let Some((x, y)) = effect.point_position {
+            (Some(y), 0, x)
+        } else {
+            effect.character_id.map_or(
+                (
+                    Some(scene.player.y),
+                    scene.player.foothold_id,
+                    scene.player.x,
+                ),
+                |character_id| {
+                    scene
+                        .remote_players
+                        .get(&character_id)
+                        .map_or((None, 0, 0.0), |player| {
+                            (Some(player.y), player.foothold, player.x)
+                        })
+                },
+            )
+        };
+        let layer = if effect.point_position.is_some() {
+            7
+        } else {
+            map_entity_foothold_layer(scene, foothold, actor_x, actor_y.unwrap_or(0.0))
+        };
         if let Some(actor_y) = actor_y
             && matches!(pass, MapEntityDrawPass::Layer(pass_layer) if pass_layer == layer)
             && effect.frames.get(effect.frame_index).is_some()
         {
             actors.push((
                 actor_y,
-                if effect.z < 0 { 5 } else { 7 },
+                if effect.point_position.is_some() || effect.z < 0 {
+                    5
+                } else {
+                    7
+                },
                 index as i32,
                 Actor::CharacterSkillEffect(effect),
             ));
@@ -153,13 +274,18 @@ fn append_map_entity_draws<'a>(
     }
     for (&character_id, player) in &scene.remote_players {
         let layer = map_entity_foothold_layer(scene, player.foothold, player.x, player.y);
-        if matches!(pass, MapEntityDrawPass::Layer(pass_layer) if pass_layer == layer)
-            && player
+        if matches!(pass, MapEntityDrawPass::Layer(pass_layer) if pass_layer == layer) {
+            if player.dead
+                && let Some(art) = player.death_art.as_ref()
+            {
+                actors.push((player.y, 6, character_id, Actor::RemoteDeath(player, art)));
+            } else if player
                 .active_avatar_frame
                 .and_then(|index| player.avatar_frames.get(index))
                 .is_some()
-        {
-            actors.push((player.y, 6, character_id, Actor::RemotePlayer(player)));
+            {
+                actors.push((player.y, 6, character_id, Actor::RemotePlayer(player)));
+            }
         }
     }
     if let Some(death_art) = scene.local_death_art.as_ref() {
@@ -217,6 +343,30 @@ fn append_map_entity_draws<'a>(
                     opacity,
                 });
             }
+            Actor::Door(door) => {
+                let Some(frame) = scene.door_frames.get(door.frame_index) else {
+                    continue;
+                };
+                let offset_x = (door.x - scene.player.x) as f32;
+                let offset_y = (door.y - scene.player.y) as f32;
+                for (texture_index, rect) in &frame.sprites {
+                    let Some(texture) = textures.get(*texture_index) else {
+                        continue;
+                    };
+                    draws.push(SpriteDraw {
+                        texture,
+                        x: rect.x + offset_x,
+                        y: rect.y + offset_y,
+                        width: rect.width,
+                        height: rect.height,
+                        uv: [0.0, 0.0, 1.0, 1.0],
+                        tint: [1.0, 1.0, 1.0],
+                        blend_mode: rect.blend_mode,
+                        flip_x: false,
+                        opacity: 1.0,
+                    });
+                }
+            }
             Actor::Reactor(reactor) => {
                 let frame = reactor
                     .active_frames
@@ -268,6 +418,34 @@ fn append_map_entity_draws<'a>(
                         tint: [1.0, 1.0, 1.0],
                         blend_mode: rect.blend_mode,
                         flip_x: flipped,
+                        opacity: 1.0,
+                    });
+                }
+            }
+            Actor::Dragon(dragon) => {
+                let Some(frame) = dragon.frames.get(dragon.frame_index) else {
+                    continue;
+                };
+                let offset_x = (dragon.x - scene.player.x) as f32;
+                let offset_y = (dragon.y - scene.player.y) as f32;
+                for (texture_index, rect) in &frame.sprites {
+                    let Some(texture) = textures.get(*texture_index) else {
+                        continue;
+                    };
+                    draws.push(SpriteDraw {
+                        texture,
+                        x: if dragon.flipped {
+                            1024.0 - (rect.x + rect.width) + offset_x
+                        } else {
+                            rect.x + offset_x
+                        },
+                        y: rect.y + offset_y,
+                        width: rect.width,
+                        height: rect.height,
+                        uv: [0.0, 0.0, 1.0, 1.0],
+                        tint: [1.0, 1.0, 1.0],
+                        blend_mode: rect.blend_mode,
+                        flip_x: dragon.flipped,
                         opacity: 1.0,
                     });
                 }
@@ -365,6 +543,20 @@ fn append_map_entity_draws<'a>(
                     } else {
                         rect.x + offset_x
                     };
+                    if mob.is_frozen() {
+                        draws.push(SpriteDraw {
+                            texture,
+                            x,
+                            y: rect.y + offset_y,
+                            width: rect.width,
+                            height: rect.height,
+                            uv: [0.0, 0.0, 1.0, 1.0],
+                            tint: [1.0, 1.0, 1.0],
+                            blend_mode: rect.blend_mode,
+                            flip_x: flipped,
+                            opacity: 1.0,
+                        });
+                    }
                     draws.push(SpriteDraw {
                         texture,
                         x,
@@ -402,10 +594,14 @@ fn append_map_entity_draws<'a>(
             Actor::Npc(npc) => {
                 let offset_x = (npc.x - scene.player.x) as f32;
                 let offset_y = (npc.y - scene.player.y) as f32;
-                let Some(frame) = npc.frames().get(npc.frame_index) else {
+                let sprite_draws = if let Some(imitated) = npc.imitated_look_sprites.as_ref() {
+                    imitated.as_slice()
+                } else if let Some(frame) = npc.frames().get(npc.frame_index) {
+                    frame.sprites.as_slice()
+                } else {
                     continue;
                 };
-                for (texture_index, rect) in &frame.sprites {
+                for (texture_index, rect) in sprite_draws {
                     let Some(texture) = textures.get(*texture_index) else {
                         continue;
                     };
@@ -630,11 +826,16 @@ fn append_map_entity_draws<'a>(
                 }
             }
             Actor::CharacterSkillEffect(effect) => {
+                if *effect_budget == 0 {
+                    continue;
+                }
+                *effect_budget -= 1;
                 let Some(frame) = effect.frames.get(effect.frame_index) else {
                     continue;
                 };
-                let (offset_x, offset_y, flipped) = if let Some(character_id) = effect.character_id
-                {
+                let (offset_x, offset_y, flipped) = if let Some((x, y)) = effect.point_position {
+                    ((x - scene.player.x) as f32, (y - scene.player.y) as f32, false)
+                } else if let Some(character_id) = effect.character_id {
                     let Some(player) = scene.remote_players.get(&character_id) else {
                         continue;
                     };
@@ -668,6 +869,89 @@ fn append_map_entity_draws<'a>(
                     });
                 }
             }
+            Actor::RemoteDeath(player, art) => {
+                let offset_x = (player.x - scene.player.x + player.recoil_offset_x) as f32;
+                let offset_y = (player.y - scene.player.y) as f32;
+                append_item_aura_draws(
+                    player.item_aura.as_ref(),
+                    true,
+                    offset_x,
+                    offset_y,
+                    textures,
+                    draws,
+                );
+                append_death_art_draws(
+                    art,
+                    offset_x,
+                    offset_y,
+                    player.facing_left,
+                    textures,
+                    draws,
+                );
+                append_item_aura_draws(
+                    player.item_aura.as_ref(),
+                    false,
+                    offset_x,
+                    offset_y,
+                    textures,
+                    draws,
+                );
+                if let Some((texture_index, rect)) = player.name_label
+                    && let Some(texture) = textures.get(texture_index)
+                {
+                    draws.push(SpriteDraw {
+                        texture,
+                        x: rect.x + offset_x,
+                        y: rect.y + offset_y,
+                        width: rect.width,
+                        height: rect.height,
+                        uv: [0.0, 0.0, 1.0, 1.0],
+                        tint: [1.0, 1.0, 1.0],
+                        blend_mode: rect.blend_mode,
+                        flip_x: false,
+                        opacity: if player.hidden { 0.5 } else { 1.0 },
+                    });
+                }
+                if let Some((texture_index, rect)) = player.guild_label
+                    && let Some(texture) = textures.get(texture_index)
+                {
+                    draws.push(SpriteDraw {
+                        texture,
+                        x: rect.x + offset_x,
+                        y: rect.y + offset_y,
+                        width: rect.width,
+                        height: rect.height,
+                        uv: [0.0, 0.0, 1.0, 1.0],
+                        tint: [0.0, 0.75, 1.0],
+                        blend_mode: rect.blend_mode,
+                        flip_x: false,
+                        opacity: if player.hidden { 0.5 } else { 1.0 },
+                    });
+                }
+                if player.chalkboard.is_some()
+                    && let Some(texture) = chalkboard_textures.get(&object_id)
+                {
+                    append_chalkboard_draw(texture, offset_x, offset_y, draws);
+                }
+                if player.speech_bubble_remaining.is_some()
+                    && let Some(texture) = speech_textures.get(&object_id)
+                {
+                    draws.push(SpriteDraw {
+                        texture,
+                        x: 512.0 + offset_x - SPEECH_BUBBLE_ANCHOR.0 as f32,
+                        y: GAMEPLAY_CAMERA_CENTER_Y + offset_y
+                            - 85.0
+                            - SPEECH_BUBBLE_ANCHOR.1 as f32,
+                        width: SPEECH_BUBBLE_WIDTH as f32,
+                        height: SPEECH_BUBBLE_HEIGHT as f32,
+                        uv: [0.0, 0.0, 1.0, 1.0],
+                        tint: [1.0, 1.0, 1.0],
+                        blend_mode: BlendMode::Alpha,
+                        flip_x: false,
+                        opacity: 1.0,
+                    });
+                }
+            }
             Actor::RemotePlayer(player) => {
                 let Some(frame) = player
                     .active_avatar_frame
@@ -678,12 +962,54 @@ fn append_map_entity_draws<'a>(
                 let offset_x = (player.x - scene.player.x + player.recoil_offset_x) as f32;
                 let offset_y = (player.y - scene.player.y) as f32;
                 let facing_right = !player.facing_left;
-                let (tint, opacity) = character_damage_tint(player.invincibility_remaining, false);
+                let mount_motion = player
+                    .mount
+                    .as_ref()
+                    .map(|_| MountLookRuntime::motion_for_avatar(player.desired_avatar_motion));
+                let rider_offset = player
+                    .mount
+                    .as_ref()
+                    .zip(mount_motion)
+                    .map_or((offset_x, offset_y), |(mount, motion)| {
+                        let seat = mount.seat_offset(motion);
+                        (offset_x + seat.0, offset_y + seat.1)
+                    });
+                if let Some(frame) = player
+                    .mount
+                    .as_ref()
+                    .zip(mount_motion)
+                    .and_then(|(mount, motion)| mount.current_frame(motion))
+                {
+                    for (texture_index, rect) in &frame.sprites {
+                        let Some(texture) = textures.get(*texture_index) else {
+                            continue;
+                        };
+                        draws.push(SpriteDraw {
+                            texture,
+                            x: if facing_right {
+                                1024.0 - (rect.x + rect.width) + offset_x
+                            } else {
+                                rect.x + offset_x
+                            },
+                            y: rect.y + offset_y,
+                            width: rect.width,
+                            height: rect.height,
+                            uv: [0.0, 0.0, 1.0, 1.0],
+                            tint: [1.0, 1.0, 1.0],
+                            blend_mode: rect.blend_mode,
+                            flip_x: facing_right,
+                            opacity: 1.0,
+                        });
+                    }
+                }
+                let (rider_offset_x, rider_offset_y) = rider_offset;
+                let (tint, opacity) =
+                    character_damage_tint(player.invincibility_remaining, player.hidden);
                 append_item_aura_draws(
                     player.item_aura.as_ref(),
                     true,
-                    offset_x,
-                    offset_y,
+                    rider_offset_x,
+                    rider_offset_y,
                     textures,
                     draws,
                 );
@@ -694,8 +1020,8 @@ fn append_map_entity_draws<'a>(
                         append_face_expression_draws(
                             expression,
                             frame.face_offset,
-                            offset_x,
-                            offset_y,
+                            rider_offset_x,
+                            rider_offset_y,
                             facing_right,
                             tint,
                             opacity,
@@ -709,14 +1035,14 @@ fn append_map_entity_draws<'a>(
                     };
                     let original = &sprite.rect;
                     let x = if facing_right {
-                        1024.0 - (original.x + original.width) + offset_x
+                        1024.0 - (original.x + original.width) + rider_offset_x
                     } else {
-                        original.x + offset_x
+                        original.x + rider_offset_x
                     };
                     draws.push(SpriteDraw {
                         texture,
                         x,
-                        y: original.y + offset_y,
+                        y: original.y + rider_offset_y,
                         width: original.width,
                         height: original.height,
                         uv: [0.0, 0.0, 1.0, 1.0],
@@ -729,8 +1055,8 @@ fn append_map_entity_draws<'a>(
                 append_item_aura_draws(
                     player.item_aura.as_ref(),
                     false,
-                    offset_x,
-                    offset_y,
+                    rider_offset_x,
+                    rider_offset_y,
                     textures,
                     draws,
                 );
@@ -738,25 +1064,46 @@ fn append_map_entity_draws<'a>(
                     if let Some(texture) = textures.get(texture_index) {
                         draws.push(SpriteDraw {
                             texture,
-                            x: rect.x + offset_x,
-                            y: rect.y + offset_y,
+                            x: rect.x + rider_offset_x,
+                            y: rect.y + rider_offset_y,
                             width: rect.width,
                             height: rect.height,
                             uv: [0.0, 0.0, 1.0, 1.0],
                             tint: [1.0, 1.0, 1.0],
                             blend_mode: rect.blend_mode,
                             flip_x: false,
-                            opacity: 1.0,
+                            opacity: if player.hidden { 0.5 } else { 1.0 },
                         });
                     }
+                }
+                if let Some((texture_index, rect)) = player.guild_label {
+                    if let Some(texture) = textures.get(texture_index) {
+                        draws.push(SpriteDraw {
+                            texture,
+                            x: rect.x + rider_offset_x,
+                            y: rect.y + rider_offset_y,
+                            width: rect.width,
+                            height: rect.height,
+                            uv: [0.0, 0.0, 1.0, 1.0],
+                            tint: [0.0, 0.75, 1.0],
+                            blend_mode: rect.blend_mode,
+                            flip_x: false,
+                            opacity: if player.hidden { 0.5 } else { 1.0 },
+                        });
+                    }
+                }
+                if player.chalkboard.is_some()
+                    && let Some(texture) = chalkboard_textures.get(&object_id)
+                {
+                    append_chalkboard_draw(texture, rider_offset_x, rider_offset_y, draws);
                 }
                 if player.speech_bubble_remaining.is_some()
                     && let Some(texture) = speech_textures.get(&object_id)
                 {
                     draws.push(SpriteDraw {
                         texture,
-                        x: 512.0 + offset_x - SPEECH_BUBBLE_ANCHOR.0 as f32,
-                        y: GAMEPLAY_CAMERA_CENTER_Y + offset_y
+                        x: 512.0 + rider_offset_x - SPEECH_BUBBLE_ANCHOR.0 as f32,
+                        y: GAMEPLAY_CAMERA_CENTER_Y + rider_offset_y
                             - 85.0
                             - SPEECH_BUBBLE_ANCHOR.1 as f32,
                         width: SPEECH_BUBBLE_WIDTH as f32,
@@ -782,6 +1129,18 @@ fn append_map_entity_draws<'a>(
                     .local_chair
                     .as_ref()
                     .map_or(0.0, |chair| chair.sit_offset_y);
+                let mount_motion = scene
+                    .local_mount
+                    .as_ref()
+                    .map(|_| MountLookRuntime::motion_for_avatar(scene.desired_avatar_motion));
+                let rider_offset = scene
+                    .local_mount
+                    .as_ref()
+                    .zip(mount_motion)
+                    .map_or((0.0, sit_offset_y), |(mount, motion)| {
+                        let seat = mount.seat_offset(motion);
+                        (seat.0, sit_offset_y + seat.1)
+                    });
                 if let Some(chair) = scene.local_chair.as_ref() {
                     append_chair_animation_draws(
                         &chair.behind,
@@ -792,11 +1151,40 @@ fn append_map_entity_draws<'a>(
                         draws,
                     );
                 }
+                if let Some(frame) = scene
+                    .local_mount
+                    .as_ref()
+                    .zip(mount_motion)
+                    .and_then(|(mount, motion)| mount.current_frame(motion))
+                {
+                    for (texture_index, rect) in &frame.sprites {
+                        let Some(texture) = textures.get(*texture_index) else {
+                            continue;
+                        };
+                        draws.push(SpriteDraw {
+                            texture,
+                            x: if facing_right {
+                                1024.0 - (rect.x + rect.width)
+                            } else {
+                                rect.x
+                            },
+                            y: rect.y + sit_offset_y,
+                            width: rect.width,
+                            height: rect.height,
+                            uv: [0.0, 0.0, 1.0, 1.0],
+                            tint: [1.0, 1.0, 1.0],
+                            blend_mode: rect.blend_mode,
+                            flip_x: facing_right,
+                            opacity: 1.0,
+                        });
+                    }
+                }
+                let (rider_offset_x, rider_offset_y) = rider_offset;
                 append_item_aura_draws(
                     scene.local_item_aura.as_ref(),
                     true,
-                    0.0,
-                    sit_offset_y,
+                    rider_offset_x,
+                    rider_offset_y,
                     textures,
                     draws,
                 );
@@ -807,8 +1195,8 @@ fn append_map_entity_draws<'a>(
                         append_face_expression_draws(
                             expression,
                             frame.face_offset,
-                            0.0,
-                            sit_offset_y,
+                            rider_offset_x,
+                            rider_offset_y,
                             facing_right,
                             tint,
                             opacity,
@@ -822,14 +1210,14 @@ fn append_map_entity_draws<'a>(
                     };
                     let rect = &sprite.rect;
                     let x = if scene.facing_right {
-                        1024.0 - (rect.x + rect.width)
+                        1024.0 - (rect.x + rect.width) + rider_offset_x
                     } else {
-                        rect.x
+                        rect.x + rider_offset_x
                     };
                     draws.push(SpriteDraw {
                         texture,
                         x,
-                        y: rect.y + sit_offset_y,
+                        y: rect.y + rider_offset_y,
                         width: rect.width,
                         height: rect.height,
                         uv: [0.0, 0.0, 1.0, 1.0],
@@ -852,18 +1240,25 @@ fn append_map_entity_draws<'a>(
                 append_item_aura_draws(
                     scene.local_item_aura.as_ref(),
                     false,
-                    0.0,
-                    sit_offset_y,
+                    rider_offset_x,
+                    rider_offset_y,
                     textures,
                     draws,
                 );
+                if scene.local_chalkboard.is_some()
+                    && let Some(texture) = local_chalkboard_texture
+                {
+                    append_chalkboard_draw(texture, rider_offset_x, rider_offset_y, draws);
+                }
                 if scene.local_speech_bubble_remaining.is_some()
                     && let Some(texture) = local_speech_texture
                 {
                     draws.push(SpriteDraw {
                         texture,
-                        x: 512.0 - SPEECH_BUBBLE_ANCHOR.0 as f32,
-                        y: GAMEPLAY_CAMERA_CENTER_Y - 85.0 - SPEECH_BUBBLE_ANCHOR.1 as f32,
+                        x: 512.0 + rider_offset_x - SPEECH_BUBBLE_ANCHOR.0 as f32,
+                        y: GAMEPLAY_CAMERA_CENTER_Y + rider_offset_y
+                            - 85.0
+                            - SPEECH_BUBBLE_ANCHOR.1 as f32,
                         width: SPEECH_BUBBLE_WIDTH as f32,
                         height: SPEECH_BUBBLE_HEIGHT as f32,
                         uv: [0.0, 0.0, 1.0, 1.0],
@@ -875,62 +1270,36 @@ fn append_map_entity_draws<'a>(
                 }
             }
             Actor::LocalDeath(art) => {
-                let tomb_sprites = if art.tomb_landed {
-                    &art.landed_sprites
-                } else {
-                    art.fall_frames
-                        .get(art.tomb_frame_index)
-                        .map_or(&art.landed_sprites, |frame| &frame.sprites)
-                };
-                for (texture_index, rect) in tomb_sprites {
-                    let Some(texture) = textures.get(*texture_index) else {
-                        continue;
-                    };
-                    draws.push(SpriteDraw {
-                        texture,
-                        x: rect.x,
-                        y: rect.y
-                            + if art.tomb_landed {
-                                0.0
-                            } else {
-                                art.tomb_y_offset
-                            },
-                        width: rect.width,
-                        height: rect.height,
-                        uv: [0.0, 0.0, 1.0, 1.0],
-                        tint: [1.0, 1.0, 1.0],
-                        blend_mode: rect.blend_mode,
-                        flip_x: false,
-                        opacity: 1.0,
-                    });
-                }
-                let ghost_bob = (art.ghost_ticks as f32 / 45.0).sin() * 5.0;
-                if let Some(frame) = art.ghost_frames.get(art.ghost_frame_index) {
-                    for (texture_index, rect) in &frame.sprites {
-                        let Some(texture) = textures.get(*texture_index) else {
-                            continue;
-                        };
-                        let facing_left = !scene.facing_right;
-                        draws.push(SpriteDraw {
-                            texture,
-                            x: if facing_left {
-                                1024.0 - (rect.x + rect.width)
-                            } else {
-                                rect.x
-                            },
-                            y: rect.y + ghost_bob,
-                            width: rect.width,
-                            height: rect.height,
-                            uv: [0.0, 0.0, 1.0, 1.0],
-                            tint: [1.0, 1.0, 1.0],
-                            blend_mode: rect.blend_mode,
-                            flip_x: facing_left,
-                            opacity: 1.0,
-                        });
-                    }
-                }
+                append_item_aura_draws(
+                    scene.local_item_aura.as_ref(),
+                    true,
+                    0.0,
+                    0.0,
+                    textures,
+                    draws,
+                );
+                append_death_art_draws(
+                    art,
+                    0.0,
+                    0.0,
+                    !scene.facing_right,
+                    textures,
+                    draws,
+                );
+                append_item_aura_draws(
+                    scene.local_item_aura.as_ref(),
+                    false,
+                    0.0,
+                    0.0,
+                    textures,
+                    draws,
+                );
             }
             Actor::Projectile(projectile) => {
+                if *effect_budget == 0 {
+                    continue;
+                }
+                *effect_budget -= 1;
                 let Some(frame) = projectile.frames.get(projectile.frame_index) else {
                     continue;
                 };
@@ -974,7 +1343,9 @@ fn append_map_entity_draws<'a>(
             .quest_clear_effect
             .as_ref()
             .and_then(|effect| effect.frames.get(effect.frame_index))
+            && *effect_budget > 0
         {
+            *effect_budget -= 1;
             for (texture_index, rect) in &frame.sprites {
                 let Some(texture) = textures.get(*texture_index) else {
                     continue;
@@ -1030,7 +1401,7 @@ fn append_map_entity_draws<'a>(
         }
 
         if let Some(texture) = damage_texture {
-            append_mob_damage_draws(scene, texture, damage_glyphs, draws);
+            append_mob_damage_draws(scene, texture, damage_glyphs, effect_budget, draws);
         }
     }
 }

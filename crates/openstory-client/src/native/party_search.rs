@@ -284,13 +284,11 @@ fn hit_rect(state: &State, anchor_x: f32, anchor_y: f32, sprite: &Sprite) -> Hit
 }
 
 fn resolve(node: &NxNode, path: &str) -> Result<NxNode, String> {
-    node.resolve(path)
-        .map_err(|error| error.to_string())?
-        .ok_or_else(|| format!("NX node {path:?} was not found"))
+    super::resolve_ui_path(node, path)?.ok_or_else(|| format!("NX node {path:?} was not found"))
 }
 
 fn optional_resolve(node: &NxNode, path: &str) -> Result<Option<NxNode>, String> {
-    node.resolve(path).map_err(|error| error.to_string())
+    super::resolve_ui_path(node, path)
 }
 
 fn sprite(node: &NxNode) -> Result<Sprite, String> {

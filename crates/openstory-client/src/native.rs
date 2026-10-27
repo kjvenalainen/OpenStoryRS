@@ -1,4 +1,5 @@
 mod audio;
+mod avatar_megaphone;
 mod cash_shop_ui;
 mod channel_switch;
 mod hardware_info;
@@ -6,9 +7,11 @@ mod item_megaphone;
 mod messenger;
 mod minimap;
 mod monster_book;
+mod monster_carnival;
 mod party_search;
 mod settings;
 mod skill_macros;
+mod ui_clock;
 mod ui_preview;
 mod weather;
 mod world_map;
@@ -24,7 +27,8 @@ use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
 use settings::{
-    AudioSettings, GameplaySettings, LoginPreferences, load_quickslot_keys, save as save_settings,
+    AudioSettings, DisplaySettings, GameplaySettings, InputSettings, LoginPreferences,
+    SocialSettings, apply_mouse_speed, load_quickslot_keys, save as save_settings,
     save_quickslot_keys,
 };
 
@@ -35,13 +39,17 @@ include!("native/model.rs");
 include!("native/debug.rs");
 
 // Feature-focused inherent impls share native state through this parent module.
+mod client_avatar_megaphone;
 mod client_cash_skills;
 mod client_core;
+mod client_events;
 mod client_family_guild;
 mod client_gameplay;
+mod client_guide;
 mod client_inventory_storage;
 mod client_login;
 mod client_map_entities;
+mod client_monster_carnival;
 mod client_network;
 mod client_packets;
 mod client_quests_inventory;
@@ -63,6 +71,9 @@ include!("native/ui_trade_merchant.rs");
 include!("native/ui_inventory_data.rs");
 include!("native/ui_npc.rs");
 include!("native/ui_status_bar.rs");
+include!("native/ui_wedding.rs");
+include!("native/ui_event_list.rs");
+include!("native/ui_rps_game.rs");
 include!("native/map_effect_draw.rs");
 include!("native/map_entity_draw.rs");
 include!("native/map_damage_draw.rs");

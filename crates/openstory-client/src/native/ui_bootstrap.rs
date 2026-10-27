@@ -369,6 +369,85 @@ fn render_map_hud(
     pixels
 }
 
+const BUFF_LIST_HEIGHT: u32 = 32;
+
+fn render_buff_list_pixels(
+    icons: &[(u32, u32, Arc<[u8]>, Option<Duration>, i32, Duration)],
+) -> Vec<u8> {
+    const WIDTH: usize = 1024;
+    const HEIGHT: usize = BUFF_LIST_HEIGHT as usize;
+    const ICON_SIZE: usize = 32;
+    const FLASH_WINDOW: Duration = Duration::from_secs(3);
+    let mut pixels = vec![0_u8; WIDTH * HEIGHT * 4];
+
+    for (index, (icon_width, icon_height, icon, remaining, duration_ms, elapsed)) in
+        icons.iter().take(31).enumerate()
+    {
+        let x = WIDTH - 35 - ICON_SIZE * index;
+        let opacity = if remaining.is_some_and(|remaining| remaining <= FLASH_WINDOW) {
+            let flash_start = Duration::from_millis(
+                duration_ms.saturating_sub(FLASH_WINDOW.as_millis() as i32).max(0) as u64,
+            );
+            let flash_elapsed = elapsed.saturating_sub(flash_start);
+            let phase_ms = flash_elapsed.as_millis() % 320;
+            if phase_ms <= 160 {
+                1.0 - phase_ms as f32 / 160.0
+            } else {
+                (phase_ms - 160) as f32 / 160.0
+            }
+        } else {
+            1.0
+        };
+        for y in 0..ICON_SIZE {
+            let source_y = y * *icon_height as usize / ICON_SIZE;
+            for icon_x in 0..ICON_SIZE {
+                let source_x = icon_x * *icon_width as usize / ICON_SIZE;
+                let source = (source_y * *icon_width as usize + source_x) * 4;
+                let destination = (y * WIDTH + x + icon_x) * 4;
+                pixels[destination..destination + 3].copy_from_slice(&icon[source..source + 3]);
+                pixels[destination + 3] =
+                    (f32::from(icon[source + 3]) * opacity).round() as u8;
+            }
+        }
+
+        let cover = if let Some(remaining) = remaining {
+            if *duration_ms <= FLASH_WINDOW.as_millis() as i32
+                || *remaining <= FLASH_WINDOW
+            {
+                1.0
+            } else {
+                let cover_duration_ms = (*duration_ms - FLASH_WINDOW.as_millis() as i32).max(1);
+                (elapsed.as_millis() as f32 / cover_duration_ms as f32).clamp(0.0, 1.0)
+            }
+        } else {
+            0.0
+        };
+        let cover_height = (30.0 * cover).round() as usize;
+        let cover_alpha = (153.0 * cover).round() as u16;
+        for y in (30 - cover_height)..30 {
+            for local_x in 1..31 {
+                let offset = (y * WIDTH + x + local_x) * 4;
+                let inverse = 255 - cover_alpha;
+                let source_alpha = u32::from(pixels[offset + 3]);
+                let output_alpha = cover_alpha as u32
+                    + (source_alpha * u32::from(inverse) + 127) / 255;
+                for channel in 0..3 {
+                    let numerator = u32::from(pixels[offset + channel])
+                        * source_alpha
+                        * u32::from(inverse);
+                    pixels[offset + channel] = if output_alpha == 0 {
+                        0
+                    } else {
+                        ((numerator + output_alpha * 127) / (output_alpha * 255)) as u8
+                    };
+                }
+                pixels[offset + 3] = output_alpha.min(255) as u8;
+            }
+        }
+    }
+    pixels
+}
+
 fn render_status_menu(font: &fontdue::Font) -> Vec<u8> {
     let width = STATUS_MENU_WIDTH as usize;
     let height = STATUS_MENU_HEIGHT as usize;

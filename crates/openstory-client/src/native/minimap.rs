@@ -117,7 +117,6 @@ pub(super) struct MiniMapData {
     pub center_x: f32,
     pub center_y: f32,
     pub magnification: u8,
-    pub town: bool,
     pub hidden: bool,
     map_mark: Option<SpriteImage>,
     canvas: SpriteImage,
@@ -162,47 +161,48 @@ pub(super) struct UiAssets {
 impl UiAssets {
     pub fn load(archive: &NxArchive) -> Result<Self, String> {
         let ui_root = archive.root();
-        let minimap_ui = required(&ui_root, "UIWindow2.img/MiniMap")?;
+        // v83 keeps these window assets under UIWindow.img. Newer archives
+        // moved them to UIWindow2.img, so retain the actual root path for
+        // diagnostics and bitmap cache keys instead of relying on aliases.
+        let (minimap_path, minimap_ui) = if let Some(node) = ui_root
+            .resolve("UIWindow2.img/MiniMap")
+            .map_err(|error| error.to_string())?
+        {
+            ("UIWindow2.img/MiniMap", node)
+        } else if let Some(node) = ui_root
+            .resolve("UIWindow.img/MiniMap")
+            .map_err(|error| error.to_string())?
+        {
+            ("UIWindow.img/MiniMap", node)
+        } else {
+            return Err(
+                "NX minimap UI was not found under UIWindow2.img/MiniMap or UIWindow.img/MiniMap"
+                    .to_owned(),
+            );
+        };
         let collapsed_root = required(&minimap_ui, "Min")?;
         let collapsed = CollapsedFrameArt {
-            west: load_ui_image(archive, &collapsed_root, "w", "Min/w")?,
-            center: load_ui_image(archive, &collapsed_root, "c", "Min/c")?,
-            east: load_ui_image(archive, &collapsed_root, "e", "Min/e")?,
+            west: load_ui_image(archive, &collapsed_root, minimap_path, "w", "Min/w")?,
+            center: load_ui_image(archive, &collapsed_root, minimap_path, "c", "Min/c")?,
+            east: load_ui_image(archive, &collapsed_root, minimap_path, "e", "Min/e")?,
         };
         let expanded_root = required(&minimap_ui, "MaxMap")?;
-        let background = load_ui_image(archive, &expanded_root, "c", "MaxMap/c")?;
-        let normal = load_map_frame(archive, &minimap_ui, "MinMap", &background)?;
-        let expanded = load_map_frame(archive, &minimap_ui, "MaxMap", &background)?;
-        let min_root = required(&minimap_ui, "BtMin")?;
-        let max_root = required(&minimap_ui, "BtMax")?;
+        let background = load_ui_image(archive, &expanded_root, minimap_path, "c", "MaxMap/c")?;
+        let normal = load_map_frame(archive, &minimap_ui, minimap_path, "MinMap", &background)?;
+        let expanded = load_map_frame(archive, &minimap_ui, minimap_path, "MaxMap", &background)?;
         let map_root = required(&minimap_ui, "BtMap")?;
-        let min_normal = load_ui_image(
-            archive,
-            &required(&min_root, "normal")?,
-            "0",
-            "BtMin/normal/0",
-        )?;
-        let min_disabled = load_ui_image(
-            archive,
-            &required(&min_root, "disabled")?,
-            "0",
-            "BtMin/disabled/0",
-        )?;
-        let max_normal = load_ui_image(
-            archive,
-            &required(&max_root, "normal")?,
-            "0",
-            "BtMax/normal/0",
-        )?;
-        let max_disabled = load_ui_image(
-            archive,
-            &required(&max_root, "disabled")?,
-            "0",
-            "BtMax/disabled/0",
-        )?;
+        let min_normal =
+            load_or_draw_minimap_button(archive, minimap_path, "BtMin/normal/0", false)?;
+        let min_disabled =
+            load_or_draw_minimap_button(archive, minimap_path, "BtMin/disabled/0", true)?;
+        let max_normal =
+            load_or_draw_minimap_button(archive, minimap_path, "BtMax/normal/0", false)?;
+        let max_disabled =
+            load_or_draw_minimap_button(archive, minimap_path, "BtMax/disabled/0", true)?;
         let map = load_ui_image(
             archive,
             &required(&map_root, "normal")?,
+            minimap_path,
             "0",
             "BtMap/normal/0",
         )?;
@@ -307,14 +307,11 @@ impl MiniMapData {
             .transpose()?
             .flatten();
         let hidden = integer_child(&info, "hideMinimap").unwrap_or(0) != 0;
-        let town = integer_child(&info, "town").unwrap_or(0) != 0;
-
         Ok(Some(Self {
             map_id,
             center_x: center_x as f32,
             center_y: center_y as f32,
             magnification,
-            town,
             hidden,
             map_mark,
             canvas,
@@ -629,26 +626,101 @@ fn load_portals(map: &NxNode, map_path: &str) -> Result<Vec<MapPortal>, String> 
 fn load_ui_image(
     archive: &NxArchive,
     root: &NxNode,
+    minimap_path: &str,
     child_path: &str,
     label: &str,
 ) -> Result<SpriteImage, String> {
     sprite_image(
         archive,
         &required(root, child_path)?,
-        &format!("UIWindow2.img/MiniMap/{label}"),
+        &format!("{minimap_path}/{label}"),
         MAX_UI_BITMAP_SIDE,
     )
+}
+
+/// v83's minimap only has a world-map button. Use its original artwork when a
+/// newer archive supplies zoom controls; otherwise draw compact plus/minus
+/// controls so zoom and expand/collapse remain available with v83 UI assets.
+fn load_or_draw_minimap_button(
+    archive: &NxArchive,
+    minimap_path: &str,
+    path: &str,
+    disabled: bool,
+) -> Result<SpriteImage, String> {
+    let full_path = format!("{minimap_path}/{path}");
+    if let Some(node) = super::resolve_ui_path(&archive.root(), &full_path)? {
+        return sprite_image(archive, &node, &full_path, MAX_UI_BITMAP_SIDE);
+    }
+    Ok(draw_minimap_button(path.starts_with("BtMax/"), disabled))
+}
+
+fn draw_minimap_button(plus: bool, disabled: bool) -> SpriteImage {
+    const WIDTH: u32 = 13;
+    const HEIGHT: u32 = 12;
+    let mut pixels = vec![0; WIDTH as usize * HEIGHT as usize * 4];
+    let mut set = |x: u32, y: u32, color: [u8; 4]| {
+        let offset = (y as usize * WIDTH as usize + x as usize) * 4;
+        pixels[offset..offset + 4].copy_from_slice(&color);
+    };
+
+    // A small beveled blue-gray control, matching the legacy window palette.
+    for y in 0..HEIGHT {
+        for x in 0..WIDTH {
+            let edge = x == 0 || y == 0 || x == WIDTH - 1 || y == HEIGHT - 1;
+            let color = if (x == 0 || y == 0) && edge {
+                [186, 199, 207, 255]
+            } else if edge {
+                [42, 56, 64, 255]
+            } else if disabled {
+                [83, 91, 96, 255]
+            } else {
+                [91, 111, 122, 255]
+            };
+            set(x, y, color);
+        }
+    }
+
+    let glyph = if disabled {
+        [139, 144, 146, 255]
+    } else {
+        [236, 239, 232, 255]
+    };
+    for x in 4..=8 {
+        set(x, 5, glyph);
+    }
+    if plus {
+        for y in 3..=7 {
+            set(6, y, glyph);
+        }
+    }
+
+    SpriteImage {
+        pixels: Arc::from(pixels),
+        width: WIDTH,
+        height: HEIGHT,
+        origin_x: 0.0,
+        origin_y: 0.0,
+    }
 }
 
 fn load_map_frame(
     archive: &NxArchive,
     minimap_ui: &NxNode,
+    minimap_path: &str,
     frame_name: &str,
     background: &SpriteImage,
 ) -> Result<MapFrameArt, String> {
     let frame = required(minimap_ui, frame_name)?;
     let prefix = frame_name.to_owned();
-    let load = |child: &str| load_ui_image(archive, &frame, child, &format!("{prefix}/{child}"));
+    let load = |child: &str| {
+        load_ui_image(
+            archive,
+            &frame,
+            minimap_path,
+            child,
+            &format!("{prefix}/{child}"),
+        )
+    };
     Ok(MapFrameArt {
         background: background.clone(),
         west: load("w")?,
@@ -848,10 +920,7 @@ fn resolve_bitmap(
     let source = source
         .split_once('/')
         .map_or(source.as_str(), |(_, path)| path);
-    let source_node = archive
-        .root()
-        .resolve(source)
-        .map_err(|error| error.to_string())?
+    let source_node = super::resolve_ui_path(&archive.root(), source)?
         .ok_or_else(|| format!("NX bitmap source {source:?} for {path:?} is missing"))?;
     let bitmap = source_node
         .bitmap()
@@ -861,9 +930,7 @@ fn resolve_bitmap(
 }
 
 fn required(root: &NxNode, path: &str) -> Result<NxNode, String> {
-    root.resolve(path)
-        .map_err(|error| error.to_string())?
-        .ok_or_else(|| format!("NX node {path:?} was not found"))
+    super::resolve_ui_path(root, path)?.ok_or_else(|| format!("NX node {path:?} was not found"))
 }
 
 fn optional_child(root: &NxNode, path: &str) -> Result<Option<NxNode>, String> {

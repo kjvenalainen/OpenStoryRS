@@ -1,12 +1,38 @@
 use super::*;
 
 impl ClientApp {
+    pub(super) fn respond_to_server_ping(&mut self) {
+        let Some(session) = self.session.as_ref() else {
+            return;
+        };
+        if let Err(error) = session.send_packet(openstory_protocol::pong()) {
+            eprintln!("OpenStoryRS: could not respond to server ping: {error}");
+        }
+    }
+
+    pub(super) fn send_rps_selection(&mut self, selection: u8) {
+        let Some(session) = self.session.as_ref() else {
+            return;
+        };
+        if !self.channel_connected {
+            return;
+        }
+        if let Err(error) = session.send_packet(openstory_protocol::rps_selection_packet(selection))
+        {
+            eprintln!("OpenStoryRS: could not send RPS selection: {error}");
+            self.channel_connected = false;
+        }
+    }
+
     pub(super) fn add_remote_character(
         &mut self,
         character: openstory_protocol::RemoteCharacterSpawn,
     ) {
         let pet_spawns = character.pets;
         let item_effect_id = character.item_effect_id;
+        let mount_item_id = character.riding_mount;
+        let guild_name = character.guild_name;
+        let guild_mark = character.guild_mark;
         if self
             .active_character
             .as_ref()
@@ -24,6 +50,12 @@ impl ClientApp {
                 eprintln!("OpenStory: could not load remote character appearance: {error}");
                 (Vec::new(), None)
             });
+        let guild_label = self
+            .load_remote_guild_label(&guild_name)
+            .unwrap_or_else(|error| {
+                eprintln!("OpenStoryRS: could not load remote guild label: {error}");
+                None
+            });
         let item_aura = match self.load_persistent_item_aura(item_effect_id) {
             Ok(aura) => aura,
             Err(error) => {
@@ -33,6 +65,14 @@ impl ClientApp {
                 None
             }
         };
+        let mount = match self.load_remote_mount(mount_item_id) {
+            Ok(mount) => mount,
+            Err(error) => {
+                eprintln!("OpenStory: could not load remote mount {mount_item_id}: {error}");
+                None
+            }
+        };
+        let death_art = self.load_character_death_art(&character.look);
         let desired_avatar_motion = avatar_motion_for_stance(character.stance);
         let active_avatar_frame = first_avatar_frame(&avatar_frames, desired_avatar_motion);
         let Some(scene) = self.map_scene.as_mut() else {
@@ -41,38 +81,48 @@ impl ClientApp {
         let id = character.id;
         let x = f64::from(character.x);
         let y = f64::from(character.y);
-        scene.remote_players.insert(
-            id,
-            RemotePlayerState {
-                name: character.name,
-                level: character.level,
-                job: character.job,
-                look: character.look,
-                x,
-                y,
-                recoil_offset_x: 0.0,
-                recoil_velocity_x: 0.0,
-                target_x: x,
-                target_y: y,
-                previous_x: x,
-                previous_y: y,
-                foothold: 0,
-                stance: character.stance,
-                facing_left: character.stance & 1 != 0,
-                attack_speed: 6,
-                attack_stance: None,
-                speech_bubble_remaining: None,
-                invincibility_remaining: Duration::ZERO,
-                mini_room: character.mini_room,
-                face_expression: None,
-                item_aura,
-                avatar_frames,
-                active_avatar_frame,
-                desired_avatar_motion,
-                avatar_elapsed: Duration::ZERO,
-                name_label,
-            },
-        );
+        let dead = character.stance & !1 == 18;
+        let mut remote_player = RemotePlayerState {
+            name: character.name,
+            guild_name,
+            _guild_mark: guild_mark,
+            level: character.level,
+            job: character.job,
+            look: character.look,
+            x,
+            y,
+            recoil_offset_x: 0.0,
+            recoil_velocity_x: 0.0,
+            target_x: x,
+            target_y: y,
+            previous_x: x,
+            previous_y: y,
+            foothold: 0,
+            stance: character.stance,
+            dead,
+            death_art,
+            facing_left: character.stance & 1 != 0,
+            hidden: false,
+            mount,
+            attack_speed: 6,
+            attack_stance: None,
+            speech_bubble_remaining: None,
+            chalkboard: None,
+            invincibility_remaining: Duration::ZERO,
+            mini_room: character.mini_room,
+            face_expression: None,
+            item_aura,
+            avatar_frames,
+            active_avatar_frame,
+            desired_avatar_motion,
+            avatar_elapsed: Duration::ZERO,
+            name_label,
+            guild_label,
+        };
+        if dead {
+            remote_player.snap_to_ground_if_needed(scene.footholds.as_ref());
+        }
+        scene.remote_players.insert(id, remote_player);
         if std::env::var("OPENSTORY_DEBUG_REMOTE").as_deref() == Ok("1") {
             if let Some(summary) = scene.remote_summary(id) {
                 eprintln!("OpenStory: spawned remote character {summary}");
@@ -81,6 +131,53 @@ impl ClientApp {
         for pet in pet_spawns {
             self.spawn_pet(pet);
         }
+    }
+
+    pub(super) fn load_character_death_art(
+        &mut self,
+        look: &openstory_protocol::CharacterLook,
+    ) -> Option<LocalDeathArtRuntime> {
+        let mut sprites = Vec::new();
+        let assets = match append_local_death_art(
+            &mut sprites,
+            &self.effect_archive,
+            &self.character_archive,
+            look,
+            &mut self.remote_art_cache,
+        ) {
+            Ok(Some(assets)) => assets,
+            Ok(None) => return None,
+            Err(error) => {
+                eprintln!("OpenStory: could not load death art: {error}");
+                return None;
+            }
+        };
+        match self.upload_dynamic_sprites(sprites) {
+            Ok(draws) => local_death_art_runtime(assets, &draws),
+            Err(error) => {
+                eprintln!("OpenStory: could not upload death art: {error}");
+                None
+            }
+        }
+    }
+
+    pub(super) fn load_remote_guild_label(
+        &mut self,
+        guild_name: &str,
+    ) -> Result<Option<(usize, SpriteRect)>, String> {
+        if guild_name.is_empty() {
+            return Ok(None);
+        }
+        let mut sprites = Vec::with_capacity(1);
+        append_text_sprite(
+            &mut sprites,
+            &self.font,
+            guild_name,
+            centered_text_x(&self.font, guild_name, 11.0),
+            GAMEPLAY_CAMERA_CENTER_Y - 76.0,
+            11.0,
+        );
+        Ok(self.upload_dynamic_sprites(sprites)?.first().copied())
     }
 
     pub(super) fn set_character_item_effect(&mut self, character_id: i32, item_id: i32) {
@@ -133,6 +230,140 @@ impl ClientApp {
             uploaded_avatar_frames_runtime(assets, &draws),
             draws.get(name_label_index).copied(),
         ))
+    }
+
+    pub(super) fn load_remote_mount(
+        &mut self,
+        item_id: i32,
+    ) -> Result<Option<MountLookRuntime>, String> {
+        if item_id <= 0 {
+            return Ok(None);
+        }
+        let item_name = format!("{item_id:08}.img");
+        let root_path = format!("TamingMob/{item_name}");
+        let Some(mount) = self
+            .character_archive
+            .root()
+            .resolve(&root_path)
+            .map_err(|error| error.to_string())?
+        else {
+            return Ok(Some(MountLookRuntime {
+                animations: HashMap::new(),
+            }));
+        };
+
+        let mut sprites = Vec::new();
+        let mut animation_assets: HashMap<MountMotion, Vec<MountFrameAsset>> = HashMap::new();
+        for (motion, primary, fallback) in [
+            (MountMotion::Stand, "stand1", Some("stand")),
+            (MountMotion::Walk, "walk1", Some("walk")),
+            (MountMotion::Jump, "jump", None),
+            (MountMotion::Rope, "rope", None),
+            (MountMotion::Ladder, "ladder", None),
+            (MountMotion::Prone, "prone", None),
+            (MountMotion::Fly, "fly", None),
+        ] {
+            let source =
+                mount
+                    .child(primary)
+                    .map_err(|error| error.to_string())?
+                    .or(match fallback {
+                        Some(fallback) => {
+                            mount.child(fallback).map_err(|error| error.to_string())?
+                        }
+                        None => None,
+                    });
+            let Some(source) = source else {
+                continue;
+            };
+            let mut frames = Vec::new();
+            for frame in numeric_children(&source)? {
+                let frame_name = frame.name().map_err(|error| error.to_string())?;
+                let first_sprite = sprites.len();
+                append_map_art_sprite(
+                    &mut sprites,
+                    &frame,
+                    &format!("mount:{item_id}/{primary}/{frame_name}"),
+                    512.0,
+                    GAMEPLAY_CAMERA_CENTER_Y,
+                    255,
+                    false,
+                    &mut self.remote_art_cache,
+                )?;
+                if sprites.len() == first_sprite {
+                    continue;
+                }
+                let navel = vector_path(&frame, "0/map/navel")
+                    .or_else(|| vector_path(&frame, "map/navel"))
+                    .unwrap_or((0.0, -30.0));
+                frames.push(MountFrameAsset {
+                    delay_ms: integer_property(&frame, "delay")
+                        .and_then(|delay| u16::try_from(delay).ok())
+                        .filter(|delay| *delay > 0)
+                        .unwrap_or(100),
+                    sprites: first_sprite..sprites.len(),
+                    navel,
+                });
+            }
+            if !frames.is_empty() {
+                animation_assets.insert(motion, frames);
+            }
+        }
+        if animation_assets.is_empty() {
+            return Ok(Some(MountLookRuntime {
+                animations: HashMap::new(),
+            }));
+        }
+        let draws = self.upload_dynamic_sprites(sprites)?;
+        let animations = animation_assets
+            .into_iter()
+            .map(|(motion, frames)| {
+                let frames = frames
+                    .into_iter()
+                    .map(|frame| MountFrameRuntime {
+                        delay: Duration::from_millis(u64::from(frame.delay_ms.max(1))),
+                        sprites: frame
+                            .sprites
+                            .filter_map(|draw_index| draws.get(draw_index).copied())
+                            .collect(),
+                        navel: frame.navel,
+                    })
+                    .collect::<Vec<_>>();
+                (
+                    motion,
+                    MountAnimationRuntime {
+                        frames,
+                        frame_index: 0,
+                        elapsed: Duration::ZERO,
+                    },
+                )
+            })
+            .collect();
+        Ok(Some(MountLookRuntime { animations }))
+    }
+
+    pub(super) fn refresh_local_mount(&mut self, look: &openstory_protocol::CharacterLook) {
+        if self.map_scene.is_none() {
+            return;
+        }
+        let riding = self
+            .active_buffs
+            .get(&openstory_protocol::BuffStatKey {
+                group: openstory_protocol::BuffMaskGroup::First,
+                flag: STATUS_MONSTER_RIDING,
+            })
+            .is_some_and(|buff| buff.value > 0);
+        let item_id = if riding { equipped_mount_id(look) } else { 0 };
+        let mount = match self.load_remote_mount(item_id) {
+            Ok(mount) => mount,
+            Err(error) => {
+                eprintln!("OpenStory: could not load local mount {item_id}: {error}");
+                None
+            }
+        };
+        if let Some(scene) = self.map_scene.as_mut() {
+            scene.local_mount = mount;
+        }
     }
 
     pub(super) fn load_face_expression(
@@ -709,6 +940,29 @@ impl ClientApp {
         Ok(frames)
     }
 
+    pub(super) fn load_dragon_frames(
+        &mut self,
+        job: i16,
+    ) -> Result<Vec<ProjectileFrameRuntime>, String> {
+        if let Some(frames) = self.dragon_frames_cache.get(&job) {
+            return Ok(frames.clone());
+        }
+        let mut sprites = Vec::new();
+        let assets = append_dragon_animation(
+            &mut sprites,
+            &self.mob_archive,
+            job,
+            &mut self.remote_art_cache,
+        )?;
+        let draws = self.upload_dynamic_sprites(sprites)?;
+        let frames = projectile_frames_runtime(assets, &draws);
+        if self.dragon_frames_cache.len() >= 5 {
+            self.dragon_frames_cache.clear();
+        }
+        self.dragon_frames_cache.insert(job, frames.clone());
+        Ok(frames)
+    }
+
     pub(super) fn load_pet_animations(
         &mut self,
         item_id: i32,
@@ -837,6 +1091,46 @@ impl ClientApp {
         }
         self.skill_effect_cache.insert(key, animations.clone());
         Ok(animations)
+    }
+
+    pub(super) fn load_skill_point_effect(
+        &mut self,
+        skill_id: i32,
+    ) -> Result<Option<Vec<ProjectileFrameRuntime>>, String> {
+        if let Some(frames) = self.skill_point_effect_cache.get(&skill_id) {
+            return Ok(frames.clone());
+        }
+        let path = format!("{:03}.img/skill/{skill_id}/effect", skill_id / 10_000);
+        let source = self
+            .skill_archive
+            .root()
+            .resolve(&path)
+            .map_err(|error| error.to_string())?;
+        let frames = if let Some(source) = source {
+            let mut sprites = Vec::new();
+            let assets = append_animation_frames_from_node_at(
+                &mut sprites,
+                &source,
+                &format!("skill-point:{path}"),
+                512.0,
+                GAMEPLAY_CAMERA_CENTER_Y,
+                &mut self.remote_art_cache,
+            )?;
+            if assets.is_empty() {
+                None
+            } else {
+                let draws = self.upload_dynamic_sprites(sprites)?;
+                Some(projectile_frames_runtime(assets, &draws))
+            }
+        } else {
+            None
+        };
+        if self.skill_point_effect_cache.len() >= 128 {
+            self.skill_point_effect_cache.clear();
+        }
+        self.skill_point_effect_cache
+            .insert(skill_id, frames.clone());
+        Ok(frames)
     }
 
     pub(super) fn load_mob_disease_effect(

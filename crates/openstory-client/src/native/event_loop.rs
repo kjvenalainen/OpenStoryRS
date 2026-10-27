@@ -1,5 +1,22 @@
 use super::*;
 
+fn map_background_hidden_for_quality(
+    scene: &MapSceneRuntime,
+    draw_index: usize,
+    graphics_quality: u8,
+) -> bool {
+    scene.map_backgrounds.iter().any(|background| {
+        if !background.sprites.contains(&draw_index) {
+            return false;
+        }
+        if background.environment_name.is_some() {
+            graphics_quality <= 25
+        } else {
+            graphics_quality <= 10 && draw_index >= scene.foreground_start_index
+        }
+    })
+}
+
 impl ApplicationHandler for ClientApp {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_some() {
@@ -7,10 +24,17 @@ impl ApplicationHandler for ClientApp {
         }
         debug_ui_stage("resumed; creating window");
 
-        let attributes = Window::default_attributes()
+        let mut attributes = Window::default_attributes()
             .with_title("OpenStoryRS")
             .with_resizable(true)
-            .with_inner_size(winit::dpi::LogicalSize::new(1024.0, 768.0));
+            .with_inner_size(winit::dpi::LogicalSize::new(
+                f64::from(self.display_settings.width),
+                f64::from(self.display_settings.height),
+            ));
+        if self.display_settings.fullscreen {
+            attributes =
+                attributes.with_fullscreen(Some(winit::window::Fullscreen::Borderless(None)));
+        }
         let window = match event_loop.create_window(attributes) {
             Ok(window) => Arc::new(window),
             Err(error) => {
@@ -103,7 +127,10 @@ impl ApplicationHandler for ClientApp {
                 }
                 self.window = Some(window.clone());
                 self.renderer = Some(renderer);
+                self.refresh_status_message_textures();
+                self.refresh_rps_game_texture();
                 self.load_native_status_bar();
+                self.refresh_clock_texture();
                 self.next_frame = Instant::now() + Duration::from_millis(16);
                 self.refresh_login_button_visuals();
                 window.request_redraw();
@@ -152,6 +179,11 @@ impl ApplicationHandler for ClientApp {
                         y: position.y as f32,
                     })
                 });
+                if self.update_rps_game_hover()
+                    && let Some(window) = self.window.as_ref()
+                {
+                    window.request_redraw();
+                }
                 if let Some(cursor) = self.cursor {
                     self.update_messenger_drag(cursor);
                     if self.update_world_map_hover(cursor)
@@ -198,6 +230,9 @@ impl ApplicationHandler for ClientApp {
                 button: MouseButton::Left,
                 ..
             } => {
+                if self.server_notice_popup.is_some() {
+                    return;
+                }
                 self.messenger_drag_offset = None;
                 self.npc_dialogue_scroll_dragging = false;
                 if self.pressed_login_button.take().is_some()
@@ -230,6 +265,79 @@ impl ApplicationHandler for ClientApp {
                 let Some(cursor) = self.cursor else {
                     return;
                 };
+                if let Some(popup) = self.server_notice_popup.as_ref() {
+                    if rect_contains(popup.button, cursor) {
+                        self.audio
+                            .play_ui_sound(&self.sound_archive, "UI.img/BtMouseClick");
+                        self.server_notice_popup = None;
+                        if let Some(window) = self.window.as_ref() {
+                            window.request_redraw();
+                        }
+                    }
+                    return;
+                }
+                if self.rps_game.is_some() {
+                    self.click_rps_game_button(cursor);
+                    if let Some(window) = self.window.as_ref() {
+                        window.request_redraw();
+                    }
+                    return;
+                }
+                if self.wedding_panel_open {
+                    let close = SpriteRect {
+                        x: (1024.0 - WEDDING_PANEL_WIDTH as f32) * 0.5 + 88.0,
+                        y: (768.0 - WEDDING_PANEL_HEIGHT as f32) * 0.5 + 220.0,
+                        width: 57.0,
+                        height: 23.0,
+                        blend_mode: BlendMode::Alpha,
+                    };
+                    if rect_contains(close, cursor) {
+                        self.close_wedding_panel();
+                    }
+                    if let Some(window) = self.window.as_ref() {
+                        window.request_redraw();
+                    }
+                    return;
+                }
+                if self.event_list_open {
+                    self.click_event_list(cursor);
+                    if let Some(window) = self.window.as_ref() {
+                        window.request_redraw();
+                    }
+                    return;
+                }
+                if self.server_ui_disabled {
+                    return;
+                }
+                let carnival_action = self.monster_carnival.as_ref().and_then(|carnival| {
+                    let local_x = cursor.x - carnival.state.x;
+                    let local_y = cursor.y - carnival.state.y;
+                    if carnival.close.contains(local_x, local_y) {
+                        Some(true)
+                    } else if carnival.side.contains(local_x, local_y) {
+                        Some(false)
+                    } else {
+                        None
+                    }
+                });
+                if let Some(close) = carnival_action {
+                    self.audio
+                        .play_ui_sound(&self.sound_archive, "UI.img/BtMouseClick");
+                    if close {
+                        self.monster_carnival = None;
+                    } else if let Some(carnival) = self.monster_carnival.as_mut() {
+                        carnival.state.side_view = !carnival.state.side_view;
+                        self.refresh_monster_carnival_texture();
+                        self.push_chat_line(
+                            "[Carnival] Side view toggled.".to_owned(),
+                            [255, 255, 0],
+                        );
+                    }
+                    if let Some(window) = self.window.as_ref() {
+                        window.request_redraw();
+                    }
+                    return;
+                }
                 if self.quit_confirmation {
                     let accept = self.quit_confirmation_buttons[0]
                         .is_some_and(|bounds| rect_contains(bounds, cursor));
@@ -501,6 +609,9 @@ impl ApplicationHandler for ClientApp {
                     }
                     return;
                 }
+                if self.show_equipment_inventory && self.begin_equipment_inventory_pointer(cursor) {
+                    return;
+                }
                 if self.show_pet_equipment && self.begin_pet_equipment_pointer(cursor) {
                     return;
                 }
@@ -629,6 +740,23 @@ impl ApplicationHandler for ClientApp {
                     MouseScrollDelta::LineDelta(_, y) => y,
                     MouseScrollDelta::PixelDelta(position) => position.y as f32,
                 };
+                if self.event_list_open {
+                    if self.cursor.is_some_and(|cursor| {
+                        rect_contains(
+                            SpriteRect {
+                                x: EVENT_LIST_PANEL_X,
+                                y: EVENT_LIST_PANEL_Y,
+                                width: EVENT_LIST_PANEL_WIDTH as f32,
+                                height: EVENT_LIST_PANEL_HEIGHT as f32,
+                                blend_mode: BlendMode::Alpha,
+                            },
+                            cursor,
+                        )
+                    }) {
+                        self.scroll_event_list(if amount > 0.0 { -1 } else { 1 });
+                    }
+                    return;
+                }
                 if self.show_key_config {
                     if self.cursor.is_some_and(|cursor| {
                         rect_contains(
@@ -990,7 +1118,70 @@ impl ApplicationHandler for ClientApp {
                 if matches!(&event.logical_key, Key::Named(NamedKey::Escape)) {
                     event.physical_key = PhysicalKey::Code(KeyCode::Escape);
                 }
-                if event.state == ElementState::Pressed && !event.repeat {
+                if self.server_notice_popup.is_some() {
+                    if event.state == ElementState::Pressed && !event.repeat {
+                        match event.physical_key {
+                            PhysicalKey::Code(
+                                KeyCode::Enter | KeyCode::NumpadEnter | KeyCode::Escape,
+                            ) => self.server_notice_popup = None,
+                            _ => {}
+                        }
+                    }
+                    if let Some(window) = self.window.as_ref() {
+                        window.request_redraw();
+                    }
+                    return;
+                }
+                if self.rps_game.is_some() {
+                    if event.state == ElementState::Pressed
+                        && !event.repeat
+                        && event.physical_key == PhysicalKey::Code(KeyCode::Escape)
+                    {
+                        self.rps_game = None;
+                    }
+                    if let Some(window) = self.window.as_ref() {
+                        window.request_redraw();
+                    }
+                    return;
+                }
+                if self.wedding_panel_open
+                    && event.state == ElementState::Pressed
+                    && !event.repeat
+                    && event.physical_key == PhysicalKey::Code(KeyCode::Escape)
+                {
+                    self.close_wedding_panel();
+                    if let Some(window) = self.window.as_ref() {
+                        window.request_redraw();
+                    }
+                    return;
+                }
+                if self.wedding_panel_open {
+                    return;
+                }
+                if self.event_list_open {
+                    if event.state == ElementState::Pressed && !event.repeat {
+                        self.handle_event_list_key(event.physical_key);
+                    }
+                    if let Some(window) = self.window.as_ref() {
+                        window.request_redraw();
+                    }
+                    return;
+                }
+                if event.state == ElementState::Pressed
+                    && !event.repeat
+                    && event.physical_key == PhysicalKey::Code(KeyCode::Escape)
+                    && self.monster_carnival.is_some()
+                {
+                    self.monster_carnival = None;
+                    if let Some(window) = self.window.as_ref() {
+                        window.request_redraw();
+                    }
+                    return;
+                }
+                if event.state == ElementState::Pressed
+                    && !event.repeat
+                    && event.physical_key != PhysicalKey::Code(KeyCode::Escape)
+                {
                     self.show_status_menu = false;
                 }
                 // A text event is followed by Ime::Commit on some backends. Keep the
@@ -1575,14 +1766,14 @@ impl ApplicationHandler for ClientApp {
                                 self.save_settings()
                             }
                             PhysicalKey::Code(KeyCode::Tab) => {
-                                self.settings_selected_slider = match self.settings_selected_slider
-                                {
-                                    OptionSlider::Music => OptionSlider::Effects,
-                                    OptionSlider::Effects => OptionSlider::HpWarning,
-                                    OptionSlider::HpWarning => OptionSlider::MpWarning,
-                                    OptionSlider::MpWarning => OptionSlider::Music,
-                                };
+                                self.settings_selected_slider =
+                                    self.settings_selected_slider.next();
                                 self.refresh_settings_texture();
+                            }
+                            PhysicalKey::Code(KeyCode::Space)
+                                if self.settings_selected_slider.is_toggle() =>
+                            {
+                                self.toggle_selected_option_setting();
                             }
                             PhysicalKey::Code(KeyCode::ArrowLeft | KeyCode::ArrowDown) => {
                                 self.adjust_selected_option_setting(-5)
@@ -2414,6 +2605,9 @@ impl ApplicationHandler for ClientApp {
                 ];
                 let mut next_map_layer = 0;
                 let mut map_overlays_inserted = false;
+                let graphics_quality = self.gameplay_settings.graphics_quality;
+                let mut effect_budget =
+                    2 + usize::from(self.gameplay_settings.effects_quality) * 48 / 100;
                 for (draw_index, (texture_index, rect)) in self.sprite_draws.iter().enumerate() {
                     if let Some(scene) = self.map_scene.as_ref() {
                         while next_map_layer < scene.layer_insert_indices.len()
@@ -2431,9 +2625,13 @@ impl ApplicationHandler for ClientApp {
                                 self.maple_tv_broadcast.as_ref(),
                                 self.damage_glyph_texture.as_ref(),
                                 &self.remote_speech_textures,
+                                &self.remote_chalkboard_textures,
                                 &self.pet_speech_textures,
                                 self.local_speech_texture.as_ref(),
+                                self.local_chalkboard_texture.as_ref(),
                                 &self.damage_glyphs,
+                                graphics_quality,
+                                &mut effect_budget,
                                 MapEntityDrawPass::Layer(next_map_layer as u8),
                                 &mut draws,
                             );
@@ -2452,9 +2650,13 @@ impl ApplicationHandler for ClientApp {
                                 self.maple_tv_broadcast.as_ref(),
                                 self.damage_glyph_texture.as_ref(),
                                 &self.remote_speech_textures,
+                                &self.remote_chalkboard_textures,
                                 &self.pet_speech_textures,
                                 self.local_speech_texture.as_ref(),
+                                self.local_chalkboard_texture.as_ref(),
                                 &self.damage_glyphs,
+                                graphics_quality,
+                                &mut effect_budget,
                                 MapEntityDrawPass::Overlays,
                                 &mut draws,
                             );
@@ -2475,6 +2677,11 @@ impl ApplicationHandler for ClientApp {
                                 || scene
                                     .inactive_environment_draw_indices
                                     .contains(&draw_index)
+                                || map_background_hidden_for_quality(
+                                    scene,
+                                    draw_index,
+                                    graphics_quality,
+                                )
                         })
                     {
                         continue;
@@ -2508,9 +2715,13 @@ impl ApplicationHandler for ClientApp {
                             self.maple_tv_broadcast.as_ref(),
                             self.damage_glyph_texture.as_ref(),
                             &self.remote_speech_textures,
+                            &self.remote_chalkboard_textures,
                             &self.pet_speech_textures,
                             self.local_speech_texture.as_ref(),
+                            self.local_chalkboard_texture.as_ref(),
                             &self.damage_glyphs,
+                            graphics_quality,
+                            &mut effect_budget,
                             MapEntityDrawPass::Layer(next_map_layer as u8),
                             &mut draws,
                         );
@@ -2529,18 +2740,28 @@ impl ApplicationHandler for ClientApp {
                             self.maple_tv_broadcast.as_ref(),
                             self.damage_glyph_texture.as_ref(),
                             &self.remote_speech_textures,
+                            &self.remote_chalkboard_textures,
                             &self.pet_speech_textures,
                             self.local_speech_texture.as_ref(),
+                            self.local_chalkboard_texture.as_ref(),
                             &self.damage_glyphs,
+                            graphics_quality,
+                            &mut effect_budget,
                             MapEntityDrawPass::Overlays,
                             &mut draws,
                         );
                     }
                 }
                 if let Some(scene) = self.map_scene.as_ref() {
-                    append_map_screen_effect_draws(scene, &self.sprite_textures, &mut draws);
+                    append_map_screen_effect_draws(
+                        scene,
+                        &self.sprite_textures,
+                        &mut effect_budget,
+                        &mut draws,
+                    );
                 }
-                if self.current_field.is_some()
+                if graphics_quality > 50
+                    && self.current_field.is_some()
                     && let Some(texture) = self.weather_texture.as_ref()
                 {
                     self.weather_overlay.append_draws(texture, &mut draws);
@@ -2623,6 +2844,23 @@ impl ApplicationHandler for ClientApp {
                         height: 24.0,
                         uv: [0.0, 0.0, 1.0, 1.0],
                         tint: [1.0, 1.0, 0.0],
+                        blend_mode: BlendMode::Alpha,
+                        flip_x: false,
+                        opacity: 1.0,
+                    });
+                }
+                if self.current_field.is_some()
+                    && !self.boss_hp_gauge_remaining.is_zero()
+                    && let Some(texture) = self.boss_hp_gauge_texture.as_ref()
+                {
+                    draws.push(SpriteDraw {
+                        texture,
+                        x: 302.0,
+                        y: 12.0,
+                        width: 420.0,
+                        height: 56.0,
+                        uv: [0.0, 0.0, 1.0, 1.0],
+                        tint: [1.0, 1.0, 1.0],
                         blend_mode: BlendMode::Alpha,
                         flip_x: false,
                         opacity: 1.0,
@@ -2748,6 +2986,22 @@ impl ApplicationHandler for ClientApp {
                     }
                 }
                 if self.current_field.is_some()
+                    && let Some(texture) = self.buff_list_texture.as_ref()
+                {
+                    draws.push(SpriteDraw {
+                        texture,
+                        x: 0.0,
+                        y: 24.0,
+                        width: 1024.0,
+                        height: 32.0,
+                        uv: [0.0, 0.0, 1.0, 1.0],
+                        tint: [1.0, 1.0, 1.0],
+                        blend_mode: BlendMode::Alpha,
+                        flip_x: false,
+                        opacity: 1.0,
+                    });
+                }
+                if self.current_field.is_some()
                     && self.show_quickslots
                     && let Some(texture) = self.quickslot_texture.as_ref()
                 {
@@ -2774,6 +3028,23 @@ impl ApplicationHandler for ClientApp {
                         y: STATUS_MENU_Y,
                         width: STATUS_MENU_WIDTH as f32,
                         height: STATUS_MENU_HEIGHT as f32,
+                        uv: [0.0, 0.0, 1.0, 1.0],
+                        tint: [1.0, 1.0, 1.0],
+                        blend_mode: BlendMode::Alpha,
+                        flip_x: false,
+                        opacity: 1.0,
+                    });
+                }
+                if self.current_field.is_some()
+                    && (self.combo_count > 0 || !self.combo_fade_remaining.is_zero())
+                    && let Some(texture) = self.combo_texture.as_ref()
+                {
+                    draws.push(SpriteDraw {
+                        texture,
+                        x: COMBO_COUNTER_X,
+                        y: COMBO_COUNTER_Y,
+                        width: COMBO_COUNTER_WIDTH as f32,
+                        height: COMBO_COUNTER_HEIGHT as f32,
                         uv: [0.0, 0.0, 1.0, 1.0],
                         tint: [1.0, 1.0, 1.0],
                         blend_mode: BlendMode::Alpha,
@@ -2953,6 +3224,22 @@ impl ApplicationHandler for ClientApp {
                         });
                     }
                 }
+                if self.show_equipment_inventory {
+                    if let Some(texture) = self.equipment_inventory_texture.as_ref() {
+                        draws.push(SpriteDraw {
+                            texture,
+                            x: EQUIPMENT_INVENTORY_PANEL_X,
+                            y: EQUIPMENT_INVENTORY_PANEL_Y,
+                            width: EQUIPMENT_INVENTORY_PANEL_WIDTH as f32,
+                            height: EQUIPMENT_INVENTORY_PANEL_HEIGHT as f32,
+                            uv: [0.0, 0.0, 1.0, 1.0],
+                            tint: [1.0, 1.0, 1.0],
+                            blend_mode: BlendMode::Alpha,
+                            flip_x: false,
+                            opacity: 1.0,
+                        });
+                    }
+                }
                 if self.show_pet_equipment {
                     if let Some(texture) = self.pet_equipment_texture.as_ref() {
                         draws.push(SpriteDraw {
@@ -3009,6 +3296,22 @@ impl ApplicationHandler for ClientApp {
                             y: STATUS_PANEL_Y,
                             width: STATUS_PANEL_WIDTH as f32,
                             height: STATUS_PANEL_HEIGHT as f32,
+                            uv: [0.0, 0.0, 1.0, 1.0],
+                            tint: [1.0, 1.0, 1.0],
+                            blend_mode: BlendMode::Alpha,
+                            flip_x: false,
+                            opacity: 1.0,
+                        });
+                    }
+                    if self.show_status_detail
+                        && let Some(texture) = self.status_detail_texture.as_ref()
+                    {
+                        draws.push(SpriteDraw {
+                            texture,
+                            x: STATUS_PANEL_X + STATUS_DETAIL_OFFSET_X,
+                            y: STATUS_PANEL_Y + STATUS_DETAIL_OFFSET_Y,
+                            width: STATUS_DETAIL_WIDTH as f32,
+                            height: STATUS_DETAIL_HEIGHT as f32,
                             uv: [0.0, 0.0, 1.0, 1.0],
                             tint: [1.0, 1.0, 1.0],
                             blend_mode: BlendMode::Alpha,
@@ -3551,6 +3854,226 @@ impl ApplicationHandler for ClientApp {
                         }
                     }
                 }
+                if self.current_field.is_some()
+                    && self.clock_state.is_some()
+                    && let Some((x, y)) = self.clock_position
+                    && let Some(texture) = self.clock_texture.as_ref()
+                {
+                    draws.push(SpriteDraw {
+                        texture,
+                        x,
+                        y,
+                        width: texture.width() as f32,
+                        height: texture.height() as f32,
+                        uv: [0.0, 0.0, 1.0, 1.0],
+                        tint: [1.0, 1.0, 1.0],
+                        blend_mode: BlendMode::Alpha,
+                        flip_x: false,
+                        opacity: 1.0,
+                    });
+                }
+                if self.current_field.is_some()
+                    && let Some(carnival) = self.monster_carnival.as_ref()
+                    && let Some(texture) = carnival.texture.as_ref()
+                {
+                    draws.push(SpriteDraw {
+                        texture,
+                        x: carnival.state.x,
+                        y: carnival.state.y,
+                        width: texture.width() as f32,
+                        height: texture.height() as f32,
+                        uv: [0.0, 0.0, 1.0, 1.0],
+                        tint: [1.0, 1.0, 1.0],
+                        blend_mode: BlendMode::Alpha,
+                        flip_x: false,
+                        opacity: 1.0,
+                    });
+                }
+                if let Some(banner) = self.avatar_megaphone.as_ref() {
+                    let x = 1024.0 - avatar_megaphone::PANEL_WIDTH as f32 + 4.0;
+                    let y = 4.0;
+                    if let Some(frame) = banner.animation.current() {
+                        draws.push(SpriteDraw {
+                            texture: &frame.texture,
+                            x: x - f32::from(frame.origin.0),
+                            y: y - f32::from(frame.origin.1),
+                            width: frame.texture.width() as f32,
+                            height: frame.texture.height() as f32,
+                            uv: [0.0, 0.0, 1.0, 1.0],
+                            tint: [1.0, 1.0, 1.0],
+                            blend_mode: BlendMode::Alpha,
+                            flip_x: false,
+                            opacity: 1.0,
+                        });
+                    }
+                    draws.push(SpriteDraw {
+                        texture: &banner.text_texture,
+                        x,
+                        y,
+                        width: avatar_megaphone::PANEL_WIDTH as f32,
+                        height: avatar_megaphone::PANEL_HEIGHT as f32,
+                        uv: [0.0, 0.0, 1.0, 1.0],
+                        tint: [1.0, 1.0, 1.0],
+                        blend_mode: BlendMode::Alpha,
+                        flip_x: false,
+                        opacity: 1.0,
+                    });
+                    for (texture_index, rect) in &banner.avatar_draws {
+                        if let Some(texture) = self.sprite_textures.get(*texture_index) {
+                            draws.push(SpriteDraw {
+                                texture,
+                                x: rect.x,
+                                y: rect.y,
+                                width: rect.width,
+                                height: rect.height,
+                                uv: [0.0, 0.0, 1.0, 1.0],
+                                tint: [1.0, 1.0, 1.0],
+                                blend_mode: rect.blend_mode,
+                                flip_x: false,
+                                opacity: 1.0,
+                            });
+                        }
+                    }
+                }
+                if let Some(popup) = self.server_notice_popup.as_ref() {
+                    if let Some(black) = self.solid_textures.first() {
+                        draws.push(SpriteDraw {
+                            texture: black,
+                            x: 0.0,
+                            y: 0.0,
+                            width: 1024.0,
+                            height: 768.0,
+                            uv: [0.0, 0.0, 1.0, 1.0],
+                            tint: [0.0, 0.0, 0.0],
+                            blend_mode: BlendMode::Alpha,
+                            flip_x: false,
+                            opacity: 0.52,
+                        });
+                    }
+                    draws.push(SpriteDraw {
+                        texture: &popup.texture,
+                        x: popup.panel.x,
+                        y: popup.panel.y,
+                        width: popup.panel.width,
+                        height: popup.panel.height,
+                        uv: [0.0, 0.0, 1.0, 1.0],
+                        tint: [1.0, 1.0, 1.0],
+                        blend_mode: BlendMode::Alpha,
+                        flip_x: false,
+                        opacity: 1.0,
+                    });
+                }
+                if self.wedding_panel_open
+                    && let Some(texture) = self.wedding_panel_texture.as_ref()
+                {
+                    draws.push(SpriteDraw {
+                        texture,
+                        x: (1024.0 - WEDDING_PANEL_WIDTH as f32) * 0.5,
+                        y: (768.0 - WEDDING_PANEL_HEIGHT as f32) * 0.5,
+                        width: WEDDING_PANEL_WIDTH as f32,
+                        height: WEDDING_PANEL_HEIGHT as f32,
+                        uv: [0.0, 0.0, 1.0, 1.0],
+                        tint: [1.0, 1.0, 1.0],
+                        blend_mode: BlendMode::Alpha,
+                        flip_x: false,
+                        opacity: 1.0,
+                    });
+                }
+                if self.event_list_open
+                    && let Some(texture) = self.event_list_texture.as_ref()
+                {
+                    draws.push(SpriteDraw {
+                        texture,
+                        x: EVENT_LIST_PANEL_X,
+                        y: EVENT_LIST_PANEL_Y,
+                        width: EVENT_LIST_PANEL_WIDTH as f32,
+                        height: EVENT_LIST_PANEL_HEIGHT as f32,
+                        uv: [0.0, 0.0, 1.0, 1.0],
+                        tint: [1.0, 1.0, 1.0],
+                        blend_mode: BlendMode::Alpha,
+                        flip_x: false,
+                        opacity: 1.0,
+                    });
+                }
+                if self.show_inventory
+                    && self.inventory_hover_slot.is_some()
+                    && self.inventory_drag_source.is_none()
+                    && self.inventory_drop_prompt.is_none()
+                    && !self.quit_confirmation
+                    && !self.wedding_panel_open
+                    && self.server_notice_popup.is_none()
+                    && let (Some(texture), Some(cursor)) =
+                        (self.inventory_tooltip_texture.as_ref(), self.cursor)
+                {
+                    let width = INVENTORY_TOOLTIP_WIDTH as f32;
+                    let height = INVENTORY_TOOLTIP_HEIGHT as f32;
+                    let x = if cursor.x + 18.0 + width > 1024.0 {
+                        cursor.x - width - 18.0
+                    } else {
+                        cursor.x + 18.0
+                    }
+                    .clamp(0.0, 1024.0 - width);
+                    let y = if cursor.y + 18.0 + height > 768.0 {
+                        cursor.y - height - 18.0
+                    } else {
+                        cursor.y + 18.0
+                    }
+                    .clamp(0.0, 768.0 - height);
+                    draws.push(SpriteDraw {
+                        texture,
+                        x,
+                        y,
+                        width,
+                        height,
+                        uv: [0.0, 0.0, 1.0, 1.0],
+                        tint: [1.0, 1.0, 1.0],
+                        blend_mode: BlendMode::Alpha,
+                        flip_x: false,
+                        opacity: 1.0,
+                    });
+                }
+                if self.current_field.is_some() {
+                    for (index, message) in self.status_messages.iter().enumerate() {
+                        let Some(texture) = message.texture.as_ref() else {
+                            continue;
+                        };
+                        let age = Instant::now().saturating_duration_since(message.created_at);
+                        if age >= STATUS_MESSAGE_DURATION {
+                            continue;
+                        }
+                        let opacity = (1.0
+                            - age.as_secs_f32() / STATUS_MESSAGE_DURATION.as_secs_f32())
+                        .clamp(0.0, 1.0);
+                        draws.push(SpriteDraw {
+                            texture,
+                            x: STATUS_MESSAGE_RIGHT - texture.width() as f32,
+                            y: STATUS_MESSAGE_Y - index as f32 * STATUS_MESSAGE_ROW_STEP,
+                            width: texture.width() as f32,
+                            height: texture.height() as f32,
+                            uv: [0.0, 0.0, 1.0, 1.0],
+                            tint: [1.0, 1.0, 1.0],
+                            blend_mode: BlendMode::Alpha,
+                            flip_x: false,
+                            opacity,
+                        });
+                    }
+                }
+                if let Some(game) = self.rps_game.as_ref()
+                    && let Some(texture) = game.texture.as_ref()
+                {
+                    draws.push(SpriteDraw {
+                        texture,
+                        x: 0.0,
+                        y: 0.0,
+                        width: 1024.0,
+                        height: 768.0,
+                        uv: [0.0, 0.0, 1.0, 1.0],
+                        tint: [1.0, 1.0, 1.0],
+                        blend_mode: BlendMode::Alpha,
+                        flip_x: false,
+                        opacity: 1.0,
+                    });
+                }
                 if let Some(renderer) = self.renderer.as_mut() {
                     let result = renderer.render_sprites(&draws);
                     if let Err(error) = result {
@@ -3580,6 +4103,10 @@ impl ApplicationHandler for ClientApp {
             }
         }
         let now = Instant::now();
+        self.tick_event_list(now);
+        self.status_messages.retain(|message| {
+            now.saturating_duration_since(message.created_at) < STATUS_MESSAGE_DURATION
+        });
         if now >= self.next_login_caret_toggle {
             self.next_login_caret_toggle = now + LOGIN_CARET_BLINK_INTERVAL;
             let login_caret_active = self.show_login_fields && self.focused_login_button.is_none();
@@ -3608,8 +4135,10 @@ impl ApplicationHandler for ClientApp {
         }
         self.expire_maple_tv_broadcast(now);
         self.expire_character_buffs(now);
+        self.play_due_skill_hit_sounds(now);
         let elapsed = now.saturating_duration_since(self.last_simulation_update);
         self.last_simulation_update = now;
+        self.advance_avatar_megaphone(elapsed, now);
         self.advance_maple_tv_animations(elapsed);
         self.advance_npc_dialogue_text(elapsed);
         self.advance_login_animations(elapsed);

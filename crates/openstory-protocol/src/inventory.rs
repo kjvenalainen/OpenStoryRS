@@ -9,6 +9,8 @@ const EQUIP_STAT_COUNT: usize = 15;
 const MAX_MODIFICATIONS: usize = 128;
 
 pub const OPCODE_MODIFY_INVENTORY: u16 = 29;
+pub const OPCODE_INVENTORY_GROW: u16 = 30;
+pub const OPCODE_SET_EXTRA_PENDANT_SLOT: u16 = 121;
 pub const OPCODE_STORAGE: u16 = 309;
 pub const OPCODE_MOVE_ITEM: u16 = 71;
 pub const OPCODE_USE_ITEM: u16 = 72;
@@ -85,12 +87,32 @@ pub struct InventoryItem {
     pub pet: Option<PetInventoryData>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InventorySnapshot {
     pub meso: i64,
     /// Equip, use, setup, etc, and cash slot capacities.
     pub slot_maxima: [u8; 5],
+    /// Highest usable equipped-item slot. This is not included in the five
+    /// capacities from the initial `SET_FIELD` inventory header.
+    pub equipped_slot_maximum: u8,
     pub items: Vec<InventoryItem>,
+}
+
+impl Default for InventorySnapshot {
+    fn default() -> Self {
+        Self {
+            meso: 0,
+            slot_maxima: [0; 5],
+            equipped_slot_maximum: 59,
+            items: Vec::new(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct InventoryCapacityUpdate {
+    pub inventory_type: InventoryType,
+    pub slot_capacity: u8,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -155,6 +177,17 @@ pub struct InventoryUpdate {
 }
 
 impl InventorySnapshot {
+    pub fn set_slot_capacity(&mut self, inventory_type: InventoryType, slot_capacity: u8) {
+        match inventory_type {
+            InventoryType::Equip => self.slot_maxima[0] = slot_capacity,
+            InventoryType::Use => self.slot_maxima[1] = slot_capacity,
+            InventoryType::Setup => self.slot_maxima[2] = slot_capacity,
+            InventoryType::Etc => self.slot_maxima[3] = slot_capacity,
+            InventoryType::Cash => self.slot_maxima[4] = slot_capacity,
+            InventoryType::Equipped => self.equipped_slot_maximum = slot_capacity,
+        }
+    }
+
     pub fn item_count(&self, item_id: i32) -> u32 {
         self.items
             .iter()
@@ -278,6 +311,7 @@ pub(crate) fn parse_initial_inventory(
     let mut snapshot = InventorySnapshot {
         meso,
         slot_maxima,
+        equipped_slot_maximum: 59,
         items: Vec::new(),
     };
 
@@ -328,6 +362,37 @@ pub(crate) fn parse_initial_inventory(
         }
     }
     Ok(snapshot)
+}
+
+/// Parses the v83 inventory-capacity update sent after an inventory expansion.
+pub fn parse_inventory_capacity_update(
+    bytes: &[u8],
+) -> Result<InventoryCapacityUpdate, PacketError> {
+    let mut packet = PacketReader::new(bytes);
+    let opcode = packet.read_u16()?;
+    if opcode != OPCODE_INVENTORY_GROW {
+        return Err(PacketError::UnexpectedOpcode {
+            expected: OPCODE_INVENTORY_GROW,
+            actual: opcode,
+        });
+    }
+    Ok(InventoryCapacityUpdate {
+        inventory_type: InventoryType::from_wire(packet.read_i8()?)?,
+        slot_capacity: packet.read_u8()?,
+    })
+}
+
+/// Parses the v83 pendant-expansion state update.
+pub fn parse_extra_pendant_slot(bytes: &[u8]) -> Result<bool, PacketError> {
+    let mut packet = PacketReader::new(bytes);
+    let opcode = packet.read_u16()?;
+    if opcode != OPCODE_SET_EXTRA_PENDANT_SLOT {
+        return Err(PacketError::UnexpectedOpcode {
+            expected: OPCODE_SET_EXTRA_PENDANT_SLOT,
+            actual: opcode,
+        });
+    }
+    packet.read_bool()
 }
 
 /// Parses an inventory delta packet without mutating client state.

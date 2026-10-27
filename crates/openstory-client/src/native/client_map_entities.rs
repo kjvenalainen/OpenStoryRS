@@ -1,6 +1,85 @@
 use super::*;
 
 impl ClientApp {
+    pub(super) fn spawn_map_door(&mut self, spawn: openstory_protocol::MapDoorSpawn) {
+        if let Some(scene) = self.map_scene.as_mut() {
+            scene.spawn_door(spawn.owner_id, spawn.x, spawn.y);
+        }
+    }
+
+    pub(super) fn remove_map_door(&mut self, owner_id: i32) {
+        if let Some(scene) = self.map_scene.as_mut() {
+            scene.remove_door(owner_id);
+        }
+    }
+
+    pub(super) fn update_map_town_portal(
+        &mut self,
+        update: openstory_protocol::MapTownPortalUpdate,
+    ) {
+        const TOWN_PORTAL_OWNER_ID: i32 = -777;
+
+        if let Some(scene) = self.map_scene.as_mut() {
+            match update {
+                openstory_protocol::MapTownPortalUpdate::Spawn { x, y, .. } => {
+                    scene.remove_door(TOWN_PORTAL_OWNER_ID);
+                    scene.spawn_door(TOWN_PORTAL_OWNER_ID, x, y);
+                }
+                openstory_protocol::MapTownPortalUpdate::Remove => {
+                    scene.remove_door(TOWN_PORTAL_OWNER_ID);
+                }
+            }
+        }
+    }
+
+    pub(super) fn apply_remote_foreign_buff(
+        &mut self,
+        update: openstory_protocol::ForeignCharacterBuffUpdate,
+    ) {
+        let mount = update.mount_item_id.map(|item_id| {
+            self.load_remote_mount(item_id).unwrap_or_else(|error| {
+                eprintln!("OpenStoryRS: could not load remote mount {item_id}: {error}");
+                None
+            })
+        });
+        if update.hidden.is_none() && update.mount_item_id.is_none() {
+            return;
+        }
+        if let Some(player) = self
+            .map_scene
+            .as_mut()
+            .and_then(|scene| scene.remote_players.get_mut(&update.character_id))
+        {
+            if let Some(hidden) = update.hidden {
+                player.hidden = hidden;
+            }
+            if update.mount_item_id.is_some() {
+                player.mount = mount.flatten();
+            }
+        }
+    }
+
+    pub(super) fn cancel_remote_foreign_buff(
+        &mut self,
+        update: openstory_protocol::ForeignCharacterBuffCancel,
+    ) {
+        if !update.cancel_hidden && !update.cancel_mount {
+            return;
+        }
+        if let Some(player) = self
+            .map_scene
+            .as_mut()
+            .and_then(|scene| scene.remote_players.get_mut(&update.character_id))
+        {
+            if update.cancel_hidden {
+                player.hidden = false;
+            }
+            if update.cancel_mount {
+                player.mount = None;
+            }
+        }
+    }
+
     pub(super) fn spawn_reactor(&mut self, spawn: openstory_protocol::MapReactorSpawn) {
         let mut sprites = Vec::new();
         let assets = match append_reactor_animations(
@@ -265,15 +344,47 @@ impl ClientApp {
         }
     }
 
-    pub(super) fn handle_character_info(&mut self, info: openstory_protocol::CharacterInfoReply) {
+    pub(super) fn apply_taming_mob_info(&mut self, update: openstory_protocol::TamingMobInfo) {
         if self
             .active_character
             .as_ref()
-            .is_some_and(|character| character.id == info.character_id)
+            .is_none_or(|character| character.id != update.character_id)
         {
+            return;
+        }
+        self.taming_mount_stats = Some(update.mount);
+        let refresh = if let Some(ui) = self.character_info.as_mut() {
+            if ui.info.character_id == update.character_id {
+                ui.info.mount = Some(update.mount);
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+        if refresh {
+            self.refresh_character_info_texture();
+        }
+    }
+
+    pub(super) fn handle_character_info(
+        &mut self,
+        mut info: openstory_protocol::CharacterInfoReply,
+    ) {
+        let is_local_character = self
+            .active_character
+            .as_ref()
+            .is_some_and(|character| character.id == info.character_id);
+        if is_local_character {
             self.monster_book.set_cover(info.monster_book.cover_item_id);
             if self.monster_book.open {
                 self.refresh_monster_book_texture();
+            }
+            if let Some(mount) = info.mount {
+                self.taming_mount_stats = Some(mount);
+            } else {
+                info.mount = self.taming_mount_stats;
             }
         }
         let name = self
@@ -499,6 +610,7 @@ impl ClientApp {
                     flipped,
                     animations,
                     animation_order,
+                    imitated_look_sprites: None,
                     random_state: (spawn.npc_id as u32)
                         .wrapping_mul(0x9E37_79B9)
                         .wrapping_add(spawn.object_id as u32)
@@ -666,6 +778,74 @@ impl ClientApp {
     pub(super) fn remove_npc(&mut self, object_id: i32) {
         if let Some(scene) = self.map_scene.as_mut() {
             scene.npcs.remove(&object_id);
+        }
+    }
+
+    pub(super) fn apply_imitated_npc_update(
+        &mut self,
+        update: openstory_protocol::ImitatedNpcUpdate,
+    ) {
+        match update {
+            openstory_protocol::ImitatedNpcUpdate::Remove { object_id } => {
+                self.remove_npc(object_id);
+            }
+            openstory_protocol::ImitatedNpcUpdate::Ignore => {}
+            openstory_protocol::ImitatedNpcUpdate::SetPlayerLook { npc_id, look } => {
+                let object_ids = self
+                    .map_scene
+                    .as_ref()
+                    .map(|scene| {
+                        scene
+                            .npcs
+                            .iter()
+                            .filter_map(|(&object_id, npc)| {
+                                (npc.npc_id == npc_id).then_some(object_id)
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                if object_ids.is_empty() {
+                    return;
+                }
+
+                let stance = if character_weapon_id(&look).is_some_and(is_two_handed_weapon) {
+                    "stand2"
+                } else {
+                    "stand1"
+                };
+                let mut sprites = Vec::new();
+                if let Err(error) = append_character_avatar(
+                    &mut sprites,
+                    &self.character_archive,
+                    &look,
+                    stance,
+                    0,
+                    512.0,
+                    GAMEPLAY_CAMERA_CENTER_Y,
+                    &mut self.remote_art_cache,
+                ) {
+                    eprintln!("OpenStoryRS: could not render imitated NPC {npc_id}: {error}");
+                    return;
+                }
+                if sprites.is_empty() {
+                    return;
+                }
+                let draws = match self.upload_dynamic_sprites(sprites) {
+                    Ok(draws) if !draws.is_empty() => draws,
+                    Ok(_) => return,
+                    Err(error) => {
+                        eprintln!("OpenStoryRS: could not upload imitated NPC {npc_id}: {error}");
+                        return;
+                    }
+                };
+                if let Some(scene) = self.map_scene.as_mut() {
+                    for object_id in object_ids {
+                        if let Some(npc) = scene.npcs.get_mut(&object_id) {
+                            npc.imitated_look_sprites = Some(draws.clone());
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -2502,6 +2682,43 @@ impl ClientApp {
         );
     }
 
+    pub(super) fn update_pet_name(&mut self, character_id: i32, name: &str) {
+        if !self
+            .map_scene
+            .as_ref()
+            .is_some_and(|scene| scene.pets.contains_key(&(character_id, 0)))
+        {
+            return;
+        }
+        let name_label = if name.is_empty() {
+            None
+        } else {
+            let mut sprites = Vec::with_capacity(1);
+            append_text_sprite(
+                &mut sprites,
+                &self.font,
+                name,
+                centered_text_x(&self.font, name, 13.0),
+                340.0,
+                13.0,
+            );
+            match self.upload_dynamic_sprites(sprites) {
+                Ok(draws) => draws.first().copied(),
+                Err(error) => {
+                    eprintln!("OpenStoryRS: could not update pet name label: {error}");
+                    return;
+                }
+            }
+        };
+        if let Some(pet) = self
+            .map_scene
+            .as_mut()
+            .and_then(|scene| scene.pets.get_mut(&(character_id, 0)))
+        {
+            pet.name_label = name_label;
+        }
+    }
+
     pub(super) fn move_pet(&mut self, movement: openstory_protocol::MapPetMovement) {
         let Some(pet) = self
             .map_scene
@@ -2647,6 +2864,81 @@ impl ClientApp {
         }
     }
 
+    pub(super) fn spawn_dragon(&mut self, spawn: openstory_protocol::MapDragonSpawn) {
+        let frames = match self.load_dragon_frames(spawn.job) {
+            Ok(frames) => frames,
+            Err(error) => {
+                eprintln!(
+                    "OpenStoryRS: could not load Evan dragon for job {}: {error}",
+                    spawn.job
+                );
+                return;
+            }
+        };
+        if frames.is_empty() {
+            eprintln!(
+                "OpenStoryRS: Evan dragon for job {} has no drawable animation",
+                spawn.job
+            );
+            return;
+        }
+        let mut body = PhysicsBody::new(f64::from(spawn.x), f64::from(spawn.y));
+        body.mode = PhysicsMode::Normal;
+        body.foothold_id = 0;
+        if let Some(scene) = self.map_scene.as_mut() {
+            scene.dragons.insert(
+                spawn.owner_id,
+                MapDragonRuntime {
+                    x: f64::from(spawn.x),
+                    y: f64::from(spawn.y),
+                    body,
+                    flipped: false,
+                    frames,
+                    frame_index: 0,
+                    elapsed: Duration::ZERO,
+                },
+            );
+        }
+    }
+
+    pub(super) fn move_dragon(&mut self, movement: openstory_protocol::MapDragonMovement) {
+        let Some(fragment) = movement.fragments.last() else {
+            return;
+        };
+        let Some(dragon) = self
+            .map_scene
+            .as_mut()
+            .and_then(|scene| scene.dragons.get_mut(&movement.owner_id))
+        else {
+            return;
+        };
+        match fragment.kind {
+            openstory_protocol::MovementKind::Absolute
+            | openstory_protocol::MovementKind::Teleport
+            | openstory_protocol::MovementKind::JumpDown => {
+                dragon.x = f64::from(fragment.x);
+                dragon.y = f64::from(fragment.y);
+            }
+            openstory_protocol::MovementKind::Relative => {
+                dragon.x += f64::from(fragment.x);
+                dragon.y += f64::from(fragment.y);
+            }
+            openstory_protocol::MovementKind::None => return,
+        }
+        dragon.flipped = fragment.stance & 1 == 1;
+        dragon.body.foothold_id = fragment.foothold;
+        dragon.body.x = dragon.x;
+        dragon.body.y = dragon.y;
+        dragon.body.previous_x = dragon.x;
+        dragon.body.previous_y = dragon.y;
+    }
+
+    pub(super) fn remove_dragon(&mut self, owner_id: i32) {
+        if let Some(scene) = self.map_scene.as_mut() {
+            scene.dragons.remove(&owner_id);
+        }
+    }
+
     pub(super) fn update_summon_skill(&mut self, update: openstory_protocol::SummonSkillUpdate) {
         if let Some(scene) = self.map_scene.as_mut() {
             for summon in scene.summons.values_mut().filter(|summon| {
@@ -2706,19 +2998,71 @@ impl ClientApp {
                 None
             }
         };
+        let mut death_art = self.load_character_death_art(&update.look);
         if let Some(player) = self
             .map_scene
             .as_mut()
             .and_then(|scene| scene.remote_players.get_mut(&update.id))
         {
+            if player.dead
+                && let (Some(new_art), Some(previous_art)) =
+                    (death_art.as_mut(), player.death_art.as_ref())
+            {
+                new_art.retain_timeline_from(previous_art);
+            }
             player.look = update.look;
             player.face_expression = None;
             player.item_aura = item_aura;
+            if death_art.is_some() {
+                player.death_art = death_art;
+            }
             player.avatar_frames = avatar_frames;
             player.active_avatar_frame =
                 first_avatar_frame(&player.avatar_frames, player.desired_avatar_motion);
             player.avatar_elapsed = Duration::ZERO;
             player.name_label = name_label;
+        }
+    }
+
+    pub(super) fn update_remote_guild_name(
+        &mut self,
+        update: openstory_protocol::RemoteGuildNameUpdate,
+    ) {
+        if !self
+            .map_scene
+            .as_ref()
+            .is_some_and(|scene| scene.remote_players.contains_key(&update.character_id))
+        {
+            return;
+        }
+        let guild_label = match self.load_remote_guild_label(&update.name) {
+            Ok(label) => label,
+            Err(error) => {
+                eprintln!("OpenStoryRS: could not update remote guild label: {error}");
+                None
+            }
+        };
+        if let Some(player) = self
+            .map_scene
+            .as_mut()
+            .and_then(|scene| scene.remote_players.get_mut(&update.character_id))
+        {
+            player.guild_name = update.name;
+            player.guild_label = guild_label;
+        }
+    }
+
+    pub(super) fn update_remote_guild_mark(
+        &mut self,
+        update: openstory_protocol::RemoteGuildMarkUpdate,
+    ) {
+        if let Some(mark) = update.mark
+            && let Some(player) = self
+                .map_scene
+                .as_mut()
+                .and_then(|scene| scene.remote_players.get_mut(&update.character_id))
+        {
+            player._guild_mark = mark;
         }
     }
 
@@ -2900,6 +3244,36 @@ impl ClientApp {
         }
     }
 
+    pub(super) fn show_server_notice_popup(&mut self, message: &str) {
+        self.audio
+            .play_ui_sound(&self.sound_archive, "UI.img/DlgNotice");
+        let (width, height, pixels, panel, button) =
+            match build_server_notice_art(&self.legacy_ui_archive, &self.font, message) {
+                Ok(art) => art,
+                Err(error) => {
+                    eprintln!("OpenStoryRS: could not build server notice: {error}");
+                    return;
+                }
+            };
+        let Some(renderer) = self.renderer.as_ref() else {
+            return;
+        };
+        match renderer.upload_bgra(width, height, &pixels) {
+            Ok(texture) => {
+                self.quit_confirmation = false;
+                self.server_notice_popup = Some(ServerNoticePopup {
+                    texture,
+                    panel,
+                    button,
+                });
+                if let Some(window) = self.window.as_ref() {
+                    window.request_redraw();
+                }
+            }
+            Err(error) => eprintln!("OpenStoryRS: could not upload server notice: {error}"),
+        }
+    }
+
     pub(super) fn advance_scrolling_notice(&mut self, updates: u8) {
         if updates == 0 {
             return;
@@ -2926,12 +3300,24 @@ impl ClientApp {
             (6 | 8, _) => "JobChanged",
             (7 | 9, _) => "QuestClear",
             (13, _) => "MonsterBook/cardGet",
-            (15, _) => "Enchant/Success",
+            (15, 0) => "Enchant/Success",
+            (15, _) => "Enchant/Failure",
             (16, 0) => "ItemMake/Success",
             (16, _) => "ItemMake/Failure",
             _ => return Ok(Vec::new()),
         };
         let path = format!("BasicEff.img/{effect_name}");
+        self.load_character_effect_path(cache_key, &path)
+    }
+
+    pub(super) fn load_character_effect_path(
+        &mut self,
+        cache_key: (i8, i8),
+        path: &str,
+    ) -> Result<Vec<CharacterSkillEffectAnimation>, String> {
+        if let Some(animations) = self.character_effect_cache.get(&cache_key) {
+            return Ok(animations.clone());
+        }
         let Some(source) = self
             .effect_archive
             .root()

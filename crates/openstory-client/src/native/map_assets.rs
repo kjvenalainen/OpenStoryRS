@@ -419,6 +419,7 @@ fn append_local_death_art(
         .resolve("00002000.img/ghoststand/1")
         .map_err(|error| error.to_string())?
     {
+        let ghost_anchor_y = GAMEPLAY_CAMERA_CENTER_Y - 30.0;
         let normal_body_path = format!("000020{:02}.img/stand1/0", look.skin);
         let normal_body = character_archive
             .root()
@@ -469,7 +470,7 @@ fn append_local_death_art(
                 &body,
                 &format!("character:{body_path}"),
                 512.0,
-                354.0,
+                ghost_anchor_y,
                 255,
                 false,
                 cache,
@@ -478,7 +479,7 @@ fn append_local_death_art(
             let ghost_neck = vector_path(&body, "map/neck").unwrap_or((0.0, 0.0));
             let fake_origin = (
                 512.0 + ghost_neck.0 - normal_body_neck.0,
-                354.0 + ghost_neck.1 - normal_body_neck.1,
+                ghost_anchor_y + ghost_neck.1 - normal_body_neck.1,
             );
             if let Some(hair_frame) = hair_frame.as_ref() {
                 append_hair_part(

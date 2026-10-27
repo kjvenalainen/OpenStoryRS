@@ -53,12 +53,16 @@ impl ClientApp {
             LoginField::Password
         };
         let settings = AudioSettings::load();
+        let display_settings = DisplaySettings::load();
+        let input_settings = InputSettings::load();
         let gameplay_settings = GameplaySettings::load();
+        let social_settings = SocialSettings::load();
         let saved_quickslot_keys = load_quickslot_keys();
         let quickslot_keys_customized = saved_quickslot_keys.is_some();
         let mut audio = audio::AudioEngine::new();
-        audio.set_music_volume(settings.music_volume);
-        audio.set_sound_volume(settings.effects_volume);
+        audio.set_music_volume(settings.effective_music_volume());
+        audio.set_sound_volume(settings.effective_effects_volume());
+        apply_mouse_speed(input_settings.mouse_speed);
         audio.play_music(&sound_archive, "BgmUI.img/Title");
         let quest_start_npc_index = build_quest_start_npc_index(&quest_archive);
         let chat_balloon_skin = match load_chat_balloon_skin(&ui_archive) {
@@ -90,16 +94,24 @@ impl ClientApp {
             item_use_effect_cache: HashMap::new(),
             item_aura_frames_cache: HashMap::new(),
             summon_frames_cache: HashMap::new(),
+            dragon_frames_cache: HashMap::new(),
             pet_frames_cache: HashMap::new(),
             pet_interaction_frames_cache: HashMap::new(),
             skill_projectile_cache: HashMap::new(),
             skill_effect_cache: HashMap::new(),
+            skill_point_effect_cache: HashMap::new(),
             mob_disease_effect_cache: HashMap::new(),
             character_effect_cache: HashMap::new(),
             field_effect_cache: HashMap::new(),
             weather_overlay: weather::WeatherOverlay::default(),
             weather_texture: None,
             scrolling_notice: None,
+            server_notice_popup: None,
+            avatar_megaphone: None,
+            monster_carnival: None,
+            clock_state: None,
+            clock_texture: None,
+            clock_position: None,
             skill_hit_effect_cache: HashMap::new(),
             face_expression_cache: HashMap::new(),
             last_face_expression_at: None,
@@ -124,9 +136,12 @@ impl ClientApp {
             pic_dialog_texture: None,
             settings_texture: None,
             status_texture: None,
+            status_detail_texture: None,
             key_config_texture: None,
             skill_macro_texture: None,
             inventory_texture: None,
+            equipment_inventory_texture: None,
+            inventory_tooltip_texture: None,
             storage_texture: None,
             hired_merchant_texture: None,
             trade_texture: None,
@@ -171,6 +186,7 @@ impl ClientApp {
             family_tree_texture: None,
             alliance_texture: None,
             guild_bbs_texture: None,
+            status_messages: VecDeque::new(),
             chat_lines: VecDeque::from([ChatLine {
                 text: "[Welcome] Welcome to MapleStory!".to_owned(),
                 color: [255, 255, 0],
@@ -215,11 +231,15 @@ impl ClientApp {
             chat_balloon_skin,
             local_speech_texture: None,
             remote_speech_textures: HashMap::new(),
+            local_chalkboard_texture: None,
+            remote_chalkboard_textures: HashMap::new(),
             pet_speech_textures: HashMap::new(),
             inventory_icon_cache: HashMap::new(),
             show_inventory: false,
+            show_equipment_inventory: false,
             show_settings: false,
             show_status: false,
+            show_status_detail: false,
             show_key_config: false,
             key_config_capture: None,
             quickslot_key_capture: None,
@@ -234,6 +254,10 @@ impl ClientApp {
             quickslot_icon_cache: HashMap::new(),
             show_status_menu: false,
             status_menu_texture: None,
+            combo_count: 0,
+            combo_displayed: 0,
+            combo_fade_remaining: Duration::ZERO,
+            combo_texture: None,
             skill_macro_editor: skill_macros::State::default(),
             skill_macros: vec![
                 openstory_protocol::SkillMacro::default();
@@ -244,11 +268,17 @@ impl ClientApp {
             status_auto_confirmation: false,
             status_waiting_for_stats: false,
             settings_dragging: None,
-            settings_selected_slider: OptionSlider::Music,
+            settings_selected_slider: OptionControl::Music,
             settings,
             settings_original: settings,
+            display_settings,
+            display_settings_original: display_settings,
+            input_settings,
+            input_settings_original: input_settings,
             gameplay_settings,
             gameplay_settings_original: gameplay_settings,
+            social_settings,
+            social_settings_original: social_settings,
             settings_notice: None,
             show_pet_equipment: false,
             pet_equipment_scroll_row: 0,
@@ -259,6 +289,8 @@ impl ClientApp {
             skills: HashMap::new(),
             skill_book_entries: Vec::new(),
             active_buffs: HashMap::new(),
+            pending_skill_hit_sounds: Vec::new(),
+            skill_cooldowns: HashMap::new(),
             forced_equipment_stats: ForcedEquipmentStats::default(),
             inventory_tab: openstory_protocol::InventoryType::Equip,
             inventory_scroll_row: 0,
@@ -276,6 +308,7 @@ impl ClientApp {
             pending_login_packet: None,
             login_server_connected: false,
             channel_connected: false,
+            server_ui_disabled: false,
             debug_event_loop_logged: false,
             audio,
             map_archive,
@@ -315,10 +348,27 @@ impl ClientApp {
             cash_shop: None,
             cash_products,
             map_hud_texture: None,
+            buff_list_texture: None,
+            buff_list_refreshed_at: None,
             status_bar_draw_indices: Vec::new(),
             status_bar_gauges: [None; 3],
             status_bar_number_font: None,
             status_bar_layout: StatusBarLayout::V83,
+            boss_hp_gauge_texture: None,
+            boss_hp_gauge_remaining: Duration::ZERO,
+            event_list_open: false,
+            event_list_texture: None,
+            event_list: Vec::new(),
+            event_list_received: false,
+            event_list_offset: 0,
+            event_list_selected: None,
+            event_list_peak_durations: HashMap::new(),
+            next_event_info_request: Instant::now(),
+            next_event_second: Instant::now(),
+            wedding_panel_open: false,
+            wedding_panel_texture: None,
+            wedding_countdown_seconds: 0,
+            rps_game: None,
             quit_confirmation: false,
             quit_confirmation_draws: Vec::new(),
             quit_confirmation_buttons: [None; 2],
@@ -334,7 +384,14 @@ impl ClientApp {
             character_selection_status: None,
             character_creation: None,
             active_character: None,
+            taming_mount_stats: None,
             inventory: None,
+            extra_pendant_slot: false,
+            auto_hp_potion_id: 0,
+            auto_mp_potion_id: 0,
+            auto_hp_potion_cooldown: Duration::ZERO,
+            auto_mp_potion_cooldown: Duration::ZERO,
+            teleport_rock_locations: openstory_protocol::TeleportRockLocations::default(),
             quest_log: openstory_protocol::QuestLog::default(),
             quest_start_npc_index,
             available_quests: Vec::new(),
@@ -429,6 +486,98 @@ impl ClientApp {
         }
     }
 
+    pub(super) fn advance_auto_potions(&mut self, elapsed: Duration, is_dead: bool) {
+        const AUTO_POTION_COOLDOWN: Duration = Duration::from_secs(4);
+        self.auto_hp_potion_cooldown = self.auto_hp_potion_cooldown.saturating_sub(elapsed);
+        self.auto_mp_potion_cooldown = self.auto_mp_potion_cooldown.saturating_sub(elapsed);
+
+        if is_dead || !self.channel_connected || self.session.is_none() || self.map_scene.is_none()
+        {
+            return;
+        }
+        let Some((character_id, hp, max_hp, mp, max_mp)) =
+            self.active_character.as_ref().map(|character| {
+                (
+                    character.id,
+                    i32::from(character.stats.hp),
+                    i32::from(character.stats.max_hp),
+                    i32::from(character.stats.mp),
+                    i32::from(character.stats.max_mp),
+                )
+            })
+        else {
+            return;
+        };
+        let has_pet = self.map_scene.as_ref().is_some_and(|scene| {
+            scene
+                .pets
+                .keys()
+                .any(|(owner_id, _)| *owner_id == character_id)
+        });
+        if !has_pet {
+            return;
+        }
+
+        let find_use_slot = |item_id| {
+            self.inventory
+                .as_ref()?
+                .items
+                .iter()
+                .find(|item| {
+                    item.inventory_type == openstory_protocol::InventoryType::Use
+                        && item.item_id == item_id
+                        && item.count > 0
+                })
+                .and_then(|item| i16::try_from(item.slot).ok())
+        };
+        let hp_slot = (self.auto_hp_potion_id > 0
+            && hp.saturating_mul(2) < max_hp
+            && self.auto_hp_potion_cooldown.is_zero())
+        .then(|| find_use_slot(self.auto_hp_potion_id))
+        .flatten();
+        let mp_slot = (self.auto_mp_potion_id > 0
+            && mp.saturating_mul(2) < max_mp
+            && self.auto_mp_potion_cooldown.is_zero())
+        .then(|| find_use_slot(self.auto_mp_potion_id))
+        .flatten();
+        if hp_slot.is_none() && mp_slot.is_none() {
+            return;
+        }
+
+        let client_tick = self.client_started_at.elapsed().as_millis() as i32;
+        let mut packets = Vec::with_capacity(2);
+        if let Some(slot) = hp_slot {
+            self.audio
+                .play_item_sound(&self.sound_archive, self.auto_hp_potion_id);
+            packets.push(openstory_protocol::use_item_packet(
+                slot,
+                self.auto_hp_potion_id,
+                client_tick,
+            ));
+            self.auto_hp_potion_cooldown = AUTO_POTION_COOLDOWN;
+        }
+        if let Some(slot) = mp_slot {
+            self.audio
+                .play_item_sound(&self.sound_archive, self.auto_mp_potion_id);
+            packets.push(openstory_protocol::use_item_packet(
+                slot,
+                self.auto_mp_potion_id,
+                client_tick,
+            ));
+            self.auto_mp_potion_cooldown = AUTO_POTION_COOLDOWN;
+        }
+        for packet in packets {
+            let Some(session) = self.session.as_ref() else {
+                break;
+            };
+            if let Err(error) = session.send_packet(packet) {
+                eprintln!("OpenStoryRS: could not send automatic potion request: {error}");
+                self.channel_connected = false;
+                break;
+            }
+        }
+    }
+
     pub(super) fn advance_login_animations(&mut self, elapsed: Duration) {
         if elapsed.is_zero() || self.login_animations.is_empty() {
             return;
@@ -472,6 +621,18 @@ impl ClientApp {
 
     pub(super) fn update_map_simulation(&mut self, elapsed: Duration) {
         let frame = self.simulation_clock.advance(elapsed);
+        self.advance_clock(frame.updates);
+        if frame.updates > 0 && !self.boss_hp_gauge_remaining.is_zero() {
+            self.boss_hp_gauge_remaining = self
+                .boss_hp_gauge_remaining
+                .saturating_sub(Duration::from_millis(8 * u64::from(frame.updates)));
+            if self.boss_hp_gauge_remaining.is_zero() {
+                self.boss_hp_gauge_texture = None;
+            }
+        }
+        if frame.updates > 0 {
+            self.advance_combo_counter(Duration::from_millis(8 * u64::from(frame.updates)));
+        }
         if frame.updates > 0 {
             let texture_width = self.weather_texture.as_ref().map_or(0, GpuTexture::width);
             self.weather_overlay.advance(frame.updates, texture_width);
@@ -502,6 +663,7 @@ impl ClientApp {
             Duration::from_millis(8 * u64::from(frame.updates)),
             is_dead,
         );
+        self.advance_auto_potions(Duration::from_millis(8 * u64::from(frame.updates)), is_dead);
         let (walk_force, jump_force, climb_force) =
             self.active_character
                 .as_ref()
@@ -536,6 +698,7 @@ impl ClientApp {
         scene.advance_reactors(frame.updates);
         scene.advance_projectiles(frame.updates);
         scene.advance_summons(frame.updates);
+        scene.advance_dragons(frame.updates);
         let pet_packets = scene.advance_pets(frame.updates, local_character_id);
         scene.advance_character_effects(frame.updates);
         scene.advance_screen_effect(frame.updates);
@@ -676,80 +839,112 @@ impl ClientApp {
                         };
                     }
                 } else {
-                    scene.player.mode = PhysicsMode::Normal;
-                    if is_stunned {
-                        scene.player.horizontal_speed = 0.0;
-                    }
-                    if scene.player.on_ground {
-                        let direction = if is_stunned {
-                            0.0
-                        } else {
-                            match (left, right) {
-                                (true, false) => -1.0,
-                                (false, true) => 1.0,
-                                _ => 0.0,
-                            }
-                        };
-                        if direction != 0.0 {
-                            scene.player.apply_force(direction * walk_force, 0.0);
-                        }
-                        if self.gameplay_input.jump_buffer > 0 && !is_stunned {
-                            if self.gameplay_input.down && self.gameplay_input.jump_down_ticks < 5 {
-                                self.gameplay_input.jump_down_ticks += 1;
-                            } else {
-                                self.audio.play_world_sound(
-                                    &self.sound_archive,
-                                    "Game.img/Jump",
-                                    (rounded_i16(scene.player.x), rounded_i16(scene.player.y)),
-                                );
-                                let lower_foothold = self
-                                    .gameplay_input
-                                    .down
-                                    .then(|| {
-                                        scene.footholds.as_ref().and_then(|tree| {
-                                            let ground = tree
-                                                .get(scene.player.foothold_id)
-                                                .and_then(|foothold| {
-                                                    foothold.ground_y(scene.player.x)
-                                                })
-                                                .unwrap_or(scene.player.y);
-                                            tree.find_below(scene.player.x, ground + 1.0)
-                                        })
-                                    })
-                                    .flatten();
-                                if let Some((foothold_id, _)) = lower_foothold {
-                                    scene.player.y += 1.0;
-                                    scene.player.foothold_id = foothold_id;
-                                    scene.player.foothold_layer = scene
-                                        .footholds
-                                        .as_ref()
-                                        .and_then(|tree| tree.get(foothold_id))
-                                        .map_or(0, |foothold| foothold.layer);
-                                    scene.player.vertical_speed = 0.0;
-                                    scene.player.on_ground = false;
-                                    scene.player.jump_down_enabled = false;
-                                } else {
-                                    scene.player.apply_force(0.0, -jump_force);
-                                }
-                                self.gameplay_input.jump_buffer = 0;
-                                self.gameplay_input.jump_down_ticks = 0;
-                            }
-                        } else if !self.gameplay_input.down {
-                            self.gameplay_input.jump_down_ticks = 0;
-                        }
+                    let swimming = scene.underwater && !scene.player.on_ground;
+                    scene.player.mode = if swimming {
+                        PhysicsMode::Swimming
                     } else {
+                        PhysicsMode::Normal
+                    };
+                    if swimming {
+                        const SWIM_FORCE: f64 = 0.25;
+                        let horizontal = if is_stunned {
+                            0.0
+                        } else if left && !right {
+                            -SWIM_FORCE
+                        } else if right && !left {
+                            SWIM_FORCE
+                        } else {
+                            0.0
+                        };
+                        let vertical = if is_stunned {
+                            0.0
+                        } else if self.gameplay_input.up && !self.gameplay_input.down {
+                            -SWIM_FORCE
+                        } else if self.gameplay_input.down && !self.gameplay_input.up {
+                            SWIM_FORCE
+                        } else {
+                            0.0
+                        };
+                        scene.player.apply_force(horizontal, vertical);
+                        self.gameplay_input.jump_buffer = 0;
                         self.gameplay_input.jump_down_ticks = 0;
+                    } else {
                         if is_stunned {
                             scene.player.horizontal_speed = 0.0;
-                        } else if left && !right && scene.player.horizontal_speed > 0.0 {
-                            scene.player.horizontal_speed =
-                                (scene.player.horizontal_speed - 0.025).max(0.0);
-                        } else if right && !left && scene.player.horizontal_speed < 0.0 {
-                            scene.player.horizontal_speed =
-                                (scene.player.horizontal_speed + 0.025).min(0.0);
                         }
-                        self.gameplay_input.jump_buffer =
-                            self.gameplay_input.jump_buffer.saturating_sub(1);
+                        if scene.player.on_ground {
+                            let direction = if is_stunned {
+                                0.0
+                            } else {
+                                match (left, right) {
+                                    (true, false) => -1.0,
+                                    (false, true) => 1.0,
+                                    _ => 0.0,
+                                }
+                            };
+                            if direction != 0.0 {
+                                scene.player.apply_force(direction * walk_force, 0.0);
+                            }
+                            if self.gameplay_input.jump_buffer > 0 && !is_stunned {
+                                if self.gameplay_input.down
+                                    && self.gameplay_input.jump_down_ticks < 5
+                                {
+                                    self.gameplay_input.jump_down_ticks += 1;
+                                } else {
+                                    self.audio.play_world_sound(
+                                        &self.sound_archive,
+                                        "Game.img/Jump",
+                                        (rounded_i16(scene.player.x), rounded_i16(scene.player.y)),
+                                    );
+                                    let lower_foothold = self
+                                        .gameplay_input
+                                        .down
+                                        .then(|| {
+                                            scene.footholds.as_ref().and_then(|tree| {
+                                                let ground = tree
+                                                    .get(scene.player.foothold_id)
+                                                    .and_then(|foothold| {
+                                                        foothold.ground_y(scene.player.x)
+                                                    })
+                                                    .unwrap_or(scene.player.y);
+                                                tree.find_below(scene.player.x, ground + 1.0)
+                                            })
+                                        })
+                                        .flatten();
+                                    if let Some((foothold_id, _)) = lower_foothold {
+                                        scene.player.y += 1.0;
+                                        scene.player.foothold_id = foothold_id;
+                                        scene.player.foothold_layer = scene
+                                            .footholds
+                                            .as_ref()
+                                            .and_then(|tree| tree.get(foothold_id))
+                                            .map_or(0, |foothold| foothold.layer);
+                                        scene.player.vertical_speed = 0.0;
+                                        scene.player.on_ground = false;
+                                        scene.player.jump_down_enabled = false;
+                                    } else {
+                                        scene.player.apply_force(0.0, -jump_force);
+                                    }
+                                    self.gameplay_input.jump_buffer = 0;
+                                    self.gameplay_input.jump_down_ticks = 0;
+                                }
+                            } else if !self.gameplay_input.down {
+                                self.gameplay_input.jump_down_ticks = 0;
+                            }
+                        } else {
+                            self.gameplay_input.jump_down_ticks = 0;
+                            if is_stunned {
+                                scene.player.horizontal_speed = 0.0;
+                            } else if left && !right && scene.player.horizontal_speed > 0.0 {
+                                scene.player.horizontal_speed =
+                                    (scene.player.horizontal_speed - 0.025).max(0.0);
+                            } else if right && !left && scene.player.horizontal_speed < 0.0 {
+                                scene.player.horizontal_speed =
+                                    (scene.player.horizontal_speed + 0.025).min(0.0);
+                            }
+                            self.gameplay_input.jump_buffer =
+                                self.gameplay_input.jump_buffer.saturating_sub(1);
+                        }
                     }
                 }
                 PhysicsEngine.move_body(footholds, &mut scene.player);
@@ -922,22 +1117,21 @@ impl ClientApp {
                     "Game.img/Portal",
                     (rounded_i16(scene.player.x), rounded_i16(scene.player.y)),
                 );
-                if let Some(character) = self.active_character.as_mut() {
-                    character.stats.map_id = map_id;
-                }
-                if self.channel_connected {
-                    match openstory_protocol::change_map_packet(false, -1, &portal_name, false) {
-                        Ok(packet) => {
-                            if let Some(session) = self.session.as_ref() {
-                                if let Err(error) = session.send_packet(packet) {
-                                    eprintln!("OpenStory: could not request portal warp: {error}");
-                                    self.channel_connected = false;
-                                }
+                match openstory_protocol::change_map_packet(false, -1, &portal_name, false) {
+                    Ok(packet) => {
+                        if let Some(session) = self.session.as_ref() {
+                            if let Err(error) = session.send_packet(packet) {
+                                eprintln!("OpenStory: could not request portal warp: {error}");
+                                self.channel_connected = false;
                             }
+                        } else {
+                            eprintln!(
+                                "OpenStory: could not request portal warp to map {map_id}: no active session"
+                            );
                         }
-                        Err(error) => {
-                            eprintln!("OpenStory: could not encode portal warp request: {error}")
-                        }
+                    }
+                    Err(error) => {
+                        eprintln!("OpenStory: could not encode portal warp request: {error}")
                     }
                 }
             }
@@ -950,6 +1144,8 @@ impl ClientApp {
             } else {
                 AvatarMotion::Rope
             }
+        } else if scene.player.mode == PhysicsMode::Swimming && !scene.player.on_ground {
+            AvatarMotion::Swim
         } else if scene.player.on_ground && self.gameplay_input.down {
             AvatarMotion::Crouch
         } else if !scene.player.on_ground {
@@ -1214,6 +1410,7 @@ impl ClientApp {
         } else {
             Vec::new()
         };
+        let skill_hit_effects = Arc::new(skill_hit_effects);
         let skill_effect_speed_factor =
             (1.7 - f32::from(attack_stats.speed) / 10.0).clamp(0.2, 3.0);
         let Some(scene) = self.map_scene.as_mut() else {
@@ -1225,12 +1422,53 @@ impl ClientApp {
         else {
             return;
         };
+        let skill_hit_delays = if skill_id > 0 {
+            attack_hit_delays(
+                &self.character_archive,
+                &self.skill_archive,
+                &character.look,
+                skill_id,
+                skill_level,
+                stance,
+                attack_stats.speed,
+                usize::from(hit_count.clamp(1, 15)),
+            )
+        } else {
+            Vec::new()
+        };
         let target_positions =
             scene.nearest_attack_targets(target_count, attack_range, horizontal_range_multiplier);
         if skill_id > 0 {
-            for (object_id, _, _) in &target_positions {
-                for _ in 0..hit_count.clamp(1, 15) {
-                    scene.show_mob_hit_effects(*object_id, &skill_hit_effects, !scene.facing_right);
+            let sound_start = Instant::now();
+            for (object_id, _, (target_x, target_y)) in &target_positions {
+                for hit_index in 0..hit_count.clamp(1, 15) {
+                    let position = (rounded_i16(*target_x), rounded_i16(*target_y));
+                    let delay = skill_hit_delays
+                        .get(usize::from(hit_index))
+                        .copied()
+                        .unwrap_or_default();
+                    scene.schedule_mob_attack_impact(
+                        *object_id,
+                        Arc::clone(&skill_hit_effects),
+                        !scene.facing_right,
+                        None,
+                        delay,
+                    );
+                    if delay.is_zero() {
+                        self.audio
+                            .play_skill_hit(&self.sound_archive, skill_id, position);
+                    } else {
+                        if self.pending_skill_hit_sounds.len() >= 512 {
+                            self.pending_skill_hit_sounds.remove(0);
+                        }
+                        if let Some(play_at) = sound_start.checked_add(delay) {
+                            self.pending_skill_hit_sounds.push(PendingSkillHitSound {
+                                skill_id,
+                                position,
+                                play_at,
+                            });
+                        }
+                    }
                 }
             }
         }
@@ -1392,7 +1630,51 @@ impl ClientApp {
         }
     }
 
+    pub(super) fn set_combo_count(&mut self, count: i32) {
+        self.combo_count = count.max(0);
+    }
+
+    pub(super) fn apply_skill_cooldown(&mut self, skill_id: i32, duration_seconds: i16) {
+        if duration_seconds <= 0 {
+            self.skill_cooldowns.remove(&skill_id);
+        } else if let Some(expires_at) =
+            Instant::now().checked_add(Duration::from_secs(duration_seconds as u64))
+        {
+            self.skill_cooldowns.insert(skill_id, expires_at);
+        }
+    }
+
+    fn advance_combo_counter(&mut self, elapsed: Duration) {
+        if self.combo_count != self.combo_displayed {
+            self.combo_displayed = self.combo_count;
+            self.combo_fade_remaining = Duration::from_secs(3);
+            self.refresh_combo_counter_texture();
+        } else {
+            self.combo_fade_remaining = self.combo_fade_remaining.saturating_sub(elapsed);
+        }
+    }
+
+    fn refresh_combo_counter_texture(&mut self) {
+        let pixels = render_combo_counter(&self.font, self.combo_displayed);
+        let Some(renderer) = self.renderer.as_ref() else {
+            return;
+        };
+        let result = if let Some(texture) = self.combo_texture.as_ref() {
+            renderer.update_bgra(texture, &pixels).map(|()| None)
+        } else {
+            renderer
+                .upload_bgra(COMBO_COUNTER_WIDTH, COMBO_COUNTER_HEIGHT, &pixels)
+                .map(Some)
+        };
+        match result {
+            Ok(Some(texture)) => self.combo_texture = Some(texture),
+            Ok(None) => {}
+            Err(error) => eprintln!("OpenStoryRS: could not update the combo counter: {error}"),
+        }
+    }
+
     pub(super) fn open_inventory_tab(&mut self, tab: openstory_protocol::InventoryType) {
+        self.show_equipment_inventory = false;
         if self.show_inventory && self.inventory_tab == tab {
             self.show_inventory = false;
             self.inventory_drag_source = None;
@@ -1410,6 +1692,19 @@ impl ClientApp {
         self.show_pet_equipment = false;
         self.update_inventory_hover();
         self.refresh_inventory_texture();
+    }
+
+    pub(super) fn toggle_equipment_inventory(&mut self) {
+        self.show_equipment_inventory = !self.show_equipment_inventory;
+        if self.show_equipment_inventory {
+            self.show_inventory = false;
+            self.inventory_drag_source = None;
+            self.inventory_hover_slot = None;
+            self.pending_scroll_slot = None;
+            self.show_skill_book = false;
+            self.show_pet_equipment = false;
+            self.refresh_equipment_inventory_texture();
+        }
     }
 
     pub(super) fn activate_status_menu_item(&mut self, item: usize) {
@@ -1441,9 +1736,10 @@ impl ClientApp {
                 self.quest_forfeit_confirmation = None;
                 self.refresh_quest_log_texture();
             }
-            3 => self.open_inventory_tab(openstory_protocol::InventoryType::Use),
-            4 => self.open_inventory_tab(openstory_protocol::InventoryType::Equip),
-            5 => {
+            3 => self.toggle_event_list(),
+            4 => self.open_inventory_tab(openstory_protocol::InventoryType::Use),
+            5 => self.open_inventory_tab(openstory_protocol::InventoryType::Equip),
+            6 => {
                 self.show_party_panel = !self.show_party_panel;
                 if self.show_party_panel {
                     self.show_buddy_panel = false;
@@ -1452,7 +1748,7 @@ impl ClientApp {
                 }
                 self.refresh_party_texture();
             }
-            6 => {
+            7 => {
                 self.show_buddy_panel = !self.show_buddy_panel;
                 if self.show_buddy_panel {
                     self.show_party_panel = false;
@@ -1461,7 +1757,7 @@ impl ClientApp {
                 }
                 self.refresh_buddy_texture();
             }
-            7 => {
+            8 => {
                 self.show_guild_panel = !self.show_guild_panel;
                 if self.show_guild_panel {
                     self.show_party_panel = false;
@@ -1470,13 +1766,13 @@ impl ClientApp {
                 }
                 self.refresh_guild_texture();
             }
-            8 => {
+            9 => {
                 self.monster_book.open = !self.monster_book.open;
                 if self.monster_book.open {
                     self.refresh_monster_book_texture();
                 }
             }
-            9 => {
+            10 => {
                 if self.world_map.open {
                     self.world_map.open = false;
                     self.refresh_world_map_texture();
@@ -1484,8 +1780,9 @@ impl ClientApp {
                     self.open_world_map();
                 }
             }
-            10 => self.toggle_key_config(),
-            11 => self.open_settings(),
+            11 => self.toggle_key_config(),
+            12 => self.open_settings(),
+            13 => self.open_quit_confirmation(),
             _ => {}
         }
     }
@@ -2351,13 +2648,7 @@ impl ClientApp {
                     } else {
                         openstory_protocol::InventoryType::Use
                     };
-                    if self.show_inventory && self.inventory_tab == tab {
-                        self.show_inventory = false;
-                    } else {
-                        self.show_inventory = true;
-                        self.inventory_tab = tab;
-                        self.refresh_inventory_texture();
-                    }
+                    self.open_inventory_tab(tab);
                 }
                 2 => self.open_status_window(),
                 3 => {
@@ -2391,6 +2682,7 @@ impl ClientApp {
                 }
                 9 => self.toggle_key_config(),
                 11 => self.open_new_whisper_window(),
+                14 => self.toggle_status_menu(),
                 12 => {
                     self.chat_target = ChatTarget::Party;
                     self.chat_open = true;
@@ -2446,10 +2738,14 @@ impl ClientApp {
                     self.refresh_chat_texture();
                 }
                 25 => self.open_channel_switch(),
-                26 => self.open_messenger(),
-                27 => self.open_party_search(),
+                // v83 assigns menu action 26 to Family (the old UI has no
+                // Family icon, so the C++ client aliases this to MEDALS).
+                26 | 42 => self.toggle_family_panel(),
+                // 27 is Boss Party in the v83 keymap. That panel is not
+                // implemented here, so keep the saved action a no-op instead
+                // of opening the unrelated party-search window.
+                27 => {}
                 28 => self.open_settings(),
-                42 => self.toggle_family_panel(),
                 _ => {}
             },
             5 => match binding.action {
@@ -2564,9 +2860,6 @@ impl ClientApp {
         state: ElementState,
         repeat: bool,
     ) -> bool {
-        if self.current_field.is_none() || self.map_scene.is_none() {
-            return false;
-        }
         if self.quit_confirmation {
             if state == ElementState::Pressed && !repeat {
                 match key {
@@ -2580,6 +2873,9 @@ impl ClientApp {
                 }
             }
             return true;
+        }
+        if self.current_field.is_none() || self.map_scene.is_none() {
+            return false;
         }
         if self.show_key_config {
             if state == ElementState::Pressed {
@@ -2670,6 +2966,12 @@ impl ClientApp {
             && matches!(key, PhysicalKey::Code(KeyCode::Escape))
         {
             self.escape_world_map();
+            return true;
+        }
+        if matches!(key, PhysicalKey::Code(KeyCode::KeyE)) {
+            if pressed && !repeat {
+                self.toggle_equipment_inventory();
+            }
             return true;
         }
         if let Some(bindings) = self.server_keymap.as_ref() {
@@ -2848,6 +3150,8 @@ impl ClientApp {
             } else if self.show_guild_panel {
                 self.show_guild_panel = false;
                 self.guild_panel_mode = GuildPanelMode::Overview;
+            } else if self.show_equipment_inventory {
+                self.show_equipment_inventory = false;
             } else if self.show_inventory {
                 if self.pending_scroll_slot.take().is_some() {
                     self.refresh_inventory_texture();
@@ -2864,6 +3168,7 @@ impl ClientApp {
         match key {
             PhysicalKey::Code(KeyCode::KeyI) => {
                 if pressed && !repeat {
+                    self.show_equipment_inventory = false;
                     self.show_inventory = !self.show_inventory;
                     if self.show_inventory {
                         self.show_skill_book = false;
@@ -3081,6 +3386,7 @@ impl ClientApp {
         self.item_aura_frames_cache.clear();
         self.face_expression_cache.clear();
         self.npc_dialogue = None;
+        self.rps_game = None;
         self.inventory_drag_source = None;
         self.inventory_hover_slot = None;
         self.inventory_drop_prompt = None;
@@ -3092,6 +3398,25 @@ impl ClientApp {
         self.sprite_draws = draws;
         self.login_actions = actions;
         self.map_scene = map_scene;
+        self.event_list_open = false;
+        self.event_list_texture = None;
+        self.event_list.clear();
+        self.event_list_received = false;
+        self.event_list_offset = 0;
+        self.event_list_selected = None;
+        self.event_list_peak_durations.clear();
+        self.local_chalkboard_texture = None;
+        self.remote_chalkboard_textures.clear();
+        if self.map_scene.is_none() {
+            self.clear_boss_hp_gauge();
+        }
+        if let Some(look) = self
+            .active_character
+            .as_ref()
+            .map(|character| character.look.clone())
+        {
+            self.refresh_local_mount(&look);
+        }
         self.save_id_indicator_draws = save_id_indicator_draws;
         let (login_animations, login_animation_draw_indices, active_login_animation_draw_indices) =
             prepare_map_art_animations(animated_art);
@@ -3111,6 +3436,8 @@ impl ClientApp {
         self.refresh_save_id_indicator();
         self.local_speech_texture = None;
         self.remote_speech_textures.clear();
+        self.local_chalkboard_texture = None;
+        self.remote_chalkboard_textures.clear();
         self.pet_speech_textures.clear();
         if self.map_scene.is_some() {
             self.refresh_map_hud();
@@ -3120,6 +3447,7 @@ impl ClientApp {
         self.refresh_minimap_texture();
         if self.map_scene.is_none() {
             self.current_field = None;
+            self.clear_clock();
             self.gameplay_input = GameplayInput::default();
             self.show_status_menu = false;
         }

@@ -28,6 +28,13 @@ pub struct CompletedQuest {
     pub timestamp: i64,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SkillCooldown {
+    pub skill_id: i32,
+    /// The v83 cooldown duration is encoded in seconds. A nonpositive value clears it.
+    pub duration_seconds: i16,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum QuestUpdate {
     Forfeited { id: i16 },
@@ -248,7 +255,9 @@ pub fn restore_lost_quest_item_packet(id: i16, item_id: i32) -> Vec<u8> {
     packet.into_bytes()
 }
 
-pub(crate) fn skip_initial_cooldowns(packet: &mut PacketReader<'_>) -> Result<(), PacketError> {
+pub(crate) fn parse_initial_cooldowns(
+    packet: &mut PacketReader<'_>,
+) -> Result<Vec<SkillCooldown>, PacketError> {
     let count = packet.read_i16()?;
     if count < 0 {
         return Err(PacketError::InvalidQuestCount(count));
@@ -257,10 +266,14 @@ pub(crate) fn skip_initial_cooldowns(packet: &mut PacketReader<'_>) -> Result<()
     if count > MAX_COOLDOWNS {
         return Err(PacketError::TooManyCooldowns(MAX_COOLDOWNS));
     }
+    let mut cooldowns = Vec::with_capacity(count);
     for _ in 0..count {
-        packet.skip(6)?; // skill ID and remaining cooldown in milliseconds
+        cooldowns.push(SkillCooldown {
+            skill_id: packet.read_i32()?,
+            duration_seconds: packet.read_i16()?,
+        });
     }
-    Ok(())
+    Ok(cooldowns)
 }
 
 fn read_count(packet: &mut PacketReader<'_>) -> Result<usize, PacketError> {

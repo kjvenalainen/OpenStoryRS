@@ -1981,7 +1981,7 @@ fn required(root: &NxNode, path: &str) -> Result<NxNode, String> {
 }
 
 fn optional(root: &NxNode, path: &str) -> Result<Option<NxNode>, String> {
-    root.resolve(path).map_err(|error| error.to_string())
+    super::resolve_ui_path(root, path)
 }
 
 fn integer_value(node: &NxNode) -> Option<i64> {

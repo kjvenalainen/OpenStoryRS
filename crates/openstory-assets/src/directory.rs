@@ -5,8 +5,9 @@ use std::fs::{self, File};
 use std::io;
 use std::path::{Path, PathBuf};
 
-/// The runtime files required by the current NX configuration in `NxFiles.cpp`.
-pub const REQUIRED_NX_FILES: [&str; 17] = [
+/// The core archives required by the Rust client. The UI archive is selected
+/// separately because the active v83 archive may currently be named `UI-v83.nx`.
+pub const REQUIRED_NX_FILES: [&str; 15] = [
     "Base.nx",
     "Character.nx",
     "Effect.nx",
@@ -22,9 +23,10 @@ pub const REQUIRED_NX_FILES: [&str; 17] = [
     "Sound.nx",
     "String.nx",
     "TamingMob.nx",
-    "UI.nx",
-    "UI-v83.nx",
 ];
+
+const UI_ARCHIVE_NAMES: [&str; 2] = ["UI-v83.nx", "UI.nx"];
+const UI_ARCHIVE_REQUIREMENT: &str = "UI-v83.nx or UI.nx";
 
 #[derive(Debug)]
 pub enum AssetDirectoryError {
@@ -140,7 +142,7 @@ impl AssetDirectory {
         Err(AssetDirectoryError::NotFound { searched })
     }
 
-    /// Selects a directory and checks the same required file set as the legacy client.
+    /// Selects a directory and checks that all core archives are present.
     pub fn resolve_and_validate(explicit: Option<&Path>) -> Result<Self, AssetDirectoryError> {
         let directory = Self::resolve(explicit)?;
         directory.validate()?;
@@ -155,12 +157,24 @@ impl AssetDirectory {
         &self.root
     }
 
+    /// Selects the v83 UI archive, preferring the current `UI-v83.nx` name.
+    /// After the archive is renamed to `UI.nx`, it remains discoverable here.
+    pub fn ui_archive_path(&self) -> Option<PathBuf> {
+        UI_ARCHIVE_NAMES
+            .iter()
+            .map(|name| self.root.join(name))
+            .find(|path| path.is_file())
+    }
+
     pub fn validate(&self) -> Result<(), AssetDirectoryError> {
-        let missing: Vec<_> = REQUIRED_NX_FILES
+        let mut missing: Vec<_> = REQUIRED_NX_FILES
             .iter()
             .copied()
             .filter(|name| !self.root.join(name).is_file())
             .collect();
+        if self.ui_archive_path().is_none() {
+            missing.push(UI_ARCHIVE_REQUIREMENT);
+        }
         if missing.is_empty() {
             Ok(())
         } else {
@@ -172,24 +186,22 @@ impl AssetDirectory {
     }
 
     /// Opens an asset without reading the whole file into memory. This matters for the
-    /// large map and mob archives without loading an entire archive into memory.
+    /// large map and mob archives without loading an entire archive into memory. A
+    /// request for `UI.nx` resolves to the selected v83 UI archive, currently
+    /// `UI-v83.nx`, even before that file is renamed.
     pub fn open(&self, relative: impl AsRef<Path>) -> Result<File, AssetDirectoryError> {
-        let relative = relative.as_ref();
-        if relative.is_absolute()
-            || relative
-                .components()
-                .any(|component| matches!(component, std::path::Component::ParentDir))
-        {
-            return Err(AssetDirectoryError::InvalidRelativePath(
-                relative.to_path_buf(),
-            ));
-        }
-        let path = self.root.join(relative);
+        let path = self.resolve_path(relative.as_ref())?;
         File::open(&path).map_err(|source| AssetDirectoryError::Io { path, source })
     }
 
     pub fn file_size(&self, relative: impl AsRef<Path>) -> Result<u64, AssetDirectoryError> {
-        let relative = relative.as_ref();
+        let path = self.resolve_path(relative.as_ref())?;
+        fs::metadata(&path)
+            .map(|metadata| metadata.len())
+            .map_err(|source| AssetDirectoryError::Io { path, source })
+    }
+
+    fn resolve_path(&self, relative: &Path) -> Result<PathBuf, AssetDirectoryError> {
         if relative.is_absolute()
             || relative
                 .components()
@@ -199,9 +211,11 @@ impl AssetDirectory {
                 relative.to_path_buf(),
             ));
         }
-        let path = self.root.join(relative);
-        fs::metadata(&path)
-            .map(|metadata| metadata.len())
-            .map_err(|source| AssetDirectoryError::Io { path, source })
+        if relative == Path::new("UI.nx")
+            && let Some(ui_archive_path) = self.ui_archive_path()
+        {
+            return Ok(ui_archive_path);
+        }
+        Ok(self.root.join(relative))
     }
 }

@@ -1,6 +1,134 @@
 use super::*;
 
 impl ClientApp {
+    pub(super) fn update_character_chalkboard(
+        &mut self,
+        update: openstory_protocol::RemoteCharacterChalkboardUpdate,
+    ) {
+        let text = update
+            .text
+            .filter(|text| !text.trim().is_empty())
+            .map(|text| text.chars().take(256).collect::<String>());
+        let is_local = self
+            .active_character
+            .as_ref()
+            .is_some_and(|character| character.id == update.character_id);
+        if is_local {
+            let Some(scene) = self.map_scene.as_mut() else {
+                return;
+            };
+            scene.local_chalkboard = text.clone();
+        } else {
+            let Some(player) = self
+                .map_scene
+                .as_mut()
+                .and_then(|scene| scene.remote_players.get_mut(&update.character_id))
+            else {
+                return;
+            };
+            player.chalkboard = text.clone();
+        }
+
+        let Some(text) = text else {
+            if is_local {
+                self.local_chalkboard_texture = None;
+            } else {
+                self.remote_chalkboard_textures.remove(&update.character_id);
+            }
+            if let Some(window) = self.window.as_ref() {
+                window.request_redraw();
+            }
+            return;
+        };
+        let pixels = render_chalkboard(&self.font, &text);
+        let Some(renderer) = self.renderer.as_ref() else {
+            return;
+        };
+        let result = if is_local {
+            if let Some(texture) = self.local_chalkboard_texture.as_ref() {
+                renderer.update_bgra(texture, &pixels).map(|()| None)
+            } else {
+                renderer
+                    .upload_bgra(CHALKBOARD_WIDTH, CHALKBOARD_HEIGHT, &pixels)
+                    .map(Some)
+            }
+        } else if let Some(texture) = self.remote_chalkboard_textures.get(&update.character_id) {
+            renderer.update_bgra(texture, &pixels).map(|()| None)
+        } else {
+            renderer
+                .upload_bgra(CHALKBOARD_WIDTH, CHALKBOARD_HEIGHT, &pixels)
+                .map(Some)
+        };
+        match result {
+            Ok(Some(texture)) if is_local => self.local_chalkboard_texture = Some(texture),
+            Ok(Some(texture)) => {
+                self.remote_chalkboard_textures
+                    .insert(update.character_id, texture);
+            }
+            Ok(None) => {}
+            Err(error) => eprintln!("OpenStoryRS: could not render character chalkboard: {error}"),
+        }
+        if let Some(window) = self.window.as_ref() {
+            window.request_redraw();
+        }
+    }
+
+    pub(super) fn show_wedding_progress(&mut self, step: i8) {
+        self.wedding_panel_open = true;
+        self.wedding_countdown_seconds = i32::from(step).max(0);
+        self.refresh_wedding_panel_texture();
+    }
+
+    pub(super) fn end_wedding_ceremony(&mut self) {
+        self.wedding_panel_open = true;
+        self.wedding_countdown_seconds = 0;
+        self.refresh_wedding_panel_texture();
+    }
+
+    pub(super) fn close_wedding_panel(&mut self) {
+        self.wedding_panel_open = false;
+        self.wedding_panel_texture = None;
+    }
+
+    pub(super) fn refresh_wedding_panel_texture(&mut self) {
+        if !self.wedding_panel_open {
+            return;
+        }
+        let panel = match build_wedding_panel(
+            &self.legacy_ui_archive,
+            &self.font,
+            self.wedding_countdown_seconds,
+        ) {
+            Ok(panel) => panel,
+            Err(error) => {
+                eprintln!("OpenStoryRS: could not render v83 wedding panel: {error}");
+                self.close_wedding_panel();
+                return;
+            }
+        };
+        let Some(renderer) = self.renderer.as_ref() else {
+            return;
+        };
+        if let Some(texture) = self.wedding_panel_texture.as_ref() {
+            if let Err(error) = renderer.update_bgra(texture, &panel.pixels) {
+                eprintln!("OpenStoryRS: could not update wedding panel: {error}");
+                self.close_wedding_panel();
+            }
+        } else {
+            match renderer.upload_bgra(
+                WEDDING_PANEL_WIDTH as u32,
+                WEDDING_PANEL_HEIGHT as u32,
+                &panel.pixels,
+            ) {
+                Ok(texture) => self.wedding_panel_texture = Some(texture),
+                Err(error) => {
+                    eprintln!("OpenStoryRS: could not upload wedding panel: {error}");
+                    self.close_wedding_panel();
+                }
+            }
+        }
+    }
+
     pub(super) fn send_trade_action(&mut self, packet: Vec<u8>, action: &str) -> bool {
         if !self.channel_connected {
             self.push_chat_line(
@@ -285,6 +413,9 @@ impl ClientApp {
         use openstory_protocol::PartyEvent;
         match event {
             PartyEvent::Invite { party_id, from } => {
+                if !self.social_settings.allow_party_invite {
+                    return;
+                }
                 let display_name = from.strip_prefix("PS: ").unwrap_or(&from).to_owned();
                 self.pending_party_invite = Some((party_id, from));
                 self.show_party_panel = true;

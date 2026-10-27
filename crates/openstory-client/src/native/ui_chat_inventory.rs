@@ -124,6 +124,45 @@ fn render_speech_bubble(font: &fontdue::Font, skin: &ChatBalloonSkin, text: &str
     pixels
 }
 
+fn render_chalkboard(font: &fontdue::Font, text: &str) -> Vec<u8> {
+    let width = CHALKBOARD_WIDTH as usize;
+    let height = CHALKBOARD_HEIGHT as usize;
+    let mut pixels = vec![0; width * height * 4];
+    for y in 0..height {
+        for x in 0..width {
+            let edge = x < 3 || x >= width - 3 || y < 3 || y >= height - 3;
+            let color = if edge {
+                [74, 112, 174, 255]
+            } else {
+                [31, 49, 35, 246]
+            };
+            let offset = (y * width + x) * 4;
+            pixels[offset..offset + 4].copy_from_slice(&color);
+        }
+    }
+    let clipped_text = text.chars().take(256).collect::<String>();
+    let label = rasterize_label_color(font, &clipped_text, 13.0, CHALKBOARD_WIDTH - 24, 22, [242, 238, 208]);
+    let label_width = (CHALKBOARD_WIDTH - 24) as usize;
+    for y in 0..22_usize {
+        for x in 0..label_width {
+            let source = (y * label_width + x) * 4;
+            let alpha = u32::from(label[source + 3]);
+            if alpha == 0 {
+                continue;
+            }
+            let target = ((y + 15) * width + x + 12) * 4;
+            for channel in 0..3 {
+                let foreground = u32::from(label[source + channel]);
+                let background = u32::from(pixels[target + channel]);
+                pixels[target + channel] =
+                    ((foreground * alpha + background * (255 - alpha)) / 255) as u8;
+            }
+            pixels[target + 3] = 255;
+        }
+    }
+    pixels
+}
+
 fn wrap_speech_text(
     font: &fontdue::Font,
     text: &str,
@@ -472,6 +511,180 @@ fn render_inventory_panel(
     pixels
 }
 
+fn render_inventory_tooltip(
+    font: &fontdue::Font,
+    item: &openstory_protocol::InventoryItem,
+    ui_archive: &NxArchive,
+    item_archive: &NxArchive,
+    character_archive: &NxArchive,
+    string_archive: &NxArchive,
+    icon_cache: &mut HashMap<i32, Option<(u32, u32, Arc<[u8]>)>>,
+    item_name_cache: &mut HashMap<i32, Option<String>>,
+) -> Vec<u8> {
+    const WIDTH: usize = INVENTORY_TOOLTIP_WIDTH as usize;
+    const HEIGHT: usize = INVENTORY_TOOLTIP_HEIGHT as usize;
+    let mut pixels = vec![0_u8; WIDTH * HEIGHT * 4];
+    fill_dialogue_rect(&mut pixels, WIDTH, HEIGHT, 0, 0, WIDTH, HEIGHT, [31, 29, 29, 248]);
+    fill_dialogue_rect(&mut pixels, WIDTH, HEIGHT, 0, 0, WIDTH, 2, [190, 160, 106, 255]);
+    fill_dialogue_rect(
+        &mut pixels,
+        WIDTH,
+        HEIGHT,
+        0,
+        HEIGHT - 2,
+        WIDTH,
+        2,
+        [190, 160, 106, 255],
+    );
+    fill_dialogue_rect(&mut pixels, WIDTH, HEIGHT, 0, 0, 2, HEIGHT, [190, 160, 106, 255]);
+    fill_dialogue_rect(
+        &mut pixels,
+        WIDTH,
+        HEIGHT,
+        WIDTH - 2,
+        0,
+        2,
+        HEIGHT,
+        [190, 160, 106, 255],
+    );
+    let _ = composite_nx_ui_bitmap(
+        &mut pixels,
+        WIDTH,
+        HEIGHT,
+        ui_archive,
+        "UIToolTip.img/Item/Frame2/cover",
+        8,
+        8,
+    );
+    let _ = composite_nx_ui_bitmap(
+        &mut pixels,
+        WIDTH,
+        HEIGHT,
+        ui_archive,
+        "UIToolTip.img/Item/ItemIcon/base",
+        10,
+        48,
+    );
+    if let Some((icon_width, icon_height, icon_pixels)) =
+        inventory_item_icon(item.item_id, item_archive, character_archive, icon_cache)
+    {
+        composite_inventory_icon(
+            &mut pixels,
+            WIDTH,
+            HEIGHT,
+            &icon_pixels,
+            icon_width as usize,
+            icon_height as usize,
+            28,
+            67,
+            46,
+        );
+    }
+    let _ = composite_nx_ui_bitmap(
+        &mut pixels,
+        WIDTH,
+        HEIGHT,
+        ui_archive,
+        "UIToolTip.img/Item/ItemIcon/cover",
+        10,
+        48,
+    );
+    draw_dialogue_text(
+        font,
+        &mut pixels,
+        WIDTH,
+        HEIGHT,
+        &item_name(item.item_id, string_archive, item_name_cache),
+        102,
+        12,
+        13.0,
+        WIDTH - 114,
+        31,
+        [255, 255, 255],
+    );
+    if item.count > 1 {
+        draw_dialogue_text(
+            font,
+            &mut pixels,
+            WIDTH,
+            HEIGHT,
+            &format!("Quantity: {}", item.count),
+            102,
+            36,
+            8.0,
+            WIDTH - 114,
+            12,
+            [210, 195, 158],
+        );
+    }
+    let info = inventory_item_info_node(item_archive, character_archive, item.item_id);
+    if let Some(summary) = inventory_item_stat_summary(item, item_archive, character_archive) {
+        draw_dialogue_text(
+            font,
+            &mut pixels,
+            WIDTH,
+            HEIGHT,
+            &summary,
+            102,
+            52,
+            8.0,
+            WIDTH - 114,
+            48,
+            [255, 232, 148],
+        );
+        let description_y = 103_usize;
+        if let Some(description) = item_description(item.item_id, string_archive) {
+            draw_dialogue_text(
+                font,
+                &mut pixels,
+                WIDTH,
+                HEIGHT,
+                &description,
+                102,
+                description_y as i32,
+                8.0,
+                WIDTH - 114,
+                HEIGHT - description_y - 8,
+                [226, 222, 212],
+            );
+        }
+    } else if let Some(description) = item_description(item.item_id, string_archive) {
+        draw_dialogue_text(
+            font,
+            &mut pixels,
+            WIDTH,
+            HEIGHT,
+            &description,
+            102,
+            52,
+            8.5,
+            WIDTH - 114,
+            HEIGHT - 60,
+            [226, 222, 212],
+        );
+    }
+    let untradable = item.cash
+        || info
+            .as_ref()
+            .is_some_and(|node| inventory_item_property_truthy(node, "tradeBlock"));
+    if untradable {
+        draw_dialogue_text(
+            font,
+            &mut pixels,
+            WIDTH,
+            HEIGHT,
+            "Untradable",
+            12,
+            HEIGHT as i32 - 16,
+            7.0,
+            WIDTH - 24,
+            10,
+            [255, 174, 110],
+        );
+    }
+    pixels
+}
+
 fn render_inventory_drop_prompt(
     font: &fontdue::Font,
     prompt: &InventoryDropPrompt,
@@ -759,6 +972,85 @@ fn pet_equipment_items(
         .collect();
     items.sort_by_key(|item| (item.inventory_type as u8, item.slot));
     items
+}
+
+fn equipment_inventory_slot_position(slot: u16) -> Option<(usize, usize)> {
+    Some(match slot {
+        1 => (43, 27),   // hat
+        2 => (43, 60),   // face accessory
+        3 => (43, 93),   // eye accessory
+        4 => (109, 93),  // ear accessory
+        5 => (43, 126),  // top
+        6 => (43, 159),  // bottom
+        7 => (76, 192),  // shoes
+        8 => (10, 159),  // gloves
+        9 => (10, 126),  // cape
+        10 => (142, 126), // shield
+        11 => (109, 126), // weapon
+        12 => (109, 60),  // ring 1
+        13 => (142, 60),  // ring 2
+        15 => (109, 159), // ring 3
+        16 => (142, 159), // ring 4
+        17 => (76, 126),  // pendant
+        18 => (10, 225),  // tamed monster
+        19 => (43, 225),  // saddle
+        49 => (10, 60),   // medal
+        50 => (76, 159),  // belt
+        52 => (10, 27),   // book
+        54 => (142, 93),  // shoulder
+        55 => (109, 27),  // android
+        57 => (76, 27),   // badge
+        59 => (142, 27),  // android heart
+        _ => return None,
+    })
+}
+
+fn render_equipment_inventory_panel(
+    inventory: &openstory_protocol::InventorySnapshot,
+    ui_archive: &NxArchive,
+    item_archive: &NxArchive,
+    character_archive: &NxArchive,
+    icon_cache: &mut HashMap<i32, Option<(u32, u32, Arc<[u8]>)>>,
+) -> Vec<u8> {
+    const WIDTH: usize = EQUIPMENT_INVENTORY_PANEL_WIDTH as usize;
+    const HEIGHT: usize = EQUIPMENT_INVENTORY_PANEL_HEIGHT as usize;
+    let mut pixels = vec![0_u8; WIDTH * HEIGHT * 4];
+
+    for layer in ["backgrnd", "backgrnd2", "backgrnd3"] {
+        let path = format!("UIWindow2.img/Equip/character/{layer}");
+        let _ = composite_nx_ui_bitmap(&mut pixels, WIDTH, HEIGHT, ui_archive, &path, 0, 0);
+    }
+    let _ = composite_nx_ui_bitmap(
+        &mut pixels,
+        WIDTH,
+        HEIGHT,
+        ui_archive,
+        "UIWindow.img/BtUIClose/normal/0",
+        139,
+        5,
+    );
+
+    for item in inventory.equipped() {
+        let Some((x, y)) = equipment_inventory_slot_position(item.slot) else {
+            continue;
+        };
+        if let Some((icon_width, icon_height, icon_pixels)) =
+            inventory_item_icon(item.item_id, item_archive, character_archive, icon_cache)
+        {
+            composite_inventory_icon(
+                &mut pixels,
+                WIDTH,
+                HEIGHT,
+                &icon_pixels,
+                icon_width as usize,
+                icon_height as usize,
+                x + 1,
+                y + 1,
+                32,
+            );
+        }
+    }
+    pixels
 }
 
 fn render_pet_equipment_panel(

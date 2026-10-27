@@ -1,9 +1,13 @@
 //! v83 gameplay packet builders.
 
 use crate::login::{expect_opcode, read_character_look};
+use crate::quest::SkillCooldown;
 use crate::{CharacterLook, PacketError, PacketReader, PacketWriter};
 
 pub const OPCODE_MOVE_PLAYER: u16 = 41;
+pub const OPCODE_CLOCK: u16 = 147;
+pub const OPCODE_STOP_CLOCK: u16 = 154;
+pub const OPCODE_SET_BACK_EFFECT: u16 = 128;
 /// Requests a channel change; the response is a channel transfer packet (opcode 16).
 pub const OPCODE_CHANGE_CHANNEL: u16 = 39;
 pub const OPCODE_FIELD_EFFECT: u16 = 138;
@@ -21,6 +25,506 @@ pub const OPCODE_WHISPER_RECEIVED: u16 = 135;
 pub const OPCODE_SEND_TV: u16 = 341;
 pub const OPCODE_REMOVE_TV: u16 = 342;
 pub const OPCODE_ENABLE_TV: u16 = 343;
+pub const OPCODE_AUTO_HP_POT: u16 = 336;
+pub const OPCODE_AUTO_MP_POT: u16 = 337;
+pub const OPCODE_SERVER_MESSAGE: u16 = 68;
+pub const OPCODE_SET_AVATAR_MEGAPHONE: u16 = 111;
+pub const OPCODE_CLEAR_AVATAR_MEGAPHONE: u16 = 112;
+pub const OPCODE_BROADCAST_MSG: u16 = 212;
+pub const OPCODE_PLAYER_HINT: u16 = 214;
+pub const OPCODE_OX_QUIZ: u16 = 145;
+pub const OPCODE_SNOWBALL_STATE: u16 = 281;
+pub const OPCODE_HIT_SNOWBALL: u16 = 282;
+pub const OPCODE_SNOWBALL_MESSAGE: u16 = 283;
+pub const OPCODE_COCONUT_HIT: u16 = 285;
+pub const OPCODE_COCONUT_SCORE: u16 = 286;
+pub const OPCODE_ARIANT_ARENA_SHOW_RESULT: u16 = 155;
+pub const OPCODE_ARIANT_ARENA_USER_SCORE: u16 = 297;
+pub const OPCODE_PYRAMID_GAUGE: u16 = 157;
+pub const OPCODE_PYRAMID_SCORE: u16 = 158;
+pub const OPCODE_DOJO_WARP_UP: u16 = 207;
+pub const OPCODE_TOURNAMENT: u16 = 315;
+pub const OPCODE_TOURNAMENT_MATCH_TABLE: u16 = 316;
+pub const OPCODE_TOURNAMENT_SET_PRIZE: u16 = 317;
+pub const OPCODE_TOURNAMENT_UEW: u16 = 318;
+pub const OPCODE_FAKE_GM_NOTICE: u16 = 116;
+pub const OPCODE_SCROLL_RESULT: u16 = 167;
+pub const OPCODE_MONSTER_CARNIVAL_START: u16 = 289;
+pub const OPCODE_MONSTER_CARNIVAL_CP: u16 = 290;
+pub const OPCODE_MONSTER_CARNIVAL_PARTY_CP: u16 = 291;
+pub const OPCODE_MONSTER_CARNIVAL_SUMMON: u16 = 292;
+pub const OPCODE_MONSTER_CARNIVAL_MESSAGE: u16 = 293;
+pub const OPCODE_MONSTER_CARNIVAL_DIED: u16 = 294;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AvatarMegaphone {
+    pub item_id: i32,
+    pub sender: String,
+    pub lines: Vec<String>,
+    pub sender_look: CharacterLook,
+}
+
+pub fn parse_set_avatar_megaphone(bytes: &[u8]) -> Result<AvatarMegaphone, PacketError> {
+    let mut packet = PacketReader::new(bytes);
+    expect_opcode(&mut packet, OPCODE_SET_AVATAR_MEGAPHONE)?;
+    let item_id = packet.read_i32()?;
+    let sender = packet.read_string()?;
+    let mut lines = Vec::with_capacity(4);
+    for _ in 0..4 {
+        lines.push(packet.read_string()?);
+    }
+    packet.read_i32()?; // channel index
+    packet.read_i8()?; // whisper flag
+    let sender_look = read_character_look(&mut packet)?;
+    Ok(AvatarMegaphone {
+        item_id,
+        sender,
+        lines,
+        sender_look,
+    })
+}
+
+pub fn parse_clear_avatar_megaphone(bytes: &[u8]) -> Result<(), PacketError> {
+    let mut packet = PacketReader::new(bytes);
+    expect_opcode(&mut packet, OPCODE_CLEAR_AVATAR_MEGAPHONE)?;
+    packet.read_i8()?; // mode
+    Ok(())
+}
+
+/// Parses the plain message string carried by the v83 FAKE_GM_NOTICE packet.
+pub fn parse_fake_gm_notice(bytes: &[u8]) -> Result<String, PacketError> {
+    let mut packet = PacketReader::new(bytes);
+    expect_opcode(&mut packet, OPCODE_FAKE_GM_NOTICE)?;
+    packet.read_string()
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MonsterCarnivalEvent {
+    Start {
+        team: i8,
+        cp: i16,
+        total_cp: i16,
+        enemy_cp: i16,
+        enemy_total_cp: i16,
+    },
+    Cp {
+        cp: i16,
+        total_cp: i16,
+    },
+    PartyCp {
+        team: i8,
+        cp: i16,
+        total_cp: i16,
+    },
+    Summon {
+        category: i8,
+        count: i8,
+        name: String,
+    },
+    Message {
+        code: i8,
+    },
+    Died {
+        team: i8,
+        name: String,
+        lost_cp: i8,
+    },
+}
+
+/// Parses one of the six v83 Monster Carnival event packets.
+pub fn parse_monster_carnival(bytes: &[u8]) -> Result<MonsterCarnivalEvent, PacketError> {
+    let mut packet = PacketReader::new(bytes);
+    let opcode = packet.read_u16()?;
+    match opcode {
+        OPCODE_MONSTER_CARNIVAL_START => {
+            let team = packet.read_i8()?;
+            let cp = packet.read_i16()?;
+            let total_cp = packet.read_i16()?;
+            packet.read_i16()?; // team CP (unused by the legacy panel)
+            packet.read_i16()?; // team total CP
+            let enemy_cp = packet.read_i16()?;
+            let enemy_total_cp = packet.read_i16()?;
+            packet.read_i16()?; // unused
+            packet.read_i64()?; // unused timestamp / padding
+            Ok(MonsterCarnivalEvent::Start {
+                team,
+                cp,
+                total_cp,
+                enemy_cp,
+                enemy_total_cp,
+            })
+        }
+        OPCODE_MONSTER_CARNIVAL_CP => Ok(MonsterCarnivalEvent::Cp {
+            cp: packet.read_i16()?,
+            total_cp: packet.read_i16()?,
+        }),
+        OPCODE_MONSTER_CARNIVAL_PARTY_CP => Ok(MonsterCarnivalEvent::PartyCp {
+            team: packet.read_i8()?,
+            cp: packet.read_i16()?,
+            total_cp: packet.read_i16()?,
+        }),
+        OPCODE_MONSTER_CARNIVAL_SUMMON => Ok(MonsterCarnivalEvent::Summon {
+            category: packet.read_i8()?,
+            count: packet.read_i8()?,
+            name: packet.read_string()?,
+        }),
+        OPCODE_MONSTER_CARNIVAL_MESSAGE => Ok(MonsterCarnivalEvent::Message {
+            code: packet.read_i8()?,
+        }),
+        OPCODE_MONSTER_CARNIVAL_DIED => Ok(MonsterCarnivalEvent::Died {
+            team: packet.read_i8()?,
+            name: packet.read_string()?,
+            lost_cp: packet.read_i8()?,
+        }),
+        _ => Err(PacketError::UnexpectedOpcode {
+            expected: OPCODE_MONSTER_CARNIVAL_START,
+            actual: opcode,
+        }),
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum EventNotification {
+    PlayerHint(String),
+    BroadcastMessage {
+        kind: i8,
+        message: String,
+    },
+    OxQuiz {
+        asking: bool,
+        set: i8,
+        question: i16,
+    },
+    SnowballState {
+        team_one_hp: i32,
+        team_two_hp: i32,
+    },
+    SnowballHit {
+        damage: i32,
+    },
+    SnowballMessage {
+        team: i8,
+        code: i32,
+    },
+    CoconutHit {
+        id: i16,
+        kind: i8,
+    },
+    CoconutScore {
+        team_one: i16,
+        team_two: i16,
+    },
+    AriantResult,
+    AriantScores(Vec<(String, i32)>),
+    PyramidGauge(i32),
+    PyramidScore {
+        rank: i8,
+        exp: i32,
+    },
+    DojoWarpUp,
+    Tournament {
+        state: i8,
+        sub_state: i8,
+    },
+    TournamentMatchTable,
+    TournamentPrize {
+        has_prize: bool,
+    },
+    TournamentUew(i8),
+}
+
+/// Parses v83 event announcements and score updates that the C++ client reports in chat.
+pub fn parse_event_notification(bytes: &[u8]) -> Result<EventNotification, PacketError> {
+    let mut packet = PacketReader::new(bytes);
+    let opcode = packet.read_u16()?;
+    match opcode {
+        OPCODE_PLAYER_HINT => Ok(EventNotification::PlayerHint(packet.read_string()?)),
+        OPCODE_BROADCAST_MSG => Ok(EventNotification::BroadcastMessage {
+            kind: packet.read_i8()?,
+            message: packet.read_string()?,
+        }),
+        OPCODE_OX_QUIZ => Ok(EventNotification::OxQuiz {
+            asking: packet.read_i8()? != 0,
+            set: packet.read_i8()?,
+            question: packet.read_i16()?,
+        }),
+        OPCODE_SNOWBALL_STATE => {
+            let state = packet.read_i8()?;
+            if state == 0 {
+                packet.skip(20)?;
+                Ok(EventNotification::SnowballState {
+                    team_one_hp: -1,
+                    team_two_hp: -1,
+                })
+            } else {
+                let team_one_hp = packet.read_i32()?;
+                let team_two_hp = packet.read_i32()?;
+                packet.read_i16()?; // team one position
+                packet.read_i8()?; // sentinel
+                packet.read_i16()?; // team two position
+                packet.read_i8()?; // sentinel
+                Ok(EventNotification::SnowballState {
+                    team_one_hp,
+                    team_two_hp,
+                })
+            }
+        }
+        OPCODE_HIT_SNOWBALL => {
+            packet.read_i8()?; // snowball selector
+            Ok(EventNotification::SnowballHit {
+                damage: packet.read_i32()?,
+            })
+        }
+        OPCODE_SNOWBALL_MESSAGE => Ok(EventNotification::SnowballMessage {
+            team: packet.read_i8()?,
+            code: packet.read_i32()?,
+        }),
+        OPCODE_COCONUT_HIT => {
+            let id = packet.read_i16()?;
+            packet.read_i16()?; // animation delay
+            Ok(EventNotification::CoconutHit {
+                id,
+                kind: packet.read_i8()?,
+            })
+        }
+        OPCODE_COCONUT_SCORE => Ok(EventNotification::CoconutScore {
+            team_one: packet.read_i16()?,
+            team_two: packet.read_i16()?,
+        }),
+        OPCODE_ARIANT_ARENA_SHOW_RESULT => Ok(EventNotification::AriantResult),
+        OPCODE_ARIANT_ARENA_USER_SCORE => {
+            let count = packet.read_i8()?.max(0) as usize;
+            let mut scores = Vec::with_capacity(count);
+            for _ in 0..count {
+                scores.push((packet.read_string()?, packet.read_i32()?));
+            }
+            Ok(EventNotification::AriantScores(scores))
+        }
+        OPCODE_PYRAMID_GAUGE => Ok(EventNotification::PyramidGauge(packet.read_i32()?)),
+        OPCODE_PYRAMID_SCORE => Ok(EventNotification::PyramidScore {
+            rank: packet.read_i8()?,
+            exp: packet.read_i32()?,
+        }),
+        OPCODE_DOJO_WARP_UP => {
+            packet.read_i8()?;
+            packet.read_i8()?;
+            Ok(EventNotification::DojoWarpUp)
+        }
+        OPCODE_TOURNAMENT => Ok(EventNotification::Tournament {
+            state: packet.read_i8()?,
+            sub_state: packet.read_i8()?,
+        }),
+        OPCODE_TOURNAMENT_MATCH_TABLE => Ok(EventNotification::TournamentMatchTable),
+        OPCODE_TOURNAMENT_SET_PRIZE => {
+            packet.read_i8()?; // prize set
+            let has_prize = packet.read_i8()? != 0;
+            if has_prize {
+                packet.read_i32()?;
+                packet.read_i32()?;
+            }
+            Ok(EventNotification::TournamentPrize { has_prize })
+        }
+        OPCODE_TOURNAMENT_UEW => Ok(EventNotification::TournamentUew(packet.read_i8()?)),
+        _ => Err(PacketError::UnexpectedOpcode {
+            expected: OPCODE_PLAYER_HINT,
+            actual: opcode,
+        }),
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ScrollResult {
+    pub character_id: i32,
+    pub success: bool,
+    pub destroyed: bool,
+    pub legendary_spirit: i16,
+}
+
+/// Parses the result broadcast sent after attempting to scroll equipment.
+pub fn parse_scroll_result(bytes: &[u8]) -> Result<ScrollResult, PacketError> {
+    let mut packet = PacketReader::new(bytes);
+    expect_opcode(&mut packet, OPCODE_SCROLL_RESULT)?;
+    Ok(ScrollResult {
+        character_id: packet.read_i32()?,
+        success: packet.read_bool()?,
+        destroyed: packet.read_bool()?,
+        legendary_spirit: packet.read_i16()?,
+    })
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ServerMessageStyle {
+    Yellow,
+    Megaphone,
+    SuperMegaphone,
+    Pink,
+    LightBlue,
+    ItemMegaphone,
+    TripleMegaphone,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ServerMessage {
+    Notice {
+        message: String,
+        popup: bool,
+    },
+    ChatLine {
+        message: String,
+        style: ServerMessageStyle,
+    },
+    ScrollNotice {
+        message: String,
+    },
+    NpcBroadcast {
+        npc_id: i32,
+        message: String,
+    },
+    ItemMegaphone {
+        message: String,
+        item_id: Option<i32>,
+    },
+    TripleMegaphone {
+        lines: Vec<String>,
+    },
+}
+
+/// Parses v83 SERVER_MESSAGE packets, including the optional marker byte used
+/// by some server broadcasts and the distinct megaphone payload trailers.
+pub fn parse_server_message(bytes: &[u8]) -> Result<ServerMessage, PacketError> {
+    let mut packet = PacketReader::new(bytes);
+    expect_opcode(&mut packet, OPCODE_SERVER_MESSAGE)?;
+    let kind = packet.read_i8()?;
+    // The legacy client peeks at the next byte and skips it only when it is 1.
+    if bytes.get(packet.position()) == Some(&1) {
+        packet.skip(1)?;
+    }
+    let message = packet.read_string()?;
+
+    Ok(match kind {
+        0 => ServerMessage::Notice {
+            message,
+            popup: false,
+        },
+        1 => ServerMessage::Notice {
+            message,
+            popup: true,
+        },
+        2 => ServerMessage::ChatLine {
+            message,
+            style: ServerMessageStyle::Megaphone,
+        },
+        3 => {
+            packet.read_u8()?; // channel
+            packet.read_bool()?; // megaphone ear
+            ServerMessage::ChatLine {
+                message,
+                style: ServerMessageStyle::SuperMegaphone,
+            }
+        }
+        4 => ServerMessage::ScrollNotice { message },
+        5 => ServerMessage::ChatLine {
+            message,
+            style: ServerMessageStyle::Pink,
+        },
+        6 => ServerMessage::ChatLine {
+            message,
+            style: ServerMessageStyle::LightBlue,
+        },
+        7 => ServerMessage::NpcBroadcast {
+            npc_id: packet.read_i32()?,
+            message,
+        },
+        8 => {
+            packet.read_u8()?; // channel
+            packet.read_bool()?; // megaphone ear
+            let item_id = if packet.remaining() > 0 && packet.read_bool()? {
+                (packet.remaining() >= 4)
+                    .then(|| packet.read_i32())
+                    .transpose()?
+            } else {
+                None
+            };
+            ServerMessage::ItemMegaphone { message, item_id }
+        }
+        10 => {
+            let extra_lines = if packet.remaining() > 0 {
+                packet.read_i8()?.max(0)
+            } else {
+                0
+            };
+            let mut lines = Vec::with_capacity(usize::from(extra_lines as u8) + 1);
+            lines.push(message);
+            for _ in 0..extra_lines {
+                if packet.is_empty() {
+                    break;
+                }
+                lines.push(packet.read_string()?);
+            }
+            if packet.remaining() > 0 {
+                packet.read_u8()?; // channel
+            }
+            if packet.remaining() > 0 {
+                packet.read_bool()?; // megaphone ear
+            }
+            ServerMessage::TripleMegaphone { lines }
+        }
+        _ => ServerMessage::ChatLine {
+            message,
+            style: ServerMessageStyle::Yellow,
+        },
+    })
+}
+
+fn parse_auto_potion_item(bytes: &[u8], opcode: u16) -> Result<i32, PacketError> {
+    let mut packet = PacketReader::new(bytes);
+    expect_opcode(&mut packet, opcode)?;
+    packet.read_i32()
+}
+
+/// Parses the server-selected automatic HP potion item ID.
+pub fn parse_auto_hp_pot(bytes: &[u8]) -> Result<i32, PacketError> {
+    parse_auto_potion_item(bytes, OPCODE_AUTO_HP_POT)
+}
+
+/// Parses the server-selected automatic MP potion item ID.
+pub fn parse_auto_mp_pot(bytes: &[u8]) -> Result<i32, PacketError> {
+    parse_auto_potion_item(bytes, OPCODE_AUTO_MP_POT)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClockUpdate {
+    Time { hour: u8, minute: u8, second: u8 },
+    Countdown { seconds: i32 },
+    Clear,
+}
+
+/// Parses the v83 CLOCK packet. Type 1 carries HH:MM:SS, type 2 carries an
+/// `i32` countdown in seconds, and type 3 removes the active timer.
+pub fn parse_clock(bytes: &[u8]) -> Result<ClockUpdate, PacketError> {
+    let mut packet = PacketReader::new(bytes);
+    expect_opcode(&mut packet, OPCODE_CLOCK)?;
+    match packet.read_u8()? {
+        1 => Ok(ClockUpdate::Time {
+            hour: packet.read_u8()?,
+            minute: packet.read_u8()?,
+            second: packet.read_u8()?,
+        }),
+        2 => Ok(ClockUpdate::Countdown {
+            seconds: packet.read_i32()?,
+        }),
+        3 => Ok(ClockUpdate::Clear),
+        kind => Err(PacketError::InvalidClockType(kind)),
+    }
+}
+
+/// Parses STOP_CLOCK, whose v83 payload contains one marker byte.
+pub fn parse_stop_clock(bytes: &[u8]) -> Result<(), PacketError> {
+    let mut packet = PacketReader::new(bytes);
+    expect_opcode(&mut packet, OPCODE_STOP_CLOCK)?;
+    packet.read_u8()?;
+    Ok(())
+}
 
 const MAPLE_TV_LINE_COUNT: usize = 5;
 const MAX_MAPLE_TV_LINE_BYTES: usize = 256;
@@ -141,6 +645,7 @@ pub const OPCODE_CHANGE_MAP: u16 = 38;
 pub const OPCODE_SPAWN_CHARACTER: u16 = 160;
 pub const OPCODE_REMOVE_CHARACTER: u16 = 161;
 pub const OPCODE_CHAT_RECEIVED: u16 = 162;
+pub const OPCODE_CHALKBOARD: u16 = 164;
 pub const OPCODE_CHARACTER_MOVED: u16 = 185;
 pub const OPCODE_GIVE_BUFF: u16 = 32;
 pub const OPCODE_CANCEL_BUFF: u16 = 33;
@@ -156,6 +661,8 @@ pub const OPCODE_SHOW_ITEM_EFFECT: u16 = 194;
 pub const OPCODE_UPDATE_CHARACTER_BOX: u16 = 165;
 pub const OPCODE_CHARACTER_INFO: u16 = 61;
 pub const OPCODE_CHARACTER_INFO_REQUEST: u16 = 97;
+/// Server-to-client opcode 48; the client-to-server direction uses 48 for TAKE_DAMAGE.
+pub const OPCODE_SET_TAMING_MOB_INFO: u16 = 48;
 pub const OPCODE_FAME_RESPONSE: u16 = 38;
 pub const OPCODE_GIVE_FAME: u16 = 95;
 pub const OPCODE_SKILL_LEARN_ITEM_RESULT: u16 = 51;
@@ -168,9 +675,14 @@ pub const OPCODE_SHOW_CHAIR: u16 = 196;
 pub const OPCODE_CANCEL_CHAIR_BROADCAST: u16 = 205;
 pub const OPCODE_SKILL_EFFECT: u16 = 190;
 pub const OPCODE_CANCEL_SKILL_EFFECT: u16 = 191;
+pub const OPCODE_THROW_GRENADE: u16 = 204;
 pub const OPCODE_SPAWN_NPC: u16 = 257;
 pub const OPCODE_REMOVE_NPC: u16 = 258;
 pub const OPCODE_SPAWN_NPC_CONTROLLER: u16 = 259;
+pub const OPCODE_IMITATED_NPC: u16 = 81;
+pub const OPCODE_SPAWN_PORTAL: u16 = 67;
+pub const OPCODE_SPAWN_DOOR: u16 = 275;
+pub const OPCODE_REMOVE_DOOR: u16 = 276;
 pub const OPCODE_SPAWN_MOB: u16 = 236;
 pub const OPCODE_KILL_MOB: u16 = 237;
 pub const OPCODE_SPAWN_MOB_CONTROLLER: u16 = 238;
@@ -183,10 +695,15 @@ pub const OPCODE_SHOW_MOB_HP: u16 = 250;
 pub const OPCODE_SPAWN_SUMMON: u16 = 175;
 pub const OPCODE_REMOVE_SUMMON: u16 = 176;
 pub const OPCODE_MOVE_SUMMON: u16 = 177;
+pub const OPCODE_SPAWN_DRAGON: u16 = 181;
+pub const OPCODE_MOVE_DRAGON: u16 = 182;
+pub const OPCODE_REMOVE_DRAGON: u16 = 183;
 pub const OPCODE_SPAWN_PET_RECEIVED: u16 = 168;
 pub const OPCODE_MOVE_PET: u16 = 170;
 pub const OPCODE_PET_LOOT: u16 = 170;
 pub const OPCODE_PET_CHAT_RECEIVED: u16 = 171;
+pub const OPCODE_PET_NAME_CHANGE: u16 = 172;
+pub const OPCODE_PET_EXCEPTION_LIST: u16 = 173;
 pub const OPCODE_PET_COMMAND_RECEIVED: u16 = 174;
 pub const OPCODE_SUMMON_ATTACK: u16 = 178;
 pub const OPCODE_DAMAGE_SUMMON: u16 = 179;
@@ -209,10 +726,15 @@ pub const OPCODE_NPC_ACTION: u16 = 260;
 pub const OPCODE_SET_NPC_SCRIPTABLE: u16 = 263;
 pub const OPCODE_FIELD_OBSTACLE_ONE: u16 = 139;
 pub const OPCODE_FIELD_OBSTACLE_ONOFF: u16 = 140;
+pub const OPCODE_SET_TRACTION: u16 = 141;
+pub const OPCODE_ADD_COOLDOWN: u16 = 234;
+pub const OPCODE_SHOW_COMBO: u16 = 225;
 pub const OPCODE_NPC_DIALOGUE: u16 = 304;
 pub const OPCODE_OPEN_NPC_SHOP: u16 = 305;
 pub const OPCODE_CONFIRM_NPC_SHOP_TRANSACTION: u16 = 306;
 pub const OPCODE_CHARACTER_STAT_UPDATE: u16 = crate::login::OPCODE_CHARACTER_STAT_UPDATE;
+pub const OPCODE_GUILD_NAME_CHANGED: u16 = 202;
+pub const OPCODE_GUILD_MARK_CHANGED: u16 = 203;
 const BUFFSTAT_BATTLESHIP: u64 = 0x0000_000A_0000_0040;
 const SKILL_MESO_EXPLOSION: i32 = 4_211_006;
 const SKILL_RAPID_FIRE: i32 = 5_221_004;
@@ -223,6 +745,13 @@ const SKILL_RAPID_FIRE_CROSSBOW: i32 = 4_341_003;
 pub const OPCODE_CLOSE_ATTACK: u16 = 44;
 pub const OPCODE_RANGED_ATTACK: u16 = 45;
 pub const OPCODE_MAGIC_ATTACK: u16 = 46;
+pub const OPCODE_LEFT_KNOCK_BACK: u16 = 284;
+
+/// Validates the empty v83 response that applies the legacy left-knockback impulse.
+pub fn parse_left_knockback(bytes: &[u8]) -> Result<(), PacketError> {
+    let mut packet = PacketReader::new(bytes);
+    expect_opcode(&mut packet, OPCODE_LEFT_KNOCK_BACK)
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AttackType {
@@ -255,6 +784,8 @@ pub struct PlayerAttackPacket {
 pub struct RemoteCharacterSpawn {
     pub id: i32,
     pub name: String,
+    pub guild_name: String,
+    pub guild_mark: GuildMark,
     pub level: u8,
     pub job: u16,
     pub look: CharacterLook,
@@ -262,8 +793,30 @@ pub struct RemoteCharacterSpawn {
     pub x: i16,
     pub y: i16,
     pub stance: u8,
+    /// Mount item ID sent in the v83 foreign-character spawn body, or zero when unmounted.
+    pub riding_mount: i32,
     pub pets: Vec<MapPetSpawn>,
     pub mini_room: Option<CharacterMiniRoom>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct GuildMark {
+    pub background: i16,
+    pub background_color: i8,
+    pub emblem: i16,
+    pub emblem_color: i8,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RemoteGuildNameUpdate {
+    pub character_id: i32,
+    pub name: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RemoteGuildMarkUpdate {
+    pub character_id: i32,
+    pub mark: Option<GuildMark>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -278,6 +831,12 @@ pub struct CharacterMiniRoom {
 pub struct RemoteCharacterMiniRoomUpdate {
     pub character_id: i32,
     pub mini_room: Option<CharacterMiniRoom>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RemoteCharacterChalkboardUpdate {
+    pub character_id: i32,
+    pub text: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -302,6 +861,12 @@ pub struct CharacterMountInfo {
     pub level: i32,
     pub experience: i32,
     pub tiredness: i32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TamingMobInfo {
+    pub character_id: i32,
+    pub mount: CharacterMountInfo,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -413,6 +978,21 @@ pub struct PetChatUpdate {
     pub act: i8,
     pub text: String,
     pub balloon_type: u8,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PetNameChange {
+    pub character_id: i32,
+    pub name: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PetExceptionList {
+    pub character_id: i32,
+    pub pet_index: i8,
+    pub pet_id: i64,
+    pub count: i8,
+    pub excluded_item_ids: Vec<i32>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -620,6 +1200,15 @@ pub struct ForeignSkillEffect {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GrenadeEffect {
+    pub character_id: i32,
+    pub x: i32,
+    pub y: i32,
+    pub skill_id: i32,
+    pub skill_level: i8,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ForeignCharacterEffect {
     pub character_id: i32,
     pub effect_type: i8,
@@ -653,6 +1242,32 @@ pub struct MapNpcSpawn {
     pub y: i16,
     pub flipped: bool,
     pub foothold: u16,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ImitatedNpcUpdate {
+    Remove { object_id: i32 },
+    SetPlayerLook { npc_id: i32, look: CharacterLook },
+    Ignore,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MapDoorSpawn {
+    pub owner_id: i32,
+    pub x: i16,
+    pub y: i16,
+    pub launched: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MapTownPortalUpdate {
+    Spawn {
+        town_map_id: i32,
+        target_map_id: i32,
+        x: i16,
+        y: i16,
+    },
+    Remove,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -835,6 +1450,86 @@ pub struct ForeignMobDiseaseEffect {
     pub character_id: i32,
     pub skill_type: u16,
     pub skill_level: u16,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ForeignCharacterBuffUpdate {
+    pub character_id: i32,
+    /// `Some(true)` marks Dark Sight active; unrelated buff updates leave it unchanged.
+    pub hidden: Option<bool>,
+    /// Present for Monster Riding's custom foreign-buff payload.
+    pub mount_item_id: Option<i32>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ForeignCharacterBuffCancel {
+    pub character_id: i32,
+    /// `true` when the cancellation mask removes Dark Sight.
+    pub cancel_hidden: bool,
+    /// `true` when the cancellation mask removes Monster Riding.
+    pub cancel_mount: bool,
+}
+
+/// Parses v83 foreign-character buffs. Dark Sight visibility and Monster Riding
+/// mount IDs are retained; other values are consumed to keep the payload aligned.
+pub fn parse_foreign_character_buff(
+    bytes: &[u8],
+) -> Result<ForeignCharacterBuffUpdate, PacketError> {
+    const MONSTER_RIDING: u64 = 0x0020_0000_0000_0000;
+    const DARK_SIGHT: u64 = 0x0000_0400_0000_0000;
+
+    let mut packet = PacketReader::new(bytes);
+    expect_opcode(&mut packet, OPCODE_GIVE_FOREIGN_BUFF)?;
+    let character_id = packet.read_i32()?;
+    let first_mask = packet.read_u64()?;
+    let second_mask = packet.read_u64()?;
+
+    if first_mask & MONSTER_RIDING != 0 {
+        packet.read_i16()?;
+        let mount_item_id = packet.read_i32()?;
+        packet.skip(packet.remaining())?;
+        return Ok(ForeignCharacterBuffUpdate {
+            character_id,
+            hidden: None,
+            mount_item_id: Some(mount_item_id),
+        });
+    }
+    for bit in 0..64 {
+        if first_mask & (1_u64 << bit) != 0 {
+            packet.read_i16()?;
+        }
+    }
+    for bit in 0..64 {
+        if second_mask & (1_u64 << bit) != 0 {
+            packet.read_i16()?;
+        }
+    }
+    packet.skip(packet.remaining())?;
+    Ok(ForeignCharacterBuffUpdate {
+        character_id,
+        hidden: (second_mask & DARK_SIGHT != 0).then_some(true),
+        mount_item_id: None,
+    })
+}
+
+/// Parses v83 foreign-buff cancellations and identifies Dark Sight removal.
+pub fn parse_foreign_character_buff_cancel(
+    bytes: &[u8],
+) -> Result<ForeignCharacterBuffCancel, PacketError> {
+    const MONSTER_RIDING: u64 = 0x0020_0000_0000_0000;
+    const DARK_SIGHT: u64 = 0x0000_0400_0000_0000;
+
+    let mut packet = PacketReader::new(bytes);
+    expect_opcode(&mut packet, OPCODE_CANCEL_FOREIGN_BUFF)?;
+    let character_id = packet.read_i32()?;
+    let first_mask = packet.read_u64()?;
+    let second_mask = packet.read_u64()?;
+    packet.skip(packet.remaining())?;
+    Ok(ForeignCharacterBuffCancel {
+        character_id,
+        cancel_hidden: second_mask & DARK_SIGHT != 0,
+        cancel_mount: first_mask & MONSTER_RIDING != 0,
+    })
 }
 
 /// Reads the mob-skill identity from a disease-only `GIVE_FOREIGN_BUFF`.
@@ -1025,6 +1720,23 @@ pub struct MapSummonSpawn {
     pub movement_type: u8,
     pub attacks: bool,
     pub animated: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MapDragonSpawn {
+    pub owner_id: i32,
+    pub x: i16,
+    pub y: i16,
+    pub stance: u8,
+    pub job: i16,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MapDragonMovement {
+    pub owner_id: i32,
+    pub start_x: i16,
+    pub start_y: i16,
+    pub fragments: Vec<MovementFragment>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1938,6 +2650,46 @@ pub fn parse_summon_skill(bytes: &[u8]) -> Result<SummonSkillUpdate, PacketError
     })
 }
 
+pub fn parse_dragon_spawn(bytes: &[u8]) -> Result<MapDragonSpawn, PacketError> {
+    let mut packet = PacketReader::new(bytes);
+    expect_opcode(&mut packet, OPCODE_SPAWN_DRAGON)?;
+    let owner_id = packet.read_i32()?;
+    let x = packet.read_i16()?;
+    packet.skip(2)?;
+    let y = packet.read_i16()?;
+    packet.skip(2)?;
+    let stance = packet.read_u8()?;
+    packet.skip(1)?;
+    let job = packet.read_i16()?;
+    Ok(MapDragonSpawn {
+        owner_id,
+        x,
+        y,
+        stance,
+        job,
+    })
+}
+
+pub fn parse_dragon_movement(bytes: &[u8]) -> Result<MapDragonMovement, PacketError> {
+    let mut packet = PacketReader::new(bytes);
+    expect_opcode(&mut packet, OPCODE_MOVE_DRAGON)?;
+    let owner_id = packet.read_i32()?;
+    let (start_x, start_y) = packet.read_point_i16()?;
+    let fragments = parse_movements(&mut packet)?;
+    Ok(MapDragonMovement {
+        owner_id,
+        start_x,
+        start_y,
+        fragments,
+    })
+}
+
+pub fn parse_dragon_remove(bytes: &[u8]) -> Result<i32, PacketError> {
+    let mut packet = PacketReader::new(bytes);
+    expect_opcode(&mut packet, OPCODE_REMOVE_DRAGON)?;
+    packet.read_i32()
+}
+
 fn parse_mob_spawn_fields(
     packet: &mut PacketReader<'_>,
     object_id: i32,
@@ -1985,6 +2737,23 @@ pub fn parse_npc_remove(bytes: &[u8]) -> Result<i32, PacketError> {
     packet.read_i32()
 }
 
+pub fn parse_imitated_npc(bytes: &[u8]) -> Result<ImitatedNpcUpdate, PacketError> {
+    let mut packet = PacketReader::new(bytes);
+    expect_opcode(&mut packet, OPCODE_IMITATED_NPC)?;
+    match packet.read_i8()? {
+        0 => Ok(ImitatedNpcUpdate::Remove {
+            object_id: packet.read_i32()?,
+        }),
+        1 => {
+            let npc_id = packet.read_i32()?;
+            packet.read_string()?; // legacy display name is not used by the handler
+            let look = read_character_look(&mut packet)?;
+            Ok(ImitatedNpcUpdate::SetPlayerLook { npc_id, look })
+        }
+        _ => Ok(ImitatedNpcUpdate::Ignore),
+    }
+}
+
 pub fn parse_npc_controller(bytes: &[u8]) -> Result<NpcControllerUpdate, PacketError> {
     let mut packet = PacketReader::new(bytes);
     expect_opcode(&mut packet, OPCODE_SPAWN_NPC_CONTROLLER)?;
@@ -1994,6 +2763,51 @@ pub fn parse_npc_controller(bytes: &[u8]) -> Result<NpcControllerUpdate, PacketE
         return Ok(NpcControllerUpdate::Remove { object_id });
     }
     parse_npc_spawn_fields(&mut packet, object_id).map(NpcControllerUpdate::Spawn)
+}
+
+pub fn parse_map_door_spawn(bytes: &[u8]) -> Result<MapDoorSpawn, PacketError> {
+    let mut packet = PacketReader::new(bytes);
+    expect_opcode(&mut packet, OPCODE_SPAWN_DOOR)?;
+    let launched = packet.read_bool()?;
+    let owner_id = packet.read_i32()?;
+    let (x, y) = packet.read_point_i16()?;
+    packet.skip(packet.remaining())?;
+    Ok(MapDoorSpawn {
+        owner_id,
+        x,
+        y,
+        launched,
+    })
+}
+
+pub fn parse_map_door_remove(bytes: &[u8]) -> Result<i32, PacketError> {
+    let mut packet = PacketReader::new(bytes);
+    expect_opcode(&mut packet, OPCODE_REMOVE_DOOR)?;
+    packet.read_u8()?; // Reserved marker, always zero on v83.
+    let owner_id = packet.read_i32()?;
+    packet.skip(packet.remaining())?;
+    Ok(owner_id)
+}
+
+pub fn parse_map_town_portal(bytes: &[u8]) -> Result<MapTownPortalUpdate, PacketError> {
+    const MAP_ID_NONE: i32 = 999_999_999;
+
+    let mut packet = PacketReader::new(bytes);
+    expect_opcode(&mut packet, OPCODE_SPAWN_PORTAL)?;
+    let town_map_id = packet.read_i32()?;
+    let target_map_id = packet.read_i32()?;
+    if town_map_id == MAP_ID_NONE && target_map_id == MAP_ID_NONE {
+        packet.skip(packet.remaining())?;
+        return Ok(MapTownPortalUpdate::Remove);
+    }
+    let (x, y) = packet.read_point_i16()?;
+    packet.skip(packet.remaining())?;
+    Ok(MapTownPortalUpdate::Spawn {
+        town_map_id,
+        target_map_id,
+        x,
+        y,
+    })
 }
 
 pub fn parse_npc_dialogue(bytes: &[u8]) -> Result<NpcDialogue, PacketError> {
@@ -2225,6 +3039,18 @@ pub fn parse_field_effect(bytes: &[u8]) -> Result<Option<FieldEffect>, PacketErr
     Ok(effect)
 }
 
+/// Parses the v83 `SET_BACK_EFFECT` packet, which carries a map effect path.
+/// An empty body or empty path means the server did not request an effect.
+pub fn parse_set_back_effect(bytes: &[u8]) -> Result<Option<String>, PacketError> {
+    let mut packet = PacketReader::new(bytes);
+    expect_opcode(&mut packet, OPCODE_SET_BACK_EFFECT)?;
+    if packet.is_empty() {
+        return Ok(None);
+    }
+    let path = packet.read_string()?;
+    Ok((!path.is_empty()).then_some(path))
+}
+
 /// Parses the v83 `BLOW_WEATHER` packet. The final message is optional.
 pub fn parse_blow_weather(bytes: &[u8]) -> Result<BlowWeatherUpdate, PacketError> {
     const MAX_WEATHER_MESSAGE_BYTES: usize = 512;
@@ -2274,6 +3100,35 @@ pub fn parse_field_obstacle_list(bytes: &[u8]) -> Result<Vec<FieldObstacleToggle
         });
     }
     Ok(toggles)
+}
+
+/// Parses the v83 `SET_TRACTION` field update, whose payload is one IEEE-754
+/// double controlling the local player's ground friction.
+pub fn parse_set_traction(bytes: &[u8]) -> Result<f64, PacketError> {
+    let mut packet = PacketReader::new(bytes);
+    expect_opcode(&mut packet, OPCODE_SET_TRACTION)?;
+    let traction = f64::from_bits(packet.read_u64()?);
+    if !traction.is_finite() {
+        return Err(PacketError::InvalidTraction);
+    }
+    Ok(traction)
+}
+
+/// Parses the v83 `SHOW_COMBO` update carrying the authoritative combo count.
+pub fn parse_show_combo(bytes: &[u8]) -> Result<i32, PacketError> {
+    let mut packet = PacketReader::new(bytes);
+    expect_opcode(&mut packet, OPCODE_SHOW_COMBO)?;
+    Ok(packet.read_i32()?)
+}
+
+/// Parses the v83 skill cooldown update: skill ID and cooldown duration in seconds.
+pub fn parse_add_cooldown(bytes: &[u8]) -> Result<SkillCooldown, PacketError> {
+    let mut packet = PacketReader::new(bytes);
+    expect_opcode(&mut packet, OPCODE_ADD_COOLDOWN)?;
+    Ok(SkillCooldown {
+        skill_id: packet.read_i32()?,
+        duration_seconds: packet.read_i16()?,
+    })
 }
 
 pub fn talk_to_npc(object_id: i32) -> Vec<u8> {
@@ -2381,9 +3236,13 @@ pub fn parse_remote_character_spawn(bytes: &[u8]) -> Result<RemoteCharacterSpawn
     let id = packet.read_i32()?;
     let level = packet.read_u8()?;
     let name = packet.read_string()?;
-
-    packet.read_string()?; // Guild name.
-    packet.skip(6)?; // Guild emblem and colors.
+    let guild_name = packet.read_string()?;
+    let guild_mark = GuildMark {
+        background: packet.read_i16()?,
+        background_color: packet.read_i8()?,
+        emblem: packet.read_i16()?,
+        emblem_color: packet.read_i8()?,
+    };
     packet.skip(8)?;
 
     let morphed = packet.read_i32()? == 2;
@@ -2395,7 +3254,7 @@ pub fn parse_remote_character_spawn(bytes: &[u8]) -> Result<RemoteCharacterSpawn
     }
     packet.skip(4)?; // Second foreign buff mask.
     packet.skip(43)?;
-    packet.skip(4)?; // Riding mount.
+    let riding_mount = packet.read_i32()?;
     packet.skip(61)?;
 
     let job = packet.read_i16()? as u16;
@@ -2428,6 +3287,8 @@ pub fn parse_remote_character_spawn(bytes: &[u8]) -> Result<RemoteCharacterSpawn
     Ok(RemoteCharacterSpawn {
         id,
         name,
+        guild_name,
+        guild_mark,
         level,
         job,
         look,
@@ -2435,9 +3296,41 @@ pub fn parse_remote_character_spawn(bytes: &[u8]) -> Result<RemoteCharacterSpawn
         x,
         y,
         stance,
+        riding_mount,
         pets,
         mini_room,
     })
+}
+
+/// Parses the v83 guild-name refresh sent for a character already in the map.
+pub fn parse_remote_guild_name(bytes: &[u8]) -> Result<RemoteGuildNameUpdate, PacketError> {
+    let mut packet = PacketReader::new(bytes);
+    expect_opcode(&mut packet, OPCODE_GUILD_NAME_CHANGED)?;
+    let character_id = packet.read_i32()?;
+    let name = if packet.is_empty() {
+        String::new()
+    } else {
+        packet.read_string()?
+    };
+    Ok(RemoteGuildNameUpdate { character_id, name })
+}
+
+/// Parses the v83 guild-mark refresh; truncated mark data leaves the current mark intact.
+pub fn parse_remote_guild_mark(bytes: &[u8]) -> Result<RemoteGuildMarkUpdate, PacketError> {
+    let mut packet = PacketReader::new(bytes);
+    expect_opcode(&mut packet, OPCODE_GUILD_MARK_CHANGED)?;
+    let character_id = packet.read_i32()?;
+    let mark = if packet.remaining() >= 6 {
+        Some(GuildMark {
+            background: packet.read_i16()?,
+            background_color: packet.read_i8()?,
+            emblem: packet.read_i16()?,
+            emblem_color: packet.read_i8()?,
+        })
+    } else {
+        None
+    };
+    Ok(RemoteGuildMarkUpdate { character_id, mark })
 }
 
 pub fn parse_remote_character_item_effect(
@@ -2462,6 +3355,20 @@ pub fn parse_remote_character_mini_room(
         character_id,
         mini_room,
     })
+}
+
+pub fn parse_remote_character_chalkboard(
+    bytes: &[u8],
+) -> Result<RemoteCharacterChalkboardUpdate, PacketError> {
+    let mut packet = PacketReader::new(bytes);
+    expect_opcode(&mut packet, OPCODE_CHALKBOARD)?;
+    let character_id = packet.read_i32()?;
+    let text = if packet.read_bool()? {
+        Some(packet.read_string()?)
+    } else {
+        None
+    };
+    Ok(RemoteCharacterChalkboardUpdate { character_id, text })
 }
 
 fn read_character_mini_room(
@@ -2725,6 +3632,25 @@ pub fn parse_character_info(bytes: &[u8]) -> Result<CharacterInfoReply, PacketEr
     })
 }
 
+/// Parses the v83 local mount progression update.
+pub fn parse_taming_mob_info(bytes: &[u8]) -> Result<TamingMobInfo, PacketError> {
+    let mut packet = PacketReader::new(bytes);
+    expect_opcode(&mut packet, OPCODE_SET_TAMING_MOB_INFO)?;
+    let character_id = packet.read_i32()?;
+    let level = packet.read_i32()?;
+    let experience = packet.read_i32()?;
+    let tiredness = packet.read_i32()?;
+    packet.read_u8()?; // level-up flag; the C++ handler currently ignores it.
+    Ok(TamingMobInfo {
+        character_id,
+        mount: CharacterMountInfo {
+            level,
+            experience,
+            tiredness,
+        },
+    })
+}
+
 fn read_character_pet_spawn(
     packet: &mut PacketReader<'_>,
     character_id: i32,
@@ -2816,6 +3742,36 @@ pub fn parse_pet_chat(bytes: &[u8]) -> Result<PetChatUpdate, PacketError> {
     })
 }
 
+pub fn parse_pet_name_change(bytes: &[u8]) -> Result<PetNameChange, PacketError> {
+    let mut packet = PacketReader::new(bytes);
+    expect_opcode(&mut packet, OPCODE_PET_NAME_CHANGE)?;
+    let character_id = packet.read_i32()?;
+    packet.skip(1)?; // Reserved zero byte.
+    let name = packet.read_string()?;
+    packet.skip(1)?; // Reserved zero byte.
+    Ok(PetNameChange { character_id, name })
+}
+
+pub fn parse_pet_exception_list(bytes: &[u8]) -> Result<PetExceptionList, PacketError> {
+    let mut packet = PacketReader::new(bytes);
+    expect_opcode(&mut packet, OPCODE_PET_EXCEPTION_LIST)?;
+    let character_id = packet.read_i32()?;
+    let pet_index = packet.read_i8()?;
+    let pet_id = packet.read_i64()?;
+    let count = packet.read_i8()?;
+    let mut excluded_item_ids = Vec::with_capacity(count.max(0) as usize);
+    for _ in 0..count.max(0) {
+        excluded_item_ids.push(packet.read_i32()?);
+    }
+    Ok(PetExceptionList {
+        character_id,
+        pet_index,
+        pet_id,
+        count,
+        excluded_item_ids,
+    })
+}
+
 pub fn parse_pet_command(bytes: &[u8]) -> Result<PetCommandUpdate, PacketError> {
     let mut packet = PacketReader::new(bytes);
     expect_opcode(&mut packet, OPCODE_PET_COMMAND_RECEIVED)?;
@@ -2863,6 +3819,26 @@ pub fn parse_foreign_skill_effect(bytes: &[u8]) -> Result<ForeignSkillEffect, Pa
     };
     packet.skip(packet.remaining())?;
     Ok(effect)
+}
+
+/// Parses the v83 server-authoritative grenade blast position and skill.
+pub fn parse_grenade_effect(bytes: &[u8]) -> Result<GrenadeEffect, PacketError> {
+    let mut packet = PacketReader::new(bytes);
+    expect_opcode(&mut packet, OPCODE_THROW_GRENADE)?;
+    let character_id = packet.read_i32()?;
+    let x = packet.read_i32()?;
+    let y = packet.read_i32()?;
+    packet.read_i32()?; // key-down duration
+    let skill_id = packet.read_i32()?;
+    let skill_level = packet.read_i32()? as i8;
+    packet.skip(packet.remaining())?;
+    Ok(GrenadeEffect {
+        character_id,
+        x,
+        y,
+        skill_id,
+        skill_level,
+    })
 }
 
 pub fn parse_show_foreign_effect(

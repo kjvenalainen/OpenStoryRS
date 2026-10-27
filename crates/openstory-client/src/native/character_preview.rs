@@ -16,8 +16,10 @@ fn append_character_animations(
     let mut stance_motions = vec![
         (stand_stance, AvatarMotion::Stand),
         (walk_stance, AvatarMotion::Walk),
+        ("alert", AvatarMotion::Alert),
         ("prone", AvatarMotion::Crouch),
         ("jump", AvatarMotion::Jump),
+        ("fly", AvatarMotion::Swim),
         ("ladder", AvatarMotion::Ladder),
         ("rope", AvatarMotion::Rope),
         ("sit", AvatarMotion::Sit),
@@ -102,6 +104,13 @@ fn character_weapon_id(look: &openstory_protocol::CharacterLook) -> Option<i32> 
         .map(|(_, item_id)| *item_id)
         .find(|item_id| (130..=170).contains(&(item_id / 10_000)))
         .or_else(|| (look.weapon_id > 0).then_some(look.weapon_id))
+}
+
+fn equipped_mount_id(look: &openstory_protocol::CharacterLook) -> i32 {
+    look.equips
+        .iter()
+        .find(|(slot, _)| slot.unsigned_abs() == 18)
+        .map_or(0, |(_, item_id)| *item_id)
 }
 
 fn equipped_ring_effect_id(

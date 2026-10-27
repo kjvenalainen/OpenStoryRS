@@ -1,6 +1,10 @@
 use crate::inventory::{InventorySnapshot, parse_initial_inventory};
-use crate::quest::{QuestLog, parse_initial_quest_log, skip_initial_cooldowns};
+use crate::monster_book::{
+    MonsterBookSnapshot, parse_initial_monster_book, skip_initial_minigame_and_rings,
+};
+use crate::quest::{QuestLog, SkillCooldown, parse_initial_cooldowns, parse_initial_quest_log};
 use crate::skills::{SkillEntry, parse_initial_skillbook};
+use crate::teleport_rock::TeleportRockLocations;
 use crate::{PacketError, PacketReader, PacketWriter};
 
 pub const OPCODE_LOGIN: u16 = 1;
@@ -176,7 +180,10 @@ pub enum SetField {
         stats: CharacterStats,
         inventory: Option<InventorySnapshot>,
         skills: Vec<SkillEntry>,
+        cooldowns: Vec<SkillCooldown>,
         quest_log: Option<QuestLog>,
+        teleport_rock: Option<TeleportRockLocations>,
+        monster_book: Option<MonsterBookSnapshot>,
     },
 }
 
@@ -415,19 +422,39 @@ pub fn parse_set_field(body: &[u8]) -> Result<SetField, PacketError> {
     } else {
         Vec::new()
     };
-    let quest_log = if inventory.is_some() && !packet.is_empty() {
-        skip_initial_cooldowns(&mut packet)?;
-        Some(parse_initial_quest_log(&mut packet)?)
+    let (cooldowns, quest_log) = if inventory.is_some() && !packet.is_empty() {
+        let cooldowns = parse_initial_cooldowns(&mut packet)?;
+        (cooldowns, Some(parse_initial_quest_log(&mut packet)?))
     } else {
-        None
+        (Vec::new(), None)
+    };
+    let (teleport_rock, monster_book) = if inventory.is_some() && !packet.is_empty() {
+        skip_initial_minigame_and_rings(&mut packet)?;
+        let normal = read_initial_map_ids(&mut packet, 5)?;
+        let vip = read_initial_map_ids(&mut packet, 10)?;
+        let teleport_rock = TeleportRockLocations { normal, vip };
+        let monster_book = parse_initial_monster_book(&mut packet)?;
+        (Some(teleport_rock), Some(monster_book))
+    } else {
+        (None, None)
     };
     Ok(SetField::CharacterEntry {
         character_id,
         stats,
         inventory,
         skills,
+        cooldowns,
         quest_log,
+        teleport_rock,
+        monster_book,
     })
+}
+
+fn read_initial_map_ids(
+    packet: &mut PacketReader<'_>,
+    count: usize,
+) -> Result<Vec<i32>, PacketError> {
+    (0..count).map(|_| packet.read_i32()).collect()
 }
 
 /// Convenience parser for callers interested only in an in-channel map change.

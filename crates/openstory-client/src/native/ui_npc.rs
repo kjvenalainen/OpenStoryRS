@@ -213,7 +213,7 @@ fn npc_dialogue_icon(
         ),
         _ => return None,
     };
-    let node = archive.root().resolve(&path).ok().flatten()?;
+    let node = resolve_ui_path(&archive.root(), &path).ok().flatten()?;
     let art = first_bitmap_node(&node).ok().flatten()?;
     let bitmap = art.bitmap().ok().flatten()?;
     let (width, height) = (u32::from(bitmap.width()), u32::from(bitmap.height()));
@@ -300,6 +300,7 @@ fn npc_shop_sellable_items<'a>(
                         | openstory_protocol::InventoryType::Setup
                         | openstory_protocol::InventoryType::Etc
                 )
+                && !item.cash
                 && !npc_shop_item_is_unsellable(item_archive, character_archive, item.item_id)
         })
         .collect()
@@ -349,7 +350,7 @@ fn npc_shop_item_info(
         ),
         _ => return None,
     };
-    archive.root().resolve(&info_path).ok().flatten()
+    resolve_ui_path(&archive.root(), &info_path).ok().flatten()
 }
 
 fn npc_shop_item_is_unsellable(
@@ -359,8 +360,29 @@ fn npc_shop_item_is_unsellable(
 ) -> bool {
     npc_shop_item_info(item_archive, character_archive, item_id)
         .as_ref()
-        .and_then(|info| integer_property(info, "notSale"))
-        .is_some_and(|value| value != 0)
+        .is_some_and(|info| item_flag_is_set(info, "notSale") || item_flag_is_set(info, "cash"))
+}
+
+fn merchant_stock_block_reason(
+    item: &openstory_protocol::InventoryItem,
+    item_archive: &NxArchive,
+    character_archive: &NxArchive,
+) -> Option<&'static str> {
+    if item.inventory_type == openstory_protocol::InventoryType::Cash || item.cash {
+        return Some("Cash items cannot be listed in a player shop.");
+    }
+    let info = npc_shop_item_info(item_archive, character_archive, item.item_id)?;
+    if item_flag_is_set(&info, "cash") {
+        Some("Cash items cannot be listed in a player shop.")
+    } else if item_flag_is_set(&info, "tradeBlock") {
+        Some("This item cannot be traded or listed in a player shop.")
+    } else {
+        None
+    }
+}
+
+fn item_flag_is_set(info: &openstory_assets::NxNode, name: &str) -> bool {
+    integer_property(info, name).is_some_and(|value| value != 0)
 }
 
 fn npc_shop_item_price(
@@ -1747,10 +1769,7 @@ fn composite_nx_ui_bitmap(
     anchor_x: i32,
     anchor_y: i32,
 ) -> Result<(), String> {
-    let node = archive
-        .root()
-        .resolve(path)
-        .map_err(|error| error.to_string())?
+    let node = resolve_ui_path(&archive.root(), path)?
         .ok_or_else(|| format!("missing v83 UI asset {path:?}"))?;
     let bitmap = node
         .bitmap()

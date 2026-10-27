@@ -584,9 +584,7 @@ fn draw_family_nx_background(
     path: &str,
     scale: f32,
 ) {
-    let bitmap = archive
-        .root()
-        .resolve(path)
+    let bitmap = resolve_ui_path(&archive.root(), path)
         .ok()
         .flatten()
         .and_then(|node| node.bitmap().ok().flatten());
@@ -632,6 +630,7 @@ fn draw_family_nx_background(
 
 fn render_guild_panel(
     font: &fontdue::Font,
+    ui_archive: &NxArchive,
     guild: Option<&openstory_protocol::GuildInfo>,
     invite: Option<&(i32, String)>,
     creation_invite: Option<&(String, String)>,
@@ -653,6 +652,14 @@ fn render_guild_panel(
         height,
         [16, 14, 12, 225],
     );
+    draw_family_nx_background(
+        &mut pixels,
+        width,
+        height,
+        ui_archive,
+        "UIWindow.img/UserList/Guild/backgrnd",
+        height as f32 / 304.0,
+    );
     for (x, y, w, h) in [
         (0, 0, width, 2),
         (0, height - 2, width, 2),
@@ -672,7 +679,7 @@ fn render_guild_panel(
         15.0,
         width - 24,
         18,
-        [226, 205, 158],
+        [80, 65, 42],
     );
     match mode {
         GuildPanelMode::Create { name, notice } => {
@@ -687,7 +694,7 @@ fn render_guild_panel(
                 14.0,
                 width - 28,
                 20,
-                [235, 224, 197],
+                [70, 60, 45],
             );
             draw_dialogue_text(
                 font,
@@ -700,7 +707,7 @@ fn render_guild_panel(
                 9.0,
                 width - 28,
                 28,
-                [180, 176, 164],
+                [92, 83, 69],
             );
             fill_dialogue_rect(
                 &mut pixels,
@@ -771,7 +778,7 @@ fn render_guild_panel(
                 8.0,
                 width - 28,
                 12,
-                [155, 151, 140],
+                [75, 70, 60],
             );
             return pixels;
         }
@@ -791,7 +798,7 @@ fn render_guild_panel(
                 13.0,
                 width - 28,
                 18,
-                [235, 224, 197],
+                [70, 60, 45],
             );
             for (index, title) in titles.iter().enumerate() {
                 let y = 88 + index as i32 * 46;
@@ -871,7 +878,7 @@ fn render_guild_panel(
                 8.0,
                 width - 28,
                 12,
-                [155, 151, 140],
+                [75, 70, 60],
             );
             return pixels;
         }
@@ -892,7 +899,7 @@ fn render_guild_panel(
                 13.0,
                 width - 28,
                 18,
-                [235, 224, 197],
+                [70, 60, 45],
             );
             fill_dialogue_rect(
                 &mut pixels,
@@ -1025,7 +1032,7 @@ fn render_guild_panel(
                 8.0,
                 width - 28,
                 12,
-                [155, 151, 140],
+                [75, 70, 60],
             );
             return pixels;
         }
@@ -1058,7 +1065,7 @@ fn render_guild_panel(
             10.0,
             width - 24,
             15,
-            [210, 210, 210],
+            [48, 48, 48],
         );
         draw_dialogue_text(
             font,
@@ -1075,7 +1082,7 @@ fn render_guild_panel(
             10.0,
             width - 24,
             15,
-            [190, 190, 190],
+            [72, 68, 60],
         );
         if !guild.notice.trim().is_empty() {
             draw_dialogue_text(
@@ -1089,7 +1096,7 @@ fn render_guild_panel(
                 10.0,
                 width - 24,
                 28,
-                [255, 222, 112],
+                [128, 83, 0],
             );
         }
         let rows = if invite.is_some() || creation_invite.is_some() {
@@ -1110,9 +1117,9 @@ fn render_guild_panel(
             let rank = guild.rank_titles[rank_index].as_str();
             let status = if member.online { "Online" } else { "Offline" };
             let color = if member.online {
-                [225, 240, 215]
+                [38, 70, 38]
             } else {
-                [155, 155, 155]
+                [90, 90, 90]
             };
             draw_dialogue_text(
                 font,
@@ -1139,9 +1146,9 @@ fn render_guild_panel(
                 width - 36,
                 12,
                 if member.online {
-                    [145, 205, 145]
+                    [55, 100, 55]
                 } else {
-                    [145, 145, 145]
+                    [100, 100, 100]
                 },
             );
         }
@@ -1157,7 +1164,7 @@ fn render_guild_panel(
                 11.0,
                 width - 24,
                 18,
-                [210, 210, 210],
+                [60, 60, 60],
             );
         }
     } else if let Some((leader, guild_name)) = creation_invite {
@@ -1182,7 +1189,7 @@ fn render_guild_panel(
             8.0,
             width - 24,
             14,
-            [255, 222, 112],
+            [128, 83, 0],
         );
     } else {
         draw_dialogue_text(
@@ -1196,7 +1203,7 @@ fn render_guild_panel(
             12.0,
             width - 24,
             20,
-            [210, 210, 210],
+            [60, 60, 60],
         );
         draw_guild_button(
             font,
@@ -1229,7 +1236,7 @@ fn render_guild_panel(
             9.0,
             width - 24,
             14,
-            [255, 222, 112],
+            [128, 83, 0],
         );
     } else {
         draw_dialogue_text(
@@ -1243,7 +1250,7 @@ fn render_guild_panel(
             9.0,
             width - 24,
             13,
-            [170, 164, 148],
+            [80, 74, 62],
         );
     }
     pixels
@@ -1352,6 +1359,7 @@ fn draw_guild_bitmap(
 
 fn render_alliance_panel(
     font: &fontdue::Font,
+    ui_archive: &NxArchive,
     guild: Option<&openstory_protocol::GuildInfo>,
     alliance: Option<&openstory_protocol::AllianceInfo>,
     invite: Option<&(i32, String)>,
@@ -1368,6 +1376,14 @@ fn render_alliance_panel(
         width,
         height,
         [16, 14, 12, 232],
+    );
+    draw_family_nx_background(
+        &mut pixels,
+        width,
+        height,
+        ui_archive,
+        "UIWindow.img/UserList/GuildUnion/backgrnd",
+        height as f32 / 304.0,
     );
     for (x, y, w, h) in [
         (0, 0, width, 2),
@@ -1388,7 +1404,7 @@ fn render_alliance_panel(
         16.0,
         width - 58,
         20,
-        [226, 205, 158],
+        [80, 65, 42],
     );
     draw_dialogue_text(
         font,
@@ -1401,7 +1417,7 @@ fn render_alliance_panel(
         9.0,
         108,
         14,
-        [170, 164, 148],
+        [80, 74, 62],
     );
     if let Some(alliance) = alliance {
         let title = if alliance.name.starts_with("Alliance ") {
@@ -1425,7 +1441,7 @@ fn render_alliance_panel(
             11.0,
             width - 28,
             16,
-            [225, 225, 215],
+            [50, 50, 50],
         );
         if !alliance.notice.trim().is_empty() {
             draw_dialogue_text(
@@ -1439,7 +1455,7 @@ fn render_alliance_panel(
                 10.0,
                 width - 28,
                 30,
-                [255, 222, 112],
+                [128, 83, 0],
             );
         }
         draw_dialogue_text(
@@ -1453,7 +1469,7 @@ fn render_alliance_panel(
             10.0,
             width - 28,
             14,
-            [190, 190, 190],
+            [72, 68, 60],
         );
         for (row, member_guild) in alliance.guilds.iter().take(8).enumerate() {
             let local = guild.is_some_and(|guild| guild.id == member_guild.id);
@@ -1481,9 +1497,9 @@ fn render_alliance_panel(
                 width - 36,
                 18,
                 if local {
-                    [255, 222, 112]
+                    [128, 83, 0]
                 } else {
-                    [220, 220, 210]
+                    [52, 52, 52]
                 },
             );
         }
@@ -1504,7 +1520,7 @@ fn render_alliance_panel(
                 11.0,
                 width - 36,
                 18,
-                [220, 220, 210],
+                [52, 52, 52],
             );
         }
     } else if let Some(guild) = guild.filter(|guild| guild.alliance_id > 0) {
@@ -1519,7 +1535,7 @@ fn render_alliance_panel(
             11.0,
             width - 28,
             18,
-            [220, 220, 210],
+            [52, 52, 52],
         );
         draw_dialogue_text(
             font,
@@ -1532,7 +1548,7 @@ fn render_alliance_panel(
             10.0,
             width - 28,
             18,
-            [170, 164, 148],
+            [80, 74, 62],
         );
     } else {
         draw_dialogue_text(
@@ -1546,7 +1562,7 @@ fn render_alliance_panel(
             11.0,
             width - 28,
             18,
-            [220, 220, 210],
+            [52, 52, 52],
         );
     }
     if let Some((_, inviter)) = invite {
@@ -1571,7 +1587,7 @@ fn render_alliance_panel(
             10.0,
             width - 28,
             16,
-            [255, 222, 112],
+            [128, 83, 0],
         );
     }
     draw_dialogue_text(
@@ -1585,7 +1601,7 @@ fn render_alliance_panel(
         9.0,
         width - 28,
         14,
-        [170, 164, 148],
+        [80, 74, 62],
     );
     pixels
 }

@@ -18,9 +18,11 @@ fn inventory_slot_max(
         openstory_protocol::InventoryType::Setup => u16::from(inventory.slot_maxima[2]),
         openstory_protocol::InventoryType::Etc => u16::from(inventory.slot_maxima[3]),
         openstory_protocol::InventoryType::Cash => u16::from(inventory.slot_maxima[4]),
-        // The legacy equip slot enum includes sparse bonus slots through 59
-        // (medal, belt, pocket, pendant, shoulder, android, and newer gear).
-        openstory_protocol::InventoryType::Equipped => 59,
+        // Includes the sparse v83 bonus slots (medal, belt, pocket, pendant,
+        // shoulder, android, and newer gear); INVENTORY_GROW can update it.
+        openstory_protocol::InventoryType::Equipped => {
+            u16::from(inventory.equipped_slot_maximum)
+        }
     }
 }
 
@@ -349,37 +351,86 @@ fn inventory_item_info_node(
 }
 
 fn inventory_item_stat_summary(
-    item_id: i32,
+    item: &openstory_protocol::InventoryItem,
     item_archive: &NxArchive,
     character_archive: &NxArchive,
 ) -> Option<String> {
-    if item_id / 1_000_000 != 1 {
+    if item.item_id / 1_000_000 != 1 {
         return None;
     }
-    let info = inventory_item_info_node(item_archive, character_archive, item_id)?;
-    let mut stats = Vec::new();
-    if let Some(level) = integer_property(&info, "reqLevel").filter(|value| *value > 0) {
-        stats.push(format!("Req. Lv. {level}"));
-    }
+    let info = inventory_item_info_node(item_archive, character_archive, item.item_id)?;
+    let mut requirements = Vec::new();
     for (property, label) in [
-        ("incSTR", "STR"),
-        ("incDEX", "DEX"),
-        ("incINT", "INT"),
-        ("incLUK", "LUK"),
-        ("incPAD", "W.ATK"),
-        ("incMAD", "M.ATK"),
-        ("incPDD", "W.DEF"),
-        ("incMDD", "M.DEF"),
-        ("incACC", "ACC"),
-        ("incEVA", "AVOID"),
-        ("incMHP", "HP"),
-        ("incMMP", "MP"),
-        ("incSpeed", "SPEED"),
-        ("incJump", "JUMP"),
+        ("reqLevel", "Lv"),
+        ("reqSTR", "STR"),
+        ("reqDEX", "DEX"),
+        ("reqINT", "INT"),
+        ("reqLUK", "LUK"),
     ] {
-        if let Some(value) = integer_property(&info, property).filter(|value| *value != 0) {
-            stats.push(format!("{label} {value:+}"));
+        if let Some(value) = integer_property(&info, property).filter(|value| *value > 0) {
+            requirements.push(format!("{label} {value}"));
         }
+    }
+    let mut stats = Vec::new();
+    if let Some(equip) = item.equip.as_ref() {
+        for (index, property, label) in [
+            (0, "incSTR", "STR"),
+            (1, "incDEX", "DEX"),
+            (2, "incINT", "INT"),
+            (3, "incLUK", "LUK"),
+            (4, "incMHP", "HP"),
+            (5, "incMMP", "MP"),
+            (6, "incPAD", "W.ATK"),
+            (7, "incMAD", "M.ATK"),
+            (8, "incPDD", "W.DEF"),
+            (9, "incMDD", "M.DEF"),
+            (10, "incACC", "ACC"),
+            (11, "incEVA", "AVOID"),
+            (12, "incHands", "HANDS"),
+            (13, "incSpeed", "SPEED"),
+            (14, "incJump", "JUMP"),
+        ] {
+            let value = i32::from(equip.stats[index]);
+            if value == 0 {
+                continue;
+            }
+            let delta = i64::from(value) - integer_property(&info, property).unwrap_or(0);
+            if delta == 0 {
+                stats.push(format!("{label} {value}"));
+            } else {
+                stats.push(format!("{label} {value} ({delta:+})"));
+            }
+        }
+        if equip.upgrade_slots > 0 {
+            stats.push(format!("Slots {}", equip.upgrade_slots));
+        }
+        if equip.level > 0 {
+            stats.push(format!("Enhance {}", equip.level));
+        }
+    } else {
+        for (property, label) in [
+            ("incSTR", "STR"),
+            ("incDEX", "DEX"),
+            ("incINT", "INT"),
+            ("incLUK", "LUK"),
+            ("incPAD", "W.ATK"),
+            ("incMAD", "M.ATK"),
+            ("incPDD", "W.DEF"),
+            ("incMDD", "M.DEF"),
+            ("incACC", "ACC"),
+            ("incEVA", "AVOID"),
+            ("incMHP", "HP"),
+            ("incMMP", "MP"),
+            ("incSpeed", "SPEED"),
+            ("incJump", "JUMP"),
+        ] {
+            if let Some(value) = integer_property(&info, property).filter(|value| *value != 0) {
+                stats.push(format!("{label} {value:+}"));
+            }
+        }
+    }
+    if !requirements.is_empty() {
+        stats.insert(0, format!("Req. {}", requirements.join("  ")));
     }
     (!stats.is_empty()).then(|| stats.join("   "))
 }

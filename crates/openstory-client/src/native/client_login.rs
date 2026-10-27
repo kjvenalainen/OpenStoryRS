@@ -2,6 +2,7 @@ use super::*;
 
 impl ClientApp {
     pub(super) fn show_map_scene(&mut self, map_id: i32, portal: u8) {
+        self.clear_boss_hp_gauge();
         self.weather_overlay.clear();
         self.weather_texture = None;
         let music_path = map_music_path(&self.map_archive, map_id);
@@ -15,6 +16,7 @@ impl ClientApp {
         );
         match scene.and_then(|scene| self.replace_scene(scene)) {
             Ok(()) => {
+                self.clear_clock();
                 if let Some(path) = music_path {
                     self.audio.play_music(&self.sound_archive, &path);
                 }
@@ -59,6 +61,8 @@ impl ClientApp {
         }) else {
             return;
         };
+        self.active_character = None;
+        self.taming_mount_stats = None;
         match pic_state {
             0 => self.begin_pic_entry(character.id, PicEntryStep::Register),
             1 => self.begin_pic_entry(character.id, PicEntryStep::Verify),
@@ -143,6 +147,7 @@ impl ClientApp {
 
     pub(super) fn show_character_selection_failure(&mut self, message: &str) {
         self.active_character = None;
+        self.taming_mount_stats = None;
         self.character_selection_status = Some(message.to_owned());
         self.refresh_character_scene();
     }
@@ -843,6 +848,8 @@ impl ClientApp {
                     self.session = None;
                     self.login_server_connected = false;
                     self.channel_connected = false;
+                    self.server_ui_disabled = false;
+                    self.rps_game = None;
                     let fame_request_was_pending = self
                         .character_info
                         .as_mut()
@@ -859,6 +866,7 @@ impl ClientApp {
                         && self.current_field.is_none()
                     {
                         self.active_character = None;
+                        self.taming_mount_stats = None;
                         self.character_selection_status =
                             Some("Connection closed. Click Start to retry.".to_owned());
                         self.refresh_character_scene();

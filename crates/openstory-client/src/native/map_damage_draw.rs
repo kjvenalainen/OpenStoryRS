@@ -2,9 +2,12 @@ fn append_mob_damage_draws<'a>(
     scene: &MapSceneRuntime,
     texture: &'a GpuTexture,
     glyphs: &[DamageGlyph],
+    effect_budget: &mut usize,
     draws: &mut Vec<SpriteDraw<'a>>,
 ) {
-    for number in &scene.damage_numbers {
+    let draw_count = scene.damage_numbers.len().min(*effect_budget);
+    *effect_budget -= draw_count;
+    for number in scene.damage_numbers.iter().take(draw_count) {
         let age = number.elapsed.as_secs_f32();
         let lifetime = number.lifetime.as_secs_f32().max(f32::EPSILON);
         let opacity = (1.0 - age / lifetime).clamp(0.0, 1.0);
@@ -126,14 +129,19 @@ fn damage_digit_advance(digits: &[u8], index: usize, critical: bool) -> i16 {
 fn append_map_screen_effect_draws<'a>(
     scene: &MapSceneRuntime,
     textures: &'a [GpuTexture],
+    effect_budget: &mut usize,
     draws: &mut Vec<SpriteDraw<'a>>,
 ) {
+    if *effect_budget == 0 {
+        return;
+    }
     let Some(effect) = scene.screen_effect.as_ref() else {
         return;
     };
     let Some(frame) = effect.frames.get(effect.frame_index) else {
         return;
     };
+    *effect_budget -= 1;
     for (texture_index, rect) in &frame.sprites {
         let Some(texture) = textures.get(*texture_index) else {
             continue;

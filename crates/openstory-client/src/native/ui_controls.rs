@@ -1,3 +1,78 @@
+const COMBO_COUNTER_WIDTH: u32 = 140;
+const COMBO_COUNTER_HEIGHT: u32 = 44;
+const COMBO_COUNTER_X: f32 = 864.0;
+const COMBO_COUNTER_Y: f32 = 150.0;
+
+fn render_combo_counter(font: &fontdue::Font, count: i32) -> Vec<u8> {
+    let width = COMBO_COUNTER_WIDTH as usize;
+    let height = COMBO_COUNTER_HEIGHT as usize;
+    let mut pixels = vec![0_u8; width * height * 4];
+    fill_dialogue_rect(
+        &mut pixels,
+        width,
+        height,
+        0,
+        0,
+        width,
+        height,
+        [0, 0, 0, 154],
+    );
+    draw_dialogue_text(
+        font,
+        &mut pixels,
+        width,
+        height,
+        "COMBO",
+        47,
+        4,
+        11.0,
+        66,
+        15,
+        [0, 0, 0],
+    );
+    draw_dialogue_text(
+        font,
+        &mut pixels,
+        width,
+        height,
+        "COMBO",
+        46,
+        3,
+        11.0,
+        66,
+        15,
+        [255, 235, 96],
+    );
+    let count_text = count.to_string();
+    draw_dialogue_text(
+        font,
+        &mut pixels,
+        width,
+        height,
+        &count_text,
+        35,
+        24,
+        18.0,
+        70,
+        20,
+        [0, 0, 0],
+    );
+    draw_dialogue_text(
+        font,
+        &mut pixels,
+        width,
+        height,
+        &count_text,
+        34,
+        23,
+        18.0,
+        70,
+        20,
+        [255, 255, 255],
+    );
+    pixels
+}
+
 fn render_key_config_panel(
     font: &fontdue::Font,
     bindings: &[openstory_protocol::KeyBinding],
@@ -257,6 +332,63 @@ fn render_key_config_panel(
         [183, 177, 164],
     );
     pixels
+}
+
+fn draw_option_checkbox(
+    pixels: &mut [u8],
+    width: usize,
+    height: usize,
+    x: usize,
+    y: usize,
+    selected: bool,
+    checked: bool,
+) {
+    fill_dialogue_rect(
+        pixels,
+        width,
+        height,
+        x,
+        y,
+        20,
+        20,
+        if selected {
+            [236, 213, 159, 255]
+        } else {
+            [136, 125, 104, 255]
+        },
+    );
+    fill_dialogue_rect(
+        pixels,
+        width,
+        height,
+        x + 3,
+        y + 3,
+        14,
+        14,
+        [33, 31, 28, 255],
+    );
+    if checked {
+        fill_dialogue_rect(
+            pixels,
+            width,
+            height,
+            x + 6,
+            y + 10,
+            4,
+            3,
+            [232, 205, 140, 255],
+        );
+        fill_dialogue_rect(
+            pixels,
+            width,
+            height,
+            x + 9,
+            y + 7,
+            5,
+            3,
+            [232, 205, 140, 255],
+        );
+    }
 }
 
 fn maple_key_from_physical(key: PhysicalKey) -> Option<u8> {
@@ -705,8 +837,11 @@ fn render_skill_book_panel(
 fn render_options_panel(
     font: &fontdue::Font,
     settings: AudioSettings,
+    display_settings: DisplaySettings,
+    input_settings: InputSettings,
     gameplay_settings: GameplaySettings,
-    selected: OptionSlider,
+    social_settings: SocialSettings,
+    selected: OptionControl,
     notice: Option<&str>,
 ) -> Vec<u8> {
     const WIDTH: usize = SETTINGS_PANEL_WIDTH as usize;
@@ -756,32 +891,40 @@ fn render_options_panel(
         [246, 226, 185],
     );
 
-    for (slider, label, value, y) in [
+    for (slider, label, value) in [
         (
-            OptionSlider::Music,
-            "Music volume",
-            settings.music_volume,
-            66,
+            OptionControl::GraphicsQuality,
+            "Graphics quality",
+            gameplay_settings.graphics_quality,
         ),
         (
-            OptionSlider::Effects,
+            OptionControl::EffectsQuality,
+            "Effects quality",
+            gameplay_settings.effects_quality,
+        ),
+        (OptionControl::Music, "Music volume", settings.music_volume),
+        (
+            OptionControl::SoundEffects,
             "Sound effects",
             settings.effects_volume,
-            108,
         ),
         (
-            OptionSlider::HpWarning,
+            OptionControl::HpWarning,
             "HP warning",
             gameplay_settings.hp_warning,
-            169,
         ),
         (
-            OptionSlider::MpWarning,
+            OptionControl::MpWarning,
             "MP warning",
             gameplay_settings.mp_warning,
-            211,
+        ),
+        (
+            OptionControl::MouseSpeed,
+            "Mouse speed",
+            input_settings.mouse_speed,
         ),
     ] {
+        let y = slider.track_y().expect("sliders have a track position");
         draw_dialogue_text(
             font,
             &mut pixels,
@@ -835,7 +978,7 @@ fn render_options_panel(
             },
         );
         let value_label =
-            if matches!(slider, OptionSlider::HpWarning | OptionSlider::MpWarning) && value == 0 {
+            if matches!(slider, OptionControl::HpWarning | OptionControl::MpWarning) && value == 0 {
                 "Off".to_owned()
             } else {
                 format!("{value}%")
@@ -855,14 +998,298 @@ fn render_options_panel(
         );
     }
 
+    for (control, label, y, muted) in [
+        (
+            OptionControl::MuteMusic,
+            "Mute",
+            OptionControl::Music.track_y().expect("music has a slider"),
+            settings.mute_music,
+        ),
+        (
+            OptionControl::MuteEffects,
+            "Mute",
+            OptionControl::SoundEffects
+                .track_y()
+                .expect("sound effects have a slider"),
+            settings.mute_effects,
+        ),
+    ] {
+        draw_option_checkbox(
+            &mut pixels,
+            WIDTH,
+            HEIGHT,
+            486,
+            y.saturating_sub(9),
+            selected == control,
+            muted,
+        );
+        draw_dialogue_text(
+            font,
+            &mut pixels,
+            WIDTH,
+            HEIGHT,
+            label,
+            512,
+            y as i32 - 12,
+            12.0,
+            60,
+            18,
+            [231, 226, 214],
+        );
+    }
+
+    let shake_selected = selected == OptionControl::ScreenShake;
+    fill_dialogue_rect(
+        &mut pixels,
+        WIDTH,
+        HEIGHT,
+        24,
+        270,
+        22,
+        22,
+        if shake_selected {
+            [236, 213, 159, 255]
+        } else {
+            [136, 125, 104, 255]
+        },
+    );
+    fill_dialogue_rect(
+        &mut pixels,
+        WIDTH,
+        HEIGHT,
+        27,
+        273,
+        16,
+        16,
+        [33, 31, 28, 255],
+    );
+    if gameplay_settings.screen_shake_enabled {
+        fill_dialogue_rect(&mut pixels, WIDTH, HEIGHT, 30, 281, 5, 3, [232, 205, 140, 255]);
+        fill_dialogue_rect(&mut pixels, WIDTH, HEIGHT, 34, 278, 3, 7, [232, 205, 140, 255]);
+        fill_dialogue_rect(&mut pixels, WIDTH, HEIGHT, 37, 275, 3, 4, [232, 205, 140, 255]);
+    }
     draw_dialogue_text(
         font,
         &mut pixels,
         WIDTH,
         HEIGHT,
-        "Set a warning to Off to disable its low-resource overlay.",
+        "Screen shake",
+        56,
+        272,
+        13.0,
+        180,
+        18,
+        [231, 226, 214],
+    );
+    draw_dialogue_text(
+        font,
+        &mut pixels,
+        WIDTH,
+        HEIGHT,
+        if gameplay_settings.screen_shake_enabled {
+            "On"
+        } else {
+            "Off"
+        },
+        438,
+        272,
+        13.0,
+        36,
+        18,
+        [231, 226, 214],
+    );
+    draw_dialogue_text(
+        font,
+        &mut pixels,
+        WIDTH,
+        HEIGHT,
+        "Windowed",
+        56,
+        305,
+        13.0,
+        90,
+        18,
+        [231, 226, 214],
+    );
+    draw_option_checkbox(
+        &mut pixels,
+        WIDTH,
+        HEIGHT,
         24,
-        242,
+        302,
+        selected == OptionControl::Windowed,
+        !display_settings.fullscreen,
+    );
+    draw_dialogue_text(
+        font,
+        &mut pixels,
+        WIDTH,
+        HEIGHT,
+        "Resolution",
+        174,
+        305,
+        13.0,
+        88,
+        18,
+        [231, 226, 214],
+    );
+    for (control, width, height, label, x) in [
+        (
+            OptionControl::Resolution800,
+            800,
+            600,
+            "800 x 600",
+            268,
+        ),
+        (
+            OptionControl::Resolution1024,
+            1024,
+            768,
+            "1024 x 768",
+            398,
+        ),
+    ] {
+        let active = display_settings.width == width && display_settings.height == height;
+        draw_option_checkbox(
+            &mut pixels,
+            WIDTH,
+            HEIGHT,
+            x,
+            302,
+            selected == control,
+            active,
+        );
+        draw_dialogue_text(
+            font,
+            &mut pixels,
+            WIDTH,
+            HEIGHT,
+            label,
+            (x + 25) as i32,
+            305,
+            12.0,
+            105,
+            18,
+            [231, 226, 214],
+        );
+    }
+    draw_dialogue_text(
+        font,
+        &mut pixels,
+        WIDTH,
+        HEIGHT,
+        "Quality limits short-lived effects and map layers.",
+        24,
+        335,
+        11.0,
+        WIDTH - 48,
+        16,
+        [190, 185, 173],
+    );
+    fill_dialogue_rect(
+        &mut pixels,
+        WIDTH,
+        HEIGHT,
+        18,
+        365,
+        WIDTH - 36,
+        1,
+        [101, 88, 66, 255],
+    );
+    draw_dialogue_text(
+        font,
+        &mut pixels,
+        WIDTH,
+        HEIGHT,
+        "Social permissions",
+        24,
+        372,
+        14.0,
+        WIDTH - 48,
+        20,
+        [240, 224, 191],
+    );
+    for (index, (control, label, allowed)) in [
+        (OptionControl::AllowWhisper, "Whispers", social_settings.allow_whisper),
+        (
+            OptionControl::AllowChatInvite,
+            "Messenger invitations",
+            social_settings.allow_chat_invite,
+        ),
+        (
+            OptionControl::AllowPartyInvite,
+            "Party invitations",
+            social_settings.allow_party_invite,
+        ),
+        (OptionControl::AllowGuildChat, "Guild chat", social_settings.allow_guild_chat),
+        (
+            OptionControl::AllowAllianceChat,
+            "Alliance chat",
+            social_settings.allow_alliance_chat,
+        ),
+        (
+            OptionControl::AllowFamilyInvite,
+            "Family invitations",
+            social_settings.allow_family_invite,
+        ),
+        (
+            OptionControl::AllowFriendChat,
+            "Buddy chat",
+            social_settings.allow_friend_chat,
+        ),
+        (
+            OptionControl::AllowTradeRequest,
+            "Trade requests",
+            social_settings.allow_trade_request,
+        ),
+        (
+            OptionControl::AllowExpeditionInvite,
+            "Expedition invitations",
+            social_settings.allow_expedition_invite,
+        ),
+        (
+            OptionControl::AllowGuildInvite,
+            "Guild invitations",
+            social_settings.allow_guild_invite,
+        ),
+        (
+            OptionControl::AllowAllianceInvite,
+            "Alliance invitations",
+            social_settings.allow_alliance_invite,
+        ),
+        (OptionControl::AllowFollow, "Follow requests", social_settings.allow_follow),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let column = index / 6;
+        let row = index % 6;
+        let x = 24 + column * 286;
+        let y = 401 + row * 25;
+        let is_selected = selected == control;
+        draw_option_checkbox(&mut pixels, WIDTH, HEIGHT, x, y, is_selected, allowed);
+        draw_dialogue_text(
+            font,
+            &mut pixels,
+            WIDTH,
+            HEIGHT,
+            label,
+            (x + 28) as i32,
+            (y + 2) as i32,
+            12.0,
+            250,
+            18,
+            [231, 226, 214],
+        );
+    }
+    draw_dialogue_text(
+        font,
+        &mut pixels,
+        WIDTH,
+        HEIGHT,
+        "Tab selects a setting; arrows change it and Space toggles permissions.",
+        24,
+        552,
         11.0,
         WIDTH - 48,
         16,
@@ -876,19 +1303,19 @@ fn render_options_panel(
             HEIGHT,
             notice,
             24,
-            258,
+            568,
             10.0,
             WIDTH - 48,
-            30,
+            18,
             [255, 180, 150],
         );
     }
 
     for (x, label, color) in [
-        (266, "Save", [88, 68, 45, 255]),
-        (370, "Cancel", [65, 63, 57, 255]),
+        (204, "Save", [88, 68, 45, 255]),
+        (312, "Cancel", [65, 63, 57, 255]),
     ] {
-        fill_dialogue_rect(&mut pixels, WIDTH, HEIGHT, x, 278, 96, 36, color);
+        fill_dialogue_rect(&mut pixels, WIDTH, HEIGHT, x, 584, 96, 36, color);
         draw_dialogue_text(
             font,
             &mut pixels,
@@ -896,7 +1323,7 @@ fn render_options_panel(
             HEIGHT,
             label,
             (x + 22) as i32,
-            286,
+            592,
             13.0,
             70,
             20,

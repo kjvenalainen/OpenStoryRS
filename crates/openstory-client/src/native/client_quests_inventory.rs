@@ -410,6 +410,20 @@ impl ClientApp {
         if skill.level <= 0 || skill.passive {
             return;
         }
+        let now = Instant::now();
+        match self.skill_cooldowns.get(&skill.id).copied() {
+            Some(expires_at) if expires_at > now => {
+                self.push_chat_line(
+                    "You cannot use this skill as it is on cooldown.".to_owned(),
+                    [255, 105, 105],
+                );
+                return;
+            }
+            Some(_) => {
+                self.skill_cooldowns.remove(&skill.id);
+            }
+            None => {}
+        }
         if character_has_buff(
             &self.active_buffs,
             openstory_protocol::BuffMaskGroup::Second,
@@ -863,6 +877,15 @@ impl ClientApp {
             }
             _ => return,
         };
+        let plays_item_sound = match item.inventory_type {
+            openstory_protocol::InventoryType::Use => item.item_id / 10_000 != 212,
+            openstory_protocol::InventoryType::Cash => item.item_id / 10_000 != 500,
+            _ => false,
+        };
+        if plays_item_sound {
+            self.audio
+                .play_item_sound(&self.sound_archive, item.item_id);
+        }
         self.show_local_item_use_effect(item.item_id);
         if let Some(session) = self.session.as_ref() {
             if let Err(error) = session.send_packet(packet) {
@@ -870,6 +893,27 @@ impl ClientApp {
                 self.channel_connected = false;
             }
         }
+    }
+
+    pub(super) fn begin_equipment_inventory_pointer(&mut self, cursor: Point) -> bool {
+        if !rect_contains(
+            SpriteRect {
+                x: EQUIPMENT_INVENTORY_PANEL_X,
+                y: EQUIPMENT_INVENTORY_PANEL_Y,
+                width: EQUIPMENT_INVENTORY_PANEL_WIDTH as f32,
+                height: EQUIPMENT_INVENTORY_PANEL_HEIGHT as f32,
+                blend_mode: BlendMode::Alpha,
+            },
+            cursor,
+        ) {
+            return false;
+        }
+        let local_x = cursor.x - EQUIPMENT_INVENTORY_PANEL_X;
+        let local_y = cursor.y - EQUIPMENT_INVENTORY_PANEL_Y;
+        if (139.0..171.0).contains(&local_x) && (5.0..20.0).contains(&local_y) {
+            self.show_equipment_inventory = false;
+        }
+        true
     }
 
     pub(super) fn begin_inventory_pointer(&mut self, cursor: Point) -> bool {
@@ -1531,6 +1575,7 @@ impl ClientApp {
                 first_avatar_frame(&scene.avatar_frames, scene.desired_avatar_motion);
             scene.avatar_elapsed = Duration::ZERO;
         }
+        self.refresh_local_mount(look);
         Ok(())
     }
 }

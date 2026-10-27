@@ -17,7 +17,10 @@ part of the game runtime port in this plan.
 - `OpenStory` contains 626 C++ source/header files across graphics, input/UI,
   gameplay/physics, character data, protocol handlers, and platform code.
 - The active asset set is 17 `.nx` files in `OpenStory/wz`, about 3.8 GB total.
-  Rust should read these in place; do not copy them into this repository or bundle.
+  Rust reads them in place; do not copy them into this repository or bundle. The
+  client currently selects `UI-v83.nx` ahead of `UI.nx`, resolves logical `UI.nx`
+  file requests to that archive, and uses it for every UI path; the archive can be
+  renamed to `UI.nx` later without changing asset references.
 - The current C++ checkout contains uncommitted user changes. Treat it as a read-only
   reference and do not reset, reformat, or edit it.
 - The client should use the larger legacy 1024x768 game canvas. Preserve those logical
@@ -147,10 +150,11 @@ process-global mutable 8 MiB vector. Concurrent decodes can overwrite one anothe
 large images force shared-buffer growth. The Rust decoder returns bounded per-call
 buffers, so independent archives can be decoded safely without a global scratch area.
 
-The supplied v83 `UI-v83.nx` contains `Login.img/NewChar`, `NewCharKnight`, and
+The v83 UI archive contains `Login.img/NewChar`, `NewCharKnight`, and
 `NewCharAran`, but not the `Login.img/CustomizeChar` node referenced by the newer C++
-creation screens. The Rust creator resolves the v83 class-specific nodes directly so
-this asset set remains usable without changing or replacing the archives.
+creation screens. The Rust creator resolves the v83 class-specific nodes directly.
+The current archive is named `UI-v83.nx`; the client treats it as the primary UI
+archive and accepts the eventual `UI.nx` name after it is renamed.
 
 The legacy C++ `CHANGE_STATS` handler reads the skin field as a 16-bit value, while the
 adjacent Cosmic v83 server writes one byte. The Rust decoder follows the server wire
@@ -198,7 +202,13 @@ and sends the matching selection index.
   has not yet been exercised against a live server response.
   The quest detail pane now lets the player choose among eligible `prop=-1` item rewards
   with on-screen arrows or Left/Right, and completion sends the corresponding v83 choice
-  index.
+  index. Incoming `SERVER_MESSAGE` packets now route v83 notices, local/global and item/triple
+  megaphones, scrolling banners, and NPC broadcasts through chat, the banner, and NPC dialogue
+  UI. The v83 `SCROLL_RESULT` response plays the NX enchant success/failure effect on the
+  affected character and displays the legacy result message locally. `SERVER_MESSAGE` popup
+  notices and `FAKE_GM_NOTICE` now use a dismissible OK modal with the v83 login notice art and
+  notice sound; Enter, Escape, and the OK button dismiss it. The v83 archive lacks the newer
+  `Basic.img/Notice6`, so the modal is composed over `Login.img/Notice/backgrnd/0`.
 
 - The minimap now reads the current map's canvas, center, magnification, portals, and marker
   art from the existing NX archives. Its collapsed and expanded panels use `UIWindow2.img`
@@ -210,13 +220,17 @@ and sends the matching selection index.
   The channel selector can be assigned from that panel too; it requests a v83 transfer and
   reconnects to the redirected channel address with the active character.
   Server key-map actions now also open the existing World Map, Monster Book, character info,
-  party search, whisper composer, and public/party/buddy/guild/alliance chat flows. The
-  Family action opens a v83-backed overview and family-member list with reputation, motto,
+  whisper composer, and public/party/buddy/guild/alliance chat flows. The
+  offline chat preview now uses the live Rust chat-panel renderer; it does not probe the newer
+  `StatusBar2.img` tree, which is absent from the selected v83 archive.
+  The Family action opens a v83-backed overview and family-member list with reputation, motto,
   junior invitations, a confirmed leave action, abilities, Y/N join and summon responses,
   and clickable pedigree navigation. The motto editor and junior invite flow use native
   keyboard/IME text input with server payload limits.
-  key-binding editor now exposes 40 implemented built-in menu, gameplay, and face actions
-  with mouse selection, scrolling, keyboard capture, and Backspace unbinding. Learned
+  key-binding editor now exposes 40 assignable built-in menu, gameplay, and face actions
+  with mouse selection, scrolling, keyboard capture, and Backspace unbinding; unsupported
+  saved actions remain visible and can be cleared. Menu action 26 opens Family as in v83,
+  action 27 remains the unsupported Boss Party action, and action 28 opens Options. Learned
   active skills and usable inventory items appear by localized name; stale skill/item
   bindings remain available to clear. The eight quick-slot keys can be rebound from the
   same panel with unique-key swapping and are saved in the legacy `QuickSlotKeys` setting;
@@ -293,7 +307,10 @@ and sends the matching selection index.
   server's v83 management operations; returned guild events keep the panel state authoritative.
   The guild panel now includes a create form, a five-title editor, and an emblem editor that
   enumerates valid background/mark IDs and color variants from `UI.nx/GuildMark.img` and
-  previews the selected bitmaps. The chat commands remain available as shortcuts.
+  previews the selected bitmaps. Guild and Alliance panels use the v83 `UIWindow.img/UserList/Guild`
+  and `GuildUnion` backgrounds from the selected UI archive, so the current `UI-v83.nx` works
+  without the newer `GuildUI.img` tree. Offline previews composite these same live panel renderers.
+  The chat commands remain available as shortcuts.
   Alliance operations now decode bounded v83 alliance snapshots and guild roster broadcasts.
   `U` opens the alliance panel; `/alliance` supports list, invite, expel, leave, notice,
   rank-title, accept, and deny actions, and Y/N answers pending invitations. Alliance rank-title, member-online,
@@ -309,13 +326,18 @@ and sends the matching selection index.
   Clicking a visible character now sends the legacy character-info request; the bounded
   response parser and NX-named panel display level/job/fame, guild/alliance, pet, mount,
   wishlist, Monster Book, and medal data; its Party, Trade, and Guild actions send the
-  corresponding invitations. Raise/Lower Fame sends the v83 fame request, enforces the
-  level-15 check, displays server rejection reasons, and updates the open panel on success.
+  corresponding invitations. The v83 `SET_TAMING_MOB_INFO` update refreshes the local
+  character's mount level, EXP, and tiredness in the open panel and seeds later character-info
+  replies when that response omits mount data. Raise/Lower Fame sends the v83 fame request,
+  enforces the level-15 check, displays server rejection reasons, and updates the open panel
+  on success.
   The character-info and fame flows have not yet been exercised against the local server.
 - The minimap now follows the legacy min/normal/max cycle: keyboard toggles visit all three
   sizes, the size buttons step one level at a time and show the disabled state at each limit,
   and NX town maps start expanded. Normal and expanded layouts use their separate
-  `UIWindow2.img/MiniMap` frame art. Offline previews cover all three states.
+  `UIWindow2.img/MiniMap` frame art when present; v83 `UIWindow.img/MiniMap` frame art is
+  resolved for the current archive, with small generated zoom controls where v83 has none.
+  Offline previews cover all three states with the active v83 UI archive.
 - The server-requested World Map now uses `Map.nx/WorldMap.img`, `MapHelper.img/worldMap`,
   and `UIWindow2.img/WorldMap` for the regional panel, current-map marker, and link navigation.
   Its search field accepts up to eight characters and filters regional markers by localized
@@ -361,8 +383,10 @@ and sends the matching selection index.
   ground level. The first map scene loads NX backgrounds, object frames, and tiles in
   legacy depth order, with viewport culling and GPU texture reuse. Background parallax,
   independent horizontal/vertical motion, and tiled wrapping follow each entry's type;
-  server obstacle packets now control map environment visibility and animation resets. A map entry
-  composes the selected character's body, head, face, hair, and equipped items. It plays
+  server obstacle packets now control map environment visibility and animation resets.
+  The v83 `SET_TRACTION` double updates local foothold friction on slippery fields, while
+  `SHOW_COMBO` drives the Aran combo counter with the legacy three-second reset display. A
+  map entry composes the selected character's body, head, face, hair, and equipped items. It plays
   authored one-handed or two-handed stand/walk frames and jump frames at NX delays.
   Character selection renders three equipped-avatar previews per page at the legacy slot
   positions; each preview hit area covers the sprite and nameplate without overlapping its
@@ -381,6 +405,8 @@ and sends the matching selection index.
   items; inventory add/count/remove/swap packets update that state, and `I` opens a
   six-tab inventory with a scrollable four-column slot grid, cached NX item icons, stack
   counts, meso, and slot capacity. Ordinary Use items send the v83 `USE_ITEM` request;
+  manual and automatic `USE_ITEM` requests play the matching `Sound.nx/Item.img` sound,
+  following the C++ exact-item, 10,000-ID group, and Red Potion fallback order.
   clicking an Equip item sends the legacy `MOVE_ITEM` request for its equipment slot, and
   clicking a worn item unequips it into the first free Equip slot. Dragging within a bag
   sends a server-authoritative `MOVE_ITEM`; inventory updates rebuild the local avatar from
@@ -396,12 +422,18 @@ and sends the matching selection index.
   Other Cash items fall through to the legacy generic `USE_ITEM` request. Pet food uses
   the distinct v83 `PET_FOOD` request so the server feeds the hungriest summoned pet, and
   activating a Cash inventory pet sends the legacy `SPAWN_PET` toggle request.
+  `AUTO_HP_POT` and `AUTO_MP_POT` now select the server-configured Use items; with a
+  summoned pet present, the client sends the matching `USE_ITEM` below 50% HP or MP and
+  applies the legacy four-second cooldown.
   Standalone pet spawn/removal and movement packets plus pet records in
   remote-character spawns now update local/remote map actors; pet stance art and names load
-  from the existing NX files. Local pets follow their owner using shared foothold physics;
+  from the existing NX files. `PET_NAMECHANGE` now refreshes the first pet's server-authored
+  name label and reports the change. Local pets follow their owner using shared foothold physics;
   the v83 pet AI selects nearby drops and sends the cash-serial `PET_LOOT` request with the
   legacy cooldowns. Pet chat bubbles and server pet-command interactions now use the pet slot,
   NX interaction results, fallback stances, and the matching pet sound category. Supported
+  server `CHALKBOARD` updates now retain or clear each character's overhead message, with a
+  board rendered for both the local character and visible remote players. Supported
   regular, super, item, and triple cash megaphones, Maple TV, avatar megaphones, and pet name
   tags compose through chat and send their v83 `USE_CASH_ITEM` payloads. Item megaphones
   accept an optional inventory attachment selected after entering the message; clicking the
@@ -438,7 +470,10 @@ and sends the matching selection index.
   applied to a chosen equipped slot with the v83 `SCROLL_EQUIP` request. Dragging an item
   outside the inventory sends the v83 drop request; stack drops accept a bounded quantity,
   cash items are blocked, and NX `tradeBlock` items require confirmation; drop quantities
-  are sent through the v83 packet. Item.nx lookup paths now match the actual nested node
+  are sent through the v83 packet. Hovering an inventory item now opens a v83-styled tooltip
+  using the `UIToolTip.img` art from `UI-v83.nx`; equipment details use the server's current
+  stats and show differences from the item's base Item.nx values. Item.nx lookup paths now
+  match the actual nested node
   names for inventory icons, drops, and projectiles; the nested item node does not include
   an `.img` suffix. Avatar frames keep
   scene draw indices separate from GPU texture indices, so dynamic equipment refreshes
@@ -458,7 +493,11 @@ and sends the matching selection index.
   sprites from the stock v83 `UI-v83.nx/StatusBar.img`. Its small controls open the implemented
   status, inventory, skill, key, and quick-slot panels; the legacy menu exposes the quest,
   social, Monster Book, and World Map screens, and the large controls open Cash Shop, Options,
-  and the `/trade` composer. The quick-slot panel hitboxes follow its bottom-bar anchor.
+  and the `/trade` composer. The Event List requests v83 `EVENT_INFO`, refreshes its local
+  countdown, and displays server descriptions, multipliers, rewards, and remaining time over
+  the v83 `UIWindow.img/EventWindow` frame from `UI-v83.nx`; it does not require the newer
+  `UIWindow2.img/EventList` or `UIWindow4.img/TimeEvent` trees. The quick-slot panel hitboxes
+  follow its bottom-bar anchor.
   An offline `native-status-bar` preview composites those same NX sprites and the transparent
   live-stat overlay over a gameplay scene to catch regressions in the legacy bottom toolbar.
   Collapsed chat keeps the latest message inside the bar and Enter expands the history panel,
@@ -491,14 +530,20 @@ and sends the matching selection index.
   changes. Map `ladderRope` geometry now supports directional Up/Down grabs, x snapping,
   fixed-step ladder/rope movement, native ladder and rope stances/animations, bounds drop-off,
   jump dismounts with the legacy climb cooldown, and synchronized v83 movement fragments.
-  Initial inventory snapshots and updates are supported; item-specific targeting,
-  server correction, complete skill/passive-stat parity, special projectile variants, and
-  other gameplay systems remain open work. The client parses v83
+  Initial inventory snapshots and deltas are supported. `INVENTORY_GROW` updates all six
+  capacity classes, including equipped slots, and refreshes the inventory grid from the
+  authoritative server value. `SET_EXTRA_PENDANT_SLOT` stores the v83 entitlement state and
+  reports activation/deactivation to the player. Item-specific targeting, server correction, complete
+  skill/passive-stat parity, special projectile variants, and other gameplay systems remain
+  open work. The client parses v83
   character spawn, remove, movement,
   and look-update packets. It also parses `SPAWN_NPC`, `REMOVE_NPC`, and `SPAWN_NPC_C`.
   Remote characters are drawn from their NX skin, face, and hair animations, with name
   labels, stance-based facing, server-position easing, and snap behavior for teleports
-  and large corrections. Character spawns retain the server's persistent item-effect ID;
+  and large corrections. Their v83 guild names and six-byte emblem values are now read
+  from `SPAWN_CHAR`; guild-name and guild-mark refresh packets update the matching remote
+  player, and guild names render in the legacy medium-blue tag below the character name.
+  Character spawns retain the server's persistent item-effect ID;
   `SHOW_ITEM_EFFECT` starts or clears it for local and remote characters. `ItemEff.img`
   flat, two-layer, and per-frame split animations loop on independent character cursors,
   and equipped rings with authored item effects refresh when equipment changes.
@@ -517,9 +562,19 @@ and sends the matching selection index.
   actor kind, and ID within each layer; foreground map art and global overlays remain in
   the final pass. Local attack casts now use the same NX level/weapon-aware effects and
   skill-selected action stances; non-attack skill casts also show their local use effects.
-  Equipment edge cases, less common skill hit variants, skill hit-sound timing, cancellation
-  and remaining non-skill foreign effects, and the full legacy character state machine remain
-  open work.
+  Remote `SPAWN_CHAR` and Monster Riding buff packets now load `Character.nx/TamingMob`
+  mount animations, use the v83 gait fallbacks and frame delays, draw the mount below the
+  rider, and follow each frame's `map/navel` seat point. Mount cancellation removes the
+  remote mount. Local Monster Riding buffs use the equipped TamedMob and the same animated
+  mount/seat path; equip and buff cancellation refresh the local state. Local and remote deaths
+  now use the v83 Tomb fall/land sequence and personalized ghost composite, preserving the
+  animation across repeated dead-state packets and remote look updates. Equipment edge cases,
+  less common skill hit variants, remaining non-skill foreign effects, and the full legacy
+  character state machine remain open work. Map `info/swim` now selects
+  the v83 swimming physics mode and `fly` avatar animation; remote `ALERT` and `SWIM` state
+  bytes also select their authored stance frames instead of being treated as attacks. Timed
+  attack impacts now use legacy action or
+  afterimage delays; live comparison against gameplay is still needed.
 - `openstory-assets` has a bounds-checked, lazy PKG4 NX reader with typed nodes, LZ4
   bitmap decoding, audio extraction, and validation of the 17 legacy data files. Its
   on-disk header and record layout match the vendored NoLifeNx definitions. Node records
@@ -602,7 +657,9 @@ and sends the matching selection index.
   signed speed value combines with weapon attack speed for local
   attacks and remote attack animations. Player ailment statuses now appear in the HUD, stun blocks movement and
   attacks, confusion reverses horizontal controls, slow reduces acceleration, seal blocks
-  skill use, and Darkness halves local attack accuracy. Poison HP changes remain
+  skill use, and Darkness halves local attack accuracy. Timed active buffs now show their
+  Skill.nx or item NX icon in the upper-right HUD, with the legacy bottom-up duration cover
+  and final-three-second flashing. Poison HP changes remain
   server-authoritative. Achilles reduction
   applies to local mob-touch damage; other active-buff effects and combat mitigation
   remain open work.
@@ -618,13 +675,19 @@ and sends the matching selection index.
   damage/miss feedback and hit sound, and emits `TAKE_DAMAGE`; HP remains authoritative.
   Contact hits now grant the legacy two-second invincibility window and character flash;
   Dark Sight protects from contact while Booster no longer incorrectly does. Remote
+  `GIVE_FOREIGN_BUFF` and `CANCEL_FOREIGN_BUFF` packets now fade and restore visible
+  characters for Dark Sight and apply or remove remote Monster Riding art. Remote
   `DAMAGE_PLAYER` feedback also flashes the actor during the same invincibility window.
   Authoritative HP changes to zero now stop local movement and attacks, play the tombstone
   sound, animate the falling/landed tomb and hovering ghost with the character's head and
   hair, and show a modal nearest-town respawn notice; OK, Enter, Escape, or Space sends the
   legacy dead-character map-change request. Position correction for the local player
   remains unavailable because this server relays `MOVE_PLAYER` only to other clients.
-  Initial `SET_FIELD` now consumes the cooldown and bounded active/completed quest sections.
+  Initial `SET_FIELD` now parses the skill cooldown list and bounded active/completed quest
+  sections, then preserves Teleport Rock destinations and reads the Monster Book cover and
+  collected cards in the legacy minigame/ring/rock order. The v83 `ADD_COOLDOWN` packet sets
+  or clears a skill's server-provided cooldown, and local skill casts honor its remaining
+  duration. `MAP_TRANSFER_RESULT` refreshes the normal or VIP saved-map list after rock use.
   `SHOW_STATUS_INFO` updates quest progress, forfeits, and completions; `J` opens an
   NX-backed available/active/completed quest log with quest descriptions, live item and monster
   objective counters, an available-quest tab, server-authoritative quest start and turn-in
@@ -649,7 +712,9 @@ and sends the matching selection index.
   uploading its art a second time or resetting an already acknowledged control claim.
   Mob stance fallback, direction metadata, death frames,
   and removal are connected to map state. Mob HP percentage and bounded status-mask
-  packets update map state. HP bars appear for two seconds; stun, freeze, and shadow-web
+  packets update map state. HP bars appear for two seconds; boss mobs also show a four-second
+  top-center HP gauge built from the v83 `UIWindow.img/MobGage` frames and boss icons, with
+  names resolved from `String.nx`. Stun, freeze, and shadow-web
   statuses hold the mob in its stand animation until cancelled. `DAMAGE_MONSTER` displays
   the legacy `Effect.nx` digit sprites above a mob using a single GPU atlas, with the
   legacy rise and fade timing. A missing death clip falls back to an available mob stance
@@ -673,7 +738,10 @@ and sends the matching selection index.
   state; stand/fly animation frames load from `Skill.nx`, with skill effect frames as a
   fallback. Server movement fragments update absolute and relative summon positions, and
   non-stationary summons use shared foothold physics between updates; animated summons
-  participate in actor depth sorting. Bounded `DROP_LOOT` and `REMOVE_LOOT` parsers update
+  participate in actor depth sorting. `SPAWN_DRAGON`, `MOVE_DRAGON`, and `REMOVE_DRAGON`
+  now animate Evan dragons from the five job-tiered `Mob.nx` growth-stage assets, update
+  their facing and movement, and advance them with map foothold physics; `native-dragon`
+  previews the v83 sprite. Bounded `DROP_LOOT` and `REMOVE_LOOT` parsers update
   map drops, which resolve item/meso `iconRaw` assets from the existing NX files, animate
   meso frames, use shared foothold physics to fall and land, and fade or magnet toward the
   looter on removal. Duplicate active drops preserve their motion, and pet pickup effects
@@ -755,16 +823,45 @@ and sends the matching selection index.
   and hidden portal animations load from `MapHelper.img`; hidden portals reveal on contact.
   Holding Up/W inside a portal follows the 48-tick warp cooldown, locally respawns at a named
   same-map destination, or sends the legacy `CHANGE_MAP` request for a cross-map transition.
-  other combat mitigation, special projectile variants and remaining skill damage formula
+  `SPAWN_DOOR`/`REMOVE_DOOR` and `SPAWN_PORTAL` now create or remove server-owned doors;
+  door animations use the dedicated `MapHelper.img/portal/game/portal` node when present and
+  fall back to the visible v83 portal animation when that node is absent. Server
+  `CLOCK` time/countdown packets and `STOP_CLOCK` now drive the top-center v83 timer, using
+  `UIWindow.img/muruengRaid` assets from the selected UI archive; countdown expiry follows
+  the legacy fixed-step cadence, and `native-clock` provides an offline asset preview.
+  Monster Carnival opcodes 289–294 now parse start, individual/party CP, summon, phase-message,
+  and elimination updates. The client displays the v83 `UIWindow.img/MonsterCarnival` panel
+  from `UI-v83.nx`, including team/CP/summon counts, with the legacy close and side-view actions;
+  `native-monster-carnival` provides an offline preview.
+  `PLAYER_HINT`, `BROADCAST_MSG`, OX Quiz, Snowball, and Coconut event packets now follow the
+  C++ chat notifications with bounded v83 payload parsing. Ariant result, Pyramid score,
+  Dojo warp-up, and Tournament state notifications use the same event parser.
+  `MAKER_RESULT` now decodes craft, crystal, and disassembly payloads, resolves item names from
+  the existing String NX archive, and reports the resulting item changes in chat.
+  `WEEK_EVENT_MESSAGE`, `BLOCKED_MAP`, and `BLOCKED_SERVER` now preserve MapleTip/notice text
+  and surface the v83 entry or channel restriction reason.
+  Monster Rider catch, item-assisted catch, and Bridle failure results also report the server's
+  success or failure message. `SET_AVATAR_MEGAPHONE` and `CLEAR_AVATAR_MEGAPHONE` now consume
+  the v83 packet layout, render the sender's character and four message strings in the 10-second
+  Map.nx banner, and select the Burning/Bright/Heart/Tiger variants. The renderer follows the
+  three authored message rows and drops overflow as the C++ client does; `native-avatar-megaphone`
+  provides an offline preview using the same v83 archive art.
+  `SET_BACK_EFFECT` now resolves and plays the server-selected map effect through the same
+  v83 NX animation path as field effects. Remaining combat
+  mitigation, special projectile variants and remaining skill damage formula
   cases, mob skill-effect visuals (server-selected mob skills now send their matching client
   action and play its NX animation when available, and `SPAWN_MIST`/`REMOVE_MIST` render the
   legacy colored area regions), and disease applications now play their per-level
   `Skill.nx/MobSkill.img` animation when the server-selected Seal, Darkness, or Weakness
-  skill has authored effect frames. Local `GIVE_BUFF` and disease-only `GIVE_FOREIGN_BUFF`
-  packets drive the animation; foreign disease decoding also handles Cosmic's persisted Slow
-  mask layout. Other disease skills have no authored NX effect frames in this v83 asset set.
-  Remaining disease-specific visuals and shop inventory restrictions
-  remain open work.
+  skill has authored effect frames. Local `GIVE_BUFF` and disease `GIVE_FOREIGN_BUFF` packets
+  drive the animation; foreign disease decoding also handles Cosmic's persisted Slow mask
+  layout. Other disease skills have no authored NX effect frames in this v83 asset set.
+  Mob status drawing follows the C++ frozen double-pass blue overlay while preserving the
+  NX-authored mob pose and other status tints.
+  NPC shop sell lists now reject `notSale` and cash items. Personal-shop and hired-merchant
+  stock selection and submission reject cash items and NX `tradeBlock` items, including a
+  second check against the current inventory slot before sending. Remaining disease-specific
+  visuals and other shop restrictions remain open work.
 - The native macOS client build passes. This pass validates macOS only. The target
   boundaries retain Windows and browser/WASM as future platform goals; WASM still needs
   a browser lifecycle, a browser-backed asset source, and a WebSocket adapter, and
@@ -772,12 +869,26 @@ and sends the matching selection index.
 - Native `Sound.nx` skill-use sounds now follow local skill casts and remote skill-use or
   attack packets through the existing distance-attenuated mixer. The audio payload cache
   evicts older entries at a 64 MiB/4096-entry bound so new sounds can still be cached.
-  Escape opens the options panel with live BGM/effects and HP/MP warning sliders; a zero
-  warning threshold disables that overlay. The low-resource screen tint follows the v83
-  threshold and intensity behavior. Audio and gameplay preferences persist in per-user
-  platform settings files, and cancel restores the saved values. Key bindings, graphics/
-  effect quality controls, screen-shake behavior, social preferences, skill hit-sound
-  timing, broader legacy sound coverage, and a browser audio backend remain open work.
+  Escape opens the options panel with graphics/effects quality, BGM/SFX and mute, mouse
+  speed, HP/MP warnings, screen shake, windowed mode, and the legacy 800x600/1024x768 choices.
+  Saved `Width`, `Height`, and `Fullscreen` values configure startup and the Options controls
+  apply display changes live. Graphics quality follows the legacy thresholds for
+  foregrounds, environments, mists, and weather; effects quality applies the legacy 2–50
+  concurrent-effect budget to rendered skill, projectile, damage, quest-clear, and screen
+  effects. A zero warning threshold disables its low-resource overlay. Audio, display, input,
+  gameplay, and all twelve v83 social permission values persist in per-user platform settings
+  files, and cancel restores the saved values. Mute is session-only like the C++ client;
+  Windows applies its system mouse-speed mapping, while other platforms preserve the C++
+  no-op. Supported whisper, group-chat, invite, family, and trade receive paths honor their
+  permissions; expedition and follow request flows are not yet implemented. Skill hit sounds
+  resolve `Sound.nx/Skill.img/<skill>/Hit` at local or remote targets using the v83 action
+  timeline's signed frame delays, the weapon afterimage first-frame fallback, and the legacy
+  attack-speed factor. The same timeline schedules each target's hit effect and damage line;
+  a missing action frame retains the C++ zero-delay behavior. Live timing comparison and
+  the remaining sound coverage still need a gameplay run.
+  The C++ client stores the screen-shake preference but has no shake trigger path;
+  simple-minimap mode, the unsupported legacy menu actions, broader legacy sound coverage,
+  and a browser audio backend remain open work.
 - The mage damage formula and equipment/buff stat path compile for native macOS. The
   C++ client does not apply parsed `mad` to the damage range, so matching the corrected
   local damage display against server-authoritative combat remains to be confirmed in a
@@ -803,3 +914,39 @@ and sends the matching selection index.
   server failure feedback, and additional client screens. The browser lifecycle, WebSocket
   gateway, ranged asset delivery, persistence, and browser audio adapter also remain future
   work; native macOS is the first delivery target.
+- v83 guild/family level-up and job-advancement packets now decode their group, name, and
+  level/job fields and display the matching legacy yellow chat notice.
+- v83 spouse/fiance chat and ship transition/status packets now decode into the legacy
+  red/yellow chat notices. `FORCED_MAP_EQUIP` now reports the server-applied map restriction.
+- v83 marriage requests/results, wedding gift results, and partner map changes retain the
+  reference client's social feedback in chat. Ceremony progress/end packets use the v83
+  `UIWindow.img/Wedding` Cathedral panel and server-provided countdown; `native-wedding`
+  previews the panel offline from the active v83 UI archive. The countdown keeps the reference
+  placement over the invitation copy and still needs a contrast/layout pass.
+- `SPAWN_GUIDE` and both `TALK_GUIDE` modes now display the reference client's yellow chat
+  feedback. Canned text resolves from the selected v83 UI archive's `tutorial.img`, then falls
+  back to its legacy hint ID when only tutorial art is present.
+- The `LEFT_KNOCK_BACK` response now applies the C++ client's `hspeed = -4` impulse to the
+  local map player.
+- `PET_EXCEPTION_LIST` now bounded-parses its pet ID and signed item list and displays the
+  reference handler's exclusion-count notice.
+- `LOCK_UI` and `DISABLE_UI` now share a v83 boolean parser and gate mouse-driven UI actions;
+  keyboard input remains available like the reference client.
+- Added v83 feedback for character-report results, the under-level trade meso limit, Vicious
+  Hammer, and Vega Scroll; report results use the existing dismissible OK notice.
+- MapleLife name rejection/error and New Year card result packets retain the C++ client's
+  v83 feedback messages.
+- `IMITATED_NPC` now decodes the v83 disguise look, renders the NPC as the supplied player
+  avatar with the installed Character NX equipment, and removes the NPC on the mode-zero
+  packet, matching the reference handler.
+- `THROW_GRENADE` now plays the remote caster's skill action and draws the skill's authored
+  `effect` animation once at the server-provided landing point, using the v83 skill NX data.
+- `SCRIPT_PROGRESS_MESSAGE` and `CANNOT_SPAWN_KITE` now render as fading v83 status text;
+  kite spawn/removal packets retain the reference yellow chat notices. Server `PING` packets
+  now receive the v83 `PONG` response on the active session. Name-change/world-transfer
+  cancellation results and incubator completion also retain their v83 chat notices. Cash Shop
+  name-availability, name-change eligibility, world-transfer results, and Gachapon outcomes now
+  use the reference client's transient status or chat feedback.
+- `RPS_GAME` now opens the server-driven Rock-Paper-Scissors panel from the v83
+  `UIWindow.img/RpsGame` assets. Start, hand selection, retry/continue, exit and Escape controls
+  follow the reference packet flow, and results update the displayed hands and win count.

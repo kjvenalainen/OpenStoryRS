@@ -152,6 +152,7 @@ impl ClientApp {
         if self.character_list.is_none()
             || self.character_creation.is_some()
             || self.show_login_fields
+            || self.current_field.is_some()
         {
             return false;
         }
