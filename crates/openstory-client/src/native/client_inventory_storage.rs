@@ -137,8 +137,11 @@ impl ClientApp {
     }
 
     pub(super) fn update_inventory_hover(&mut self) -> bool {
+        let cursor = self
+            .cursor
+            .map(|cursor| self.dialog_window_input_cursor(cursor));
         let hovered_slot = if self.show_inventory && self.inventory_drag_source.is_none() {
-            self.cursor
+            cursor
                 .and_then(|cursor| inventory_slot_at(cursor, self.inventory_scroll_row))
                 .filter(|slot| {
                     self.inventory.as_ref().is_some_and(|inventory| {

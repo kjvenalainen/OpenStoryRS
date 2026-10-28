@@ -398,6 +398,20 @@ fn draw_status_bar_number(
     right: i32,
     y: i32,
 ) {
+    draw_status_bar_number_scaled(font, pixels, width, height, text, right, y, 1.0, None);
+}
+
+fn draw_status_bar_number_scaled(
+    font: &StatusBarNumberFont,
+    pixels: &mut [u8],
+    width: usize,
+    height: usize,
+    text: &str,
+    right: i32,
+    y: i32,
+    scale: f32,
+    tint: Option<[u8; 3]>,
+) {
     let mut shift = 0_i32;
     for character in text.chars().rev() {
         let character = match character {
@@ -410,35 +424,51 @@ fn draw_status_bar_number(
         let Some(glyph) = font.glyphs.get(&character) else {
             continue;
         };
-        shift += glyph.width as i32;
-        let left = right - shift - glyph.origin_x;
-        let top = y - glyph.origin_y;
-        for source_y in 0..glyph.height as i32 {
-            let destination_y = top + source_y;
+        let glyph_width = (glyph.width as f32 * scale).round() as i32;
+        let glyph_height = (glyph.height as f32 * scale).round() as i32;
+        let left = right - shift - (glyph.origin_x as f32 * scale).round() as i32;
+        let top = y - (glyph.origin_y as f32 * scale).round() as i32;
+        shift += glyph_width;
+        for destination_offset_y in 0..glyph_height {
+            let destination_y = top + destination_offset_y;
             if !(0..height as i32).contains(&destination_y) {
                 continue;
             }
-            for source_x in 0..glyph.width as i32 {
-                let destination_x = left + source_x;
+            let source_y = ((destination_offset_y as f32 / scale).floor() as i32)
+                .clamp(0, glyph.height as i32 - 1);
+            for destination_offset_x in 0..glyph_width {
+                let destination_x = left + destination_offset_x;
                 if !(0..width as i32).contains(&destination_x) {
                     continue;
                 }
+                let source_x = ((destination_offset_x as f32 / scale).floor() as i32)
+                    .clamp(0, glyph.width as i32 - 1);
                 let source = (source_y as usize * glyph.width as usize + source_x as usize) * 4;
                 let destination = (destination_y as usize * width + destination_x as usize) * 4;
                 let alpha = u16::from(glyph.pixels[source + 3]);
                 if alpha == 0 {
                     continue;
                 }
+                let mut source_pixel = [
+                    glyph.pixels[source],
+                    glyph.pixels[source + 1],
+                    glyph.pixels[source + 2],
+                ];
+                if let Some([red, green, blue]) = tint {
+                    source_pixel[0] = ((u16::from(source_pixel[0]) * u16::from(blue)) / 255) as u8;
+                    source_pixel[1] = ((u16::from(source_pixel[1]) * u16::from(green)) / 255) as u8;
+                    source_pixel[2] = ((u16::from(source_pixel[2]) * u16::from(red)) / 255) as u8;
+                }
                 let destination_alpha = u16::from(pixels[destination + 3]);
                 if destination_alpha == 0 {
-                    pixels[destination..destination + 4]
-                        .copy_from_slice(&glyph.pixels[source..source + 4]);
+                    pixels[destination..destination + 3].copy_from_slice(&source_pixel);
+                    pixels[destination + 3] = alpha as u8;
                     continue;
                 }
                 let inverse = 255 - alpha;
                 let output_alpha = alpha + (destination_alpha * inverse + 127) / 255;
                 for channel in 0..3 {
-                    let source_color = u32::from(glyph.pixels[source + channel]);
+                    let source_color = u32::from(source_pixel[channel]);
                     let destination_color = u32::from(pixels[destination + channel]);
                     let numerator = source_color * u32::from(alpha)
                         + (destination_color * u32::from(destination_alpha) * u32::from(inverse)
@@ -758,9 +788,74 @@ fn build_v83_status_bar_sprites(
     String,
 > {
     const BAR_TOP: f32 = 697.0;
-    const GAUGE_X: f32 = 156.0;
-    const GAUGE_Y: f32 = 734.0;
     let mut sprites = Vec::with_capacity(24);
+    // The full v83 strip carries the right-side controls; backgrnd2 is the
+    // compact status panel shown in the reference and supplies its NX frame.
+    append_status_bar_bitmap(
+        &mut sprites,
+        archive,
+        "StatusBar.img/base/backgrnd",
+        0.0,
+        BAR_TOP,
+        1024.0,
+        71.0,
+        None,
+    )?;
+    append_status_bar_bitmap(
+        &mut sprites,
+        archive,
+        "StatusBar.img/base/backgrnd2",
+        0.0,
+        BAR_TOP - 12.0,
+        570.0,
+        71.0,
+        None,
+    )?;
+    // The compact panel includes LV/HP/MP/EXP legends, so omit the caption row
+    // from gauge/bar to keep those labels from being drawn a second time.
+    // Keep the first three non-gauge entries as the base, compact panel, and
+    // gauge track before live gauge fills.
+    let gauge_x = 219.0;
+    append_status_bar_bitmap(
+        &mut sprites,
+        archive,
+        "StatusBar.img/gauge/graduation",
+        gauge_x,
+        BAR_TOP + 32.0,
+        340.0,
+        31.0,
+        None,
+    )?;
+    let hp_gauge = append_status_bar_bitmap(
+        &mut sprites,
+        archive,
+        "StatusBar.img/gauge/bar",
+        gauge_x + 2.0,
+        BAR_TOP + 46.0,
+        105.0,
+        16.0,
+        Some((2, 15, 105, 16)),
+    )?;
+    let mp_gauge = append_status_bar_bitmap(
+        &mut sprites,
+        archive,
+        "StatusBar.img/gauge/bar",
+        gauge_x + 110.0,
+        BAR_TOP + 46.0,
+        105.0,
+        16.0,
+        Some((110, 15, 105, 16)),
+    )?;
+    let exp_gauge = append_status_bar_bitmap(
+        &mut sprites,
+        archive,
+        "StatusBar.img/gauge/bar",
+        gauge_x + 223.0,
+        BAR_TOP + 46.0,
+        115.0,
+        16.0,
+        Some((223, 15, 115, 16)),
+    )?;
     let mut add = |path: &str,
                    x: f32,
                    y: f32,
@@ -769,56 +864,6 @@ fn build_v83_status_bar_sprites(
                    crop: Option<(u32, u32, u32, u32)>| {
         append_status_bar_bitmap(&mut sprites, archive, path, x, y, width, height, crop)
     };
-
-    add(
-        "StatusBar.img/base/backgrnd",
-        0.0,
-        BAR_TOP,
-        1024.0,
-        71.0,
-        None,
-    )?;
-    add(
-        "StatusBar.img/gauge/graduation",
-        GAUGE_X,
-        GAUGE_Y,
-        340.0,
-        31.0,
-        None,
-    )?;
-    add(
-        "StatusBar.img/gauge/bar",
-        GAUGE_X,
-        GAUGE_Y,
-        340.0,
-        15.0,
-        Some((0, 0, 340, 15)),
-    )?;
-
-    let hp_gauge = add(
-        "StatusBar.img/gauge/bar",
-        GAUGE_X + 2.0,
-        GAUGE_Y + 15.0,
-        105.0,
-        16.0,
-        Some((2, 15, 105, 16)),
-    )?;
-    let mp_gauge = add(
-        "StatusBar.img/gauge/bar",
-        GAUGE_X + 110.0,
-        GAUGE_Y + 15.0,
-        105.0,
-        16.0,
-        Some((110, 15, 105, 16)),
-    )?;
-    let exp_gauge = add(
-        "StatusBar.img/gauge/bar",
-        GAUGE_X + 223.0,
-        GAUGE_Y + 15.0,
-        115.0,
-        16.0,
-        Some((223, 15, 115, 16)),
-    )?;
 
     let small_x = 1024.0 - 8.0 - (6.0 * 28.0 + 5.0 * 2.0);
     let small_y = BAR_TOP + 5.0;

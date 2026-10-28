@@ -5,6 +5,7 @@ impl ClientApp {
         let local_id = self.active_character.as_ref().map(|character| character.id);
         let pixels = render_party_panel(
             &self.font,
+            &self.ui_archive,
             self.party_state.as_ref(),
             self.pending_party_invite.as_ref(),
             local_id,

@@ -1,4 +1,5 @@
 fn render_chat_panel(
+    ui_archive: &NxArchive,
     font: &fontdue::Font,
     lines: &VecDeque<ChatLine>,
     input: &str,
@@ -9,71 +10,32 @@ fn render_chat_panel(
     let width = CHAT_WIDTH as usize;
     let height = CHAT_HEIGHT as usize;
     let mut pixels = vec![0; width * height * 4];
-    fill_dialogue_rect(
-        &mut pixels,
-        width,
-        height,
-        0,
-        0,
-        width,
-        height,
-        [16, 14, 12, 205],
-    );
-    fill_dialogue_rect(
-        &mut pixels,
-        width,
-        height,
-        0,
-        0,
-        width,
-        2,
-        [112, 96, 72, 230],
-    );
-    fill_dialogue_rect(
-        &mut pixels,
-        width,
-        height,
-        0,
-        height - 2,
-        width,
-        2,
-        [112, 96, 72, 230],
-    );
-    fill_dialogue_rect(
-        &mut pixels,
-        width,
-        height,
-        0,
-        0,
-        2,
-        height,
-        [112, 96, 72, 230],
-    );
-    fill_dialogue_rect(
-        &mut pixels,
-        width,
-        height,
-        width - 2,
-        0,
-        2,
-        height,
-        [112, 96, 72, 230],
-    );
-    let heading = format!("{} Chat", target.label());
-    draw_dialogue_text(
-        font,
-        &mut pixels,
-        width,
-        height,
-        &heading,
-        12,
-        7,
-        12.0,
-        width - 24,
-        16,
-        [226, 205, 158],
-    );
-    let first = lines.len().saturating_sub(6);
+    if open {
+        // Keep this authored v83 frame at its native 295x240 size.
+        let _ = composite_nx_ui_bitmap(
+            &mut pixels,
+            width,
+            height,
+            ui_archive,
+            "UIWindow.img/Messenger/backgrnd2",
+            0,
+            0,
+        );
+    } else {
+        // The collapsed chat surface follows the v83 status-bar chat strip.
+        let _ = composite_nx_ui_bitmap_scaled_to(
+            &mut pixels,
+            width,
+            height,
+            ui_archive,
+            "StatusBar.img/base/backgrnd2",
+            0,
+            0,
+            width,
+            71,
+        );
+    }
+    let first = lines.len().saturating_sub(if open { 6 } else { 1 });
     for (row, line) in lines.iter().skip(first).enumerate() {
         draw_dialogue_text(
             font,
@@ -82,23 +44,24 @@ fn render_chat_panel(
             height,
             &line.text,
             12,
-            27 + row as i32 * 17,
+            (if open { 52 } else { 27 }) + row as i32 * 15,
             12.0,
             width - 24,
             16,
-            line.color,
+            readable_chat_panel_color(line.color),
         );
     }
-    fill_dialogue_rect(
-        &mut pixels,
-        width,
-        height,
-        10,
-        height - 30,
-        width - 20,
-        1,
-        [84, 76, 62, 220],
-    );
+    if open {
+        let _ = composite_nx_ui_bitmap(
+            &mut pixels,
+            width,
+            height,
+            ui_archive,
+            "StatusBar.img/base/chat",
+            6,
+            height as i32 - 32,
+        );
+    }
     let prompt = if open {
         format!("[{}] >", composer_label.unwrap_or_else(|| target.label()))
     } else {
@@ -112,11 +75,11 @@ fn render_chat_panel(
         height,
         &prompt,
         12,
-        height as i32 - 23,
+        if open { height as i32 - 23 } else { 43 },
         12.0,
         width - 24,
         16,
-        [205, 194, 168],
+        [76, 59, 43],
     );
     if !input.is_empty() {
         draw_dialogue_text(
@@ -126,17 +89,28 @@ fn render_chat_panel(
             height,
             input,
             input_x,
-            height as i32 - 23,
+            if open { height as i32 - 23 } else { 43 },
             12.0,
             (width as i32 - input_x - 12).max(1) as usize,
             16,
-            [255, 255, 255],
+            [58, 47, 38],
         );
     }
     pixels
 }
 
+fn readable_chat_panel_color(color: [u8; 3]) -> [u8; 3] {
+    let luminance =
+        (u16::from(color[0]) * 54 + u16::from(color[1]) * 183 + u16::from(color[2]) * 19) / 256;
+    if luminance > 145 {
+        color.map(|channel| ((u16::from(channel) * 2) / 5) as u8)
+    } else {
+        color
+    }
+}
+
 fn render_whisper_panel(
+    ui_archive: &NxArchive,
     font: &fontdue::Font,
     conversation: &WhisperConversation,
     input_focused: bool,
@@ -145,104 +119,23 @@ fn render_whisper_panel(
     let width = WHISPER_PANEL_WIDTH as usize;
     let height = WHISPER_PANEL_HEIGHT as usize;
     let mut pixels = vec![0; width * height * 4];
-    fill_dialogue_rect(
+    let _ = composite_nx_ui_layers(
         &mut pixels,
         width,
         height,
-        0,
-        0,
-        width,
-        height,
-        [18, 16, 14, 238],
+        ui_archive,
+        &[
+            ("UIWindow.img/Messenger/backgrnd", 0, 0),
+            ("UIWindow.img/Messenger/backgrnd2", 0, 0),
+            ("UIWindow.img/Messenger/backgrnd3", 14, 330),
+            ("UIWindow.img/Messenger/BtEnter/normal/0", 205, 333),
+        ],
     );
-    fill_dialogue_rect(
-        &mut pixels,
-        width,
-        height,
-        0,
-        0,
-        width,
-        34,
-        [80, 61, 39, 255],
-    );
-    for (x, y, rect_width, rect_height) in [
-        (0, 0, width, 2),
-        (0, height - 2, width, 2),
-        (0, 0, 2, height),
-        (width - 2, 0, 2, height),
-    ] {
-        fill_dialogue_rect(
-            &mut pixels,
-            width,
-            height,
-            x,
-            y,
-            rect_width,
-            rect_height,
-            [202, 177, 126, 255],
-        );
-    }
-    let title = if conversation.target.is_empty() {
-        "New Whisper".to_owned()
-    } else {
-        format!("Whisper with {}", conversation.target)
-    };
-    draw_dialogue_text(
-        font,
-        &mut pixels,
-        width,
-        height,
-        &title,
-        12,
-        9,
-        14.0,
-        width - 54,
-        20,
-        [236, 223, 192],
-    );
-    fill_dialogue_rect(
-        &mut pixels,
-        width,
-        height,
-        width - 31,
-        6,
-        22,
-        22,
-        [105, 62, 48, 255],
-    );
-    draw_dialogue_text(
-        font,
-        &mut pixels,
-        width,
-        height,
-        "×",
-        width as i32 - 24,
-        8,
-        16.0,
-        15,
-        18,
-        [255, 237, 217],
-    );
-
     let recipient = if conversation.target.is_empty() {
         "To: enter a character name".to_owned()
     } else {
         format!("To: {}", conversation.target)
     };
-    fill_dialogue_rect(
-        &mut pixels,
-        width,
-        height,
-        10,
-        37,
-        width - 20,
-        24,
-        if target_focused {
-            [64, 57, 47, 255]
-        } else {
-            [34, 30, 25, 255]
-        },
-    );
     draw_dialogue_text(
         font,
         &mut pixels,
@@ -250,20 +143,18 @@ fn render_whisper_panel(
         height,
         &recipient,
         16,
-        41,
+        34,
         12.0,
         width - 32,
         18,
-        if target_focused {
-            [255, 255, 255]
-        } else {
-            [205, 194, 168]
-        },
+        [56, 48, 39],
     );
 
     let visible_lines = 9;
     let first = conversation.lines.len().saturating_sub(visible_lines);
-    for (row, line) in conversation.lines.iter().skip(first).enumerate() {
+    let visible_messages = conversation.lines.iter().skip(first).collect::<Vec<_>>();
+    let row_start = 120;
+    for (row, line) in visible_messages.into_iter().enumerate() {
         let wrapped = wrap_speech_text(font, &line.text, 12.0, width - 24, 1);
         if let Some(text) = wrapped.first() {
             draw_dialogue_text(
@@ -273,26 +164,16 @@ fn render_whisper_panel(
                 height,
                 text,
                 12,
-                66 + row as i32 * 18,
+                row_start + row as i32 * 14,
                 12.0,
                 width - 24,
                 16,
-                line.color,
+                readable_chat_panel_color(line.color),
             );
         }
     }
-    fill_dialogue_rect(
-        &mut pixels,
-        width,
-        height,
-        10,
-        height - 34,
-        width - 20,
-        1,
-        [104, 91, 72, 240],
-    );
     let input = conversation.input.trim_end();
-    let input_width = width - 24;
+    let input_width = 176;
     let mut visible_input = input.to_owned();
     let full_input_width = dialogue_text_width(font, &format!("> {input}"), 12.0);
     if full_input_width > input_width as f32 {
@@ -302,36 +183,30 @@ fn render_whisper_panel(
             visible_input.remove(0);
         }
         visible_input.insert(0, '…');
-    } else if !input_focused || target_focused {
+    } else if !input_focused || target_focused || input.is_empty() {
         visible_input.clear();
-    } else {
-        visible_input.insert_str(0, "> ");
     }
-    let prompt = if input_focused && !target_focused {
-        visible_input
-    } else if input_focused {
-        "Type a name · Tab to message".to_owned()
-    } else {
-        "Click to type · Esc hides input".to_owned()
-    };
-    draw_dialogue_text(
-        font,
-        &mut pixels,
-        width,
-        height,
-        &prompt,
-        12,
-        height as i32 - 26,
-        12.0,
-        input_width,
-        18,
-        [205, 194, 168],
-    );
+    if input_focused && !target_focused && !visible_input.is_empty() {
+        draw_dialogue_text(
+            font,
+            &mut pixels,
+            width,
+            height,
+            &visible_input,
+            20,
+            height as i32 - 30,
+            12.0,
+            input_width,
+            18,
+            [60, 49, 39],
+        );
+    }
     pixels
 }
 
 fn render_party_panel(
     font: &fontdue::Font,
+    ui_archive: &NxArchive,
     party: Option<&openstory_protocol::PartySnapshot>,
     invite: Option<&(i32, String)>,
     local_id: Option<i32>,
@@ -339,55 +214,19 @@ fn render_party_panel(
     let width = PARTY_PANEL_WIDTH as usize;
     let height = PARTY_PANEL_HEIGHT as usize;
     let mut pixels = vec![0; width * height * 4];
-    fill_dialogue_rect(
+    let _ = composite_nx_ui_layers(
         &mut pixels,
         width,
         height,
-        0,
-        0,
-        width,
-        height,
-        [16, 14, 12, 225],
-    );
-    fill_dialogue_rect(
-        &mut pixels,
-        width,
-        height,
-        0,
-        0,
-        width,
-        2,
-        [112, 96, 72, 255],
-    );
-    fill_dialogue_rect(
-        &mut pixels,
-        width,
-        height,
-        0,
-        height - 2,
-        width,
-        2,
-        [112, 96, 72, 255],
-    );
-    fill_dialogue_rect(
-        &mut pixels,
-        width,
-        height,
-        0,
-        0,
-        2,
-        height,
-        [112, 96, 72, 255],
-    );
-    fill_dialogue_rect(
-        &mut pixels,
-        width,
-        height,
-        width - 2,
-        0,
-        2,
-        height,
-        [112, 96, 72, 255],
+        ui_archive,
+        &[
+            ("UIWindow.img/UserList/backgrnd", 0, 0),
+            ("UIWindow.img/UserList/Tab/disabled/0", 0, 0),
+            ("UIWindow.img/UserList/Tab/enabled/1", 0, 0),
+            ("UIWindow.img/UserList/Tab/disabled/2", 0, 0),
+            ("UIWindow.img/UserList/Tab/disabled/3", 0, 0),
+            ("UIWindow.img/UserList/Party/party0", 10, 115),
+        ],
     );
     draw_dialogue_text(
         font,
@@ -395,12 +234,12 @@ fn render_party_panel(
         width,
         height,
         "Party",
-        12,
-        7,
-        15.0,
+        22,
+        61,
+        12.0,
         width - 24,
         18,
-        [226, 205, 158],
+        [37, 37, 37],
     );
     if let Some(party) = party {
         let leader = party
@@ -414,13 +253,13 @@ fn render_party_panel(
             &mut pixels,
             width,
             height,
-            &format!("ID {} · Leader {leader}", party.party_id),
-            12,
-            28,
-            11.0,
-            width - 24,
-            16,
-            [195, 195, 195],
+            &format!("Party {} · Leader {leader}", party.party_id),
+            20,
+            92,
+            9.0,
+            width - 40,
+            14,
+            [65, 65, 65],
         );
         if party.members.is_empty() {
             draw_dialogue_text(
@@ -429,16 +268,16 @@ fn render_party_panel(
                 width,
                 height,
                 "Waiting for member details…",
-                12,
-                63,
-                12.0,
+                37,
+                139,
+                11.0,
                 width - 24,
                 18,
-                [210, 210, 210],
+                [45, 45, 45],
             );
         }
         for (index, member) in party.members.iter().take(6).enumerate() {
-            let y = 51 + index as i32 * 25;
+            let y = 142 + index as i32 * 18;
             let leader_mark = if member.character_id == party.leader_id {
                 "★ "
             } else {
@@ -464,39 +303,41 @@ fn render_party_panel(
                 width,
                 height,
                 &line,
-                12,
-                y,
-                11.0,
-                width - 24,
-                16,
+                27,
+                y - 2,
+                10.0,
+                width - 55,
+                15,
                 if member.channel < 0 {
-                    [150, 150, 150]
+                    [130, 130, 130]
                 } else {
-                    [225, 225, 225]
+                    [35, 35, 35]
                 },
             );
             if let Some((hp, max_hp)) = member.hp.filter(|(_, max_hp)| *max_hp > 0) {
-                let bar_width = (width - 26) * hp.clamp(0, max_hp) as usize / max_hp as usize;
-                fill_dialogue_rect(
+                let bar_width = 63 * hp.clamp(0, max_hp) as usize / max_hp as usize;
+                let _ = composite_nx_ui_bitmap(
                     &mut pixels,
                     width,
                     height,
-                    14,
-                    (y + 16) as usize,
-                    width - 28,
-                    3,
-                    [60, 48, 42, 255],
+                    ui_archive,
+                    "UIWindow.img/UserList/Party/PartyHP/GaugeBar/bar",
+                    27,
+                    y + 18,
                 );
-                fill_dialogue_rect(
-                    &mut pixels,
-                    width,
-                    height,
-                    14,
-                    (y + 16) as usize,
-                    bar_width,
-                    3,
-                    [80, 190, 95, 255],
-                );
+                if bar_width > 0 {
+                    let _ = composite_nx_ui_bitmap_scaled_to(
+                        &mut pixels,
+                        width,
+                        height,
+                        ui_archive,
+                        "UIWindow.img/UserList/Party/PartyHP/GaugeBar/gauge",
+                        27,
+                        (y + 18) as usize,
+                        bar_width,
+                        7,
+                    );
+                }
             }
         }
     } else {
@@ -506,34 +347,24 @@ fn render_party_panel(
             width,
             height,
             "You are not in a party.",
-            12,
-            36,
-            12.0,
+            27,
+            136,
+            11.0,
             width - 24,
             18,
-            [210, 210, 210],
+            [45, 45, 45],
         );
     }
     if let Some((party_id, inviter)) = invite {
         let display_name = inviter.strip_prefix("PS: ").unwrap_or(inviter);
-        fill_dialogue_rect(
-            &mut pixels,
-            width,
-            height,
-            10,
-            height - 42,
-            width - 20,
-            1,
-            [84, 76, 62, 255],
-        );
         draw_dialogue_text(
             font,
             &mut pixels,
             width,
             height,
             &format!("Invite from {display_name} (#{party_id})"),
-            12,
-            height as i32 - 36,
+            20,
+            height as i32 - 46,
             11.0,
             width - 24,
             16,
@@ -545,8 +376,8 @@ fn render_party_panel(
             width,
             height,
             "/party accept  ·  /party deny",
-            12,
-            height as i32 - 20,
+            20,
+            height as i32 - 28,
             10.0,
             width - 24,
             14,
@@ -559,8 +390,8 @@ fn render_party_panel(
             width,
             height,
             "O toggles this panel · /party controls",
-            12,
-            height as i32 - 19,
+            20,
+            height as i32 - 27,
             10.0,
             width - 24,
             14,
@@ -1030,6 +861,7 @@ fn render_owl_panel(
 
 fn render_buddy_panel(
     font: &fontdue::Font,
+    ui_archive: &NxArchive,
     buddies: &[openstory_protocol::BuddyEntry],
     capacity: u8,
     total_buddies: usize,
@@ -1040,55 +872,21 @@ fn render_buddy_panel(
     let width = BUDDY_PANEL_WIDTH as usize;
     let height = BUDDY_PANEL_HEIGHT as usize;
     let mut pixels = vec![0; width * height * 4];
-    fill_dialogue_rect(
+    let _ = composite_nx_ui_layers(
         &mut pixels,
         width,
         height,
-        0,
-        0,
-        width,
-        height,
-        [16, 14, 12, 225],
-    );
-    fill_dialogue_rect(
-        &mut pixels,
-        width,
-        height,
-        0,
-        0,
-        width,
-        2,
-        [112, 96, 72, 255],
-    );
-    fill_dialogue_rect(
-        &mut pixels,
-        width,
-        height,
-        0,
-        height - 2,
-        width,
-        2,
-        [112, 96, 72, 255],
-    );
-    fill_dialogue_rect(
-        &mut pixels,
-        width,
-        height,
-        0,
-        0,
-        2,
-        height,
-        [112, 96, 72, 255],
-    );
-    fill_dialogue_rect(
-        &mut pixels,
-        width,
-        height,
-        width - 2,
-        0,
-        2,
-        height,
-        [112, 96, 72, 255],
+        ui_archive,
+        &[
+            ("UIWindow.img/UserList/backgrnd", 0, 0),
+            ("UIWindow.img/UserList/backgrnd2", 0, 0),
+            ("UIWindow.img/UserList/Tab/enabled/0", 0, 0),
+            ("UIWindow.img/UserList/Tab/disabled/1", 0, 0),
+            ("UIWindow.img/UserList/Tab/disabled/2", 0, 0),
+            ("UIWindow.img/UserList/Tab/disabled/3", 0, 0),
+            ("UIWindow.img/UserList/Friend/friend0", 0, 0),
+            ("UIWindow.img/UserList/Friend/line", 132, 115),
+        ],
     );
     let online = buddies.iter().filter(|buddy| buddy.channel >= 0).count();
     let title = if let Some(group) = group_filter {
@@ -1102,12 +900,12 @@ fn render_buddy_panel(
         width,
         height,
         &title,
-        12,
-        7,
-        14.0,
+        22,
+        61,
+        11.0,
         width - 24,
         18,
-        [226, 205, 158],
+        [37, 37, 37],
     );
     draw_dialogue_text(
         font,
@@ -1115,12 +913,12 @@ fn render_buddy_panel(
         width,
         height,
         &format!("Capacity: {total_buddies}/{capacity}"),
-        12,
-        28,
-        10.0,
+        20,
+        78,
+        9.0,
         width - 24,
         14,
-        [185, 185, 185],
+        [70, 70, 70],
     );
     let row_limit = if invite.is_some() { 5 } else { 7 };
     if buddies.is_empty() {
@@ -1134,16 +932,29 @@ fn render_buddy_panel(
             } else {
                 "No buddies yet. Use /buddy add <name>."
             },
-            12,
-            56,
-            11.0,
+            20,
+            116,
+            10.0,
             width - 24,
             30,
-            [210, 210, 210],
+            [50, 50, 50],
         );
     }
     for (row, buddy) in buddies.iter().skip(scroll).take(row_limit).enumerate() {
-        let y = 50 + row as i32 * 29;
+        let y = 116 + row as i32 * 24;
+        let _ = composite_nx_ui_bitmap(
+            &mut pixels,
+            width,
+            height,
+            ui_archive,
+            if buddy.channel >= 0 {
+                "UIWindow.img/UserList/Friend/icon0"
+            } else {
+                "UIWindow.img/UserList/Friend/icon1"
+            },
+            13,
+            y + 4,
+        );
         let status = if buddy.channel < 0 {
             "Offline".to_owned()
         } else {
@@ -1155,15 +966,15 @@ fn render_buddy_panel(
             width,
             height,
             &buddy.name,
-            12,
-            y,
-            11.0,
-            150,
-            15,
+            40,
+            y + 4,
+            10.0,
+            112,
+            14,
             if buddy.channel < 0 {
-                [160, 160, 160]
+                [125, 125, 125]
             } else {
-                [225, 240, 215]
+                [35, 35, 35]
             },
         );
         draw_dialogue_text(
@@ -1172,38 +983,15 @@ fn render_buddy_panel(
             width,
             height,
             &status,
-            width as i32 - 112,
-            y,
-            10.0,
+            160,
+            y + 4,
+            9.0,
             100,
             15,
-            [190, 205, 180],
-        );
-        draw_dialogue_text(
-            font,
-            &mut pixels,
-            width,
-            height,
-            &buddy.group,
-            20,
-            y + 13,
-            9.0,
-            width - 36,
-            13,
-            [165, 158, 142],
+            [70, 70, 70],
         );
     }
     if let Some((character_id, name)) = invite {
-        fill_dialogue_rect(
-            &mut pixels,
-            width,
-            height,
-            10,
-            height - 58,
-            width - 20,
-            1,
-            [84, 76, 62, 255],
-        );
         draw_dialogue_text(
             font,
             &mut pixels,
@@ -1237,12 +1025,12 @@ fn render_buddy_panel(
             width,
             height,
             "B · /buddy add/group · /buddy filter all|group",
-            12,
-            height as i32 - 20,
+            20,
+            height as i32 - 27,
             9.0,
             width - 24,
             13,
-            [170, 164, 148],
+            [70, 70, 70],
         );
     }
     pixels

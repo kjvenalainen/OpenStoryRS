@@ -466,6 +466,87 @@ fn basic_attack_stats(
     }))
 }
 
+struct StatusDetailCombatValues {
+    attack_range: Option<(i32, i32)>,
+    magic: i32,
+    accuracy: i32,
+    speed: i32,
+    jump: i32,
+}
+
+fn status_detail_combat_values(
+    character: &openstory_protocol::CharacterInfo,
+    inventory: Option<&openstory_protocol::InventorySnapshot>,
+    character_archive: &NxArchive,
+    item_archive: &NxArchive,
+    skill_archive: &NxArchive,
+    skills: &HashMap<i32, openstory_protocol::SkillEntry>,
+    active_buffs: &HashMap<openstory_protocol::BuffStatKey, ActiveCharacterBuff>,
+    forced_stats: &ForcedEquipmentStats,
+) -> StatusDetailCombatValues {
+    let attack = basic_attack_stats(
+        character,
+        inventory,
+        character_archive,
+        item_archive,
+        skill_archive,
+        skills,
+        active_buffs,
+        forced_stats,
+    )
+    .ok()
+    .flatten();
+    let clamp = |value: f64| value.round().clamp(i32::MIN as f64, i32::MAX as f64) as i32;
+    let gear_accuracy = inventory.map_or(0_i32, |inventory| {
+        inventory
+            .equipped()
+            .filter_map(|item| item.equip.as_ref())
+            .map(|equip| i32::from(equip.stats[10]))
+            .sum()
+    });
+    let gear_magic = inventory.map_or(0_i32, |inventory| {
+        inventory
+            .equipped()
+            .filter_map(|item| item.equip.as_ref())
+            .map(|equip| i32::from(equip.stats[7]))
+            .sum()
+    });
+    let accuracy = attack.map_or_else(
+        || {
+            forced_stats.accuracy.map_or_else(
+                || {
+                    ((f64::from(character.stats.dexterity) * 0.8
+                        + f64::from(character.stats.luck) * 0.5)
+                        as i32)
+                        .saturating_add(gear_accuracy)
+                },
+                i32::from,
+            )
+        },
+        |attack| attack.accuracy,
+    );
+    let (_, jump_force, speed_multiplier) =
+        player_movement_forces(character, character_archive, active_buffs, forced_stats, false);
+    StatusDetailCombatValues {
+        attack_range: attack.map(|attack| {
+            (
+                clamp(attack.minimum_damage),
+                clamp(attack.maximum_damage),
+            )
+        }),
+        magic: attack.map_or_else(
+            || {
+                i32::from(character.stats.intelligence)
+                    .saturating_add(forced_stats.magic_attack.map_or(gear_magic, i32::from))
+            },
+            |attack| attack.magic_total.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32,
+        ),
+        accuracy,
+        speed: clamp(speed_multiplier * 100.0),
+        jump: clamp((jump_force - 1.0) * 100.0 / 3.5),
+    }
+}
+
 fn fallback_weapon_attack_class(weapon_type: i32) -> u8 {
     match weapon_type {
         130..=133 => 1,

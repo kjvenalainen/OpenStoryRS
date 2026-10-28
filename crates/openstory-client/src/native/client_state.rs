@@ -46,6 +46,8 @@ struct ClientApp {
     login_actions: Vec<LoginActionRegion>,
     cursor: Option<Point>,
     cursor_physical: Option<(f64, f64)>,
+    dialog_window_offsets: HashMap<DialogWindow, (f32, f32)>,
+    dialog_window_drag: Option<DialogWindowDrag>,
     field_textures: Vec<GpuTexture>,
     account_text: String,
     password_text: String,
@@ -302,6 +304,7 @@ struct ClientApp {
     selected_character_index: usize,
     character_selection_status: Option<String>,
     character_creation: Option<CharacterCreationState>,
+    accept_tos_pending: bool,
     active_character: Option<openstory_protocol::CharacterInfo>,
     taming_mount_stats: Option<openstory_protocol::CharacterMountInfo>,
     inventory: Option<openstory_protocol::InventorySnapshot>,
@@ -329,4 +332,45 @@ struct ClientApp {
     simulation_clock: FixedStepClock,
     client_started_at: Instant,
     last_simulation_update: Instant,
+}
+
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+enum DialogWindow {
+    Inventory,
+    EquipmentInventory,
+    PetEquipment,
+    SkillBook,
+    QuestLog,
+    Status,
+    Settings,
+    KeyConfig,
+    SkillMacros,
+    OwlSearch,
+    NpcDialogue,
+    NpcShop,
+    Storage,
+    HiredMerchant,
+    TradeRoom,
+    CharacterInfo,
+    Whisper,
+    Party,
+    Buddy,
+    Guild,
+    Family,
+    FamilyTree,
+    Alliance,
+    GuildBbs,
+    EventList,
+    Wedding,
+    ChannelSwitch,
+    WorldMap,
+    PartySearch,
+    MonsterBook,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct DialogWindowDrag {
+    window: DialogWindow,
+    grab_x: f32,
+    grab_y: f32,
 }

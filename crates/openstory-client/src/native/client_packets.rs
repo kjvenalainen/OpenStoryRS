@@ -881,6 +881,17 @@ impl ClientApp {
             }
             openstory_protocol::OPCODE_DELETE_CHARACTER_RESULT => {
                 match openstory_protocol::parse_delete_character_result(packet) {
+                    Ok(result)
+                        if self
+                            .character_creation
+                            .as_ref()
+                            .is_some_and(|creation| creation.awaiting_create) =>
+                    {
+                        self.fail_character_creation(format!(
+                            "Character creation failed ({}). Review choices and retry.",
+                            result.state
+                        ));
+                    }
                     Ok(result) if result.state == 0 => {
                         if let Some(characters) = self.character_list.as_mut() {
                             characters
@@ -948,6 +959,7 @@ impl ClientApp {
                 match openstory_protocol::parse_login_result(packet) {
                     Ok(openstory_protocol::LoginResult::Accepted(account)) => {
                         eprintln!("OpenStory: account login accepted");
+                        self.accept_tos_pending = false;
                         if account.gender != 10 {
                             self.worlds.clear();
                             if let Some(session) = self.session.as_ref() {
@@ -961,6 +973,17 @@ impl ClientApp {
                     }
                     Ok(openstory_protocol::LoginResult::Rejected { reason }) => {
                         eprintln!("OpenStory: login rejected (reason {reason})");
+                        if reason == 23 {
+                            self.accept_tos_pending = true;
+                            self.show_server_notice_popup(
+                                "Server Terms of Service required. Review them first. Click OK or Enter to accept; Escape cancels.",
+                            );
+                        } else {
+                            self.accept_tos_pending = false;
+                            self.show_server_notice_popup(&format!(
+                                "Login was rejected by the server (code {reason}). Check your account details and server status."
+                            ));
+                        }
                     }
                     Err(error) => eprintln!("OpenStory: invalid login response: {error}"),
                 }
@@ -1112,6 +1135,19 @@ impl ClientApp {
                         self.show_character_selection(characters);
                     }
                     Err(error) => eprintln!("OpenStory: invalid character list: {error}"),
+                }
+            }
+            openstory_protocol::OPCODE_AFTER_LOGIN_ERROR => {
+                match openstory_protocol::parse_after_login_error(packet) {
+                    Ok(reason) => {
+                        eprintln!("OpenStory: server refused character entry (reason {reason})");
+                        self.show_character_selection_failure(&format!(
+                            "The server refused character entry (code {reason}). Check account status and channel availability, then try again."
+                        ));
+                    }
+                    Err(error) => {
+                        eprintln!("OpenStory: invalid character-entry rejection: {error}")
+                    }
                 }
             }
             openstory_protocol::OPCODE_CHARACTER_NAME_RESULT => {

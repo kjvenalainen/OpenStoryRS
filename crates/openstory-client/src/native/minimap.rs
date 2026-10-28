@@ -134,7 +134,6 @@ struct CollapsedFrameArt {
 
 #[derive(Clone)]
 struct MapFrameArt {
-    background: SpriteImage,
     west: SpriteImage,
     east: SpriteImage,
     north: SpriteImage,
@@ -161,44 +160,23 @@ pub(super) struct UiAssets {
 impl UiAssets {
     pub fn load(archive: &NxArchive) -> Result<Self, String> {
         let ui_root = archive.root();
-        // v83 keeps these window assets under UIWindow.img. Newer archives
-        // moved them to UIWindow2.img, so retain the actual root path for
-        // diagnostics and bitmap cache keys instead of relying on aliases.
-        let (minimap_path, minimap_ui) = if let Some(node) = ui_root
-            .resolve("UIWindow2.img/MiniMap")
-            .map_err(|error| error.to_string())?
-        {
-            ("UIWindow2.img/MiniMap", node)
-        } else if let Some(node) = ui_root
-            .resolve("UIWindow.img/MiniMap")
-            .map_err(|error| error.to_string())?
-        {
-            ("UIWindow.img/MiniMap", node)
-        } else {
-            return Err(
-                "NX minimap UI was not found under UIWindow2.img/MiniMap or UIWindow.img/MiniMap"
-                    .to_owned(),
-            );
-        };
+        // UI.nx is the v83 archive, where the authored minimap pieces live
+        // directly under UIWindow.img rather than the newer UIWindow2 tree.
+        let minimap_path = "UIWindow.img/MiniMap";
+        let minimap_ui = required(&ui_root, minimap_path)?;
         let collapsed_root = required(&minimap_ui, "Min")?;
         let collapsed = CollapsedFrameArt {
             west: load_ui_image(archive, &collapsed_root, minimap_path, "w", "Min/w")?,
             center: load_ui_image(archive, &collapsed_root, minimap_path, "c", "Min/c")?,
             east: load_ui_image(archive, &collapsed_root, minimap_path, "e", "Min/e")?,
         };
-        let expanded_root = required(&minimap_ui, "MaxMap")?;
-        let background = load_ui_image(archive, &expanded_root, minimap_path, "c", "MaxMap/c")?;
-        let normal = load_map_frame(archive, &minimap_ui, minimap_path, "MinMap", &background)?;
-        let expanded = load_map_frame(archive, &minimap_ui, minimap_path, "MaxMap", &background)?;
+        let normal = load_map_frame(archive, &minimap_ui, minimap_path, "MinMap")?;
+        let expanded = load_map_frame(archive, &minimap_ui, minimap_path, "MaxMap")?;
         let map_root = required(&minimap_ui, "BtMap")?;
-        let min_normal =
-            load_or_draw_minimap_button(archive, minimap_path, "BtMin/normal/0", false)?;
-        let min_disabled =
-            load_or_draw_minimap_button(archive, minimap_path, "BtMin/disabled/0", true)?;
-        let max_normal =
-            load_or_draw_minimap_button(archive, minimap_path, "BtMax/normal/0", false)?;
-        let max_disabled =
-            load_or_draw_minimap_button(archive, minimap_path, "BtMax/disabled/0", true)?;
+        let min_normal = load_minimap_button(archive, minimap_path, "BtMin/normal/0", false)?;
+        let min_disabled = load_minimap_button(archive, minimap_path, "BtMin/disabled/0", true)?;
+        let max_normal = load_minimap_button(archive, minimap_path, "BtMax/normal/0", false)?;
+        let max_disabled = load_minimap_button(archive, minimap_path, "BtMax/disabled/0", true)?;
         let map = load_ui_image(
             archive,
             &required(&map_root, "normal")?,
@@ -455,6 +433,9 @@ pub(super) fn render(
                 .max(0.1);
             let zoomed_width = (map_width * zoom).ceil().max(1.0);
             let zoomed_height = (map_height * zoom).ceil().max(1.0);
+            // Keep the normal panel sized to the map. Expanded mode needs a
+            // small title area beside the map mark, while controls remain
+            // positioned in the frame's existing right-hand control zone.
             let text_width = if expanded { name_width + 78.0 } else { 0.0 };
             let width = (zoomed_width + 20.0)
                 .max(text_width)
@@ -638,10 +619,9 @@ fn load_ui_image(
     )
 }
 
-/// v83's minimap only has a world-map button. Use its original artwork when a
-/// newer archive supplies zoom controls; otherwise draw compact plus/minus
-/// controls so zoom and expand/collapse remain available with v83 UI assets.
-fn load_or_draw_minimap_button(
+/// The v83 minimap sheet does not contain the newer zoom buttons. Reuse the
+/// matching v83 Basic controls so the retained zoom interactions stay NX-backed.
+fn load_minimap_button(
     archive: &NxArchive,
     minimap_path: &str,
     path: &str,
@@ -651,56 +631,17 @@ fn load_or_draw_minimap_button(
     if let Some(node) = super::resolve_ui_path(&archive.root(), &full_path)? {
         return sprite_image(archive, &node, &full_path, MAX_UI_BITMAP_SIDE);
     }
-    Ok(draw_minimap_button(path.starts_with("BtMax/"), disabled))
-}
-
-fn draw_minimap_button(plus: bool, disabled: bool) -> SpriteImage {
-    const WIDTH: u32 = 13;
-    const HEIGHT: u32 = 12;
-    let mut pixels = vec![0; WIDTH as usize * HEIGHT as usize * 4];
-    let mut set = |x: u32, y: u32, color: [u8; 4]| {
-        let offset = (y as usize * WIDTH as usize + x as usize) * 4;
-        pixels[offset..offset + 4].copy_from_slice(&color);
-    };
-
-    // A small beveled blue-gray control, matching the legacy window palette.
-    for y in 0..HEIGHT {
-        for x in 0..WIDTH {
-            let edge = x == 0 || y == 0 || x == WIDTH - 1 || y == HEIGHT - 1;
-            let color = if (x == 0 || y == 0) && edge {
-                [186, 199, 207, 255]
-            } else if edge {
-                [42, 56, 64, 255]
-            } else if disabled {
-                [83, 91, 96, 255]
-            } else {
-                [91, 111, 122, 255]
-            };
-            set(x, y, color);
-        }
-    }
-
-    let glyph = if disabled {
-        [139, 144, 146, 255]
+    let button = if path.starts_with("BtMax/") {
+        "BtMax"
     } else {
-        [236, 239, 232, 255]
+        "BtMin"
     };
-    for x in 4..=8 {
-        set(x, 5, glyph);
-    }
-    if plus {
-        for y in 3..=7 {
-            set(6, y, glyph);
-        }
-    }
-
-    SpriteImage {
-        pixels: Arc::from(pixels),
-        width: WIDTH,
-        height: HEIGHT,
-        origin_x: 0.0,
-        origin_y: 0.0,
-    }
+    let state = if disabled { "disabled" } else { "normal" };
+    let fallback_path = format!("Basic.img/{button}/{state}/0");
+    let node = super::resolve_ui_path(&archive.root(), &fallback_path)?.ok_or_else(|| {
+        format!("missing v83 minimap control {full_path:?} and {fallback_path:?}")
+    })?;
+    sprite_image(archive, &node, &fallback_path, MAX_UI_BITMAP_SIDE)
 }
 
 fn load_map_frame(
@@ -708,7 +649,6 @@ fn load_map_frame(
     minimap_ui: &NxNode,
     minimap_path: &str,
     frame_name: &str,
-    background: &SpriteImage,
 ) -> Result<MapFrameArt, String> {
     let frame = required(minimap_ui, frame_name)?;
     let prefix = frame_name.to_owned();
@@ -722,7 +662,6 @@ fn load_map_frame(
         )
     };
     Ok(MapFrameArt {
-        background: background.clone(),
         west: load("w")?,
         east: load("e")?,
         north: load("n")?,
@@ -738,21 +677,20 @@ fn draw_collapsed_frame(canvas: &mut Canvas, frame: &CollapsedFrameArt, width: f
     let left = &frame.west;
     let center = &frame.center;
     let right = &frame.east;
-    canvas.draw_image(left, 0.0, 0.0, left.width as f32, 20.0, false);
-    canvas.draw_image(
+    canvas.draw_image(left, 0.0, 0.0, left.width as f32, left.height as f32, false);
+    canvas.tile_image(
         center,
         left.width as f32,
         0.0,
         (width - left.width as f32 - right.width as f32).max(0.0),
-        20.0,
-        false,
+        center.height as f32,
     );
     canvas.draw_image(
         right,
         width - right.width as f32,
         0.0,
         right.width as f32,
-        20.0,
+        right.height as f32,
         false,
     );
 }
@@ -764,7 +702,6 @@ fn draw_map_frame(
     map_height: f32,
     canvas_y: f32,
 ) {
-    let background = &frame.background;
     let edge_west = &frame.west;
     let edge_east = &frame.east;
     let top = &frame.north;
@@ -773,33 +710,39 @@ fn draw_map_frame(
     let bottom = &frame.south;
     let bottom_left = &frame.southwest;
     let bottom_right = &frame.southeast;
-    let bottom_y = canvas_y - 20.0 + map_height;
-    let inner_height = (map_height + 10.0).max(1.0);
-    canvas.draw_image(
-        background,
-        7.0,
-        canvas_y - 10.0,
-        width - 14.0,
-        inner_height,
-        false,
-    );
+    // Match the authored v83 layout: the left and right 64px title/control
+    // zones are outside the center stretch. The vertical sides sit at the
+    // middle-right offset, while the upper/lower right corners sit at ur_x.
+    let center_stretch = (width - 128.0).max(0.0);
+    let upper_right_x = 64.0 + center_stretch;
+    let middle_right_x = upper_right_x + 55.0;
+    let vertical_offset = canvas_y - 20.0;
+    let (middle_stretch, down_y_offset) = if map_height <= 20.0 {
+        (5.0, 22.0)
+    } else {
+        (map_height - 17.0, map_height)
+    };
+    let bottom_y = vertical_offset + down_y_offset;
+    // The v83 c-sprite is a pale opaque fill and obscures the map scene behind
+    // this transparent frame. Keep the minimap artwork itself and let the
+    // active map show through the unused space around its canvas.
     canvas.draw_image(
         edge_west,
         0.0,
-        canvas_y - 3.0,
+        17.0 + vertical_offset,
         edge_west.width as f32,
-        map_height - 17.0,
+        middle_stretch,
         false,
     );
     canvas.draw_image(
         edge_east,
-        width - edge_east.width as f32,
-        canvas_y - 3.0,
+        middle_right_x,
+        17.0 + vertical_offset,
         edge_east.width as f32,
-        map_height - 17.0,
+        middle_stretch,
         false,
     );
-    canvas.draw_image(top, 64.0, 0.0, width - 128.0, top.height as f32, false);
+    canvas.draw_image(top, 64.0, 0.0, center_stretch, top.height as f32, false);
     canvas.draw_image(
         top_left,
         0.0,
@@ -810,7 +753,7 @@ fn draw_map_frame(
     );
     canvas.draw_image(
         top_right,
-        width - top_right.width as f32,
+        upper_right_x,
         0.0,
         top_right.width as f32,
         top_right.height as f32,
@@ -820,7 +763,7 @@ fn draw_map_frame(
         bottom,
         64.0,
         bottom_y + 18.0,
-        width - 128.0,
+        center_stretch,
         bottom.height as f32,
         false,
     );
@@ -834,7 +777,7 @@ fn draw_map_frame(
     );
     canvas.draw_image(
         bottom_right,
-        width - bottom_right.width as f32,
+        upper_right_x,
         bottom_y,
         bottom_right.width as f32,
         bottom_right.height as f32,
@@ -1045,6 +988,30 @@ impl Canvas {
             height,
             flip_x,
         );
+    }
+
+    fn tile_image(&mut self, image: &SpriteImage, x: f32, y: f32, width: f32, height: f32) {
+        if image.width == 0 || image.height == 0 || width <= 0.0 || height <= 0.0 {
+            return;
+        }
+        let right = x + width;
+        let bottom = y + height;
+        let mut tile_y = y;
+        while tile_y < bottom {
+            let mut tile_x = x;
+            while tile_x < right {
+                self.draw_image(
+                    image,
+                    tile_x,
+                    tile_y,
+                    image.width as f32,
+                    image.height as f32,
+                    false,
+                );
+                tile_x += image.width as f32;
+            }
+            tile_y += image.height as f32;
+        }
     }
 
     fn draw_pixels(

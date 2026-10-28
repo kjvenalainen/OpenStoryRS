@@ -144,15 +144,15 @@ impl OptionControl {
 
     fn track_y(self) -> Option<usize> {
         match self {
-            Self::GraphicsQuality => Some(56),
-            Self::EffectsQuality => Some(86),
-            Self::Music => Some(116),
+            Self::GraphicsQuality => Some(44),
+            Self::EffectsQuality => Some(128),
+            Self::Music => Some(72),
             Self::MuteMusic => None,
-            Self::SoundEffects => Some(146),
+            Self::SoundEffects => Some(100),
             Self::MuteEffects => None,
-            Self::HpWarning => Some(176),
-            Self::MpWarning => Some(206),
-            Self::MouseSpeed => Some(236),
+            Self::HpWarning => Some(184),
+            Self::MpWarning => Some(212),
+            Self::MouseSpeed => Some(156),
             Self::ScreenShake => None,
             Self::Windowed | Self::Resolution800 | Self::Resolution1024 => None,
             Self::AllowWhisper
@@ -273,7 +273,7 @@ impl MapCameraBounds {
         let mut x = 512.0 - world_x as f32;
         let mut y = GAMEPLAY_CAMERA_CENTER_Y - world_y as f32;
         let width = 1024.0;
-        let height = 768.0;
+        let height = GAMEPLAY_VIEW_HEIGHT;
         if self.right - self.left < width {
             x = -self.left;
         } else {
@@ -603,7 +603,8 @@ impl LocalDeathArtRuntime {
                 if self.tomb_elapsed >= Duration::from_millis(30) {
                     self.tomb_elapsed = Duration::ZERO;
                     if !self.fall_frames.is_empty() {
-                        self.tomb_frame_index = (self.tomb_frame_index + 1) % self.fall_frames.len();
+                        self.tomb_frame_index =
+                            (self.tomb_frame_index + 1) % self.fall_frames.len();
                     }
                 }
                 if self.tomb_y_offset >= 0.0 {
@@ -3488,7 +3489,11 @@ impl MapSceneRuntime {
                 &mut self.hidden_portal_elapsed,
             );
             for door in self.doors.values_mut() {
-                advance_portal_animation(&self.door_frames, &mut door.frame_index, &mut door.elapsed);
+                advance_portal_animation(
+                    &self.door_frames,
+                    &mut door.frame_index,
+                    &mut door.elapsed,
+                );
             }
             self.portal_cooldown = self.portal_cooldown.saturating_sub(1);
             self.teleport_cooldown = self.teleport_cooldown.saturating_sub(1);
@@ -3499,16 +3504,16 @@ impl MapSceneRuntime {
             if !up_pressed || !can_use_portal || self.portal_cooldown != 0 {
                 continue;
             }
-            let Some(portal) = self
-                .portals
-                .iter()
-                .find(|portal| portal_bounds_contains(portal, self.player.x, self.player.y))
-            else {
+            // Script, spawn, and message portals often share proximity bounds
+            // with a real exit. Ignore entries without a destination before
+            // selecting a portal so an earlier tutorial marker cannot mask a
+            // usable warp portal later in the map's portal list.
+            let Some(portal) = self.portals.iter().find(|portal| {
+                portal.target_map_id < 999_999_999
+                    && portal_bounds_contains(portal, self.player.x, self.player.y)
+            }) else {
                 continue;
             };
-            if portal.target_map_id >= 999_999_999 {
-                continue;
-            }
             if portal.target_map_id == self.map_id {
                 let Some(target) = self
                     .portals
@@ -4227,12 +4232,11 @@ impl MapSceneRuntime {
         }
     }
 
-    fn scripted_npc_at(&self, point: Point) -> Option<i32> {
+    fn npc_at(&self, point: Point) -> Option<i32> {
         let camera_bias_x = self.camera_offset.0 + self.player.x as f32 - 512.0;
         let camera_bias_y = self.camera_offset.1 + self.player.y as f32 - GAMEPLAY_CAMERA_CENTER_Y;
         self.npcs
             .iter()
-            .filter(|(_, npc)| npc.scripted)
             .filter_map(|(object_id, npc)| {
                 let frame = npc.frames().get(npc.frame_index)?;
                 let offset_x = (npc.x - self.player.x) as f32 + camera_bias_x;
@@ -4257,9 +4261,13 @@ impl MapSceneRuntime {
                             point,
                         )
                     })
-                    .then_some(*object_id)
+                    // Prefer a server-marked or NX-scripted NPC when hitboxes
+                    // overlap, while still allowing the legacy click-to-talk
+                    // action on NPCs whose scripts are provided by the server.
+                    .then_some((*object_id, npc.scripted))
             })
-            .next()
+            .max_by_key(|(_, scripted)| *scripted)
+            .map(|(object_id, _)| object_id)
     }
 
     fn hired_merchant_at(&self, point: Point) -> Option<i32> {
@@ -5088,24 +5096,20 @@ impl MapSceneRuntime {
             return;
         }
         if delay.is_zero() {
-            self.apply_mob_attack_impact(
-                object_id,
-                &hit_effects,
-                hit_effect_flip,
-                damage,
-            );
+            self.apply_mob_attack_impact(object_id, &hit_effects, hit_effect_flip, damage);
             return;
         }
         if self.pending_mob_attack_impacts.len() >= 512 {
             self.pending_mob_attack_impacts.remove(0);
         }
-        self.pending_mob_attack_impacts.push(PendingMobAttackImpact {
-            object_id,
-            remaining: delay,
-            hit_effects,
-            hit_effect_flip,
-            damage,
-        });
+        self.pending_mob_attack_impacts
+            .push(PendingMobAttackImpact {
+                object_id,
+                remaining: delay,
+                hit_effects,
+                hit_effect_flip,
+                damage,
+            });
     }
 
     fn apply_mob_attack_impact(
@@ -5378,10 +5382,7 @@ impl MapSceneRuntime {
         self.mists.remove(&object_id);
     }
 
-    fn show_mob_hp(
-        &mut self,
-        update: openstory_protocol::MobHpUpdate,
-    ) -> Option<(i32, u8)> {
+    fn show_mob_hp(&mut self, update: openstory_protocol::MobHpUpdate) -> Option<(i32, u8)> {
         let Some(mob) = self.mobs.get_mut(&update.object_id) else {
             return None;
         };

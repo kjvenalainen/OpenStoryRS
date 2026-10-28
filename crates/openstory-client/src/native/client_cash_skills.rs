@@ -1011,7 +1011,7 @@ impl ClientApp {
         self.skill_book_entries = entries.into_values().collect();
         self.skill_book_scroll_row = self
             .skill_book_scroll_row
-            .min(self.skill_book_entries.len().saturating_sub(1));
+            .min(self.skill_book_entries.len().saturating_sub(6));
     }
 
     pub(super) fn refresh_skill_book_texture(&mut self) {
@@ -1030,18 +1030,40 @@ impl ClientApp {
             .map_or(character.stats.skill_points, |(_, points)| {
                 u16::from(*points)
             });
+        let book_job = skill_subjob_for_tab(character.stats.job, self.skill_book_tab);
+        let book_title = book_job
+            .and_then(|job| {
+                self.string_archive
+                    .root()
+                    .resolve(&format!("Skill.img/{job:03}"))
+                    .ok()
+                    .flatten()
+                    .and_then(|node| string_property(&node, "bookName"))
+            })
+            .unwrap_or_else(|| "Skill Book".to_owned());
+        let book_icon = book_job.and_then(|job| {
+            decode_nx_icon(&self.skill_archive, &format!("{job:03}.img/info/icon"))
+        });
+        let visible_tabs = (0..5)
+            .take_while(|tab| skill_subjob_for_tab(character.stats.job, *tab).is_some())
+            .count() as u8;
         let pixels = render_skill_book_panel(
             &self.font,
+            &self.ui_archive,
+            &self.skill_archive,
             &self.skill_book_entries,
+            &book_title,
+            book_icon,
             skill_points,
             self.skill_book_tab,
+            visible_tabs,
             self.skill_book_scroll_row,
         );
         let Some(renderer) = self.renderer.as_ref() else {
             return;
         };
-        const WIDTH: u32 = 430;
-        const HEIGHT: u32 = 500;
+        const WIDTH: u32 = SKILL_BOOK_PANEL_WIDTH;
+        const HEIGHT: u32 = SKILL_BOOK_PANEL_HEIGHT;
         let result = if let Some(texture) = self.skill_book_texture.as_ref() {
             renderer.update_bgra(texture, &pixels).map(|()| None)
         } else {

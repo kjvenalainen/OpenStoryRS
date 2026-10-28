@@ -1313,7 +1313,18 @@ impl ClientApp {
         }
 
         if self.show_status_detail {
-            let pixels = render_status_detail_panel(&self.font, &self.ui_archive);
+            let pixels = render_status_detail_panel(
+                &self.font,
+                &self.ui_archive,
+                character,
+                self.inventory.as_ref(),
+                &self.character_archive,
+                &self.item_archive,
+                &self.skill_archive,
+                &self.skills,
+                &self.active_buffs,
+                &self.forced_equipment_stats,
+            );
             let result = if let Some(texture) = self.status_detail_texture.as_ref() {
                 renderer.update_bgra(texture, &pixels).map(|()| None)
             } else {

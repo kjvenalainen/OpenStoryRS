@@ -9,6 +9,7 @@ use crate::{PacketError, PacketReader, PacketWriter};
 
 pub const OPCODE_LOGIN: u16 = 1;
 pub const OPCODE_LOGIN_RESULT: u16 = 0;
+pub const OPCODE_ACCEPT_TOS: u16 = 7;
 pub const OPCODE_CHARLIST_REQUEST: u16 = 5;
 pub const OPCODE_SERVERSTATUS_REQUEST: u16 = 6;
 pub const OPCODE_SERVERLIST_REQUEST: u16 = 11;
@@ -18,6 +19,8 @@ pub const OPCODE_RECOMMENDED_WORLDS: u16 = 27;
 pub const OPCODE_CHARLIST_RESULT: u16 = 11;
 pub const OPCODE_SERVERSTATUS_RESULT: u16 = 3;
 pub const OPCODE_SERVER_IP: u16 = 12;
+/// Login-server rejection returned after character selection.
+pub const OPCODE_AFTER_LOGIN_ERROR: u16 = 9;
 /// In-game channel-transfer response carrying the destination IPv4 address and port.
 pub const OPCODE_CHANNEL_TRANSFER: u16 = 16;
 pub const OPCODE_SELECT_CHARACTER: u16 = 19;
@@ -158,6 +161,13 @@ pub struct ServerRedirect {
     pub address: std::net::Ipv4Addr,
     pub port: u16,
     pub character_id: i32,
+}
+
+/// Parses a login-server rejection returned after character selection.
+pub fn parse_after_login_error(body: &[u8]) -> Result<i16, PacketError> {
+    let mut packet = PacketReader::new(body);
+    expect_opcode(&mut packet, OPCODE_AFTER_LOGIN_ERROR)?;
+    packet.read_i16()
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -601,6 +611,13 @@ pub(crate) fn expect_opcode(
 
 pub fn login_start() -> Vec<u8> {
     PacketWriter::new(OPCODE_LOGIN_START).into_bytes()
+}
+
+/// Confirms the server's Terms of Service after the user explicitly accepts.
+pub fn accept_terms_of_service() -> Vec<u8> {
+    let mut packet = PacketWriter::new(OPCODE_ACCEPT_TOS);
+    packet.write_u8(1);
+    packet.into_bytes()
 }
 
 /// Builds the legacy v83 account login request. `machine_id` is emitted in

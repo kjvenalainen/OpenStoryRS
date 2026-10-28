@@ -18,9 +18,8 @@ part of the game runtime port in this plan.
   gameplay/physics, character data, protocol handlers, and platform code.
 - The active asset set is 17 `.nx` files in `OpenStory/wz`, about 3.8 GB total.
   Rust reads them in place; do not copy them into this repository or bundle. The
-  client currently selects `UI-v83.nx` ahead of `UI.nx`, resolves logical `UI.nx`
-  file requests to that archive, and uses it for every UI path; the archive can be
-  renamed to `UI.nx` later without changing asset references.
+  client reads the version 83 UI assets from `UI.nx` and resolves every UI path
+  against that archive.
 - The current C++ checkout contains uncommitted user changes. Treat it as a read-only
   reference and do not reset, reformat, or edit it.
 - The client should use the larger legacy 1024x768 game canvas. Preserve those logical
@@ -153,8 +152,8 @@ buffers, so independent archives can be decoded safely without a global scratch 
 The v83 UI archive contains `Login.img/NewChar`, `NewCharKnight`, and
 `NewCharAran`, but not the `Login.img/CustomizeChar` node referenced by the newer C++
 creation screens. The Rust creator resolves the v83 class-specific nodes directly.
-The current archive is named `UI-v83.nx`; the client treats it as the primary UI
-archive and accepts the eventual `UI.nx` name after it is renamed.
+The installed version 83 UI archive is named `UI.nx`; UI paths resolve directly
+against it.
 
 The legacy C++ `CHANGE_STATS` handler reads the skin field as a 16-bit value, while the
 adjacent Cosmic v83 server writes one byte. The Rust decoder follows the server wire
@@ -308,7 +307,7 @@ and sends the matching selection index.
   The guild panel now includes a create form, a five-title editor, and an emblem editor that
   enumerates valid background/mark IDs and color variants from `UI.nx/GuildMark.img` and
   previews the selected bitmaps. Guild and Alliance panels use the v83 `UIWindow.img/UserList/Guild`
-  and `GuildUnion` backgrounds from the selected UI archive, so the current `UI-v83.nx` works
+  and `GuildUnion` backgrounds from the selected UI archive, so the current `UI.nx` works
   without the newer `GuildUI.img` tree. Offline previews composite these same live panel renderers.
   The chat commands remain available as shortcuts.
   Alliance operations now decode bounded v83 alliance snapshots and guild roster broadcasts.
@@ -365,7 +364,7 @@ and sends the matching selection index.
   and MP as colored text values; it does not use animated gauge bars.
 - The Rust workspace and application shell are in place. It opens a resizable wgpu
   window with a 1024x768 logical canvas and letterboxes its 4:3 content. The login
-  screen uses layered v83 art from Map.nx and UI-v83.nx, with editable account and
+  screen uses layered v83 art from Map.nx and UI.nx, with editable account and
   password fields, password masking, viewport-mapped mouse input, and login/guest/quit
   controls. Successful authentication now opens a world/channel picker built from
   legacy assets; selecting a world and channel requests that channel's character list.
@@ -471,7 +470,7 @@ and sends the matching selection index.
   outside the inventory sends the v83 drop request; stack drops accept a bounded quantity,
   cash items are blocked, and NX `tradeBlock` items require confirmation; drop quantities
   are sent through the v83 packet. Hovering an inventory item now opens a v83-styled tooltip
-  using the `UIToolTip.img` art from `UI-v83.nx`; equipment details use the server's current
+  using the `UIToolTip.img` art from `UI.nx`; equipment details use the server's current
   stats and show differences from the item's base Item.nx values. Item.nx lookup paths now
   match the actual nested node
   names for inventory icons, drops, and projectiles; the nested item node does not include
@@ -490,12 +489,12 @@ and sends the matching selection index.
   control now persists the account name and
   checkbox state without storing the password; audio settings updates preserve these values.
   The field HUD now draws its 1024x71 bottom bar, gauge tracks/fills, notice art, and toolbar
-  sprites from the stock v83 `UI-v83.nx/StatusBar.img`. Its small controls open the implemented
+  sprites from the stock v83 `UI.nx/StatusBar.img`. Its small controls open the implemented
   status, inventory, skill, key, and quick-slot panels; the legacy menu exposes the quest,
   social, Monster Book, and World Map screens, and the large controls open Cash Shop, Options,
   and the `/trade` composer. The Event List requests v83 `EVENT_INFO`, refreshes its local
   countdown, and displays server descriptions, multipliers, rewards, and remaining time over
-  the v83 `UIWindow.img/EventWindow` frame from `UI-v83.nx`; it does not require the newer
+  the v83 `UIWindow.img/EventWindow` frame from `UI.nx`; it does not require the newer
   `UIWindow2.img/EventList` or `UIWindow4.img/TimeEvent` trees. The quick-slot panel hitboxes
   follow its bottom-bar anchor.
   An offline `native-status-bar` preview composites those same NX sprites and the transparent
@@ -821,7 +820,7 @@ and sends the matching selection index.
   hittable reactor intersecting the facing attack arc; hit state remains server-authoritative.
   Map portal entries now retain their destination metadata and legacy touch bounds. Regular
   and hidden portal animations load from `MapHelper.img`; hidden portals reveal on contact.
-  Holding Up/W inside a portal follows the 48-tick warp cooldown, locally respawns at a named
+  Holding Up in a portal follows the legacy 48-tick warp cooldown, locally respawns at a named
   same-map destination, or sends the legacy `CHANGE_MAP` request for a cross-map transition.
   `SPAWN_DOOR`/`REMOVE_DOOR` and `SPAWN_PORTAL` now create or remove server-owned doors;
   door animations use the dedicated `MapHelper.img/portal/game/portal` node when present and
@@ -831,7 +830,7 @@ and sends the matching selection index.
   the legacy fixed-step cadence, and `native-clock` provides an offline asset preview.
   Monster Carnival opcodes 289–294 now parse start, individual/party CP, summon, phase-message,
   and elimination updates. The client displays the v83 `UIWindow.img/MonsterCarnival` panel
-  from `UI-v83.nx`, including team/CP/summon counts, with the legacy close and side-view actions;
+  from `UI.nx`, including team/CP/summon counts, with the legacy close and side-view actions;
   `native-monster-carnival` provides an offline preview.
   `PLAYER_HINT`, `BROADCAST_MSG`, OX Quiz, Snowball, and Coconut event packets now follow the
   C++ chat notifications with bounded v83 payload parsing. Ariant result, Pyramid score,

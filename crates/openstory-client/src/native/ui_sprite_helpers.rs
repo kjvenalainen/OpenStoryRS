@@ -42,6 +42,98 @@ fn resolve_ui_path(root: &NxNode, path: &str) -> Result<Option<NxNode>, String> 
     root.resolve(&candidate).map_err(|error| error.to_string())
 }
 
+/// Composites authored NX window layers in order. Callers provide each layer's
+/// legacy anchor; `composite_nx_ui_bitmap` applies the bitmap's NX origin and
+/// `resolve_ui_path` handles aliases between newer and v83 path layouts.
+fn composite_nx_ui_layers(
+    pixels: &mut [u8],
+    canvas_width: usize,
+    canvas_height: usize,
+    archive: &NxArchive,
+    layers: &[(&str, i32, i32)],
+) -> Result<(), String> {
+    for (path, anchor_x, anchor_y) in layers {
+        composite_nx_ui_bitmap(
+            pixels,
+            canvas_width,
+            canvas_height,
+            archive,
+            path,
+            *anchor_x,
+            *anchor_y,
+        )?;
+    }
+    Ok(())
+}
+
+/// Draws a v83 NX bitmap into a panel-sized rectangle using nearest-neighbor
+/// scaling so pixel-art edges remain crisp. The requested position is the
+/// destination's top-left; source NX origins are intentionally ignored because
+/// this is for authored panel backdrops, not individual controls.
+fn composite_nx_ui_bitmap_scaled_to(
+    pixels: &mut [u8],
+    canvas_width: usize,
+    canvas_height: usize,
+    archive: &NxArchive,
+    path: &str,
+    left: usize,
+    top: usize,
+    target_width: usize,
+    target_height: usize,
+) -> Result<(), String> {
+    if target_width == 0 || target_height == 0 {
+        return Ok(());
+    }
+    let node = resolve_ui_path(&archive.root(), path)?
+        .ok_or_else(|| format!("missing v83 UI asset {path:?}"))?;
+    let bitmap = node
+        .bitmap()
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| format!("v83 UI asset {path:?} is not a bitmap"))?;
+    let source = bitmap
+        .decode_bgra_shared()
+        .map_err(|error| error.to_string())?;
+    let source_width = usize::from(bitmap.width());
+    let source_height = usize::from(bitmap.height());
+    if source_width == 0 || source_height == 0 {
+        return Err(format!("v83 UI asset {path:?} has empty dimensions"));
+    }
+
+    for destination_y in 0..target_height {
+        let canvas_y = top.saturating_add(destination_y);
+        if canvas_y >= canvas_height {
+            continue;
+        }
+        let source_y = destination_y * source_height / target_height;
+        for destination_x in 0..target_width {
+            let canvas_x = left.saturating_add(destination_x);
+            if canvas_x >= canvas_width {
+                continue;
+            }
+            let source_x = destination_x * source_width / target_width;
+            let source_index = (source_y * source_width + source_x) * 4;
+            let destination_index = (canvas_y * canvas_width + canvas_x) * 4;
+            let source_alpha = u32::from(source[source_index + 3]);
+            if source_alpha == 0 {
+                continue;
+            }
+            let destination_alpha = u32::from(pixels[destination_index + 3]);
+            let inverse = 255 - source_alpha;
+            let output_alpha = source_alpha + destination_alpha * inverse / 255;
+            for channel in 0..3 {
+                let foreground = u32::from(source[source_index + channel]);
+                let background = u32::from(pixels[destination_index + channel]);
+                let premultiplied = foreground * source_alpha
+                    + background * destination_alpha * inverse / 255;
+                pixels[destination_index + channel] =
+                    (premultiplied / output_alpha.max(1)) as u8;
+            }
+            pixels[destination_index + 3] = output_alpha as u8;
+        }
+    }
+    Ok(())
+}
+
 fn append_login_button(
     sprites: &mut Vec<DecodedSprite>,
     actions: &mut Vec<LoginActionRegion>,
@@ -237,7 +329,50 @@ fn build_quit_confirmation_sprites(
     let text_width = f32::from(text_bitmap.width());
     let text_left = left + (panel_width - text_width) / 2.0;
     append_required(text_path, text_left, top + 13.0)?;
+    drop(append_required);
 
+    // The prompt bitmap has an opaque paper-colored area below its glyphs, so
+    // it hides the mushroom artwork baked into the notice background. Restore
+    // just that part of the background after the text; the crop starts below
+    // the prompt glyphs and keeps the mushroom face in front.
+    let mushroom_crop = (32_u32, 45_u32, 72_u32, 70_u32);
+    let (crop_x, crop_y, crop_width, crop_height) = mushroom_crop;
+    if crop_x.saturating_add(crop_width) <= u32::from(bitmap.width())
+        && crop_y.saturating_add(crop_height) <= u32::from(bitmap.height())
+    {
+        let background_pixels = bitmap
+            .decode_bgra_shared()
+            .map_err(|error| error.to_string())?;
+        let source_width = usize::from(bitmap.width());
+        let mut crop_pixels = vec![0_u8; crop_width as usize * crop_height as usize * 4];
+        for row in 0..crop_height as usize {
+            let source_start =
+                ((crop_y as usize + row) * source_width + crop_x as usize) * 4;
+            let destination_start = row * crop_width as usize * 4;
+            let row_bytes = crop_width as usize * 4;
+            crop_pixels[destination_start..destination_start + row_bytes]
+                .copy_from_slice(&background_pixels[source_start..source_start + row_bytes]);
+        }
+        sprites.push(DecodedSprite {
+            texture_key: format!("{background_path}#mushroom-foreground"),
+            rect: SpriteRect {
+                x: left + crop_x as f32,
+                y: top + crop_y as f32,
+                width: crop_width as f32,
+                height: crop_height as f32,
+                blend_mode: BlendMode::Alpha,
+            },
+            depth_order: 0,
+            texture_width: crop_width,
+            texture_height: crop_height,
+            pixels: crop_pixels.into(),
+        });
+    }
+
+    let mut append_required = |path: &str, x, y| {
+        append_optional_sprite_at_top_left(&mut sprites, archive, path, x, y, 1.0)?
+            .ok_or_else(|| format!("missing native quit-dialog asset {path:?}"))
+    };
     let yes_path = "Login.img/Notice/BtYes/normal/0";
     let no_path = "Login.img/Notice/BtNo/normal/0";
     let button_width = |path: &str| -> Result<f32, String> {

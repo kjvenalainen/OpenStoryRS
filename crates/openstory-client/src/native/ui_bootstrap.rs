@@ -181,8 +181,8 @@ fn render_map_hud(
     let height = layout.height() as usize;
     let modern = layout == StatusBarLayout::Modern;
     let mut pixels = vec![0_u8; WIDTH * height * 4];
-    // This image is only a transparent dynamic overlay. The frame, button,
-    // gauge and fill art underneath comes directly from the selected NX UI.
+    // NX artwork supplies the labels and frame; this overlay supplies character
+    // data and live stat values while gauge fills are drawn from their own sprites.
     if let Some((text, color)) = chat_line {
         draw_dialogue_text(
             font,
@@ -190,10 +190,10 @@ fn render_map_hud(
             WIDTH,
             height,
             text,
-            4,
-            if modern { 22 } else { 9 },
-            12.0,
-            480,
+            if modern { 4 } else { 4 },
+            if modern { 22 } else { 10 },
+            if modern { 12.0 } else { 10.0 },
+            if modern { 480 } else { 500 },
             17,
             color,
         );
@@ -239,34 +239,96 @@ fn render_map_hud(
             [255, 255, 255],
         );
     } else {
+        if let Some(number_font) = number_font {
+            draw_status_bar_number_scaled(
+                number_font,
+                &mut pixels,
+                WIDTH,
+                height,
+                &stats.level.to_string(),
+                78,
+                39,
+                2.2,
+                Some([255, 145, 28]),
+            );
+        } else {
+            draw_dialogue_text(
+                font,
+                &mut pixels,
+                WIDTH,
+                height,
+                &stats.level.to_string(),
+                40,
+                37,
+                14.0,
+                55,
+                29,
+                [255, 178, 42],
+            );
+        }
+        draw_dialogue_text(
+            font,
+            &mut pixels,
+            WIDTH,
+            height,
+            &status_bar_job_name(stats.job),
+            88,
+            32,
+            12.0,
+            122,
+            15,
+            [244, 246, 250],
+        );
         draw_dialogue_text(
             font,
             &mut pixels,
             WIDTH,
             height,
             &stats.name,
-            10,
-            34,
-            13.0,
-            140,
-            17,
-            [255, 255, 255],
-        );
-        draw_dialogue_text(
-            font,
-            &mut pixels,
-            WIDTH,
-            height,
-            &format!("Lv.{}  {}", stats.level, character_job_name(stats.job)),
-            10,
-            50,
+            88,
+            49,
             11.0,
-            140,
+            122,
             15,
-            [255, 220, 44],
+            [244, 246, 250],
         );
+        for (value, value_x, max_width) in [
+            (
+                format!("[{}/{}]", stats.hp, stats.max_hp),
+                244,
+                67,
+            ),
+            (
+                format!("[{}/{}]", stats.mp, stats.max_mp),
+                352,
+                67,
+            ),
+            (
+                format!(
+                    "{}[{:.2}%]",
+                    stats.experience,
+                    v83_exp_fraction(stats.level, stats.experience) * 100.0
+                ),
+                473,
+                84,
+            ),
+        ] {
+            draw_dialogue_text(
+                font,
+                &mut pixels,
+                WIDTH,
+                height,
+                &value,
+                value_x,
+                32,
+                10.0,
+                max_width,
+                13,
+                [255, 255, 255],
+            );
+        }
     }
-    if let Some(number_font) = number_font {
+    if modern && let Some(number_font) = number_font {
         draw_status_bar_number(
             number_font,
             &mut pixels,
@@ -303,7 +365,7 @@ fn render_map_hud(
         );
     }
 
-    let mut status_x = if modern { 576 } else { 438 };
+    let mut status_x = if modern { 576 } else { 790 };
     for (flag, label, background, foreground) in [
         (STATUS_STUN, "STUN", [107, 76, 42, 255], [255, 231, 160]),
         (STATUS_POISON, "POISON", [45, 89, 54, 255], [205, 255, 199]),
@@ -367,6 +429,15 @@ fn render_map_hud(
         status_x += 66;
     }
     pixels
+}
+
+fn status_bar_job_name(job: u16) -> String {
+    match job {
+        112 => "Hero".to_owned(),
+        122 => "Paladin".to_owned(),
+        132 => "Dark Knight".to_owned(),
+        _ => character_job_name(job),
+    }
 }
 
 const BUFF_LIST_HEIGHT: u32 = 32;

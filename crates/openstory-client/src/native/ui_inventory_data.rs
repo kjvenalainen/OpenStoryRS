@@ -2,8 +2,8 @@ fn inventory_tabs() -> [openstory_protocol::InventoryType; 5] {
     [
         openstory_protocol::InventoryType::Equip,
         openstory_protocol::InventoryType::Use,
-        openstory_protocol::InventoryType::Etc,
         openstory_protocol::InventoryType::Setup,
+        openstory_protocol::InventoryType::Etc,
         openstory_protocol::InventoryType::Cash,
     ]
 }
@@ -210,6 +210,26 @@ fn inventory_item_icon(
     resolved
 }
 
+fn inventory_item_icon_offset(
+    item_id: i32,
+    item_archive: &NxArchive,
+    character_archive: &NxArchive,
+) -> Option<(i32, i32)> {
+    let (is_character, path) = inventory_icon_path(item_id)?;
+    let archive = if is_character {
+        character_archive
+    } else {
+        item_archive
+    };
+    let icon = archive.root().resolve(&path).ok().flatten()?;
+    let origin = icon.child("origin").ok().flatten()?.value().ok()?;
+    let NodeValue::Vector { x, y } = origin else {
+        return None;
+    };
+    // Item icons are drawn bottom-aligned to a 32 px box by the legacy client.
+    Some((-x, 32 - y))
+}
+
 fn load_cash_products(
     etc_archive: &NxArchive,
     string_archive: &NxArchive,
@@ -291,6 +311,11 @@ fn inventory_icon_path(item_id: i32) -> Option<(bool, String)> {
     let item_file = format!("0{item_id}.img");
     let item_node = format!("0{item_id}");
     let item_prefix = item_id / 10_000;
+    let icon_node = if matches!(item_prefix, 238 | 239) {
+        "iconRaw"
+    } else {
+        "icon"
+    };
     let (is_character, path) = match item_id / 1_000_000 {
         1 => {
             let category = match item_prefix {
@@ -311,24 +336,24 @@ fn inventory_icon_path(item_id: i32) -> Option<(bool, String)> {
                     _ => return None,
                 },
             };
-            (true, format!("{category}/{item_file}/info/iconRaw"))
+            (true, format!("{category}/{item_file}/info/{icon_node}"))
         }
         2 => (
             false,
-            format!("Consume/0{item_prefix}.img/{item_node}/info/iconRaw"),
+            format!("Consume/0{item_prefix}.img/{item_node}/info/{icon_node}"),
         ),
         3 => (
             false,
-            format!("Install/0{item_prefix}.img/{item_node}/info/iconRaw"),
+            format!("Install/0{item_prefix}.img/{item_node}/info/{icon_node}"),
         ),
         4 => (
             false,
-            format!("Etc/0{item_prefix}.img/{item_node}/info/iconRaw"),
+            format!("Etc/0{item_prefix}.img/{item_node}/info/{icon_node}"),
         ),
-        5 if item_prefix == 500 => (false, format!("Pet/{item_id}.img/info/iconRaw")),
+        5 if item_prefix == 500 => (false, format!("Pet/{item_id}.img/info/{icon_node}")),
         5 => (
             false,
-            format!("Cash/0{item_prefix}.img/{item_node}/info/iconRaw"),
+            format!("Cash/0{item_prefix}.img/{item_node}/info/{icon_node}"),
         ),
         _ => return None,
     };
@@ -601,6 +626,45 @@ fn composite_inventory_icon(
                 break;
             }
             let source_x = target_x * source_width / target_size;
+            let source_index = (source_y * source_width + source_x) * 4;
+            let destination_index = (destination_y * canvas_width + destination_x) * 4;
+            let alpha = u16::from(source[source_index + 3]);
+            let inverse = 255 - alpha;
+            for channel in 0..3 {
+                canvas[destination_index + channel] = ((u16::from(source[source_index + channel])
+                    * alpha
+                    + u16::from(canvas[destination_index + channel]) * inverse)
+                    / 255) as u8;
+            }
+            let destination_alpha = u16::from(canvas[destination_index + 3]);
+            canvas[destination_index + 3] = (alpha + destination_alpha * inverse / 255) as u8;
+        }
+    }
+}
+
+fn composite_inventory_icon_native(
+    canvas: &mut [u8],
+    canvas_width: usize,
+    canvas_height: usize,
+    source: &[u8],
+    source_width: usize,
+    source_height: usize,
+    x: usize,
+    y: usize,
+) {
+    if source_width == 0 || source_height == 0 {
+        return;
+    }
+    for source_y in 0..source_height {
+        let destination_y = y + source_y;
+        if destination_y >= canvas_height {
+            break;
+        }
+        for source_x in 0..source_width {
+            let destination_x = x + source_x;
+            if destination_x >= canvas_width {
+                break;
+            }
             let source_index = (source_y * source_width + source_x) * 4;
             let destination_index = (destination_y * canvas_width + destination_x) * 4;
             let alpha = u16::from(source[source_index + 3]);

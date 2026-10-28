@@ -6,7 +6,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 /// The core archives required by the Rust client. The UI archive is selected
-/// separately because the active v83 archive may currently be named `UI-v83.nx`.
+/// separately because the UI archive has a version-specific layout.
 pub const REQUIRED_NX_FILES: [&str; 15] = [
     "Base.nx",
     "Character.nx",
@@ -25,8 +25,8 @@ pub const REQUIRED_NX_FILES: [&str; 15] = [
     "TamingMob.nx",
 ];
 
-const UI_ARCHIVE_NAMES: [&str; 2] = ["UI-v83.nx", "UI.nx"];
-const UI_ARCHIVE_REQUIREMENT: &str = "UI-v83.nx or UI.nx";
+const UI_ARCHIVE_NAME: &str = "UI.nx";
+const UI_ARCHIVE_REQUIREMENT: &str = "UI.nx";
 
 #[derive(Debug)]
 pub enum AssetDirectoryError {
@@ -157,13 +157,10 @@ impl AssetDirectory {
         &self.root
     }
 
-    /// Selects the v83 UI archive, preferring the current `UI-v83.nx` name.
-    /// After the archive is renamed to `UI.nx`, it remains discoverable here.
+    /// Returns the installed version 83 UI archive.
     pub fn ui_archive_path(&self) -> Option<PathBuf> {
-        UI_ARCHIVE_NAMES
-            .iter()
-            .map(|name| self.root.join(name))
-            .find(|path| path.is_file())
+        let path = self.root.join(UI_ARCHIVE_NAME);
+        path.is_file().then_some(path)
     }
 
     pub fn validate(&self) -> Result<(), AssetDirectoryError> {
@@ -187,8 +184,7 @@ impl AssetDirectory {
 
     /// Opens an asset without reading the whole file into memory. This matters for the
     /// large map and mob archives without loading an entire archive into memory. A
-    /// request for `UI.nx` resolves to the selected v83 UI archive, currently
-    /// `UI-v83.nx`, even before that file is renamed.
+    /// request for `UI.nx` resolves to the installed version 83 UI archive.
     pub fn open(&self, relative: impl AsRef<Path>) -> Result<File, AssetDirectoryError> {
         let path = self.resolve_path(relative.as_ref())?;
         File::open(&path).map_err(|source| AssetDirectoryError::Io { path, source })
@@ -217,5 +213,47 @@ impl AssetDirectory {
             return Ok(ui_archive_path);
         }
         Ok(self.root.join(relative))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AssetDirectory;
+    use std::fs;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static NEXT_TEMP_DIRECTORY: AtomicUsize = AtomicUsize::new(0);
+
+    #[test]
+    fn version_83_ui_archive_uses_ui_nx() {
+        let sequence = NEXT_TEMP_DIRECTORY.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "openstory-assets-ui-{}-{sequence}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&root).expect("create temporary asset directory");
+        fs::write(root.join("UI.nx"), []).expect("create UI.nx fixture");
+        fs::write(root.join("UI-v83.nx"), []).expect("create stale archive fixture");
+
+        let directory = AssetDirectory::from_path(&root);
+        assert_eq!(directory.ui_archive_path(), Some(root.join("UI.nx")));
+
+        fs::remove_dir_all(root).expect("remove temporary asset directory");
+    }
+
+    #[test]
+    fn version_83_ui_archive_does_not_fall_back_to_ui_v83_nx() {
+        let sequence = NEXT_TEMP_DIRECTORY.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "openstory-assets-ui-only-{}-{sequence}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&root).expect("create temporary asset directory");
+        fs::write(root.join("UI-v83.nx"), []).expect("create stale archive fixture");
+
+        let directory = AssetDirectory::from_path(&root);
+        assert_eq!(directory.ui_archive_path(), None);
+
+        fs::remove_dir_all(root).expect("remove temporary asset directory");
     }
 }

@@ -119,6 +119,8 @@ impl ClientApp {
             login_actions: actions,
             cursor: None,
             cursor_physical: None,
+            dialog_window_offsets: HashMap::new(),
+            dialog_window_drag: None,
             field_textures: Vec::with_capacity(2),
             account_text,
             password_text,
@@ -383,6 +385,7 @@ impl ClientApp {
             selected_character_index: 0,
             character_selection_status: None,
             character_creation: None,
+            accept_tos_pending: false,
             active_character: None,
             taming_mount_stats: None,
             inventory: None,
@@ -1094,7 +1097,7 @@ impl ClientApp {
         }
 
         match scene.advance_portals(
-            self.gameplay_input.up && !is_stunned && !is_confused,
+            self.gameplay_input.up,
             scene.attack_stance.is_none()
                 && !scene.is_locally_seated()
                 && scene.local_ladder.is_none(),
@@ -1998,8 +2001,8 @@ impl ClientApp {
                 .flatten()
         });
         let pixels = render_quickslot_panel_pixels(
-            &self.font,
             quickslot_background_image(&self.legacy_ui_archive),
+            &self.ui_archive,
             &self.quickslot_keys,
             &icons,
         );
@@ -2060,6 +2063,7 @@ impl ClientApp {
         };
         let pixels = render_key_config_panel(
             &self.font,
+            &self.ui_archive,
             bindings,
             &self.quickslot_keys,
             self.key_config_capture,
@@ -2105,7 +2109,12 @@ impl ClientApp {
         }
         let skills = self.skill_macro_choices();
         self.skill_macro_editor.scroll_skills(0, skills.len());
-        let pixels = skill_macros::render(&self.font, &self.skill_macro_editor, &skills);
+        let pixels = skill_macros::render(
+            &self.font,
+            &self.ui_archive,
+            &self.skill_macro_editor,
+            &skills,
+        );
         let Some(renderer) = self.renderer.as_ref() else {
             return;
         };
@@ -2297,14 +2306,46 @@ impl ClientApp {
             self.quickslot_key_capture = None;
         } else if let Some(slot) = quickslot_key_slot_at(local_x, local_y) {
             self.begin_quickslot_key_capture(slot);
-        } else if (KEY_CONFIG_ROW_TOP as f32
-            ..(KEY_CONFIG_ROW_TOP + KEY_CONFIG_VISIBLE_ROWS as i32 * KEY_CONFIG_ROW_HEIGHT) as f32)
-            .contains(&local_y)
-        {
-            let visible_row =
-                ((local_y - KEY_CONFIG_ROW_TOP as f32) / KEY_CONFIG_ROW_HEIGHT as f32) as usize;
-            let row = self.key_config_scroll_row + visible_row;
-            self.begin_key_config_capture(row);
+        } else {
+            let fallback;
+            let bindings = if let Some(bindings) = self.server_keymap.as_deref() {
+                bindings
+            } else {
+                fallback = default_keymap_bindings();
+                fallback.as_slice()
+            };
+
+            // Clicking a bound key selects its action. The next physical key
+            // press assigns that action to the new key.
+            let bound_action = bindings
+                .iter()
+                .take(90)
+                .enumerate()
+                .find(|(key, binding)| {
+                    binding.kind != 0
+                        && keycap_position(*key as u8).is_some_and(|(x, y)| {
+                            (x as f32..(x + 30) as f32).contains(&local_x)
+                                && (y as f32..(y + 29) as f32).contains(&local_y)
+                        })
+                })
+                .and_then(|(_, binding)| {
+                    self.key_config_actions.iter().position(|action| {
+                        action.kind == binding.kind && action.action == binding.action
+                    })
+                });
+
+            if let Some(row) = bound_action {
+                self.begin_key_config_capture(row);
+            } else if let Some(row) = self.key_config_actions.iter().position(|action| {
+                unbound_action_cell(action.kind, action.action).is_some_and(|(column, grid_row)| {
+                    let x = 5 + column * 34;
+                    let y = 267 + grid_row * 34;
+                    (x as f32..(x + 34) as f32).contains(&local_x)
+                        && (y as f32..(y + 34) as f32).contains(&local_y)
+                })
+            }) {
+                self.begin_key_config_capture(row);
+            }
         }
     }
 

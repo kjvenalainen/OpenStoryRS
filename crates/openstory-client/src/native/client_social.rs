@@ -590,6 +590,7 @@ impl ClientApp {
         let buddies = self.buddy_display_entries();
         let pixels = render_buddy_panel(
             &self.font,
+            &self.ui_archive,
             &buddies,
             self.buddy_capacity,
             self.buddy_entries.len(),

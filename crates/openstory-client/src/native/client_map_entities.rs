@@ -867,7 +867,58 @@ impl ClientApp {
         let Some(session) = self.session.as_ref() else {
             return;
         };
-        match session.send_packet(openstory_protocol::talk_to_npc(object_id)) {
+        // Some quest NPCs have a server-side quest conversation but no regular
+        // NPC script. Start that authored conversation when clicking the NPC;
+        // otherwise fall back to the normal TalkToNPC request.
+        let npc_id = self
+            .map_scene
+            .as_ref()
+            .and_then(|scene| scene.npcs.get(&object_id).map(|npc| npc.npc_id));
+        let scripted_quest_start = npc_id.and_then(|npc_id| {
+            available_quest_entries(
+                &self.quest_log,
+                &self.quest_archive,
+                &self.quest_start_npc_index,
+                self.active_character.as_ref(),
+            )
+            .into_iter()
+            .find(|(quest_id, quest_npc_id)| {
+                *quest_npc_id == npc_id
+                    && quest_requires_script(&self.quest_archive, *quest_id, 0, "startscript")
+            })
+        });
+        let scripted_quest_end = scripted_quest_start
+            .is_none()
+            .then(|| {
+                let npc_id = npc_id?;
+                let inventory = self.inventory.as_ref();
+                self.quest_log
+                    .started
+                    .iter()
+                    .find(|quest| {
+                        let check_path = format!("Check.img/{}/1", quest.id);
+                        let end_npc_id = self
+                            .quest_archive
+                            .root()
+                            .resolve(&check_path)
+                            .ok()
+                            .flatten()
+                            .and_then(|node| quest_node_integer(&node, "npc"));
+                        end_npc_id == Some(npc_id)
+                            && quest_requires_script(&self.quest_archive, quest.id, 1, "endscript")
+                            && quest_is_completable(quest, &self.quest_archive, inventory)
+                    })
+                    .map(|quest| (quest.id, npc_id))
+            })
+            .flatten();
+        let packet = if let Some((quest_id, npc_id)) = scripted_quest_start {
+            openstory_protocol::start_quest_packet(quest_id, npc_id, true)
+        } else if let Some((quest_id, npc_id)) = scripted_quest_end {
+            openstory_protocol::complete_quest_packet(quest_id, npc_id, None, true)
+        } else {
+            openstory_protocol::talk_to_npc(object_id)
+        };
+        match session.send_packet(packet) {
             Ok(()) => self.last_npc_talk_at = Some(now),
             Err(error) => {
                 eprintln!("OpenStory: could not request NPC dialogue: {error}");
@@ -929,6 +980,9 @@ impl ClientApp {
         };
         let (pixels, panel, buttons, text_max_scroll) = render_npc_dialogue(
             &self.font,
+            &self.legacy_ui_archive,
+            &self.npc_archive,
+            &self.string_archive,
             dialogue.npc_id,
             dialogue.speaker,
             dialogue.message_type,
@@ -943,7 +997,11 @@ impl ClientApp {
         let Some(renderer) = self.renderer.as_ref() else {
             return;
         };
-        match renderer.upload_bgra(600, 260, &pixels) {
+        match renderer.upload_bgra(
+            panel.width.round() as u32,
+            panel.height.round() as u32,
+            &pixels,
+        ) {
             Ok(texture) => {
                 let visible_text_chars = if dialogue.message_type == 4 {
                     text.chars().count()
@@ -2142,6 +2200,9 @@ impl ClientApp {
         };
         let (pixels, panel, buttons, text_max_scroll) = render_npc_dialogue(
             &self.font,
+            &self.legacy_ui_archive,
+            &self.npc_archive,
+            &self.string_archive,
             state.npc_id,
             state.speaker,
             state.message_type,
@@ -2156,7 +2217,11 @@ impl ClientApp {
         let Some(renderer) = self.renderer.as_ref() else {
             return;
         };
-        match renderer.upload_bgra(600, 260, &pixels) {
+        match renderer.upload_bgra(
+            panel.width.round() as u32,
+            panel.height.round() as u32,
+            &pixels,
+        ) {
             Ok(texture) => {
                 if let Some(ui) = self.npc_dialogue.as_mut() {
                     ui.text_max_scroll = text_max_scroll;

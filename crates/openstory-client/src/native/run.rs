@@ -14,7 +14,7 @@ pub fn run() -> Result<(), String> {
         match arg.to_str() {
             Some("--help" | "-h") => {
                 println!(
-                    "OpenStoryRS\n\nOptions:\n  --data-dir PATH        Use an existing folder of NX files\n  --list-assets          Validate and list required NX files\n  --inspect-nx FILE PATH  Inspect an NX node and decode it if it is a bitmap\n  --inspect-map ID       Decode and summarize a map scene without opening a window\n  --inspect-avatar SKIN FACE HAIR  Resolve and decode a base character appearance\n  --ui-preview SCREEN    Render an offline UI preview (or 'all')\n  --out DIR              Write UI previews under DIR (default: target/ui-previews)\n  --ui-hitboxes          Also write screen hitbox overlays\n  Preview screens: login, login-active, world-select, character-select-empty, character-select-populated, character-create-class, character-create-explorer, native-keybindings, native-quickslots, native-skill-macros, native-items, native-equipment, native-skills, native-pet-equipment, native-minimap-collapsed, native-minimap-normal, native-minimap-expanded, native-npc-store, native-cash-shop, native-cash-shop-locker, native-cash-shop-coupon, native-cash-shop-confirmation, native-monster-book, native-monster-book-detail, native-monster-book-detail-move, native-monster-book-detail-die, native-status, native-status-bar, native-clock, native-wedding, native-rps, native-event-list, native-dragon, native-monster-carnival, native-avatar-megaphone, native-quit-confirmation, native-server-notice, native-quest-log, native-quest-log-detail, native-chat, native-party, native-buddy, native-guild, native-alliance, native-character-info, native-world-map, native-world-map-link, native-world-map-search, native-world-map-marker, native-world-map-result, native-options, native-audio-settings\n  --connect HOST:PORT    Connect to a v83 server (default: OPENSTORY_SERVER or 127.0.0.1:8484)\n  --help                 Show this help"
+                    "OpenStoryRS\n\nOptions:\n  --data-dir PATH        Use an existing folder of NX files\n  --list-assets          Validate and list required NX files\n  --inspect-nx FILE PATH  Inspect an NX node and decode it if it is a bitmap\n  --inspect-map ID       Decode and summarize a map scene without opening a window\n  --inspect-avatar SKIN FACE HAIR  Resolve and decode a base character appearance\n  --ui-preview SCREEN    Render an offline UI preview (or 'all')\n  --out DIR              Write UI previews under DIR (default: target/ui-previews)\n  --ui-hitboxes          Also write screen hitbox overlays\n  Preview screens: login, login-active, world-select, character-select-empty, character-select-populated, character-create-class, character-create-explorer, character-create-error, native-keybindings, native-quickslots, native-skill-macros, native-items, native-item-tooltip, native-equipment, native-skills, native-pet-equipment, native-minimap-collapsed, native-minimap-normal, native-minimap-expanded, native-npc-store, native-cash-shop, native-cash-shop-locker, native-cash-shop-coupon, native-cash-shop-confirmation, native-monster-book, native-monster-book-detail, native-monster-book-detail-move, native-monster-book-detail-die, native-status, native-status-detail, native-status-bar, native-first-map, native-second-map, native-npc-dialogue, native-clock, native-wedding, native-rps, native-event-list, native-dragon, native-monster-carnival, native-avatar-megaphone, native-quit-confirmation, native-server-notice, native-tos-acceptance, native-quest-log, native-quest-log-detail, native-chat, native-whisper, native-party, native-buddy, native-guild, native-alliance, native-character-info, native-world-map, native-world-map-link, native-world-map-search, native-world-map-marker, native-world-map-result, native-options, native-audio-settings\n  Friendly aliases: inventory, equipment, pet-equipment, keybindings, skills, stats, stats-detail, npc-chat, item-tooltip\n  --connect HOST:PORT    Connect to a v83 server (default: OPENSTORY_SERVER or 127.0.0.1:8484)\n  --help                 Show this help"
                 );
                 return Ok(());
             }
@@ -103,10 +103,10 @@ pub fn run() -> Result<(), String> {
     println!("NX data directory: {}", directory.root().display());
 
     if let Some((file, path)) = inspect_node {
-        let archive_path = if file == PathBuf::from("UI.nx") || file == PathBuf::from("UI-v83.nx") {
+        let archive_path = if file == PathBuf::from("UI.nx") {
             directory
                 .ui_archive_path()
-                .ok_or_else(|| "missing UI-v83.nx or UI.nx".to_owned())?
+                .ok_or_else(|| "missing UI.nx".to_owned())?
         } else {
             directory
                 .file_size(&file)
@@ -162,7 +162,7 @@ pub fn run() -> Result<(), String> {
         }
         let ui_path = directory
             .ui_archive_path()
-            .ok_or_else(|| "missing UI-v83.nx or UI.nx".to_owned())?;
+            .ok_or_else(|| "missing UI.nx".to_owned())?;
         let ui_name = ui_path
             .file_name()
             .and_then(|name| name.to_str())
@@ -255,7 +255,7 @@ pub fn run() -> Result<(), String> {
     }
     let ui_archive_path = directory
         .ui_archive_path()
-        .ok_or_else(|| "missing UI-v83.nx or UI.nx".to_owned())?;
+        .ok_or_else(|| "missing UI.nx".to_owned())?;
     let ui_archive = NxArchive::open(&ui_archive_path).map_err(|error| {
         format!(
             "could not open UI archive {}: {error}",
@@ -296,6 +296,7 @@ pub fn run() -> Result<(), String> {
             &legacy_ui_archive,
             &ui_archive,
             &character_archive,
+            &npc_archive,
             &skill_archive,
             &etc_archive,
             &item_archive,

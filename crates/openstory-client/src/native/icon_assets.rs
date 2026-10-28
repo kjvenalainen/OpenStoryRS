@@ -49,14 +49,15 @@ fn quickslot_background_image(archive: &NxArchive) -> Option<(u32, u32, Arc<[u8]
 }
 
 fn render_quickslot_panel_pixels(
-    font: &fontdue::Font,
     background: Option<(u32, u32, Arc<[u8]>)>,
+    ui_archive: &NxArchive,
     keys: &[u8; 8],
     icons: &[Option<(u32, u32, Arc<[u8]>)>; 8],
 ) -> Vec<u8> {
     const WIDTH: usize = 151;
     const HEIGHT: usize = 80;
     let mut pixels = vec![0_u8; WIDTH * HEIGHT * 4];
+    let has_nx_background = background.is_some();
     if let Some((source_width, source_height, source)) = background {
         for y in 0..HEIGHT.min(source_height as usize) {
             let source_start = y * source_width as usize * 4;
@@ -101,12 +102,27 @@ fn render_quickslot_panel_pixels(
             }
         }
     }
-
     for slot in 0..8 {
         let column = slot % 4;
         let row = slot / 4;
         let x = 7 + column * 35;
         let y = 8 + row * 34;
+        if has_nx_background {
+            // StatusBar.img's v83 panel has fixed, baked-in legends. Clear the
+            // caption strip so rebinding a key cannot leave the old label
+            // visible beneath its live caption. The slot's top interior is a
+            // light neutral fill in the source art.
+            fill_dialogue_rect(
+                &mut pixels,
+                WIDTH,
+                HEIGHT,
+                x + 3,
+                y + 2,
+                26,
+                13,
+                [235, 238, 240, 255],
+            );
+        }
         if let Some((icon_width, icon_height, icon)) = &icons[slot] {
             composite_inventory_icon(
                 &mut pixels,
@@ -120,19 +136,20 @@ fn render_quickslot_panel_pixels(
                 22,
             );
         }
-        draw_dialogue_text(
-            font,
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            &quickslot_short_key_label(keys[slot]),
-            x as i32 + 1,
-            y as i32 + 20,
-            8.0,
-            30,
-            10,
-            [255, 247, 221],
-        );
+        let path = format!("UIWindow.img/KeyConfig/quickslotConfig/key/{}", keys[slot]);
+        if let Some((glyph_width, glyph_height, _)) = decode_nx_icon(ui_archive, &path) {
+            let glyph_x = x as i32 + (32 - glyph_width as i32) / 2;
+            let glyph_y = y as i32 + (30 - glyph_height as i32) / 2;
+            let _ = composite_nx_ui_bitmap(
+                &mut pixels,
+                WIDTH,
+                HEIGHT,
+                ui_archive,
+                &path,
+                glyph_x,
+                glyph_y,
+            );
+        }
     }
     pixels
 }

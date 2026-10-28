@@ -75,320 +75,286 @@ fn render_combo_counter(font: &fontdue::Font, count: i32) -> Vec<u8> {
 
 fn render_key_config_panel(
     font: &fontdue::Font,
+    ui_archive: &NxArchive,
     bindings: &[openstory_protocol::KeyBinding],
     quickslot_keys: &[u8; 8],
     capture: Option<usize>,
     quickslot_capture: Option<usize>,
-    first_row: usize,
+    _first_row: usize,
     actions: &[KeyConfigAction],
 ) -> Vec<u8> {
     let width = KEY_CONFIG_PANEL_WIDTH as usize;
     let height = KEY_CONFIG_PANEL_HEIGHT as usize;
     let mut pixels = vec![0_u8; width * height * 4];
-    fill_dialogue_rect(
+    let _ = composite_nx_ui_bitmap(
         &mut pixels,
         width,
         height,
-        0,
-        0,
-        width,
-        height,
-        [27, 25, 23, 250],
+        ui_archive,
+        "UIWindow.img/KeyConfig/backgrnd",
+        (width / 2) as i32,
+        (height / 2) as i32,
     );
-    fill_dialogue_rect(
+    let _ = composite_nx_ui_bitmap(
         &mut pixels,
         width,
         height,
-        0,
-        0,
-        width,
-        42,
-        [91, 69, 42, 255],
+        ui_archive,
+        "UIWindow.img/KeyConfig/BtClose/normal/0",
+        width as i32 - 34,
+        4,
     );
-    draw_dialogue_text(
-        font,
-        &mut pixels,
-        width,
-        height,
-        "Keyboard Bindings",
-        16,
-        10,
-        19.0,
-        width - 32,
-        26,
-        [250, 235, 202],
-    );
-    draw_dialogue_text(
-        font,
-        &mut pixels,
-        width,
-        height,
-        "X",
-        width as i32 - 28,
-        10,
-        18.0,
-        18,
-        24,
-        [255, 224, 178],
-    );
-    draw_dialogue_text(
-        font,
-        &mut pixels,
-        width,
-        height,
-        "Click an action or press 1-8, then press its key.",
-        18,
-        48,
-        12.0,
-        width - 36,
-        20,
-        [223, 216, 197],
-    );
-    draw_dialogue_text(
-        font,
-        &mut pixels,
-        width,
-        height,
-        "Mouse wheel scrolls; Backspace clears a binding.",
-        18,
-        62,
-        11.0,
-        width - 36,
-        16,
-        [183, 177, 164],
-    );
-    let first_row = first_row.min(actions.len().saturating_sub(KEY_CONFIG_VISIBLE_ROWS));
-    for (visible_row, index) in (first_row..actions.len())
-        .take(KEY_CONFIG_VISIBLE_ROWS)
-        .enumerate()
+
+    if let Some(slot) = quickslot_capture {
+        let _ = composite_nx_ui_bitmap(
+            &mut pixels,
+            width,
+            height,
+            ui_archive,
+            "UIWindow.img/KeyConfig/quickslotConfig/backgrnd",
+            0,
+            0,
+        );
+        let hint = format!("Press a key for Quick Slot {}", slot + 1);
+        draw_dialogue_text(
+            font,
+            &mut pixels,
+            width,
+            height,
+            &hint,
+            194,
+            3,
+            11.0,
+            390,
+            18,
+            [255, 224, 146],
+        );
+    } else if let Some(index) = capture
+        && let Some(action) = actions.get(index)
     {
-        let action_entry = &actions[index];
-        let y = KEY_CONFIG_ROW_TOP + visible_row as i32 * KEY_CONFIG_ROW_HEIGHT;
-        let is_capturing = capture == Some(index);
-        fill_dialogue_rect(
-            &mut pixels,
-            width,
-            height,
-            14,
-            y as usize,
-            width - 28,
-            28,
-            if is_capturing {
-                [91, 72, 43, 255]
-            } else {
-                [45, 41, 35, 255]
-            },
-        );
-        let maple_key = bindings
-            .iter()
-            .take(90)
-            .position(|binding| {
-                binding.kind == action_entry.kind && binding.action == action_entry.action
-            })
-            .map(|key| key as u8);
-        let assigned = if is_capturing {
-            if action_entry.assignable {
-                "Press a key...".to_owned()
-            } else {
-                "Backspace clears".to_owned()
-            }
-        } else {
-            maple_key.map_or_else(|| "Unbound".to_owned(), maple_key_label)
-        };
         draw_dialogue_text(
             font,
             &mut pixels,
             width,
             height,
-            &format!("{}  {}", visible_row + 1, action_entry.label),
-            24,
-            y + 5,
-            15.0,
-            235,
-            20,
-            if action_entry.assignable {
-                [238, 232, 216]
-            } else {
-                [175, 164, 148]
-            },
-        );
-        draw_dialogue_text(
-            font,
-            &mut pixels,
-            width,
-            height,
-            &assigned,
-            267,
-            y + 5,
-            15.0,
-            138,
-            20,
-            if is_capturing && action_entry.assignable {
-                [255, 218, 142]
-            } else if !action_entry.assignable {
-                [207, 169, 133]
-            } else {
-                [199, 221, 195]
-            },
+            &format!("Press a key for {}", action.label),
+            194,
+            3,
+            11.0,
+            390,
+            18,
+            [255, 224, 146],
         );
     }
-    let last_row = (first_row + KEY_CONFIG_VISIBLE_ROWS).min(actions.len());
-    draw_dialogue_text(
-        font,
-        &mut pixels,
-        width,
-        height,
-        &format!(
-            "Actions {}–{} of {}",
-            first_row + 1,
-            last_row,
-            actions.len()
-        ),
-        18,
-        333,
-        11.0,
-        width - 36,
-        14,
-        [183, 177, 164],
-    );
-    fill_dialogue_rect(
-        &mut pixels,
-        width,
-        height,
-        14,
-        350,
-        width - 28,
-        1,
-        [101, 88, 66, 255],
-    );
-    draw_dialogue_text(
-        font,
-        &mut pixels,
-        width,
-        height,
-        "Quick-slot keys",
-        18,
-        356,
-        14.0,
-        width - 36,
-        19,
-        [240, 224, 191],
-    );
-    for row in 0..2 {
-        for column in 0..4 {
-            let slot = row * 4 + column;
-            let x = 16 + column * 98;
-            let y = 378 + row * 21;
-            let capturing = quickslot_capture == Some(slot);
-            fill_dialogue_rect(
+
+    for action in actions {
+        let bound_key = bindings
+            .iter()
+            .take(90)
+            .position(|binding| binding.kind == action.kind && binding.action == action.action)
+            .map(|key| key as u8);
+        let icon_path = format!("UIWindow.img/KeyConfig/icon/{}", action.action);
+        if let Some(key) = bound_key {
+            if let Some((x, y)) = keycap_position(key) {
+                if matches!(action.kind, 4..=6) {
+                    let _ = composite_nx_ui_bitmap(
+                        &mut pixels,
+                        width,
+                        height,
+                        ui_archive,
+                        &icon_path,
+                        x,
+                        y,
+                    );
+                } else {
+                    let caption = match action.kind {
+                        1 => "SK",
+                        2 => "IT",
+                        3 => "CS",
+                        8 => "MC",
+                        _ => "?",
+                    };
+                    draw_dialogue_text(
+                        font,
+                        &mut pixels,
+                        width,
+                        height,
+                        caption,
+                        x + 7,
+                        y + 10,
+                        10.0,
+                        20,
+                        12,
+                        [44, 55, 65],
+                    );
+                }
+            }
+        } else if let Some((column, row)) = unbound_action_cell(action.kind, action.action) {
+            let x = 5 + column * 34;
+            let y = 267 + row * 34;
+            let _ = composite_nx_ui_bitmap(
                 &mut pixels,
                 width,
                 height,
-                x,
-                y,
-                94,
-                19,
-                if capturing {
-                    [91, 72, 43, 255]
-                } else {
-                    [45, 41, 35, 255]
-                },
+                ui_archive,
+                &icon_path,
+                x + 1,
+                y + 1,
             );
-            let label = if capturing {
-                format!("{}: Press key", slot + 1)
-            } else {
-                format!("{}: {}", slot + 1, maple_key_label(quickslot_keys[slot]))
-            };
+        }
+    }
+
+    // The stock lower grid is for unbound actions, so keep quick-slot labels
+    // out of it during normal viewing. Show the dedicated v83 key glyphs
+    // while the user is editing a quick-slot assignment.
+    if quickslot_capture.is_some() {
+        for (slot, key) in quickslot_keys.iter().copied().enumerate() {
+            let x = 12 + (slot % 4) * 151;
+            let y = 288 + (slot / 4) * 31;
+            let _ = composite_nx_ui_bitmap(
+                &mut pixels,
+                width,
+                height,
+                ui_archive,
+                &format!("UIWindow.img/KeyConfig/quickslotConfig/key/{key}"),
+                x as i32 + 4,
+                y as i32 + 5,
+            );
             draw_dialogue_text(
                 font,
                 &mut pixels,
                 width,
                 height,
-                &label,
-                x as i32 + 4,
-                y as i32 + 2,
-                11.0,
-                87,
-                15,
-                if capturing {
-                    [255, 218, 142]
+                &format!("{}: {}", slot + 1, quickslot_short_key_label(key)),
+                x as i32 + 24,
+                y as i32 + 5,
+                10.0,
+                112,
+                14,
+                if quickslot_capture == Some(slot) {
+                    [142, 76, 31]
                 } else {
-                    [213, 213, 207]
+                    [47, 59, 68]
                 },
             );
         }
     }
-    draw_dialogue_text(
-        font,
-        &mut pixels,
-        width,
-        height,
-        "Click a slot, then press a key. Esc/Backspace cancels; changes save locally.",
-        18,
-        423,
-        10.0,
-        width - 36,
-        16,
-        [183, 177, 164],
-    );
     pixels
+}
+
+pub(super) fn keycap_position(key: u8) -> Option<(i32, i32)> {
+    let point = match key {
+        84 => (11, 28), // Escape
+        59..=62 => (79 + (i32::from(key) - 59) * 34, 28),
+        63..=66 => (223 + (i32::from(key) - 63) * 34, 28),
+        67..=70 => (367 + (i32::from(key) - 67) * 34, 28),
+        88 => (511, 28), // Scroll Lock
+        2 => (351, 65), // 0
+        3..=11 => (45 + (i32::from(key) - 3) * 34, 65),
+        12 => (385, 65),
+        13 => (419, 65),
+        41 => (11, 65), // Grave
+        16..=25 => (61 + (i32::from(key) - 16) * 34, 99),
+        26 => (401, 99),
+        27 => (435, 99),
+        43 => (469, 99),
+        30..=38 => (78 + (i32::from(key) - 30) * 34, 132),
+        39 => (384, 132),
+        40 => (418, 132),
+        42 => (36, 165),
+        45..=51 => (95 + (i32::from(key) - 45) * 34, 165),
+        52 => (333, 165),
+        53 => (367, 165),
+        86 => (407, 165), // Right Shift
+        29 => (19, 198),
+        56 => (120, 198),
+        57 => (231, 198),
+        87 => (362, 198),
+        85 => (453, 198),
+        82 => (511, 65), // Insert
+        71 => (545, 65), // Home
+        73 => (579, 65), // Page Up
+        83 => (511, 99), // Delete
+        79 => (545, 99), // End
+        81 => (579, 99), // Page Down
+        _ => return None,
+    };
+    // Keep the action overlay aligned with the top-left of the NX keycap.
+    Some((point.0 + 4, point.1))
+}
+
+pub(super) fn unbound_action_cell(kind: u8, action: i32) -> Option<(i32, i32)> {
+    let slot = match kind {
+        4 => match action {
+            0 => (6, 0),   // Equipment
+            1 => (7, 0),   // Items
+            2 => (6, 1),   // Stats
+            3 => (7, 1),   // Skills
+            4 => (13, 1),  // Friends
+            5 => (14, 1),  // World map
+            6 => (0, 0),   // Chat
+            7 => (15, 1),  // Mini map
+            8 => (8, 1),   // Quest log
+            9 => (16, 1),  // Key bindings
+            10 => (0, 1),  // Say
+            11 => (2, 0),  // Whisper
+            12 => (1, 1),  // Party chat
+            13 => (2, 1),  // Friends chat
+            14 => (9, 0),  // Menu
+            15 => (10, 0), // Quick slots
+            16 => (1, 0),  // Toggle chat
+            17 => (10, 1), // Guild
+            18 => (0, 2),  // Guild chat
+            19 => (11, 1), // Party
+            21 => (8, 0),  // Character info
+            22 => (16, 0), // Monster book
+            23 => (2, 2),  // Cash shop
+            24 => (1, 2),  // Alliance chat
+            25 => (9, 1),  // Change channel
+            26 | 42 => (5, 2), // Family shortcut
+            27 => (4, 0),  // Boss party
+            28 => (3, 2),  // Main menu / settings
+            _ => return None,
+        },
+        5 => match action {
+            50 => (11, 0), // Pickup
+            51 => (12, 0), // Sit
+            52 => (13, 0), // Attack
+            53 => (14, 0), // Jump
+            54 => (15, 0), // NPC chat
+            _ => return None,
+        },
+        6 if (100..=106).contains(&action) => (action - 100, 3),
+        _ => return None,
+    };
+    Some(slot)
 }
 
 fn draw_option_checkbox(
     pixels: &mut [u8],
     width: usize,
     height: usize,
+    ui_archive: &NxArchive,
     x: usize,
     y: usize,
     selected: bool,
     checked: bool,
 ) {
-    fill_dialogue_rect(
+    let state = match (checked, selected) {
+        (false, false) => 0,
+        (true, false) => 1,
+        (false, true) => 2,
+        (true, true) => 3,
+    };
+    let _ = composite_nx_ui_bitmap(
         pixels,
         width,
         height,
-        x,
-        y,
-        20,
-        20,
-        if selected {
-            [236, 213, 159, 255]
-        } else {
-            [136, 125, 104, 255]
-        },
+        ui_archive,
+        &format!("Basic.img/CheckBox/{state}"),
+        x as i32 + 4,
+        y as i32 + 4,
     );
-    fill_dialogue_rect(
-        pixels,
-        width,
-        height,
-        x + 3,
-        y + 3,
-        14,
-        14,
-        [33, 31, 28, 255],
-    );
-    if checked {
-        fill_dialogue_rect(
-            pixels,
-            width,
-            height,
-            x + 6,
-            y + 10,
-            4,
-            3,
-            [232, 205, 140, 255],
-        );
-        fill_dialogue_rect(
-            pixels,
-            width,
-            height,
-            x + 9,
-            y + 7,
-            5,
-            3,
-            [232, 205, 140, 255],
-        );
-    }
 }
 
 fn maple_key_from_physical(key: PhysicalKey) -> Option<u8> {
@@ -474,17 +440,17 @@ fn maple_key_from_physical(key: PhysicalKey) -> Option<u8> {
 }
 
 fn quickslot_key_slot_at(local_x: f32, local_y: f32) -> Option<usize> {
-    let row = if (378.0..397.0).contains(&local_y) {
+    let row = if (288.0..314.0).contains(&local_y) {
         0
-    } else if (399.0..418.0).contains(&local_y) {
+    } else if (319.0..345.0).contains(&local_y) {
         1
     } else {
         return None;
     };
-    if !(16.0..408.0).contains(&local_x) {
+    if !(12.0..616.0).contains(&local_x) {
         return None;
     }
-    let column = ((local_x - 16.0) / 98.0).floor() as usize;
+    let column = ((local_x - 12.0) / 151.0).floor() as usize;
     (column < 4).then_some(row * 4 + column)
 }
 
@@ -548,150 +514,187 @@ fn quickslot_short_key_label(key: u8) -> String {
 
 fn render_skill_book_panel(
     font: &fontdue::Font,
+    ui_archive: &NxArchive,
+    skill_archive: &NxArchive,
     entries: &[SkillUiEntry],
+    book_title: &str,
+    book_icon: Option<(u32, u32, Arc<[u8]>)>,
     skill_points: u16,
     selected_tab: u8,
+    visible_tabs: u8,
     scroll_row: usize,
 ) -> Vec<u8> {
-    const WIDTH: usize = 430;
-    const HEIGHT: usize = 500;
-    const ROW_HEIGHT: usize = 34;
-    const ROWS: usize = 10;
+    const WIDTH: usize = SKILL_BOOK_PANEL_WIDTH as usize;
+    const HEIGHT: usize = SKILL_BOOK_PANEL_HEIGHT as usize;
+    const ROW_HEIGHT: usize = 84;
+    const ROWS: usize = 6;
     let mut pixels = vec![0_u8; WIDTH * HEIGHT * 4];
-    fill_dialogue_rect(
+    // Keep the NX window frame and title bar, but lay out the larger inventory
+    // contents with the original NX row, tab, skill, and button art.
+    let _ = composite_nx_ui_bitmap_scaled_to(
         &mut pixels,
         WIDTH,
         HEIGHT,
+        ui_archive,
+        "UIWindow.img/Skill/backgrnd",
         0,
         0,
         WIDTH,
         HEIGHT,
-        [25, 27, 31, 245],
     );
-    for (x, y, width, height) in [
-        (0, 0, WIDTH, 2),
-        (0, HEIGHT - 2, WIDTH, 2),
-        (0, 0, 2, HEIGHT),
-        (WIDTH - 2, 0, 2, HEIGHT),
-    ] {
-        fill_dialogue_rect(
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            x,
-            y,
-            width,
-            height,
-            [192, 164, 112, 255],
-        );
-    }
-    draw_dialogue_text(
-        font,
+    let _ = composite_nx_ui_bitmap_scaled_to(
         &mut pixels,
         WIDTH,
         HEIGHT,
-        "Skill Book",
-        14,
-        10,
-        20.0,
-        330,
-        25,
-        [246, 226, 185],
-    );
-    draw_dialogue_text(
-        font,
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        "X",
-        402,
-        12,
-        15.0,
-        18,
+        ui_archive,
+        "Basic.img/BtClose/normal/0",
+        WIDTH - 31,
+        13,
         20,
-        [240, 220, 180],
+        20,
     );
-    let tabs = ["Beginner", "1st job", "2nd job", "3rd job", "4th job"];
-    for (index, label) in tabs.into_iter().enumerate() {
-        let x = 10 + index * 82;
-        let active = index == usize::from(selected_tab);
+    fill_dialogue_rect(
+        &mut pixels,
+        WIDTH,
+        HEIGHT,
+        18,
+        10,
+        WIDTH - 56,
+        34,
+        [255, 255, 255, 255],
+    );
+    draw_dialogue_text(
+        font,
+        &mut pixels,
+        WIDTH,
+        HEIGHT,
+        "SKILL INVENTORY",
+        17,
+        9,
+        18.0,
+        WIDTH - 90,
+        28,
+        [27, 30, 35],
+    );
+    fill_dialogue_rect(
+        &mut pixels,
+        WIDTH,
+        HEIGHT,
+        6,
+        48,
+        WIDTH - 12,
+        HEIGHT - 99,
+        [248, 246, 243, 255],
+    );
+    fill_dialogue_rect(
+        &mut pixels,
+        WIDTH,
+        HEIGHT,
+        14,
+        HEIGHT - 99,
+        WIDTH - 28,
+        89,
+        [208, 195, 171, 255],
+    );
+
+    for tab in 0..usize::from(visible_tabs.min(5)) {
+        let left = 8 + tab * 67;
+        let active = tab == usize::from(selected_tab);
         fill_dialogue_rect(
             &mut pixels,
             WIDTH,
             HEIGHT,
-            x,
-            42,
-            76,
-            26,
+            left,
+            45,
+            64,
+            38,
             if active {
-                [92, 75, 48, 255]
+                [133, 91, 218, 255]
             } else {
-                [48, 48, 52, 255]
+                [205, 211, 216, 255]
             },
         );
-        draw_dialogue_text(
-            font,
+        let _ = composite_nx_ui_bitmap_scaled_to(
             &mut pixels,
             WIDTH,
             HEIGHT,
-            label,
-            x as i32 + 4,
-            46,
-            11.0,
-            68,
-            18,
-            if active {
-                [255, 231, 173]
-            } else {
-                [190, 190, 190]
-            },
+            ui_archive,
+            &format!(
+                "UIWindow.img/Skill/Tab/{}/{tab}",
+                if active { "enabled" } else { "disabled" }
+            ),
+            left + 26,
+            58,
+            12,
+            16,
         );
     }
-    draw_dialogue_text(
-        font,
+    fill_dialogue_rect(
         &mut pixels,
         WIDTH,
         HEIGHT,
-        &format!("SP: {skill_points}"),
-        15,
-        74,
-        12.0,
-        120,
-        17,
-        [218, 218, 218],
+        14,
+        85,
+        WIDTH - 28,
+        3,
+        [52, 68, 221, 255],
+    );
+
+    fill_dialogue_rect(
+        &mut pixels,
+        WIDTH,
+        HEIGHT,
+        14,
+        108,
+        WIDTH - 28,
+        70,
+        [47, 116, 179, 255],
     );
     fill_dialogue_rect(
         &mut pixels,
         WIDTH,
         HEIGHT,
-        300,
-        71,
-        112,
-        19,
-        [69, 57, 40, 255],
+        18,
+        113,
+        WIDTH - 36,
+        60,
+        [198, 221, 234, 255],
+    );
+    if let Some((icon_width, icon_height, icon)) = book_icon {
+        composite_inventory_icon(
+            &mut pixels,
+            WIDTH,
+            HEIGHT,
+            &icon,
+            icon_width as usize,
+            icon_height as usize,
+            18,
+            112,
+            58,
+        );
+    }
+    fill_dialogue_rect(
+        &mut pixels,
+        WIDTH,
+        HEIGHT,
+        91,
+        127,
+        WIDTH - 104,
+        35,
+        [70, 57, 50, 255],
     );
     draw_dialogue_text(
         font,
         &mut pixels,
         WIDTH,
         HEIGHT,
-        "Macros…",
-        328,
-        73,
-        11.0,
-        74,
-        16,
-        [238, 220, 181],
-    );
-    fill_dialogue_rect(
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        12,
-        89,
-        WIDTH - 24,
-        1,
-        [96, 88, 77, 255],
+        book_title,
+        107,
+        127,
+        20.0,
+        WIDTH - 128,
+        31,
+        [246, 246, 246],
     );
     let end = entries.len().min(scroll_row.saturating_add(ROWS));
     for (row, skill) in entries
@@ -700,40 +703,33 @@ fn render_skill_book_panel(
         .iter()
         .enumerate()
     {
-        let y = 94 + row * ROW_HEIGHT;
+        let y = 192 + row * ROW_HEIGHT;
         let mastered = skill.level >= skill.max_level;
-        fill_dialogue_rect(
+        let _ = composite_nx_ui_bitmap_scaled_to(
             &mut pixels,
             WIDTH,
             HEIGHT,
-            12,
-            y,
-            WIDTH - 24,
-            ROW_HEIGHT - 2,
-            if row % 2 == 0 {
-                [36, 38, 42, 235]
-            } else {
-                [31, 33, 37, 235]
-            },
-        );
-        let color = if skill.level > 0 {
-            [238, 221, 181]
-        } else {
-            [168, 168, 168]
-        };
-        draw_dialogue_text(
-            font,
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            &skill.name,
-            20,
-            y as i32 + 2,
-            13.0,
-            300,
+            ui_archive,
+            "UIWindow.img/Skill/skill1",
             17,
-            color,
+            y,
+            WIDTH - 34,
+            if row + 1 == ROWS { 84 } else { 78 },
         );
+        let icon_path = format!("{:03}.img/skill/{}/icon", skill.id / 10_000, skill.id);
+        if let Some((icon_width, icon_height, icon)) = decode_nx_icon(skill_archive, &icon_path) {
+            composite_inventory_icon(
+                &mut pixels,
+                WIDTH,
+                HEIGHT,
+                &icon,
+                icon_width as usize,
+                icon_height as usize,
+                17,
+                y + 8,
+                64,
+            );
+        }
         let level_cap = if skill.master_level > 0 {
             skill.max_level.min(skill.master_level)
         } else {
@@ -744,54 +740,47 @@ fn render_skill_book_panel(
             &mut pixels,
             WIDTH,
             HEIGHT,
-            &format!("Lv. {} / {}   MP {}", skill.level, level_cap, skill.mp_cost),
-            20,
-            y as i32 + 17,
-            10.0,
-            260,
-            13,
-            [175, 178, 182],
+            &skill.name,
+            112,
+            y as i32 + 7,
+            22.0,
+            213,
+            27,
+            if skill.level > 0 {
+                [69, 47, 29]
+            } else {
+                [104, 90, 74]
+            },
         );
-        if skill.level > 0 && !skill.passive {
-            draw_dialogue_text(
-                font,
-                &mut pixels,
-                WIDTH,
-                HEIGHT,
-                "Use",
-                341,
-                y as i32 + 8,
-                12.0,
-                38,
-                18,
-                [220, 220, 220],
-            );
-        }
-        if skill.level < level_cap && !mastered {
-            fill_dialogue_rect(
-                &mut pixels,
-                WIDTH,
-                HEIGHT,
-                391,
-                y + 5,
-                27,
-                22,
-                [78, 95, 61, 255],
-            );
-            draw_dialogue_text(
-                font,
-                &mut pixels,
-                WIDTH,
-                HEIGHT,
-                "+",
-                399,
-                y as i32 + 5,
-                16.0,
-                14,
-                19,
-                [225, 242, 206],
-            );
-        }
+        draw_dialogue_text(
+            font,
+            &mut pixels,
+            WIDTH,
+            HEIGHT,
+            &skill.level.to_string(),
+            112,
+            y as i32 + 44,
+            18.0,
+            213,
+            23,
+            [89, 74, 59],
+        );
+        let state = if skill.level < level_cap && !mastered && skill_points > 0 {
+            "normal"
+        } else {
+            "disabled"
+        };
+        let _ = composite_nx_ui_bitmap_scaled_to(
+            &mut pixels,
+            WIDTH,
+            HEIGHT,
+            ui_archive,
+            &format!("UIWindow.img/Skill/BtSpUp/{state}/0"),
+            WIDTH - 67,
+            y + 48,
+            26,
+            26,
+        );
     }
     if entries.is_empty() {
         draw_dialogue_text(
@@ -799,43 +788,67 @@ fn render_skill_book_panel(
             &mut pixels,
             WIDTH,
             HEIGHT,
-            "No skills are available for this job tab.",
-            20,
-            112,
-            12.0,
-            WIDTH - 40,
-            20,
-            [185, 185, 185],
+            "No skills for this job.",
+            30,
+            210,
+            18.0,
+            WIDTH - 60,
+            30,
+            [91, 71, 52],
         );
     }
     fill_dialogue_rect(
         &mut pixels,
         WIDTH,
         HEIGHT,
-        12,
-        444,
-        WIDTH - 24,
-        1,
-        [96, 88, 77, 255],
+        169,
+        HEIGHT - 54,
+        62,
+        36,
+        [151, 139, 120, 255],
+    );
+    fill_dialogue_rect(
+        &mut pixels,
+        WIDTH,
+        HEIGHT,
+        173,
+        HEIGHT - 50,
+        54,
+        28,
+        [246, 247, 247, 255],
     );
     draw_dialogue_text(
         font,
         &mut pixels,
         WIDTH,
         HEIGHT,
-        "Click + to spend SP; click Use for an active skill. K toggles this window.",
-        16,
-        451,
-        10.0,
-        WIDTH - 32,
-        16,
-        [195, 195, 195],
+        "SKILL POINT",
+        20,
+        (HEIGHT - 46) as i32,
+        18.0,
+        190,
+        27,
+        [226, 231, 235],
+    );
+    draw_dialogue_text(
+        font,
+        &mut pixels,
+        WIDTH,
+        HEIGHT,
+        &skill_points.to_string(),
+        195,
+        (HEIGHT - 47) as i32,
+        20.0,
+        50,
+        29,
+        [50, 45, 38],
     );
     pixels
 }
 
 fn render_options_panel(
     font: &fontdue::Font,
+    ui_archive: &NxArchive,
     settings: AudioSettings,
     display_settings: DisplaySettings,
     input_settings: InputSettings,
@@ -846,168 +859,102 @@ fn render_options_panel(
 ) -> Vec<u8> {
     const WIDTH: usize = SETTINGS_PANEL_WIDTH as usize;
     const HEIGHT: usize = SETTINGS_PANEL_HEIGHT as usize;
+    const GAME_X: usize = 300;
+    const GAME_Y: usize = 366;
     let mut pixels = vec![0_u8; WIDTH * HEIGHT * 4];
-    fill_dialogue_rect(
+
+    // These are the two stock v83 settings windows at their authored sizes.
+    let _ = composite_nx_ui_bitmap(
         &mut pixels,
         WIDTH,
         HEIGHT,
+        ui_archive,
+        "UIWindow.img/SysOpt/backgrnd",
         0,
         0,
-        WIDTH,
-        HEIGHT,
-        [177, 145, 92, 255],
     );
-    fill_dialogue_rect(
+    let _ = composite_nx_ui_bitmap(
         &mut pixels,
         WIDTH,
         HEIGHT,
-        4,
-        4,
-        WIDTH - 8,
-        HEIGHT - 8,
-        [31, 29, 27, 255],
-    );
-    fill_dialogue_rect(
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        4,
-        4,
-        WIDTH - 8,
-        42,
-        [83, 63, 40, 255],
-    );
-    draw_dialogue_text(
-        font,
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        "OpenStoryRS Options",
-        22,
-        12,
-        18.0,
-        WIDTH - 44,
-        22,
-        [246, 226, 185],
+        ui_archive,
+        "UIWindow.img/GameOpt/backgrnd",
+        GAME_X as i32,
+        GAME_Y as i32,
     );
 
-    for (slider, label, value) in [
+    // The SysOpt artwork carries its own labels and layout. Overlay only live
+    // values and controls in the authored row fields.
+    for (slider, value) in [
         (
             OptionControl::GraphicsQuality,
-            "Graphics quality",
             gameplay_settings.graphics_quality,
         ),
+        (OptionControl::Music, settings.music_volume),
+        (OptionControl::SoundEffects, settings.effects_volume),
         (
             OptionControl::EffectsQuality,
-            "Effects quality",
             gameplay_settings.effects_quality,
         ),
-        (OptionControl::Music, "Music volume", settings.music_volume),
-        (
-            OptionControl::SoundEffects,
-            "Sound effects",
-            settings.effects_volume,
-        ),
-        (
-            OptionControl::HpWarning,
-            "HP warning",
-            gameplay_settings.hp_warning,
-        ),
-        (
-            OptionControl::MpWarning,
-            "MP warning",
-            gameplay_settings.mp_warning,
-        ),
-        (
-            OptionControl::MouseSpeed,
-            "Mouse speed",
-            input_settings.mouse_speed,
-        ),
+        (OptionControl::MouseSpeed, input_settings.mouse_speed),
+        (OptionControl::HpWarning, gameplay_settings.hp_warning),
+        (OptionControl::MpWarning, gameplay_settings.mp_warning),
     ] {
         let y = slider.track_y().expect("sliders have a track position");
-        draw_dialogue_text(
-            font,
+        const TRACK_LEFT: usize = 104;
+        const TRACK_WIDTH: usize = 152;
+        let _ = composite_nx_ui_bitmap_scaled_to(
             &mut pixels,
             WIDTH,
             HEIGHT,
-            label,
-            26,
-            y as i32 - 12,
-            13.0,
-            112,
-            18,
-            [231, 226, 214],
+            ui_archive,
+            "Basic.img/Slider/mid",
+            TRACK_LEFT,
+            y.saturating_sub(3),
+            TRACK_WIDTH,
+            6,
         );
-        fill_dialogue_rect(
+        let filled_width = usize::from(value) * TRACK_WIDTH / 100;
+        if filled_width > 0 {
+            let _ = composite_nx_ui_bitmap_scaled_to(
+                &mut pixels,
+                WIDTH,
+                HEIGHT,
+                ui_archive,
+                "Basic.img/Slider/mid",
+                TRACK_LEFT,
+                y.saturating_sub(3),
+                filled_width,
+                6,
+            );
+        }
+        let thumb_x = TRACK_LEFT + filled_width;
+        let thumb_state = if slider == selected {
+            "thumbMouseOver"
+        } else {
+            "thumbNormal"
+        };
+        let _ = composite_nx_ui_bitmap_scaled_to(
             &mut pixels,
             WIDTH,
             HEIGHT,
-            148,
-            y,
-            280,
-            4,
-            [75, 71, 63, 255],
-        );
-        fill_dialogue_rect(
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            148,
-            y,
-            usize::from(value) * 28 / 10,
-            4,
-            if slider == selected {
-                [198, 155, 79, 255]
-            } else {
-                [146, 124, 84, 255]
-            },
-        );
-        let thumb_x = 142 + usize::from(value) * 28 / 10;
-        fill_dialogue_rect(
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            thumb_x,
-            y - 8,
-            14,
-            20,
-            if slider == selected {
-                [236, 213, 159, 255]
-            } else {
-                [203, 197, 180, 255]
-            },
-        );
-        let value_label =
-            if matches!(slider, OptionControl::HpWarning | OptionControl::MpWarning) && value == 0 {
-                "Off".to_owned()
-            } else {
-                format!("{value}%")
-            };
-        draw_dialogue_text(
-            font,
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            &value_label,
-            438,
-            y as i32 - 12,
-            13.0,
-            36,
-            18,
-            [231, 226, 214],
+            ui_archive,
+            &format!("Basic.img/Slider/{thumb_state}"),
+            thumb_x.saturating_sub(5),
+            y.saturating_sub(7),
+            16,
+            13,
         );
     }
 
-    for (control, label, y, muted) in [
+    for (control, y, muted) in [
         (
             OptionControl::MuteMusic,
-            "Mute",
             OptionControl::Music.track_y().expect("music has a slider"),
             settings.mute_music,
         ),
         (
             OptionControl::MuteEffects,
-            "Mute",
             OptionControl::SoundEffects
                 .track_y()
                 .expect("sound effects have a slider"),
@@ -1018,144 +965,55 @@ fn render_options_panel(
             &mut pixels,
             WIDTH,
             HEIGHT,
-            486,
+            ui_archive,
+            264,
             y.saturating_sub(9),
             selected == control,
             muted,
         );
-        draw_dialogue_text(
-            font,
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            label,
-            512,
-            y as i32 - 12,
-            12.0,
-            60,
-            18,
-            [231, 226, 214],
-        );
     }
 
-    let shake_selected = selected == OptionControl::ScreenShake;
-    fill_dialogue_rect(
+    draw_option_checkbox(
         &mut pixels,
         WIDTH,
         HEIGHT,
-        24,
-        270,
-        22,
-        22,
-        if shake_selected {
-            [236, 213, 159, 255]
-        } else {
-            [136, 125, 104, 255]
-        },
-    );
-    fill_dialogue_rect(
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        27,
-        273,
-        16,
-        16,
-        [33, 31, 28, 255],
-    );
-    if gameplay_settings.screen_shake_enabled {
-        fill_dialogue_rect(&mut pixels, WIDTH, HEIGHT, 30, 281, 5, 3, [232, 205, 140, 255]);
-        fill_dialogue_rect(&mut pixels, WIDTH, HEIGHT, 34, 278, 3, 7, [232, 205, 140, 255]);
-        fill_dialogue_rect(&mut pixels, WIDTH, HEIGHT, 37, 275, 3, 4, [232, 205, 140, 255]);
-    }
-    draw_dialogue_text(
-        font,
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        "Screen shake",
-        56,
-        272,
-        13.0,
-        180,
-        18,
-        [231, 226, 214],
-    );
-    draw_dialogue_text(
-        font,
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        if gameplay_settings.screen_shake_enabled {
-            "On"
-        } else {
-            "Off"
-        },
-        438,
-        272,
-        13.0,
-        36,
-        18,
-        [231, 226, 214],
-    );
-    draw_dialogue_text(
-        font,
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        "Windowed",
-        56,
-        305,
-        13.0,
-        90,
-        18,
-        [231, 226, 214],
+        ui_archive,
+        263,
+        231,
+        selected == OptionControl::ScreenShake,
+        gameplay_settings.screen_shake_enabled,
     );
     draw_option_checkbox(
         &mut pixels,
         WIDTH,
         HEIGHT,
-        24,
-        302,
+        ui_archive,
+        258,
+        296,
         selected == OptionControl::Windowed,
         !display_settings.fullscreen,
     );
-    draw_dialogue_text(
-        font,
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        "Resolution",
-        174,
-        305,
-        13.0,
-        88,
-        18,
-        [231, 226, 214],
-    );
-    for (control, width, height, label, x) in [
+    for (control, x, label, active) in [
         (
             OptionControl::Resolution800,
-            800,
-            600,
+            64,
             "800 x 600",
-            268,
+            display_settings.width == 800 && display_settings.height == 600,
         ),
         (
             OptionControl::Resolution1024,
-            1024,
-            768,
+            164,
             "1024 x 768",
-            398,
+            display_settings.width == 1024 && display_settings.height == 768,
         ),
     ] {
-        let active = display_settings.width == width && display_settings.height == height;
         draw_option_checkbox(
             &mut pixels,
             WIDTH,
             HEIGHT,
+            ui_archive,
             x,
-            302,
+            260,
             selected == control,
             active,
         );
@@ -1165,136 +1023,104 @@ fn render_options_panel(
             WIDTH,
             HEIGHT,
             label,
-            (x + 25) as i32,
-            305,
-            12.0,
-            105,
-            18,
-            [231, 226, 214],
+            x as i32 + 23,
+            264,
+            8.0,
+            68,
+            12,
+            [37, 47, 54],
         );
     }
-    draw_dialogue_text(
-        font,
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        "Quality limits short-lived effects and map layers.",
-        24,
-        335,
-        11.0,
-        WIDTH - 48,
-        16,
-        [190, 185, 173],
-    );
-    fill_dialogue_rect(
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        18,
-        365,
-        WIDTH - 36,
-        1,
-        [101, 88, 66, 255],
-    );
-    draw_dialogue_text(
-        font,
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        "Social permissions",
-        24,
-        372,
-        14.0,
-        WIDTH - 48,
-        20,
-        [240, 224, 191],
-    );
-    for (index, (control, label, allowed)) in [
-        (OptionControl::AllowWhisper, "Whispers", social_settings.allow_whisper),
-        (
-            OptionControl::AllowChatInvite,
-            "Messenger invitations",
-            social_settings.allow_chat_invite,
-        ),
-        (
-            OptionControl::AllowPartyInvite,
-            "Party invitations",
-            social_settings.allow_party_invite,
-        ),
-        (OptionControl::AllowGuildChat, "Guild chat", social_settings.allow_guild_chat),
-        (
-            OptionControl::AllowAllianceChat,
-            "Alliance chat",
-            social_settings.allow_alliance_chat,
-        ),
-        (
-            OptionControl::AllowFamilyInvite,
-            "Family invitations",
-            social_settings.allow_family_invite,
-        ),
+
+    // GameOpt owns the social labels. A checkbox replaces its baked ALLOW cell
+    // with the current state while leaving every authored label visible.
+    let permissions = [
+        (OptionControl::AllowWhisper, social_settings.allow_whisper),
         (
             OptionControl::AllowFriendChat,
-            "Buddy chat",
             social_settings.allow_friend_chat,
         ),
         (
+            OptionControl::AllowChatInvite,
+            social_settings.allow_chat_invite,
+        ),
+        (
             OptionControl::AllowTradeRequest,
-            "Trade requests",
             social_settings.allow_trade_request,
         ),
         (
+            OptionControl::AllowPartyInvite,
+            social_settings.allow_party_invite,
+        ),
+        (
             OptionControl::AllowExpeditionInvite,
-            "Expedition invitations",
             social_settings.allow_expedition_invite,
+        ),
+        (OptionControl::AllowFollow, social_settings.allow_follow),
+        (
+            OptionControl::AllowGuildChat,
+            social_settings.allow_guild_chat,
         ),
         (
             OptionControl::AllowGuildInvite,
-            "Guild invitations",
             social_settings.allow_guild_invite,
         ),
         (
+            OptionControl::AllowAllianceChat,
+            social_settings.allow_alliance_chat,
+        ),
+        (
             OptionControl::AllowAllianceInvite,
-            "Alliance invitations",
             social_settings.allow_alliance_invite,
         ),
-        (OptionControl::AllowFollow, "Follow requests", social_settings.allow_follow),
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        let column = index / 6;
-        let row = index % 6;
-        let x = 24 + column * 286;
-        let y = 401 + row * 25;
-        let is_selected = selected == control;
-        draw_option_checkbox(&mut pixels, WIDTH, HEIGHT, x, y, is_selected, allowed);
+        (
+            OptionControl::AllowFamilyInvite,
+            social_settings.allow_family_invite,
+        ),
+    ];
+    for (index, (control, allowed)) in permissions.into_iter().enumerate() {
+        let y = GAME_Y + 31 + index * 18;
+        draw_option_checkbox(
+            &mut pixels,
+            WIDTH,
+            HEIGHT,
+            ui_archive,
+            GAME_X + 124,
+            y,
+            selected == control,
+            allowed,
+        );
+    }
+
+    for (x, label, path) in [
+        (204, "OK", "Basic.img/BtOK/normal/0"),
+        (253, "Cancel", "Basic.img/BtCancel/normal/0"),
+    ] {
+        let _ = composite_nx_ui_bitmap_scaled_to(
+            &mut pixels,
+            WIDTH,
+            HEIGHT,
+            ui_archive,
+            path,
+            x,
+            339,
+            if label == "OK" { 45 } else { 44 },
+            22,
+        );
         draw_dialogue_text(
             font,
             &mut pixels,
             WIDTH,
             HEIGHT,
             label,
-            (x + 28) as i32,
-            (y + 2) as i32,
-            12.0,
-            250,
-            18,
-            [231, 226, 214],
+            x as i32 + 6,
+            344,
+            9.0,
+            38,
+            13,
+            [48, 48, 48],
         );
     }
-    draw_dialogue_text(
-        font,
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        "Tab selects a setting; arrows change it and Space toggles permissions.",
-        24,
-        552,
-        11.0,
-        WIDTH - 48,
-        16,
-        [190, 185, 173],
-    );
     if let Some(notice) = notice {
         draw_dialogue_text(
             font,
@@ -1302,32 +1128,12 @@ fn render_options_panel(
             WIDTH,
             HEIGHT,
             notice,
-            24,
-            568,
-            10.0,
-            WIDTH - 48,
-            18,
-            [255, 180, 150],
-        );
-    }
-
-    for (x, label, color) in [
-        (204, "Save", [88, 68, 45, 255]),
-        (312, "Cancel", [65, 63, 57, 255]),
-    ] {
-        fill_dialogue_rect(&mut pixels, WIDTH, HEIGHT, x, 584, 96, 36, color);
-        draw_dialogue_text(
-            font,
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            label,
-            (x + 22) as i32,
-            592,
-            13.0,
-            70,
-            20,
-            [246, 231, 199],
+            5,
+            369,
+            9.0,
+            GAME_X - 10,
+            22,
+            [120, 24, 24],
         );
     }
     pixels

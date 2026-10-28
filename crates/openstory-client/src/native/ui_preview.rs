@@ -20,6 +20,7 @@ pub(super) fn run(
     legacy_ui: &NxArchive,
     ui: &NxArchive,
     characters: &NxArchive,
+    npcs: &NxArchive,
     skills: &NxArchive,
     etc: &NxArchive,
     items: &NxArchive,
@@ -28,6 +29,20 @@ pub(super) fn run(
     strings: &NxArchive,
     font: &fontdue::Font,
 ) -> Result<(), String> {
+    // Keep short, task-oriented names convenient while retaining the existing
+    // native-* names used by the client preview catalogue.
+    let screen = match screen {
+        "inventory" | "native-inventory" => "native-items",
+        "equipment" => "native-equipment",
+        "pet-equipment" => "native-pet-equipment",
+        "keybindings" => "native-keybindings",
+        "skills" => "native-skills",
+        "stats" => "native-status",
+        "stats-detail" => "native-status-detail",
+        "npc-chat" => "native-npc-dialogue",
+        "item-tooltip" => "native-item-tooltip",
+        other => other,
+    };
     fs::create_dir_all(output_dir)
         .map_err(|error| format!("could not create {}: {error}", output_dir.display()))?;
 
@@ -40,10 +55,12 @@ pub(super) fn run(
             "character-select-populated",
             "character-create-class",
             "character-create-explorer",
+            "character-create-error",
             "native-keybindings",
             "native-quickslots",
             "native-skill-macros",
             "native-items",
+            "native-item-tooltip",
             "native-equipment",
             "native-skills",
             "native-pet-equipment",
@@ -62,6 +79,9 @@ pub(super) fn run(
             "native-status",
             "native-status-detail",
             "native-status-bar",
+            "native-first-map",
+            "native-second-map",
+            "native-npc-dialogue",
             "native-clock",
             "native-wedding",
             "native-rps",
@@ -71,9 +91,11 @@ pub(super) fn run(
             "native-avatar-megaphone",
             "native-quit-confirmation",
             "native-server-notice",
+            "native-tos-acceptance",
             "native-quest-log",
             "native-quest-log-detail",
             "native-chat",
+            "native-whisper",
             "native-item-megaphone",
             "native-party",
             "native-buddy",
@@ -82,6 +104,9 @@ pub(super) fn run(
             "native-character-info",
             "native-world-map",
             "native-world-map-link",
+            "native-world-map-marker",
+            "native-world-map-search",
+            "native-world-map-result",
             "native-options",
             "native-audio-settings",
         ],
@@ -92,10 +117,12 @@ pub(super) fn run(
         | "character-select-populated"
         | "character-create-class"
         | "character-create-explorer"
+        | "character-create-error"
         | "native-keybindings"
         | "native-quickslots"
         | "native-skill-macros"
         | "native-items"
+        | "native-item-tooltip"
         | "native-equipment"
         | "native-skills"
         | "native-pet-equipment"
@@ -114,6 +141,9 @@ pub(super) fn run(
         | "native-status"
         | "native-status-detail"
         | "native-status-bar"
+        | "native-first-map"
+        | "native-second-map"
+        | "native-npc-dialogue"
         | "native-clock"
         | "native-wedding"
         | "native-rps"
@@ -123,9 +153,11 @@ pub(super) fn run(
         | "native-avatar-megaphone"
         | "native-quit-confirmation"
         | "native-server-notice"
+        | "native-tos-acceptance"
         | "native-quest-log"
         | "native-quest-log-detail"
         | "native-chat"
+        | "native-whisper"
         | "native-item-megaphone"
         | "native-party"
         | "native-buddy"
@@ -210,8 +242,42 @@ pub(super) fn run(
             build_monster_book_detail_scene(map, ui, items, characters, mobs, strings, font, mode)?
         } else if *name == "native-items" {
             build_inventory_panel_scene(map, legacy_ui, characters, items, strings, font)?
+        } else if *name == "native-equipment" {
+            build_equipment_panel_scene(map, legacy_ui, characters, items, font)?
+        } else if *name == "native-item-tooltip" {
+            build_item_tooltip_scene(map, characters, items, strings, ui, font)?
         } else if matches!(*name, "native-quest-log" | "native-quest-log-detail") {
             build_quest_log_panel_scene(name, map, legacy_ui, quests, strings, characters, font)?
+        } else if *name == "native-npc-dialogue" {
+            let mut scene = build_scene(
+                "native-first-map",
+                map,
+                legacy_ui,
+                ui,
+                characters,
+                items,
+                skills,
+                etc,
+                strings,
+                font,
+            )?;
+            let (pixels, (x, y, width, height)) =
+                super::render_npc_dialogue_preview(font, legacy_ui, npcs, strings);
+            scene.sprites.push(DecodedSprite {
+                texture_key: "native-npc-dialogue-preview".to_owned(),
+                rect: SpriteRect {
+                    x,
+                    y,
+                    width,
+                    height,
+                    blend_mode: BlendMode::Alpha,
+                },
+                depth_order: 0,
+                texture_width: width.round() as u32,
+                texture_height: height.round() as u32,
+                pixels: Arc::from(pixels),
+            });
+            scene
         } else if *name == "native-clock" {
             let panel = super::ui_clock::render(
                 ui,
@@ -522,7 +588,7 @@ pub(super) fn run(
                 login_buttons: Vec::new(),
                 save_id_indicator_draws: None,
             }
-        } else if *name == "native-server-notice" {
+        } else if *name == "native-server-notice" || *name == "native-tos-acceptance" {
             let mut sprites = gameplay_backdrop(map, characters, font)?;
             let dim_pixels: Arc<[u8]> = Arc::from([0_u8, 0, 0, 140]);
             sprites.push(DecodedSprite {
@@ -539,7 +605,11 @@ pub(super) fn run(
                 texture_height: 1,
                 pixels: dim_pixels,
             });
-            let message = "The server will restart in five minutes. Please move to a safe place.";
+            let message = if *name == "native-tos-acceptance" {
+                "Server Terms of Service required. Review them first. Click OK or Enter to accept; Escape cancels."
+            } else {
+                "The server will restart in five minutes. Please move to a safe place."
+            };
             let (width, height, pixels, panel, _) =
                 build_server_notice_art(legacy_ui, font, message)
                     .or_else(|_| build_server_notice_art(ui, font, message))?;
@@ -723,6 +793,7 @@ fn build_scene(
             let mut sprites = gameplay_backdrop(map, character_archive, font)?;
             let pixels = render_options_panel(
                 font,
+                ui,
                 AudioSettings {
                     music_volume: 50,
                     effects_volume: 70,
@@ -759,21 +830,35 @@ fn build_scene(
                 save_id_indicator_draws: None,
             })
         }
-        "native-status-bar" => {
-            let mut sprites = gameplay_backdrop(map, character_archive, font)?;
+        "native-status-bar" | "native-first-map" | "native-second-map" => {
+            let map_id = match name {
+                "native-first-map" => Some(10_000),
+                "native-second-map" => Some(20_000),
+                _ => None,
+            };
+            let mut sprites = if let Some(map_id) = map_id {
+                gameplay_backdrop_for_map(map, character_archive, font, map_id)?
+            } else {
+                gameplay_backdrop(map, character_archive, font)?
+            };
             let (bar_sprites, gauge_assets, layout) = build_status_bar_sprites(legacy_ui)?;
+            let status_bar_preview = name == "native-status-bar";
             let stats = openstory_protocol::CharacterStats {
-                name: "Bobby".to_owned(),
-                level: 12,
-                job: 0,
-                hp: 50,
-                max_hp: 50,
-                mp: 50,
-                max_mp: 78,
-                experience: 82,
+                name: if status_bar_preview { "Ronan" } else { "Bobby" }.to_owned(),
+                level: if status_bar_preview { 200 } else { 12 },
+                job: if status_bar_preview { 122 } else { 0 },
+                hp: if status_bar_preview { 4_641 } else { 50 },
+                max_hp: if status_bar_preview { 4_641 } else { 50 },
+                mp: if status_bar_preview { 3_165 } else { 50 },
+                max_mp: if status_bar_preview { 3_165 } else { 78 },
+                experience: if status_bar_preview { 0 } else { 82 },
                 ..Default::default()
             };
-            let fractions = [1.0_f32, 50.0 / 78.0, 0.18];
+            let fractions = if status_bar_preview {
+                [1.0_f32, 1.0, 0.0]
+            } else {
+                [1.0_f32, 50.0 / 78.0, 0.18]
+            };
             let gauge_rects = gauge_assets.map(|gauge| bar_sprites[gauge.fill_index].rect);
             for (index, mut sprite) in bar_sprites.into_iter().enumerate() {
                 if let Some(gauge) = gauge_assets
@@ -1057,6 +1142,22 @@ fn build_scene(
                 font,
             )
         }
+        "character-create-error" => {
+            let pools = load_character_creation_options(etc, 1, false)?;
+            let mut creation = CharacterCreationState::customize(1, pools);
+            creation.notice =
+                Some("Character creation failed (9). Review choices and retry.".to_owned());
+            load_character_customization_scene(
+                map,
+                legacy_ui,
+                character_archive,
+                strings,
+                &mut HashMap::new(),
+                true,
+                &creation,
+                font,
+            )
+        }
         "native-keybindings"
         | "native-quickslots"
         | "native-skill-macros"
@@ -1071,6 +1172,7 @@ fn build_scene(
         | "native-status-detail"
         | "native-quest-log"
         | "native-chat"
+        | "native-whisper"
         | "native-party"
         | "native-buddy"
         | "native-guild"
@@ -1169,7 +1271,7 @@ fn build_minimap_scene(
     string_archive: &NxArchive,
     font: &fontdue::Font,
 ) -> Result<LoginSceneAssets, String> {
-    let map_id = 100_000_000;
+    let map_id = 10_000;
     let data = minimap::MiniMapData::load(map_archive, map_id)?
         .ok_or_else(|| format!("map {map_id} has no minimap to preview"))?;
     let ui_assets = minimap::UiAssets::load(ui_archive)?;
@@ -1179,25 +1281,26 @@ fn build_minimap_scene(
         "native-minimap-expanded" => minimap::Presentation::Expanded,
         _ => return Err(format!("unknown minimap preview {name:?}")),
     };
+    let units = 2.0_f32.powi(i32::from(data.magnification));
     let markers = [
         minimap::Marker {
             kind: minimap::MarkerKind::Player,
-            x: -520.0,
-            y: -310.0,
+            x: -data.center_x + 32.0 * units,
+            y: -data.center_y + 26.0 * units,
             facing_left: false,
             sprite: None,
         },
         minimap::Marker {
             kind: minimap::MarkerKind::Npc,
-            x: -650.0,
-            y: -250.0,
+            x: -data.center_x + 26.0 * units,
+            y: -data.center_y + 29.0 * units,
             facing_left: false,
             sprite: None,
         },
         minimap::Marker {
             kind: minimap::MarkerKind::Mob,
-            x: -420.0,
-            y: -360.0,
+            x: -data.center_x + 42.0 * units,
+            y: -data.center_y + 18.0 * units,
             facing_left: true,
             sprite: None,
         },
@@ -1327,10 +1430,20 @@ fn gameplay_backdrop(
     character_archive: &NxArchive,
     font: &fontdue::Font,
 ) -> Result<Vec<DecodedSprite>, String> {
-    let mut map_scene = load_map_scene(map_archive, None, 100_000_000, 0, None, font)?;
+    gameplay_backdrop_for_map(map_archive, character_archive, font, 100_000_000)
+}
+
+fn gameplay_backdrop_for_map(
+    map_archive: &NxArchive,
+    character_archive: &NxArchive,
+    font: &fontdue::Font,
+    map_id: i32,
+) -> Result<Vec<DecodedSprite>, String> {
+    let mut map_scene = load_map_scene(map_archive, None, map_id, 0, None, font)?;
+    let map_label = format!("label:15:Map {map_id}");
     map_scene
         .sprites
-        .retain(|sprite| sprite.texture_key != "label:15:Map 100000000");
+        .retain(|sprite| sprite.texture_key != map_label);
     append_character_preview(
         &mut map_scene.sprites,
         character_archive,
@@ -1353,37 +1466,24 @@ fn build_inventory_panel_scene(
     font: &fontdue::Font,
 ) -> Result<LoginSceneAssets, String> {
     let inventory = openstory_protocol::InventorySnapshot {
-        meso: 1_234_567,
+        meso: 2_145_892,
         slot_maxima: [24; 5],
         equipped_slot_maximum: 59,
-        items: vec![
-            openstory_protocol::InventoryItem {
-                inventory_type: openstory_protocol::InventoryType::Use,
-                slot: 1,
-                item_id: 2_000_000,
-                count: 50,
+        items: (4_000_000..=4_000_010)
+            .enumerate()
+            .map(|(index, item_id)| openstory_protocol::InventoryItem {
+                inventory_type: openstory_protocol::InventoryType::Etc,
+                slot: index as u16 + 1,
+                item_id,
+                count: 1,
                 ..Default::default()
-            },
-            openstory_protocol::InventoryItem {
-                inventory_type: openstory_protocol::InventoryType::Use,
-                slot: 2,
-                item_id: 2_000_001,
-                count: 25,
-                ..Default::default()
-            },
-            openstory_protocol::InventoryItem {
-                inventory_type: openstory_protocol::InventoryType::Use,
-                slot: 5,
-                item_id: 2_000_002,
-                count: 10,
-                ..Default::default()
-            },
-        ],
+            })
+            .collect(),
     };
     let pixels = super::render_inventory_panel(
         font,
         &inventory,
-        openstory_protocol::InventoryType::Use,
+        openstory_protocol::InventoryType::Etc,
         0,
         None,
         None,
@@ -1408,6 +1508,125 @@ fn build_inventory_panel_scene(
         depth_order: 0,
         texture_width: super::INVENTORY_PANEL_WIDTH,
         texture_height: super::INVENTORY_PANEL_HEIGHT,
+        pixels: Arc::from(pixels),
+    });
+    Ok(LoginSceneAssets {
+        sprites,
+        actions: Vec::new(),
+        map_scene: None,
+        animated_art: Vec::new(),
+        login_buttons: Vec::new(),
+        save_id_indicator_draws: None,
+    })
+}
+
+fn build_item_tooltip_scene(
+    map_archive: &NxArchive,
+    character_archive: &NxArchive,
+    item_archive: &NxArchive,
+    string_archive: &NxArchive,
+    ui_archive: &NxArchive,
+    font: &fontdue::Font,
+) -> Result<LoginSceneAssets, String> {
+    let item = openstory_protocol::InventoryItem {
+        inventory_type: openstory_protocol::InventoryType::Use,
+        slot: 1,
+        item_id: 2_000_000,
+        count: 25,
+        ..Default::default()
+    };
+    let pixels = super::render_inventory_tooltip(
+        font,
+        &item,
+        ui_archive,
+        item_archive,
+        character_archive,
+        string_archive,
+        &mut HashMap::new(),
+        &mut HashMap::new(),
+    );
+    let mut sprites = gameplay_backdrop(map_archive, character_archive, font)?;
+    let tooltip_width = super::INVENTORY_TOOLTIP_WIDTH as usize;
+    let tooltip_height = super::INVENTORY_TOOLTIP_HEIGHT as usize;
+    let mut frame = vec![0_u8; tooltip_width * tooltip_height * 4];
+    for y in 0..tooltip_height {
+        for x in 0..tooltip_width {
+            let edge = x < 2 || y < 2 || x >= tooltip_width - 2 || y >= tooltip_height - 2;
+            let color = if edge {
+                [202, 166, 103, 255]
+            } else {
+                [35, 29, 24, 238]
+            };
+            let offset = (y * tooltip_width + x) * 4;
+            frame[offset..offset + 4].copy_from_slice(&color);
+        }
+    }
+    sprites.push(DecodedSprite {
+        texture_key: "inventory-tooltip:preview-frame".to_owned(),
+        rect: SpriteRect {
+            x: 520.0,
+            y: 240.0,
+            width: tooltip_width as f32,
+            height: tooltip_height as f32,
+            blend_mode: BlendMode::Alpha,
+        },
+        depth_order: 0,
+        texture_width: tooltip_width as u32,
+        texture_height: tooltip_height as u32,
+        pixels: Arc::from(frame),
+    });
+    sprites.push(DecodedSprite {
+        texture_key: "inventory-tooltip:preview".to_owned(),
+        rect: SpriteRect {
+            x: 520.0,
+            y: 240.0,
+            width: super::INVENTORY_TOOLTIP_WIDTH as f32,
+            height: super::INVENTORY_TOOLTIP_HEIGHT as f32,
+            blend_mode: BlendMode::Alpha,
+        },
+        depth_order: 0,
+        texture_width: super::INVENTORY_TOOLTIP_WIDTH,
+        texture_height: super::INVENTORY_TOOLTIP_HEIGHT,
+        pixels: Arc::from(pixels),
+    });
+    Ok(LoginSceneAssets {
+        sprites,
+        actions: Vec::new(),
+        map_scene: None,
+        animated_art: Vec::new(),
+        login_buttons: Vec::new(),
+        save_id_indicator_draws: None,
+    })
+}
+
+fn build_equipment_panel_scene(
+    map_archive: &NxArchive,
+    ui_archive: &NxArchive,
+    character_archive: &NxArchive,
+    item_archive: &NxArchive,
+    font: &fontdue::Font,
+) -> Result<LoginSceneAssets, String> {
+    let inventory = preview_equipped_inventory();
+    let pixels = super::render_equipment_inventory_panel(
+        &inventory,
+        ui_archive,
+        item_archive,
+        character_archive,
+        &mut HashMap::new(),
+    );
+    let mut sprites = gameplay_backdrop(map_archive, character_archive, font)?;
+    sprites.push(DecodedSprite {
+        texture_key: "nx-window:live-equipment".to_owned(),
+        rect: SpriteRect {
+            x: super::EQUIPMENT_INVENTORY_PANEL_X,
+            y: super::EQUIPMENT_INVENTORY_PANEL_Y,
+            width: super::EQUIPMENT_INVENTORY_PANEL_WIDTH as f32,
+            height: super::EQUIPMENT_INVENTORY_PANEL_HEIGHT as f32,
+            blend_mode: BlendMode::Alpha,
+        },
+        depth_order: 0,
+        texture_width: super::EQUIPMENT_INVENTORY_PANEL_WIDTH,
+        texture_height: super::EQUIPMENT_INVENTORY_PANEL_HEIGHT,
         pixels: Arc::from(pixels),
     });
     Ok(LoginSceneAssets {
@@ -1473,7 +1692,7 @@ fn build_quest_log_panel_scene(
             super::QUEST_LOG_PANEL_HEIGHT as usize,
         )
     } else {
-        (296, 289)
+        (245, 396)
     };
     let mut visible_pixels = Vec::with_capacity(panel_width * panel_height * 4);
     for row in 0..panel_height {
@@ -1525,22 +1744,12 @@ fn build_native_window_scene(
     // approximations generated by the Rust panel renderer. Related layers
     // share the same anchor; their NX origins provide the authored offsets.
     let layers: &[(&str, f32, f32)] = match name {
-        "native-keybindings" => &[
-            ("UIWindow2.img/KeyConfig/backgrnd", 201.0, 197.0),
-            ("UIWindow2.img/KeyConfig/backgrnd2", 201.0, 197.0),
-            ("UIWindow2.img/KeyConfig/backgrnd3", 201.0, 197.0),
-        ],
+        "native-keybindings" => &[],
         "native-quickslots" | "native-skill-macros" => &[],
         "native-items" => &[("UIWindow.img/Item/backgrnd", 300.0, 160.0)],
-        "native-equipment" => &[
-            ("UIWindow2.img/Equip/character/backgrnd", 184.0, 20.0),
-            ("UIWindow2.img/Equip/character/backgrnd2", 184.0, 20.0),
-            ("UIWindow2.img/Equip/character/backgrnd3", 184.0, 20.0),
-        ],
+        "native-equipment" => &[],
         "native-skills" => &[
-            ("UIWindow2.img/Skill/main/backgrnd", 174.0, 20.0),
-            ("UIWindow2.img/Skill/main/backgrnd2", 174.0, 20.0),
-            ("UIWindow2.img/Skill/main/backgrnd3", 174.0, 20.0),
+            // Compose the same scaled v83 Skill window used by the live panel below.
         ],
         "native-pet-equipment" => &[("UIWindow.img/Equip/pet", 184.0, 20.0)],
         "native-npc-store" => &[
@@ -1551,33 +1760,16 @@ fn build_native_window_scene(
         "native-cash-shop" => &[("CashShop.img/Base/backgrnd", 0.0, 0.0)],
         "native-monster-book" => &[("UIWindow2.img/MonsterBook/backgrnd", 276.5, 20.0)],
         "native-status" | "native-status-detail" => &[
-            // Render the live status panel below so the preview audits the same
-            // v83 fallback art and layout that the S key opens in-game.
+            // Render the live v83 status sheets below so preview and gameplay
+            // share the same NX art and layout.
         ],
         "native-quest-log" => &[("UIWindow.img/Quest/backgrnd3", 280.0, 20.0)],
         // The v83 UI archive has StatusBar.img, not the newer StatusBar2
         // chat-bar tree. Preview the live Rust fallback panel below.
-        "native-chat" => &[],
-        "native-party" => &[
-            ("UIWindow2.img/UserList/Main/backgrnd", 260.0, 20.0),
-            ("UIWindow2.img/UserList/Main/backgrnd2", 260.0, 20.0),
-            ("UIWindow2.img/UserList/Main/Party/partyOn", 260.0, 20.0),
-            ("UIWindow2.img/UserList/Sheet2/0", 270.0, 135.0),
-            ("UIWindow2.img/UserList/Sheet2/1", 270.0, 153.0),
-        ],
-        "native-buddy" => &[
-            ("UIWindow2.img/UserList/Main/backgrnd", 260.0, 20.0),
-            ("UIWindow2.img/UserList/Main/backgrnd2", 260.0, 20.0),
-            ("UIWindow2.img/UserList/Main/Friend/title", 260.0, 20.0),
-            (
-                "UIWindow2.img/UserList/Main/Friend/CbCondition/text",
-                260.0,
-                20.0,
-            ),
-            ("UIWindow2.img/UserList/line", 392.0, 135.0),
-        ],
+        "native-chat" | "native-whisper" => &[],
+        "native-party" | "native-buddy" => &[],
         // The C++ v83 client uses the UserList tree. Newer GuildUI.img art is
-        // absent from the selected v83 UI-v83.nx archive.
+        // absent from the installed v83 UI.nx archive.
         "native-guild" | "native-alliance" => &[],
         "native-audio-settings" => &[
             ("UIWindow2.img/OptionMenu/backgrnd", 370.0, 105.0),
@@ -1655,6 +1847,95 @@ fn build_native_window_scene(
             texture_height: ALLIANCE_PANEL_HEIGHT,
             pixels: Arc::from(pixels),
         });
+    } else if name == "native-party" {
+        let party = openstory_protocol::PartySnapshot {
+            party_id: 83,
+            leader_id: 1,
+            members: vec![
+                openstory_protocol::PartyMember {
+                    character_id: 1,
+                    name: "PreviewHero".to_owned(),
+                    job: 0,
+                    level: 30,
+                    channel: 0,
+                    map_id: 100_000_000,
+                    hp: Some((850, 1_000)),
+                },
+                openstory_protocol::PartyMember {
+                    character_id: 2,
+                    name: "Maya".to_owned(),
+                    job: 100,
+                    level: 31,
+                    channel: 0,
+                    map_id: 100_000_000,
+                    hp: Some((670, 900)),
+                },
+                openstory_protocol::PartyMember {
+                    character_id: 3,
+                    name: "Alex".to_owned(),
+                    job: 200,
+                    level: 29,
+                    channel: -1,
+                    map_id: 0,
+                    hp: None,
+                },
+            ],
+        };
+        let pixels = render_party_panel(font, ui_archive, Some(&party), None, Some(1));
+        sprites.push(DecodedSprite {
+            texture_key: "nx-window:rendered-v83-party".to_owned(),
+            rect: SpriteRect {
+                x: PARTY_PANEL_X,
+                y: PARTY_PANEL_Y,
+                width: PARTY_PANEL_WIDTH as f32,
+                height: PARTY_PANEL_HEIGHT as f32,
+                blend_mode: BlendMode::Alpha,
+            },
+            depth_order: 0,
+            texture_width: PARTY_PANEL_WIDTH,
+            texture_height: PARTY_PANEL_HEIGHT,
+            pixels: Arc::from(pixels),
+        });
+    } else if name == "native-buddy" {
+        let buddies = [
+            openstory_protocol::BuddyEntry {
+                character_id: 2,
+                name: "Maya".to_owned(),
+                status: 0,
+                channel: 0,
+                group: "Friends".to_owned(),
+            },
+            openstory_protocol::BuddyEntry {
+                character_id: 4,
+                name: "Rin".to_owned(),
+                status: 0,
+                channel: 2,
+                group: "Friends".to_owned(),
+            },
+            openstory_protocol::BuddyEntry {
+                character_id: 5,
+                name: "Alex".to_owned(),
+                status: 0,
+                channel: -1,
+                group: "Guild".to_owned(),
+            },
+        ];
+        let pixels =
+            render_buddy_panel(font, ui_archive, &buddies, 20, buddies.len(), None, None, 0);
+        sprites.push(DecodedSprite {
+            texture_key: "nx-window:rendered-v83-buddy".to_owned(),
+            rect: SpriteRect {
+                x: BUDDY_PANEL_X,
+                y: BUDDY_PANEL_Y,
+                width: BUDDY_PANEL_WIDTH as f32,
+                height: BUDDY_PANEL_HEIGHT as f32,
+                blend_mode: BlendMode::Alpha,
+            },
+            depth_order: 0,
+            texture_width: BUDDY_PANEL_WIDTH,
+            texture_height: BUDDY_PANEL_HEIGHT,
+            pixels: Arc::from(pixels),
+        });
     } else if matches!(name, "native-status" | "native-status-detail") {
         let pixels = render_status_panel(font, ui_archive, &preview_character(), false, false);
         sprites.push(DecodedSprite {
@@ -1672,7 +1953,23 @@ fn build_native_window_scene(
             pixels: Arc::from(pixels),
         });
         if name == "native-status-detail" {
-            let pixels = render_status_detail_panel(font, ui_archive);
+            let character = preview_character();
+            let inventory = preview_equipped_inventory();
+            let skills = HashMap::new();
+            let active_buffs = HashMap::new();
+            let forced_stats = ForcedEquipmentStats::default();
+            let pixels = render_status_detail_panel(
+                font,
+                ui_archive,
+                &character,
+                Some(&inventory),
+                character_archive,
+                item_archive,
+                skill_archive,
+                &skills,
+                &active_buffs,
+                &forced_stats,
+            );
             sprites.push(DecodedSprite {
                 texture_key: "rendered-window:status-detail-panel".to_owned(),
                 rect: SpriteRect {
@@ -1704,6 +2001,7 @@ fn build_native_window_scene(
             },
         ]);
         let pixels = render_chat_panel(
+            ui_archive,
             font,
             &lines,
             "See you there!",
@@ -1723,6 +2021,36 @@ fn build_native_window_scene(
             depth_order: 0,
             texture_width: CHAT_WIDTH,
             texture_height: CHAT_HEIGHT,
+            pixels: Arc::from(pixels),
+        });
+    } else if name == "native-whisper" {
+        let conversation = WhisperConversation {
+            target: "Maya".to_owned(),
+            lines: VecDeque::from([
+                ChatLine {
+                    text: "Maya: Are you at Henesys?".to_owned(),
+                    color: [40, 40, 40],
+                },
+                ChatLine {
+                    text: "You: Yes, near the portal.".to_owned(),
+                    color: [40, 40, 40],
+                },
+            ]),
+            input: "See you soon!".to_owned(),
+        };
+        let pixels = render_whisper_panel(ui_archive, font, &conversation, true, false);
+        sprites.push(DecodedSprite {
+            texture_key: "rendered-window:whisper-panel".to_owned(),
+            rect: SpriteRect {
+                x: WHISPER_PANEL_X,
+                y: WHISPER_PANEL_Y,
+                width: WHISPER_PANEL_WIDTH as f32,
+                height: WHISPER_PANEL_HEIGHT as f32,
+                blend_mode: BlendMode::Alpha,
+            },
+            depth_order: 0,
+            texture_width: WHISPER_PANEL_WIDTH,
+            texture_height: WHISPER_PANEL_HEIGHT,
             pixels: Arc::from(pixels),
         });
     }
@@ -1790,8 +2118,8 @@ fn build_native_window_scene(
             }
         });
         let pixels = render_quickslot_panel_pixels(
-            font,
             quickslot_background_image(legacy_ui_archive),
+            ui_archive,
             &keys,
             &icons,
         );
@@ -1814,6 +2142,7 @@ fn build_native_window_scene(
     if name == "native-keybindings" {
         let pixels = render_key_config_panel(
             font,
+            ui_archive,
             &default_keymap_bindings(),
             &DEFAULT_QUICKSLOT_KEYS,
             None,
@@ -1833,6 +2162,53 @@ fn build_native_window_scene(
             depth_order: 0,
             texture_width: KEY_CONFIG_PANEL_WIDTH,
             texture_height: KEY_CONFIG_PANEL_HEIGHT,
+            pixels: Arc::from(pixels),
+        });
+    }
+
+    if name == "native-skills" {
+        let mut entries = preview_skill_entries();
+        for (entry, (id, skill_name, level)) in entries.iter_mut().zip([
+            (4_000_000, "Nimble Body", 15),
+            (4_000_001, "Keen Eyes", 15),
+            (4_001_002, "Disorder", 10),
+            (4_001_003, "Dark Sight", 1),
+            (4_001_344, "Double Stab", 0),
+        ]) {
+            entry.id = id;
+            entry.name = skill_name.to_owned();
+            entry.level = level;
+        }
+        let mut lucky_seven = preview_skill_entry();
+        lucky_seven.id = 4_001_334;
+        lucky_seven.name = "Lucky Seven".to_owned();
+        lucky_seven.level = 20;
+        entries.push(lucky_seven);
+        let book_icon = decode_nx_icon(skill_archive, "400.img/info/icon");
+        let pixels = render_skill_book_panel(
+            font,
+            ui_archive,
+            skill_archive,
+            &entries,
+            "Introduction to the Thief",
+            book_icon,
+            0,
+            1,
+            2,
+            0,
+        );
+        sprites.push(DecodedSprite {
+            texture_key: "nx-window:rendered-v83-skills".to_owned(),
+            rect: SpriteRect {
+                x: SKILL_BOOK_PANEL_X,
+                y: SKILL_BOOK_PANEL_Y,
+                width: SKILL_BOOK_PANEL_WIDTH as f32,
+                height: SKILL_BOOK_PANEL_HEIGHT as f32,
+                blend_mode: BlendMode::Alpha,
+            },
+            depth_order: 0,
+            texture_width: SKILL_BOOK_PANEL_WIDTH,
+            texture_height: SKILL_BOOK_PANEL_HEIGHT,
             pixels: Arc::from(pixels),
         });
     }
@@ -1871,7 +2247,7 @@ fn build_native_window_scene(
         editor.open(&macros);
         editor.selected_macro = 1;
         editor.selected_slot = 2;
-        let pixels = skill_macros::render(font, &editor, &skills);
+        let pixels = skill_macros::render(font, ui_archive, &editor, &skills);
         sprites.push(DecodedSprite {
             texture_key: "skill-macros-preview".to_owned(),
             rect: SpriteRect {
@@ -1921,6 +2297,77 @@ fn preview_character() -> openstory_protocol::CharacterInfo {
         },
         look: fixture_look(),
     }
+}
+
+fn preview_equipped_inventory() -> openstory_protocol::InventorySnapshot {
+    openstory_protocol::InventorySnapshot {
+        slot_maxima: [24; 5],
+        equipped_slot_maximum: 59,
+        items: [
+            (1, 1_002_002),  // hat
+            (5, 1_040_002),  // top
+            (6, 1_060_002),  // bottom
+            (7, 1_072_001),  // shoes
+            (11, 1_302_000), // weapon
+        ]
+        .into_iter()
+        .map(|(slot, item_id)| openstory_protocol::InventoryItem {
+            inventory_type: openstory_protocol::InventoryType::Equipped,
+            slot,
+            item_id,
+            count: 1,
+            ..Default::default()
+        })
+        .collect(),
+        ..Default::default()
+    }
+}
+
+fn preview_skill_entry() -> SkillUiEntry {
+    SkillUiEntry {
+        id: 1_001_004,
+        name: "Power Strike".to_owned(),
+        level: 1,
+        master_level: 0,
+        max_level: 20,
+        required_weapon: None,
+        passive: false,
+        attack: true,
+        magic_damage: false,
+        magic_damage_multiplier: 1.0,
+        magic_mastery: 0.0,
+        element: None,
+        attack_count: 1,
+        bullet_count: 0,
+        mob_count: 1,
+        damage_multiplier: 1.0,
+        horizontal_range_multiplier: 1.0,
+        attack_range: None,
+        fixed_damage: None,
+        mp_cost: 8,
+        hp_cost: 0,
+        bullet_cost: 0,
+        requirements: Vec::new(),
+    }
+}
+
+fn preview_skill_entries() -> Vec<SkillUiEntry> {
+    [
+        (1_001_004, "Power Strike", 1),
+        (1_001_005, "Slash Blast", 5),
+        (1_001_003, "Iron Body", 3),
+        (1_000_003, "Improved MaxHP", 2),
+        (1_000_002, "Improved Recovery", 1),
+    ]
+    .into_iter()
+    .map(|(id, name, level)| {
+        let mut entry = preview_skill_entry();
+        entry.id = id;
+        entry.name = name.to_owned();
+        entry.level = level;
+        entry
+    })
+    .collect()
 }
 
 fn fixture_look() -> openstory_protocol::CharacterLook {

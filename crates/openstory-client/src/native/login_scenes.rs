@@ -1217,7 +1217,7 @@ fn load_character_customization_scene(
             &mut sprites,
             font,
             notice,
-            584.0,
+            300.0,
             630.0,
             12.0,
             [142, 47, 33],

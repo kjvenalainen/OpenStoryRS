@@ -7,9 +7,9 @@ const VIEW_WIDTH: f32 = 1024.0;
 const PANEL_TOP: f32 = 20.0;
 const MAX_BITMAP_SIDE: u32 = 4096;
 const MAX_SEARCH_INDEX_ENTRIES: usize = 10_000;
-pub(super) const MAX_VISIBLE_SEARCH_RESULTS: usize = 12;
+pub(super) const MAX_VISIBLE_SEARCH_RESULTS: usize = 4;
 const SEARCH_RESULT_TOP: f32 = 54.0;
-const SEARCH_RESULT_HEIGHT: f32 = 34.0;
+const SEARCH_RESULT_HEIGHT: f32 = 20.0;
 
 pub(super) struct SearchEntry {
     pub map_id: i32,
@@ -287,24 +287,39 @@ pub(super) fn render(
 ) -> Result<Panel, String> {
     let ui_root = ui_archive.root();
     let map_root = map_archive.root();
-    let world_map_ui = resolve(&ui_root, "UIWindow2.img/WorldMap")?;
-    let border = resolve(&world_map_ui, "Border/0")?;
-    let border_sprite = sprite(&border)?;
-    let border_width = border_sprite.width;
-    let border_height = border_sprite.height;
+    // The installed archive is v83: these authored window pieces live in
+    // UIWindow.img, while the newer UIWindow2 path is only an alias.
+    let world_map_ui = resolve(&ui_root, "UIWindow.img/WorldMap")?;
+    let border_root = resolve(&world_map_ui, "Border")?;
 
     let search_background = optional_resolve(&world_map_ui, "WorldMapSearch/backgrnd")?
         .and_then(|node| sprite(&node).ok());
     let search_notice = optional_resolve(&world_map_ui, "WorldMapSearch/notice")?
         .and_then(|node| sprite(&node).ok());
-    let search_width = if search_open {
-        search_background.as_ref().map_or(0, |image| image.width)
+    let search_panel_in_side = search_open && search_background.is_some();
+    let map_folder = resolve(&map_root, "WorldMap")?;
+    let selected_path = requested_map
+        .map(str::to_owned)
+        .unwrap_or_else(|| format!("WorldMap0{}", map_id / 10_000_000));
+    let (map_path, map_data) = resolve_world_map(&map_folder, &selected_path)?;
+    let parent_map = string_child(&map_data, "info/parentMap");
+    let base_node = optional_resolve(&map_data, "BaseImg/0")?
+        .or(optional_resolve(&map_data, "BaseImg")?)
+        .ok_or_else(|| format!("world map {map_path:?} has no BaseImg"))?;
+    let base_sprite = sprite(&base_node)?;
+    // In the v83 archive Border/0 is only a 7x33 frame slice, not the full
+    // modern WorldMap background. Size the map panel from its actual NX map
+    // bitmap and tile the authored border pieces around it.
+    let border_width = base_sprite.width.saturating_add(14);
+    let border_height = base_sprite.height.saturating_add(48);
+    let search_width = if search_panel_in_side {
+        search_background.as_ref().map_or(220, |image| image.width)
     } else {
         0
     };
     let width = border_width.saturating_add(search_width).min(1024);
     let height = border_height
-        .max(if search_open {
+        .max(if search_panel_in_side {
             search_background.as_ref().map_or(0, |image| image.height)
         } else {
             0
@@ -319,23 +334,21 @@ pub(super) fn render(
             "world map panel has invalid dimensions {width}x{height}"
         ));
     }
-
-    let map_folder = resolve(&map_root, "WorldMap")?;
-    let selected_path = requested_map
-        .map(str::to_owned)
-        .unwrap_or_else(|| format!("WorldMap0{}", map_id / 10_000_000));
-    let (map_path, map_data) = resolve_world_map(&map_folder, &selected_path)?;
-    let parent_map = string_child(&map_data, "info/parentMap");
-    let base_node = optional_resolve(&map_data, "BaseImg/0")?
-        .or(optional_resolve(&map_data, "BaseImg")?)
-        .ok_or_else(|| format!("world map {map_path:?} has no BaseImg"))?;
-    let base_sprite = sprite(&base_node)?;
     let map_helper = resolve(&map_root, "MapHelper.img/worldMap")?;
 
     let x = ((VIEW_WIDTH - width as f32) / 2.0).max(0.0);
     let y = PANEL_TOP;
     let mut pixels = vec![0; width * height * 4];
-    blit(&mut pixels, width, height, &border_sprite, 0.0, 0.0, 1.0);
+    compose_world_map_frame(
+        &mut pixels,
+        width,
+        height,
+        &border_root,
+        0,
+        0,
+        border_width,
+        border_height,
+    )?;
     if search_open {
         if let Some(image) = search_background.as_ref() {
             blit(
@@ -361,10 +374,10 @@ pub(super) fn render(
         }
     }
 
-    let content_anchor_x = border_width as f32 / 2.0;
-    let content_anchor_y = border_height as f32 / 2.0 + 15.0;
-    let available_width = border_width.max(1) as f32;
-    let available_height = border_height.saturating_sub(30).max(1) as f32;
+    let content_anchor_x = 7.0 + base_sprite.width as f32 / 2.0;
+    let content_anchor_y = 33.0 + base_sprite.height as f32 / 2.0;
+    let available_width = base_sprite.width.max(1) as f32;
+    let available_height = base_sprite.height.max(1) as f32;
     let map_scale = (available_width / base_sprite.width as f32)
         .min(available_height / base_sprite.height as f32)
         .min(1.0)
@@ -597,7 +610,7 @@ pub(super) fn render(
         .and_then(|index| markers.get(index))
         .or(selected_marker)
     {
-        let tooltip_in_search_panel = search_open && normalized_query.is_empty();
+        let tooltip_in_search_panel = search_panel_in_side && normalized_query.is_empty();
         let tooltip_width = if tooltip_in_search_panel {
             search_width.saturating_sub(18)
         } else {
@@ -614,17 +627,6 @@ pub(super) fn render(
         } else {
             (marker.bounds.y - y + 12.0).clamp(36.0, border_height.saturating_sub(70) as f32)
         };
-        let tooltip_width = tooltip_width.max(70);
-        fill_rect(
-            &mut pixels,
-            width,
-            height,
-            tooltip_x as usize,
-            tooltip_y as usize,
-            tooltip_width,
-            62,
-            [244, 236, 213, 255],
-        );
         let description = marker.description.chars().collect::<Vec<_>>();
         let description_line_one = description.iter().take(18).collect::<String>();
         let description_line_two = description.iter().skip(18).take(18).collect::<String>();
@@ -640,7 +642,7 @@ pub(super) fn render(
         } else {
             description_line_two.as_str()
         };
-        draw_text_color(
+        draw_shadowed_text_color(
             &mut pixels,
             width,
             height,
@@ -648,9 +650,9 @@ pub(super) fn render(
             &marker.title.chars().take(22).collect::<String>(),
             tooltip_x + 5.0,
             tooltip_y + 3.0,
-            [35, 27, 18],
+            [255, 255, 255],
         );
-        draw_text_color(
+        draw_shadowed_text_color(
             &mut pixels,
             width,
             height,
@@ -658,9 +660,9 @@ pub(super) fn render(
             &format!("Map {}", selected_map_id.unwrap_or(marker.map_id)),
             tooltip_x + 5.0,
             tooltip_y + 19.0,
-            [83, 68, 48],
+            [255, 255, 255],
         );
-        draw_text_color(
+        draw_shadowed_text_color(
             &mut pixels,
             width,
             height,
@@ -668,9 +670,9 @@ pub(super) fn render(
             tooltip_line_one,
             tooltip_x + 5.0,
             tooltip_y + 34.0,
-            [83, 68, 48],
+            [255, 255, 255],
         );
-        draw_text_color(
+        draw_shadowed_text_color(
             &mut pixels,
             width,
             height,
@@ -678,77 +680,39 @@ pub(super) fn render(
             tooltip_line_two,
             tooltip_x + 5.0,
             tooltip_y + 48.0,
-            [83, 68, 48],
+            [255, 255, 255],
         );
     }
 
-    let title = optional_child(&world_map_ui, "title")?.and_then(|node| sprite(&node).ok());
-    if let Some(title) = title {
-        blit(
-            &mut pixels,
-            width,
-            height,
-            &title,
-            (border_width as f32 - title.width as f32) / 2.0,
-            12.0,
-            1.0,
-        );
-    } else {
-        draw_text(&mut pixels, width, height, font, "WORLD MAP", 22.0, 12.0);
-    }
+    let title = sprite(&resolve(&world_map_ui, "title")?)?;
+    blit(
+        &mut pixels,
+        width,
+        height,
+        &title,
+        (border_width as f32 - title.width as f32) / 2.0,
+        12.0,
+        1.0,
+    );
 
-    let close_node = optional_resolve(&ui_root, "Basic.img/BtClose3")?;
-    let close_sprite = close_node
-        .as_ref()
-        .and_then(|node| first_frame(node))
-        .and_then(|node| sprite(&node).ok());
-    let close_anchor_x = border_width.saturating_sub(22) as f32;
+    let close_sprite = sprite(&resolve(&ui_root, "UIWindow.img/BtUIClose/normal/0")?)?;
+    let close_anchor_x = border_width.saturating_sub(close_sprite.width + 4) as f32;
     let close_anchor_y = 4.0;
-    let close = if let Some(image) = close_sprite.as_ref() {
-        blit(
-            &mut pixels,
-            width,
-            height,
-            image,
-            close_anchor_x,
-            close_anchor_y,
-            1.0,
-        );
-        HitRect {
-            x: x + close_anchor_x - image.origin_x,
-            y: y + close_anchor_y - image.origin_y,
-            width: image.width as f32,
-            height: image.height as f32,
-        }
-    } else {
-        HitRect {
-            x: x + border_width as f32 - 30.0,
-            y: y + 4.0,
-            width: 20.0,
-            height: 20.0,
-        }
+    blit(
+        &mut pixels,
+        width,
+        height,
+        &close_sprite,
+        close_anchor_x,
+        close_anchor_y,
+        1.0,
+    );
+    let close = HitRect {
+        x: x + close_anchor_x - close_sprite.origin_x,
+        y: y + close_anchor_y - close_sprite.origin_y,
+        width: close_sprite.width as f32,
+        height: close_sprite.height as f32,
     };
-    if close_sprite.is_none() {
-        fill_rect(
-            &mut pixels,
-            width,
-            height,
-            border_width.saturating_sub(30),
-            4,
-            20,
-            20,
-            [44, 44, 44, 255],
-        );
-        draw_text(
-            &mut pixels,
-            width,
-            height,
-            font,
-            "X",
-            border_width.saturating_sub(26) as f32,
-            2.0,
-        );
-    }
 
     let search_toggle = draw_button(
         &mut pixels,
@@ -797,26 +761,45 @@ pub(super) fn render(
             y,
         )?;
     }
+    let search_content_x = if search_panel_in_side {
+        border_width as f32
+    } else {
+        border_width.saturating_sub(220) as f32
+    };
+    let search_input_top = if search_panel_in_side { 18.0 } else { 40.0 };
     let search_input = search_open.then(|| HitRect {
-        x: x + border_width as f32 + 14.0,
-        y: y + 19.0,
-        width: 83.0,
-        height: 19.0,
+        x: x + search_content_x + 14.0,
+        y: y + search_input_top,
+        width: 81.0,
+        height: 20.0,
     });
     if search_input.is_some() {
+        if let Some(input_art) = optional_resolve(&ui_root, "Basic.img/ComboBox2/normal/0")?
+            .and_then(|node| sprite(&node).ok())
+        {
+            blit(
+                &mut pixels,
+                width,
+                height,
+                &input_art,
+                search_content_x + 14.0,
+                search_input_top,
+                1.0,
+            );
+        }
         let visible_query = if search_query.is_empty() {
             "Search maps"
         } else {
             search_query
         };
-        draw_text_color(
+        draw_shadowed_text_color(
             &mut pixels,
             width,
             height,
             font,
             visible_query,
-            border_width as f32 + 16.0,
-            20.0,
+            search_content_x + 16.0,
+            search_input_top + 2.0,
             if search_query.is_empty() {
                 [118, 105, 88]
             } else {
@@ -824,13 +807,13 @@ pub(super) fn render(
             },
         );
         if search_focused {
-            let caret_x = border_width as f32 + 16.0 + (search_query.chars().count() as f32 * 7.0);
+            let caret_x = search_content_x + 16.0 + (search_query.chars().count() as f32 * 7.0);
             fill_rect(
                 &mut pixels,
                 width,
                 height,
                 caret_x.max(0.0) as usize,
-                22,
+                search_input_top as usize + 4,
                 1,
                 13,
                 [35, 26, 18, 255],
@@ -838,23 +821,40 @@ pub(super) fn render(
         }
     }
     if search_open && !normalized_query.is_empty() {
+        let list_x = if search_panel_in_side {
+            border_width as usize + 8
+        } else {
+            border_width.saturating_sub(330) + 8
+        };
+        let list_width = if search_panel_in_side {
+            search_width.saturating_sub(16)
+        } else {
+            190
+        };
         let results_label = if search_result_count == 0 {
             "No maps found".to_owned()
         } else {
             format!("{} matches", search_result_count)
         };
-        draw_text_color(
+        draw_shadowed_text_color(
             &mut pixels,
             width,
             height,
             font,
             &results_label,
-            border_width as f32 + 10.0,
-            40.0,
-            [77, 62, 45],
+            list_x as f32 + 4.0,
+            if search_panel_in_side {
+                40.0
+            } else {
+                (33 + base_sprite.height.saturating_sub(112)) as f32
+            },
+            [255, 255, 255],
         );
-        let list_x = border_width + 8;
-        let list_width = search_width.saturating_sub(16);
+        let search_results_top = if search_panel_in_side {
+            SEARCH_RESULT_TOP
+        } else {
+            (33 + base_sprite.height.saturating_sub(74)) as f32
+        };
         let mut visible_index = 0;
         let mut remaining_skip = first_result;
         if let Some(catalog) = search_catalog {
@@ -873,18 +873,8 @@ pub(super) fn render(
                     .skip(bucket_skip)
                     .take(MAX_VISIBLE_SEARCH_RESULTS.saturating_sub(visible_index))
                 {
-                    let row_y = SEARCH_RESULT_TOP + visible_index as f32 * SEARCH_RESULT_HEIGHT;
-                    fill_rect(
-                        &mut pixels,
-                        width,
-                        height,
-                        list_x,
-                        row_y as usize,
-                        list_width,
-                        SEARCH_RESULT_HEIGHT as usize - 2,
-                        [242, 233, 212, 255],
-                    );
-                    draw_text_color(
+                    let row_y = search_results_top + visible_index as f32 * SEARCH_RESULT_HEIGHT;
+                    draw_shadowed_text_color(
                         &mut pixels,
                         width,
                         height,
@@ -892,24 +882,14 @@ pub(super) fn render(
                         &result.title.chars().take(17).collect::<String>(),
                         list_x as f32 + 4.0,
                         row_y + 1.0,
-                        [42, 31, 20],
-                    );
-                    draw_text_color(
-                        &mut pixels,
-                        width,
-                        height,
-                        font,
-                        &format!("Map {}", result.map_id),
-                        list_x as f32 + 4.0,
-                        row_y + 17.0,
-                        [91, 74, 52],
+                        [255, 255, 255],
                     );
                     search_hits.push(SearchHit {
                         bounds: HitRect {
                             x: x + list_x as f32,
                             y: y + row_y,
                             width: list_width as f32,
-                            height: SEARCH_RESULT_HEIGHT - 2.0,
+                            height: SEARCH_RESULT_HEIGHT,
                         },
                         map_id: result.map_id,
                         world_map: result.world_map.clone(),
@@ -922,27 +902,56 @@ pub(super) fn render(
             }
         }
     }
-    let search_close = if search_open {
-        close_sprite.as_ref().map(|image| {
+    let search_close = if search_panel_in_side {
+        Some({
             let anchor_x = search_width as f32 + close_anchor_x;
             blit(
                 &mut pixels,
                 width,
                 height,
-                image,
+                &close_sprite,
                 anchor_x,
                 close_anchor_y,
                 1.0,
             );
             HitRect {
-                x: x + anchor_x - image.origin_x,
-                y: y + close_anchor_y - image.origin_y,
-                width: image.width as f32,
-                height: image.height as f32,
+                x: x + anchor_x - close_sprite.origin_x,
+                y: y + close_anchor_y - close_sprite.origin_y,
+                width: close_sprite.width as f32,
+                height: close_sprite.height as f32,
             }
         })
     } else {
         None
+    };
+    let search_toggle = if search_background.is_some() {
+        search_toggle
+    } else {
+        // No WorldMap search button ships in v83. Reuse its native Basic
+        // minimize/maximize controls to reveal or dismiss over-map results.
+        let control_path = if search_open {
+            "Basic.img/BtMin/normal/0"
+        } else {
+            "Basic.img/BtMax/normal/0"
+        };
+        let control = sprite(&resolve(&ui_root, control_path)?)?;
+        let anchor_x = (border_width as f32 - 54.0).max(8.0);
+        let anchor_y = 5.0;
+        blit(
+            &mut pixels,
+            width,
+            height,
+            &control,
+            anchor_x,
+            anchor_y,
+            1.0,
+        );
+        Some(HitRect {
+            x: x + anchor_x - control.origin_x,
+            y: y + anchor_y - control.origin_y,
+            width: control.width as f32,
+            height: control.height as f32,
+        })
     };
 
     Ok(Panel {
@@ -963,6 +972,148 @@ pub(super) fn render(
         map_path,
         parent_map,
     })
+}
+
+fn compose_world_map_frame(
+    pixels: &mut [u8],
+    canvas_width: usize,
+    canvas_height: usize,
+    border_root: &NxNode,
+    left: usize,
+    top: usize,
+    width: usize,
+    height: usize,
+) -> Result<(), String> {
+    if width < 14 || height < 51 {
+        return Err(format!("world map frame is too small: {width}x{height}"));
+    }
+    let image = |index: usize| -> Result<Sprite, String> {
+        sprite(&resolve(border_root, &index.to_string())?)
+    };
+    let top_left = image(0)?;
+    let top_middle = image(1)?;
+    let top_right = image(2)?;
+    let divider_left = image(3)?;
+    let divider_right = image(4)?;
+    let lower_left = image(5)?;
+    let lower_middle = image(6)?;
+    let lower_right = image(7)?;
+
+    tile_image(
+        pixels,
+        canvas_width,
+        canvas_height,
+        &top_middle,
+        left,
+        top,
+        width,
+        top_left.height,
+    );
+    blit(
+        pixels,
+        canvas_width,
+        canvas_height,
+        &top_left,
+        left as f32,
+        top as f32,
+        1.0,
+    );
+    blit(
+        pixels,
+        canvas_width,
+        canvas_height,
+        &top_right,
+        (left + width - top_right.width) as f32,
+        top as f32,
+        1.0,
+    );
+
+    let body_top = top + top_left.height;
+    let body_height = height.saturating_sub(top_left.height + lower_left.height);
+    tile_image(
+        pixels,
+        canvas_width,
+        canvas_height,
+        &divider_left,
+        left,
+        body_top,
+        divider_left.width,
+        body_height,
+    );
+    tile_image(
+        pixels,
+        canvas_width,
+        canvas_height,
+        &divider_right,
+        left + width - divider_right.width,
+        body_top,
+        divider_right.width,
+        body_height,
+    );
+    let bottom_top = top + height - lower_left.height;
+    tile_image(
+        pixels,
+        canvas_width,
+        canvas_height,
+        &lower_middle,
+        left + lower_left.width,
+        bottom_top,
+        width.saturating_sub(lower_left.width + lower_right.width),
+        lower_middle.height,
+    );
+    blit(
+        pixels,
+        canvas_width,
+        canvas_height,
+        &lower_left,
+        left as f32,
+        bottom_top as f32,
+        1.0,
+    );
+    blit(
+        pixels,
+        canvas_width,
+        canvas_height,
+        &lower_right,
+        (left + width - lower_right.width) as f32,
+        bottom_top as f32,
+        1.0,
+    );
+    Ok(())
+}
+
+fn tile_image(
+    pixels: &mut [u8],
+    canvas_width: usize,
+    canvas_height: usize,
+    image: &Sprite,
+    left: usize,
+    top: usize,
+    width: usize,
+    height: usize,
+) {
+    if image.width == 0 || image.height == 0 {
+        return;
+    }
+    let bottom = top.saturating_add(height);
+    let right = left.saturating_add(width);
+    let mut y = top;
+    while y < bottom {
+        let mut x = left;
+        while x < right {
+            blit(
+                pixels,
+                canvas_width,
+                canvas_height,
+                image,
+                x as f32,
+                y as f32,
+                1.0,
+            );
+            x = x.saturating_add(image.width);
+        }
+        y = y.saturating_add(image.height);
+    }
 }
 
 fn draw_button(
@@ -1167,18 +1318,6 @@ fn fill_rect(
     }
 }
 
-fn draw_text(
-    canvas: &mut [u8],
-    width: usize,
-    height: usize,
-    font: &Font,
-    text: &str,
-    x: f32,
-    y: f32,
-) {
-    draw_text_color(canvas, width, height, font, text, x, y, [230, 230, 220]);
-}
-
 fn draw_text_color(
     canvas: &mut [u8],
     width: usize,
@@ -1217,4 +1356,27 @@ fn draw_text_color(
         }
         cursor_x += metrics.advance_width;
     }
+}
+
+fn draw_shadowed_text_color(
+    canvas: &mut [u8],
+    width: usize,
+    height: usize,
+    font: &Font,
+    text: &str,
+    x: f32,
+    y: f32,
+    color: [u8; 3],
+) {
+    draw_text_color(
+        canvas,
+        width,
+        height,
+        font,
+        text,
+        x + 1.0,
+        y + 1.0,
+        [0, 0, 0],
+    );
+    draw_text_color(canvas, width, height, font, text, x, y, color);
 }

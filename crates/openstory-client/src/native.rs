@@ -56,6 +56,7 @@ mod client_quests_inventory;
 mod client_selection;
 mod client_settings_chat;
 mod client_social;
+mod client_window_drag;
 mod client_world_overlays;
 mod event_loop;
 

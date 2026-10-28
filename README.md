@@ -3,17 +3,22 @@
 This repository is the Rust port of the OpenStory v83 MapleStory game client. The
 implementation roadmap is in [PORT_PLAN.md](PORT_PLAN.md).
 
-The client reads the existing NX assets in place. It currently uses `UI-v83.nx` as the
-UI archive, even when a separate `UI.nx` is present, and resolves logical `UI.nx` asset
-requests to that selected v83 archive. You can rename it later without changing the
-client's asset paths. Keep the files in the existing `OpenStory/wz` directory; point
+The client reads the existing NX assets in place. `UI.nx` is the version 83 UI archive
+and the client resolves UI asset paths from it. Keep the files in the existing
+`OpenStory/wz` directory; point
 the client at them with
 `OPENSTORY_DATA_DIR=/path/to/wz` or `--data-dir /path/to/wz`.
+
+Core in-game panels use their v83 frames and controls from `UI.nx`, including
+stats, inventory and equipment, skills, quests, chat, map windows, and options.
+Live character and server data is rendered over the NX artwork.
 
 The native client opens v83 login and world/channel artwork in a resizable GPU-backed
 window, keeps a 1024x768 logical canvas, and scales with letterboxing. The account and
 password fields accept text; the password is masked. The selected world and channel
 can be used to request a character list. Characters display name, level, job, and map.
+In the field, the camera keeps the player above the status bar and uses the visible
+field area for map limits. Escape opens the quit confirmation when no panel is handling it.
 The login background's six light beams animate independently using their NX frame delays;
 login buttons use their NX disabled, mouse-over, and pressed art. Keyboard focus uses NX
 focus art when available and a gold outline otherwise. Tab cycles through the account field,
@@ -21,6 +26,9 @@ password field, and enabled actions; arrows move among actions, and Enter or Spa
 the focused action. Login and Guest are enabled while the session connects; clicking either
 queues the request until the Maple handshake and login-start packet complete. Login also
 requires an account of 1–12 characters and a password of 5–12 characters.
+If the server reports that its Terms of Service have not been accepted, the client
+asks the player to review them; clicking OK or pressing Enter sends acceptance, while
+Escape cancels.
 The selection screen follows the legacy three-slot layout and pages through all characters returned by the server.
 Click a character's avatar or the Start sign to enter; Enter also selects the highlighted character. Character
 selection supports PIC registration, verification, and the disabled-PIC path;
@@ -80,7 +88,7 @@ the selected character's body, head, face, hair, and equipped items. Character s
 shows a compact equipped-avatar preview beside each character row. Use Left/Right or A/D
 to walk; left or right Option jumps; Space talks to the nearest nearby NPC. Movement
 acceleration and jump force use equipped and buffed SPEED/JUMP with the legacy stat caps;
-Up or W activates map portals. The avatar uses NX-authored one-handed or two-handed
+hold Up or W to activate map portals. The avatar uses NX-authored one-handed or two-handed
 stand/walk frames and jump frames, including the legacy body arm and hand z layers.
 Press F1–F7 to play and broadcast the matching facial expression; NX-authored face
 frames animate locally and for other visible players.
@@ -152,11 +160,15 @@ when collected; meso icons animate from their NX frame data. Press Z near a drop
 reactors on map footholds, and play their state-specific hit animations. Basic attacks
 send server-authoritative `DAMAGE_REACTOR` requests when a hittable reactor intersects the
 attack arc. Regular portals animate from `MapHelper.img`; hidden portals reveal their
-animation when approached. Holding Up inside a portal requests a server map change, while
+animation when approached. Hold Up or W in a portal to request a server map change;
 same-map portals move the player to their named destination after the legacy cooldown.
-Click a scriptable NPC to request dialogue; the dialogue panel handles
-selection lists, yes/no and accept/decline prompts, text and number input, and page
-navigation. Long dialogue pages scroll inside their panel with the mouse wheel or Page Up/Down.
+Click an NPC to request dialogue, including NPCs whose scripts are supplied by the server.
+When an NPC has an available scripted quest but no regular NPC script, clicking it starts
+that quest's server-authored dialogue.
+The dialogue panel handles selection lists, yes/no and accept/decline prompts, text and
+number input, and page navigation. Its frame and standard controls use the NX
+`UIWindow.img/UtilDlgEx` artwork. Long dialogue pages scroll inside their panel with the
+mouse wheel or Page Up/Down.
 Press Space or click to reveal a line as it types; press Space again to advance
 or accept the current choice. On text-entry prompts, Space reveals the prompt first and then
 remains available for spaces in the answer; Enter submits it. Up/Down moves the selection
@@ -236,7 +248,7 @@ submit it to start the server's nearby-cofounder confirmation flow. Guild member
 the **Ranks** editor to change all five rank titles, or the **Emblem** editor to choose
 valid backgrounds, colors, and marks from `UI.nx/GuildMark.img` with a live asset preview.
 The Guild and Alliance windows also use the v83 `UIWindow.img/UserList/Guild` and
-`GuildUnion` panel art from the selected UI archive, including the current `UI-v83.nx` file.
+`GuildUnion` panel art from `UI.nx`.
 `/guild create <name>` is the equivalent chat shortcut. When another player asks you to
 cofound, press Y/N to agree or decline. `/guild invite <character>`,
 `/guild leave`, `/guild expel <member>`,

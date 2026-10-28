@@ -1,6 +1,30 @@
 use super::*;
 
 impl ClientApp {
+    pub(super) fn respond_to_server_notice(&mut self, accept: bool) {
+        if self.server_notice_popup.is_none() {
+            return;
+        }
+        self.server_notice_popup = None;
+        if self.accept_tos_pending {
+            self.accept_tos_pending = false;
+            if accept {
+                match self.session.as_ref().map(|session| {
+                    session.send_packet(openstory_protocol::accept_terms_of_service())
+                }) {
+                    Some(Ok(())) => {}
+                    Some(Err(error)) => {
+                        eprintln!("OpenStory: could not accept server terms: {error}");
+                    }
+                    None => eprintln!("OpenStory: no login connection for server terms acceptance"),
+                }
+            }
+        }
+        if let Some(window) = self.window.as_ref() {
+            window.request_redraw();
+        }
+    }
+
     pub(super) fn show_map_scene(&mut self, map_id: i32, portal: u8) {
         self.clear_boss_hp_gauge();
         self.weather_overlay.clear();

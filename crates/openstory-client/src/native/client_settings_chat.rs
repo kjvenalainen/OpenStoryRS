@@ -7,6 +7,7 @@ impl ClientApp {
         }
         let pixels = render_options_panel(
             &self.font,
+            &self.ui_archive,
             self.settings,
             self.display_settings,
             self.input_settings,
@@ -292,8 +293,8 @@ impl ClientApp {
     }
 
     pub(super) fn set_option_setting_from_cursor(&mut self, slider: OptionControl, x: f32) {
-        const TRACK_LEFT: f32 = SETTINGS_PANEL_X + 148.0;
-        const TRACK_WIDTH: f32 = 280.0;
+        const TRACK_LEFT: f32 = SETTINGS_PANEL_X + 104.0;
+        const TRACK_WIDTH: f32 = 152.0;
         if slider.track_y().is_none() {
             return;
         }
@@ -313,7 +314,7 @@ impl ClientApp {
         }
         let local_x = cursor.x - SETTINGS_PANEL_X;
         let local_y = cursor.y - SETTINGS_PANEL_Y;
-        if (138.0..438.0).contains(&local_x)
+        if (98.0..272.0).contains(&local_x)
             && let Some(slider) = [
                 OptionControl::GraphicsQuality,
                 OptionControl::EffectsQuality,
@@ -327,36 +328,36 @@ impl ClientApp {
             .find(|slider| {
                 slider
                     .track_y()
-                    .is_some_and(|y| (y as f32 - 17.0..y as f32 + 18.0).contains(&local_y))
+                    .is_some_and(|y| (y as f32 - 12.0..y as f32 + 13.0).contains(&local_y))
             })
         {
             self.settings_selected_slider = slider;
             self.settings_dragging = Some(slider);
             self.set_option_setting_from_cursor(slider, cursor.x);
-        } else if (266.0..296.0).contains(&local_y) && (24.0..218.0).contains(&local_x) {
+        } else if (231.0..258.0).contains(&local_y) && (263.0..296.0).contains(&local_x) {
             self.settings_selected_slider = OptionControl::ScreenShake;
             self.toggle_selected_option_setting();
-        } else if (107.0..139.0).contains(&local_y) && (478.0..590.0).contains(&local_x) {
+        } else if (63.0..84.0).contains(&local_y) && (263.0..296.0).contains(&local_x) {
             self.settings_selected_slider = OptionControl::MuteMusic;
             self.toggle_selected_option_setting();
-        } else if (137.0..169.0).contains(&local_y) && (478.0..590.0).contains(&local_x) {
+        } else if (91.0..112.0).contains(&local_y) && (263.0..296.0).contains(&local_x) {
             self.settings_selected_slider = OptionControl::MuteEffects;
             self.toggle_selected_option_setting();
-        } else if (298.0..326.0).contains(&local_y) && (20.0..145.0).contains(&local_x) {
+        } else if (296.0..323.0).contains(&local_y) && (258.0..286.0).contains(&local_x) {
             self.settings_selected_slider = OptionControl::Windowed;
             self.toggle_selected_option_setting();
-        } else if (298.0..326.0).contains(&local_y) && (263.0..387.0).contains(&local_x) {
+        } else if (258.0..284.0).contains(&local_y) && (64.0..158.0).contains(&local_x) {
             self.settings_selected_slider = OptionControl::Resolution800;
             self.set_option_setting(OptionControl::Resolution800, 100);
-        } else if (298.0..326.0).contains(&local_y) && (393.0..525.0).contains(&local_x) {
+        } else if (258.0..284.0).contains(&local_y) && (164.0..286.0).contains(&local_x) {
             self.settings_selected_slider = OptionControl::Resolution1024;
             self.set_option_setting(OptionControl::Resolution1024, 100);
         } else if let Some(control) = option_permission_at(local_x, local_y) {
             self.settings_selected_slider = control;
             self.toggle_selected_option_setting();
-        } else if (584.0..620.0).contains(&local_y) && (204.0..300.0).contains(&local_x) {
+        } else if (338.0..365.0).contains(&local_y) && (204.0..252.0).contains(&local_x) {
             self.save_settings();
-        } else if (584.0..620.0).contains(&local_y) && (312.0..408.0).contains(&local_x) {
+        } else if (338.0..365.0).contains(&local_y) && (253.0..296.0).contains(&local_x) {
             self.cancel_settings();
         }
     }
@@ -367,6 +368,7 @@ impl ClientApp {
             .as_ref()
             .is_some_and(|compose| compose.kind.is_item_megaphone(compose.item_id));
         let pixels = render_chat_panel(
+            &self.ui_archive,
             &self.font,
             &self.chat_lines,
             if item_megaphone_open {
@@ -634,6 +636,7 @@ impl ClientApp {
             return;
         };
         let pixels = render_whisper_panel(
+            &self.ui_archive,
             &self.font,
             conversation,
             self.whisper_input_focused,
@@ -863,29 +866,28 @@ fn bool_to_percent(value: bool) -> u8 {
 fn option_permission_at(x: f32, y: f32) -> Option<OptionControl> {
     [
         OptionControl::AllowWhisper,
-        OptionControl::AllowChatInvite,
-        OptionControl::AllowPartyInvite,
-        OptionControl::AllowGuildChat,
-        OptionControl::AllowAllianceChat,
-        OptionControl::AllowFamilyInvite,
         OptionControl::AllowFriendChat,
+        OptionControl::AllowChatInvite,
         OptionControl::AllowTradeRequest,
+        OptionControl::AllowPartyInvite,
         OptionControl::AllowExpeditionInvite,
-        OptionControl::AllowGuildInvite,
-        OptionControl::AllowAllianceInvite,
         OptionControl::AllowFollow,
+        OptionControl::AllowGuildChat,
+        OptionControl::AllowGuildInvite,
+        OptionControl::AllowAllianceChat,
+        OptionControl::AllowAllianceInvite,
+        OptionControl::AllowFamilyInvite,
     ]
     .into_iter()
     .enumerate()
     .find_map(|(index, control)| {
-        let column = index / 6;
-        let row = index % 6;
-        let left = 24.0 + column as f32 * 286.0;
-        let top = 422.0 + row as f32 * 25.0;
-        (left - 3.0..left + 274.0)
+        (300.0..458.0)
             .contains(&x)
             .then_some(())
-            .filter(|()| (top - 3.0..top + 23.0).contains(&y))
+            .filter(|()| {
+                let top = 397.0 + index as f32 * 18.0;
+                (top..top + 18.0).contains(&y)
+            })
             .map(|()| control)
     })
 }

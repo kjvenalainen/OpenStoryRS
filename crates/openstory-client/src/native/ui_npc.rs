@@ -1017,6 +1017,48 @@ fn render_npc_shop_panel(
     )
 }
 
+// All NPC dialogue coordinates are NX-local: bitmap anchors, text and hitboxes
+// share one 529x260 panel coordinate space. The panel itself is centered in the
+// 1024x768 logical canvas (render scaling is applied later by the UI renderer).
+struct NpcDialogueLayout;
+
+impl NpcDialogueLayout {
+    const WIDTH: usize = 529;
+    const HEIGHT: usize = 260;
+    const TOP_HEIGHT: usize = 28;
+    const BOTTOM_Y: usize = 202;
+    const BODY_HEIGHT: usize = Self::BOTTOM_Y - Self::TOP_HEIGHT;
+    const PANEL_X: f32 = (1024.0 - Self::WIDTH as f32) / 2.0;
+    const PANEL_Y: f32 = (768.0 - Self::HEIGHT as f32) / 2.0;
+
+    const NPC_BAR_X: i32 = 22;
+    const NPC_BAR_Y: i32 = 141;
+    const NPC_BAR_WIDTH: i32 = 121;
+    const NPC_CENTER_X: i32 = Self::NPC_BAR_X + Self::NPC_BAR_WIDTH / 2;
+    const TEXT_X: i32 = 166;
+    const TEXT_Y: i32 = 48;
+    const TEXT_WIDTH: usize = 320;
+    const SCROLL_X: usize = 490;
+    const SCROLL_WIDTH: usize = 5;
+    const INPUT_X: i32 = Self::TEXT_X + 8;
+    const INPUT_Y: i32 = 177;
+    const INPUT_HEIGHT: usize = 20;
+    const SELECTION_ROW_STEP: i32 = 25;
+    const SELECTION_HEIGHT: usize = 23;
+    const SELECTION_BORDER: usize = 2;
+    const ADJUST_MINUS_X: i32 = 328;
+    const ADJUST_PLUS_X: i32 = 365;
+    const ADJUST_WIDTH: f32 = 32.0;
+    const ADJUST_HEIGHT: f32 = 18.0;
+    const CLOSE_X: i32 = 9;
+    const YES_X: i32 = 400;
+    const NO_X: i32 = 465;
+    const PREV_X: i32 = 389;
+    const NEXT_X: i32 = 471;
+    const OK_X: i32 = 471;
+    const BUTTON_Y: i32 = 236;
+}
+
 fn npc_dialogue_text_view_height(message_type: i8) -> usize {
     match message_type {
         2 | 3 => 112,
@@ -1077,6 +1119,9 @@ fn dialogue_text_content_height(
 
 fn render_npc_dialogue(
     font: &fontdue::Font,
+    ui_archive: &NxArchive,
+    npc_archive: &NxArchive,
+    string_archive: &NxArchive,
     npc_id: i32,
     speaker: i8,
     message_type: i8,
@@ -1088,112 +1133,87 @@ fn render_npc_dialogue(
     first_visible_selection: usize,
     input: &str,
 ) -> (Vec<u8>, SpriteRect, Vec<NpcDialogueButton>, usize) {
-    const WIDTH: usize = 600;
-    const HEIGHT: usize = 260;
-    const PANEL_X: f32 = 212.0;
-    const PANEL_Y: f32 = 490.0;
-    let mut pixels = vec![0_u8; WIDTH * HEIGHT * 4];
-    fill_dialogue_rect(
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        0,
-        0,
-        WIDTH,
-        HEIGHT,
-        [26, 22, 18, 235],
-    );
-    fill_dialogue_rect(
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        0,
-        0,
-        WIDTH,
-        36,
-        [92, 70, 42, 255],
-    );
-    fill_dialogue_rect(
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        0,
-        0,
-        WIDTH,
-        2,
-        [202, 177, 126, 255],
-    );
-    fill_dialogue_rect(
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        0,
-        HEIGHT - 2,
-        WIDTH,
-        2,
-        [202, 177, 126, 255],
-    );
-    fill_dialogue_rect(
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        0,
-        0,
-        2,
-        HEIGHT,
-        [202, 177, 126, 255],
-    );
-    fill_dialogue_rect(
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        WIDTH - 2,
-        0,
-        2,
-        HEIGHT,
-        [202, 177, 126, 255],
-    );
-    let title = if speaker == 0 {
-        format!("NPC {npc_id}")
-    } else {
-        "Dialogue".to_owned()
-    };
-    draw_dialogue_text(
-        font,
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        &title,
-        22,
-        8,
-        18.0,
-        246,
-        26,
-        [236, 223, 192],
-    );
-    let keyboard_hint = match message_type {
-        1 => "SPACE: REVEAL / YES   ENTER: YES",
-        2 => "SPACE: REVEAL / TYPE   ENTER: SUBMIT",
-        3 => "SPACE: REVEAL / SUBMIT   ENTER: SUBMIT",
-        4 => "UP/DOWN SELECT   SPACE: CHOOSE",
-        12 => "SPACE: REVEAL / ACCEPT   ENTER: ACCEPT",
-        _ => "SPACE: REVEAL / NEXT   ENTER: NEXT",
-    };
-    draw_dialogue_text(
-        font,
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        keyboard_hint,
-        286,
-        11,
-        12.0,
-        292,
-        18,
-        [229, 208, 166],
-    );
+    let (width, height) = (NpcDialogueLayout::WIDTH, NpcDialogueLayout::HEIGHT);
+    let (panel_x, panel_y) = (NpcDialogueLayout::PANEL_X, NpcDialogueLayout::PANEL_Y);
+    let mut pixels = vec![0_u8; width * height * 4];
+    let nx_frame = composite_npc_dialogue_frame(&mut pixels, width, height, ui_archive);
+    if !nx_frame {
+        // Keep dialogue usable with incomplete custom UI archives.
+        fill_dialogue_rect(
+            &mut pixels,
+            width,
+            height,
+            0,
+            0,
+            width,
+            height,
+            [26, 22, 18, 235],
+        );
+        fill_dialogue_rect(
+            &mut pixels,
+            width,
+            height,
+            0,
+            0,
+            width,
+            36,
+            [92, 70, 42, 255],
+        );
+    }
+    if speaker == 0 {
+        let npc_path = format!("{:07}.img/stand/0", npc_id.max(0));
+        let name = string_archive
+            .root()
+            .resolve(&format!("Npc.img/{npc_id}/name"))
+            .ok()
+            .flatten()
+            .and_then(|node| match node.value().ok()? {
+                NodeValue::String(name) if !name.trim().is_empty() => Some(name),
+                _ => None,
+            })
+            .unwrap_or_else(|| format!("NPC {npc_id}"));
+        if let Some(npc) = npc_archive.root().resolve(&npc_path).ok().flatten() {
+            let _ = composite_nx_node_bitmap(
+                &mut pixels,
+                width,
+                height,
+                &npc,
+                NpcDialogueLayout::NPC_CENTER_X,
+                NpcDialogueLayout::NPC_BAR_Y,
+            );
+        }
+        let _ = composite_nx_ui_bitmap(
+            &mut pixels,
+            width,
+            height,
+            ui_archive,
+            "UIWindow.img/UtilDlgEx/bar",
+            NpcDialogueLayout::NPC_BAR_X,
+            NpcDialogueLayout::NPC_BAR_Y,
+        );
+        let name_width = dialogue_text_width(font, &name, 12.0).ceil() as i32;
+        draw_dialogue_text(
+            font,
+            &mut pixels,
+            width,
+            height,
+            &name,
+            NpcDialogueLayout::NPC_BAR_X + (NpcDialogueLayout::NPC_BAR_WIDTH - name_width) / 2,
+            NpcDialogueLayout::NPC_BAR_Y + 2,
+            12.0,
+            NpcDialogueLayout::NPC_BAR_WIDTH as usize,
+            17,
+            [255, 255, 255],
+        );
+    }
     let text_view_height = npc_dialogue_text_view_height(message_type);
-    let text_content_height = dialogue_text_content_height(font, text, 16.0, 548, inline_icons);
+    let text_content_height = dialogue_text_content_height(
+        font,
+        text,
+        14.0,
+        NpcDialogueLayout::TEXT_WIDTH,
+        inline_icons,
+    );
     let text_max_scroll = if message_type == 4 {
         0
     } else {
@@ -1203,29 +1223,27 @@ fn render_npc_dialogue(
     draw_dialogue_text_with_icons_scrolled(
         font,
         &mut pixels,
-        WIDTH,
-        HEIGHT,
+        width,
+        height,
         text,
-        26,
-        50,
-        16.0,
-        548,
+        NpcDialogueLayout::TEXT_X,
+        NpcDialogueLayout::TEXT_Y,
+        14.0,
+        NpcDialogueLayout::TEXT_WIDTH,
         text_view_height,
-        [235, 235, 235],
+        [46, 46, 46],
         inline_icons,
         text_scroll,
     );
     if text_max_scroll > 0 {
-        const SCROLL_TRACK_X: usize = 582;
-        const SCROLL_TRACK_Y: usize = 50;
-        const SCROLL_TRACK_WIDTH: usize = 5;
+        const SCROLL_TRACK_Y: usize = NpcDialogueLayout::TEXT_Y as usize;
         fill_dialogue_rect(
             &mut pixels,
-            WIDTH,
-            HEIGHT,
-            SCROLL_TRACK_X,
+            width,
+            height,
+            NpcDialogueLayout::SCROLL_X,
             SCROLL_TRACK_Y,
-            SCROLL_TRACK_WIDTH,
+            NpcDialogueLayout::SCROLL_WIDTH,
             text_view_height,
             [56, 53, 48, 255],
         );
@@ -1236,11 +1254,11 @@ fn render_npc_dialogue(
         let thumb_y = SCROLL_TRACK_Y + thumb_range * text_scroll / text_max_scroll;
         fill_dialogue_rect(
             &mut pixels,
-            WIDTH,
-            HEIGHT,
-            SCROLL_TRACK_X,
+            width,
+            height,
+            NpcDialogueLayout::SCROLL_X,
             thumb_y,
-            SCROLL_TRACK_WIDTH,
+            NpcDialogueLayout::SCROLL_WIDTH,
             thumb_height,
             [198, 169, 116, 255],
         );
@@ -1255,142 +1273,232 @@ fn render_npc_dialogue(
             .take(5)
             .enumerate()
         {
-            let local_y = 112 + row as i32 * 25;
+            let local_y =
+                NpcDialogueLayout::TEXT_Y + row as i32 * NpcDialogueLayout::SELECTION_ROW_STEP;
             let rect = SpriteRect {
-                x: PANEL_X + 28.0,
-                y: PANEL_Y + local_y as f32,
-                width: 544.0,
-                height: 23.0,
+                x: panel_x + NpcDialogueLayout::TEXT_X as f32,
+                y: panel_y + local_y as f32,
+                width: NpcDialogueLayout::TEXT_WIDTH as f32,
+                height: NpcDialogueLayout::SELECTION_HEIGHT as f32,
                 blend_mode: BlendMode::Alpha,
             };
             draw_dialogue_button_with_icons(
                 font,
                 &mut pixels,
-                WIDTH,
-                HEIGHT,
+                width,
+                height,
                 rect,
-                PANEL_X,
-                PANEL_Y,
+                panel_x,
+                panel_y,
                 label,
                 inline_icons,
             );
             if index == selected_selection {
-                let x = 28_usize;
+                let x = NpcDialogueLayout::TEXT_X as usize;
                 let y = local_y as usize;
                 let color = [244, 210, 124, 255];
-                fill_dialogue_rect(&mut pixels, WIDTH, HEIGHT, x, y, 544, 2, color);
-                fill_dialogue_rect(&mut pixels, WIDTH, HEIGHT, x, y + 21, 544, 2, color);
-                fill_dialogue_rect(&mut pixels, WIDTH, HEIGHT, x, y, 2, 23, color);
-                fill_dialogue_rect(&mut pixels, WIDTH, HEIGHT, x + 542, y, 2, 23, color);
+                let selection_width = NpcDialogueLayout::TEXT_WIDTH;
+                let border = NpcDialogueLayout::SELECTION_BORDER;
+                let selection_height = NpcDialogueLayout::SELECTION_HEIGHT;
+                fill_dialogue_rect(
+                    &mut pixels,
+                    width,
+                    height,
+                    x,
+                    y,
+                    selection_width,
+                    border,
+                    color,
+                );
+                fill_dialogue_rect(
+                    &mut pixels,
+                    width,
+                    height,
+                    x,
+                    y + selection_height - border,
+                    selection_width,
+                    border,
+                    color,
+                );
+                fill_dialogue_rect(
+                    &mut pixels,
+                    width,
+                    height,
+                    x,
+                    y,
+                    border,
+                    selection_height,
+                    color,
+                );
+                fill_dialogue_rect(
+                    &mut pixels,
+                    width,
+                    height,
+                    x + selection_width - border,
+                    y,
+                    border,
+                    selection_height,
+                    color,
+                );
             }
             buttons.push(NpcDialogueButton {
                 rect,
                 action: NpcDialogueAction::Select(*selection),
             });
         }
-        push_dialogue_button(
+        push_nx_dialogue_button(
             &mut pixels,
             &mut buttons,
-            font,
-            WIDTH,
-            HEIGHT,
-            PANEL_X,
-            PANEL_Y,
-            "Close",
-            0,
-            234,
+            ui_archive,
+            width,
+            height,
+            "UIWindow.img/UtilDlgEx/BtClose/normal/0",
+            NpcDialogueLayout::CLOSE_X,
+            NpcDialogueLayout::BUTTON_Y,
+            NpcDialogueAction::More(0),
         );
     } else {
         if message_type == 2 || message_type == 3 {
-            fill_dialogue_rect(
-                &mut pixels,
-                WIDTH,
-                HEIGHT,
-                26,
-                172,
-                548,
-                28,
-                [72, 64, 52, 255],
-            );
             draw_dialogue_text(
                 font,
                 &mut pixels,
-                WIDTH,
-                HEIGHT,
+                width,
+                height,
                 input,
-                36,
-                177,
+                NpcDialogueLayout::INPUT_X,
+                NpcDialogueLayout::INPUT_Y,
                 16.0,
-                530,
-                20,
-                [255, 255, 255],
+                NpcDialogueLayout::TEXT_WIDTH - 16,
+                NpcDialogueLayout::INPUT_HEIGHT,
+                [46, 46, 46],
             );
         }
-        let (labels, actions): (&[&str], &[NpcDialogueAction]) = match message_type {
-            1 => (
-                &["Yes", "No"],
-                &[NpcDialogueAction::More(1), NpcDialogueAction::More(0)],
-            ),
-            2 => (
-                &["OK", "Cancel"],
-                &[NpcDialogueAction::SubmitText, NpcDialogueAction::More(0)],
-            ),
-            3 => (
-                &["−", "+", "OK", "Cancel"],
-                &[
-                    NpcDialogueAction::AdjustNumber(-1),
-                    NpcDialogueAction::AdjustNumber(1),
-                    NpcDialogueAction::SubmitNumber,
-                    NpcDialogueAction::More(0),
-                ],
-            ),
-            5 => (&["Next"], &[NpcDialogueAction::More(1)]),
-            6 => (
-                &["Back", "Next"],
-                &[NpcDialogueAction::More(0), NpcDialogueAction::More(1)],
-            ),
-            12 => (
-                &["Accept", "Decline"],
-                &[NpcDialogueAction::More(1), NpcDialogueAction::More(0)],
-            ),
-            _ => (&["OK"], &[NpcDialogueAction::More(1)]),
-        };
-        let width = if message_type == 3 { 58.0 } else { 104.0 };
-        let gap = 12.0;
-        let total = labels.len() as f32 * width + labels.len().saturating_sub(1) as f32 * gap;
-        let start_x = (WIDTH as f32 - total) / 2.0;
-        for (index, (label, action)) in labels.iter().zip(actions).enumerate() {
-            let local_x = start_x + index as f32 * (width + gap);
-            let rect = SpriteRect {
-                x: PANEL_X + local_x,
-                y: PANEL_Y + 214.0,
-                width,
-                height: 30.0,
-                blend_mode: BlendMode::Alpha,
-            };
-            draw_dialogue_button(
-                font,
+        push_nx_dialogue_button(
+            &mut pixels,
+            &mut buttons,
+            ui_archive,
+            width,
+            height,
+            "UIWindow.img/UtilDlgEx/BtClose/normal/0",
+            9,
+            NpcDialogueLayout::BUTTON_Y,
+            NpcDialogueAction::More(0),
+        );
+        match message_type {
+            1 => {
+                push_nx_yes_no_buttons(&mut pixels, &mut buttons, ui_archive, width, height);
+            }
+            2 => push_nx_dialogue_button(
                 &mut pixels,
-                WIDTH,
-                HEIGHT,
-                rect,
-                PANEL_X,
-                PANEL_Y,
-                label,
-            );
-            buttons.push(NpcDialogueButton {
-                rect,
-                action: *action,
-            });
+                &mut buttons,
+                ui_archive,
+                width,
+                height,
+                "UIWindow.img/UtilDlgEx/BtOK/normal/0",
+                NpcDialogueLayout::OK_X,
+                NpcDialogueLayout::BUTTON_Y,
+                NpcDialogueAction::SubmitText,
+            ),
+            3 => {
+                for (x, label, action) in [
+                    (
+                        NpcDialogueLayout::ADJUST_MINUS_X,
+                        "−",
+                        NpcDialogueAction::AdjustNumber(-1),
+                    ),
+                    (
+                        NpcDialogueLayout::ADJUST_PLUS_X,
+                        "+",
+                        NpcDialogueAction::AdjustNumber(1),
+                    ),
+                ] {
+                    let rect = SpriteRect {
+                        x: panel_x + x as f32,
+                        y: panel_y + NpcDialogueLayout::BUTTON_Y as f32,
+                        width: NpcDialogueLayout::ADJUST_WIDTH,
+                        height: NpcDialogueLayout::ADJUST_HEIGHT,
+                        blend_mode: BlendMode::Alpha,
+                    };
+                    draw_dialogue_button(
+                        font,
+                        &mut pixels,
+                        width,
+                        height,
+                        rect,
+                        panel_x,
+                        panel_y,
+                        label,
+                    );
+                    buttons.push(NpcDialogueButton { rect, action });
+                }
+                push_nx_dialogue_button(
+                    &mut pixels,
+                    &mut buttons,
+                    ui_archive,
+                    width,
+                    height,
+                    "UIWindow.img/UtilDlgEx/BtOK/normal/0",
+                    NpcDialogueLayout::OK_X,
+                    NpcDialogueLayout::BUTTON_Y,
+                    NpcDialogueAction::SubmitNumber,
+                );
+            }
+            5 => push_nx_dialogue_button(
+                &mut pixels,
+                &mut buttons,
+                ui_archive,
+                width,
+                height,
+                "UIWindow.img/UtilDlgEx/BtNext/normal/0",
+                NpcDialogueLayout::NEXT_X,
+                NpcDialogueLayout::BUTTON_Y,
+                NpcDialogueAction::More(1),
+            ),
+            6 => {
+                push_nx_dialogue_button(
+                    &mut pixels,
+                    &mut buttons,
+                    ui_archive,
+                    width,
+                    height,
+                    "UIWindow.img/UtilDlgEx/BtPrev/normal/0",
+                    NpcDialogueLayout::PREV_X,
+                    NpcDialogueLayout::BUTTON_Y,
+                    NpcDialogueAction::More(0),
+                );
+                push_nx_dialogue_button(
+                    &mut pixels,
+                    &mut buttons,
+                    ui_archive,
+                    width,
+                    height,
+                    "UIWindow.img/UtilDlgEx/BtNext/normal/0",
+                    NpcDialogueLayout::NEXT_X,
+                    NpcDialogueLayout::BUTTON_Y,
+                    NpcDialogueAction::More(1),
+                );
+            }
+            12 => push_nx_yes_no_buttons(&mut pixels, &mut buttons, ui_archive, width, height),
+            _ => push_nx_dialogue_button(
+                &mut pixels,
+                &mut buttons,
+                ui_archive,
+                width,
+                height,
+                "UIWindow.img/UtilDlgEx/BtOK/normal/0",
+                NpcDialogueLayout::OK_X,
+                NpcDialogueLayout::BUTTON_Y,
+                NpcDialogueAction::More(1),
+            ),
         }
     }
     (
         pixels,
         SpriteRect {
-            x: PANEL_X,
-            y: PANEL_Y,
-            width: WIDTH as f32,
-            height: HEIGHT as f32,
+            x: panel_x,
+            y: panel_y,
+            width: width as f32,
+            height: height as f32,
             blend_mode: BlendMode::Alpha,
         },
         buttons,
@@ -1398,30 +1506,146 @@ fn render_npc_dialogue(
     )
 }
 
-fn push_dialogue_button(
+fn push_nx_yes_no_buttons(
     pixels: &mut [u8],
     buttons: &mut Vec<NpcDialogueButton>,
-    font: &fontdue::Font,
+    archive: &NxArchive,
     width: usize,
     height: usize,
-    panel_x: f32,
-    panel_y: f32,
-    label: &str,
-    response: i8,
-    local_y: i32,
 ) {
+    push_nx_dialogue_button(
+        pixels,
+        buttons,
+        archive,
+        width,
+        height,
+        "UIWindow.img/UtilDlgEx/BtYes/normal/0",
+        NpcDialogueLayout::YES_X,
+        236,
+        NpcDialogueAction::More(1),
+    );
+    push_nx_dialogue_button(
+        pixels,
+        buttons,
+        archive,
+        width,
+        height,
+        "UIWindow.img/UtilDlgEx/BtNo/normal/0",
+        NpcDialogueLayout::NO_X,
+        236,
+        NpcDialogueAction::More(0),
+    );
+}
+
+fn push_nx_dialogue_button(
+    pixels: &mut [u8],
+    buttons: &mut Vec<NpcDialogueButton>,
+    archive: &NxArchive,
+    width: usize,
+    height: usize,
+    path: &str,
+    x: i32,
+    y: i32,
+    action: NpcDialogueAction,
+) {
+    let (button_width, button_height, origin_x, origin_y) =
+        nx_dialogue_button_geometry(archive, path).unwrap_or((46.0, 18.0, 0, 0));
     let rect = SpriteRect {
-        x: panel_x + 248.0,
-        y: panel_y + local_y as f32,
-        width: 104.0,
-        height: 24.0,
+        x: NpcDialogueLayout::PANEL_X + x as f32 - origin_x as f32,
+        y: NpcDialogueLayout::PANEL_Y + y as f32 - origin_y as f32,
+        width: button_width,
+        height: button_height,
         blend_mode: BlendMode::Alpha,
     };
-    draw_dialogue_button(font, pixels, width, height, rect, panel_x, panel_y, label);
-    buttons.push(NpcDialogueButton {
-        rect,
-        action: NpcDialogueAction::More(response),
-    });
+    let _ = composite_nx_ui_bitmap(pixels, width, height, archive, path, x, y);
+    buttons.push(NpcDialogueButton { rect, action });
+}
+
+fn nx_dialogue_button_geometry(archive: &NxArchive, path: &str) -> Option<(f32, f32, i32, i32)> {
+    let node = resolve_ui_path(&archive.root(), path).ok().flatten()?;
+    let bitmap = node.bitmap().ok().flatten()?;
+    let origin = node
+        .child("origin")
+        .ok()
+        .flatten()
+        .and_then(|origin| origin.value().ok())
+        .and_then(|value| match value {
+            NodeValue::Vector { x, y } => Some((x, y)),
+            _ => None,
+        })
+        .unwrap_or((0, 0));
+    Some((
+        f32::from(bitmap.width()),
+        f32::from(bitmap.height()),
+        origin.0,
+        origin.1,
+    ))
+}
+
+fn composite_npc_dialogue_frame(
+    pixels: &mut [u8],
+    width: usize,
+    height: usize,
+    ui_archive: &NxArchive,
+) -> bool {
+    let mut frame = vec![0_u8; pixels.len()];
+    let top = "UIWindow.img/UtilDlgEx/t";
+    let fill = "UIWindow.img/UtilDlgEx/c";
+    let bottom = "UIWindow.img/UtilDlgEx/s";
+    let result =
+        composite_nx_ui_bitmap(&mut frame, width, height, ui_archive, top, 0, 0).and_then(|_| {
+            let node = resolve_ui_path(&ui_archive.root(), fill)?
+                .ok_or_else(|| format!("missing v83 UI asset {fill:?}"))?;
+            let bitmap = node
+                .bitmap()
+                .map_err(|error| error.to_string())?
+                .ok_or_else(|| format!("v83 UI asset {fill:?} is not a bitmap"))?;
+            let step = usize::from(bitmap.height()).max(1);
+            let body_end = NpcDialogueLayout::TOP_HEIGHT + NpcDialogueLayout::BODY_HEIGHT;
+            for y in (NpcDialogueLayout::TOP_HEIGHT..body_end).step_by(step) {
+                composite_nx_ui_bitmap(&mut frame, width, height, ui_archive, fill, 0, y as i32)?;
+            }
+            composite_nx_ui_bitmap(
+                &mut frame,
+                width,
+                height,
+                ui_archive,
+                bottom,
+                0,
+                NpcDialogueLayout::BOTTOM_Y as i32,
+            )
+        });
+    if result.is_ok() {
+        pixels.copy_from_slice(&frame);
+        true
+    } else {
+        false
+    }
+}
+
+pub(super) fn render_npc_dialogue_preview(
+    font: &fontdue::Font,
+    ui_archive: &NxArchive,
+    npc_archive: &NxArchive,
+    string_archive: &NxArchive,
+) -> (Vec<u8>, (f32, f32, f32, f32)) {
+    let (pixels, panel, _, _) = render_npc_dialogue(
+        font,
+        ui_archive,
+        npc_archive,
+        string_archive,
+        2101,
+        0,
+        1,
+        "Are you done with your training? If you wish, I will send you out from this training camp.",
+        0,
+        &NpcInlineIcons::new(),
+        &[],
+        0,
+        0,
+        "",
+    );
+    (pixels, (panel.x, panel.y, panel.width, panel.height))
 }
 
 fn draw_dialogue_button(
@@ -1771,10 +1995,28 @@ fn composite_nx_ui_bitmap(
 ) -> Result<(), String> {
     let node = resolve_ui_path(&archive.root(), path)?
         .ok_or_else(|| format!("missing v83 UI asset {path:?}"))?;
+    composite_nx_node_bitmap(
+        pixels,
+        canvas_width,
+        canvas_height,
+        &node,
+        anchor_x,
+        anchor_y,
+    )
+}
+
+fn composite_nx_node_bitmap(
+    pixels: &mut [u8],
+    canvas_width: usize,
+    canvas_height: usize,
+    node: &openstory_assets::NxNode,
+    anchor_x: i32,
+    anchor_y: i32,
+) -> Result<(), String> {
     let bitmap = node
         .bitmap()
         .map_err(|error| error.to_string())?
-        .ok_or_else(|| format!("v83 UI asset {path:?} is not a bitmap"))?;
+        .ok_or_else(|| "NX sprite node is not a bitmap".to_owned())?;
     let source = bitmap
         .decode_bgra_shared()
         .map_err(|error| error.to_string())?;
@@ -1786,7 +2028,7 @@ fn composite_nx_ui_bitmap(
         .map_err(|error| error.to_string())?;
     let (origin_x, origin_y) = match origin {
         Some(NodeValue::Vector { x, y }) => (x, y),
-        Some(_) => return Err(format!("v83 UI asset {path:?} has a malformed origin")),
+        Some(_) => return Err("NX sprite has a malformed origin".to_owned()),
         None => (0, 0),
     };
     let left = anchor_x - origin_x;

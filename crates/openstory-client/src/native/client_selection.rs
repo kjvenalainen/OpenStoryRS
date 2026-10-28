@@ -425,7 +425,7 @@ impl ClientApp {
         let Some(creation) = self.character_creation.as_ref() else {
             return;
         };
-        if !creation.awaiting_name || !creation.name.eq_ignore_ascii_case(&name) {
+        if !creation.awaiting_name || !creation.name.trim().eq_ignore_ascii_case(&name) {
             eprintln!("OpenStory: ignored an unexpected character-name response");
             return;
         }

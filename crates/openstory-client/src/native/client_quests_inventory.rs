@@ -200,7 +200,7 @@ impl ClientApp {
         {
             (QUEST_LOG_PANEL_WIDTH as f32, QUEST_LOG_PANEL_HEIGHT as f32)
         } else {
-            (296.0, 289.0)
+            (245.0, QUEST_LOG_PANEL_HEIGHT as f32)
         };
         if !rect_contains(
             SpriteRect {
@@ -229,7 +229,12 @@ impl ClientApp {
             }
             return true;
         }
-        if (5.0..20.0).contains(&y) && (256.0..289.0).contains(&x) {
+        if (5.0..20.0).contains(&y)
+            && ((207.0..240.0).contains(&x)
+                || (QUEST_LOG_DETAIL_X as f32 + 207.0
+                    ..QUEST_LOG_DETAIL_X as f32 + QUEST_LOG_DETAIL_WIDTH as f32 - 5.0)
+                    .contains(&x))
+        {
             self.show_quest_log = false;
             return true;
         }
@@ -252,7 +257,7 @@ impl ClientApp {
             }
             return true;
         }
-        if (50.0..254.0).contains(&y) && (8.0..244.0).contains(&x) {
+        if (50.0..254.0).contains(&y) && (8.0..238.0).contains(&x) {
             let row = ((y - 54.0).max(0.0) / 25.0).floor() as usize;
             let index = self.quest_log_scroll.saturating_add(row);
             if index
@@ -267,11 +272,13 @@ impl ClientApp {
         }
         if self.quest_log_tab == QuestLogTab::Active
             && (300.0..335.0).contains(&y)
-            && (QUEST_LOG_DETAIL_X as f32 + 18.0..QUEST_LOG_DETAIL_X as f32 + 285.0).contains(&x)
+            && (QUEST_LOG_DETAIL_X as f32 + 18.0
+                ..QUEST_LOG_DETAIL_X as f32 + QUEST_LOG_DETAIL_WIDTH as f32 - 18.0)
+                .contains(&x)
         {
             if x < QUEST_LOG_DETAIL_X as f32 + 56.0 {
                 self.change_selected_quest_reward(-1);
-            } else if x > QUEST_LOG_DETAIL_X as f32 + 258.0 {
+            } else if x > QUEST_LOG_DETAIL_X as f32 + QUEST_LOG_DETAIL_WIDTH as f32 - 40.0 {
                 self.change_selected_quest_reward(1);
             }
             return true;
@@ -312,14 +319,14 @@ impl ClientApp {
     }
 
     pub(super) fn begin_skill_book_pointer(&mut self, cursor: Point) -> bool {
-        const PANEL_X: f32 = 586.0;
-        const PANEL_Y: f32 = 128.0;
+        const PANEL_X: f32 = SKILL_BOOK_PANEL_X;
+        const PANEL_Y: f32 = SKILL_BOOK_PANEL_Y;
         if !rect_contains(
             SpriteRect {
                 x: PANEL_X,
                 y: PANEL_Y,
-                width: 430.0,
-                height: 500.0,
+                width: SKILL_BOOK_PANEL_WIDTH as f32,
+                height: SKILL_BOOK_PANEL_HEIGHT as f32,
                 blend_mode: BlendMode::Alpha,
             },
             cursor,
@@ -328,13 +335,13 @@ impl ClientApp {
         }
         let local_x = cursor.x - PANEL_X;
         let local_y = cursor.y - PANEL_Y;
-        if (397.0..425.0).contains(&local_x) && (7.0..35.0).contains(&local_y) {
+        if local_x >= SKILL_BOOK_PANEL_WIDTH as f32 - 36.0 && local_y < 38.0 {
             self.show_skill_book = false;
             return true;
         }
-        if (42.0..72.0).contains(&local_y) {
-            let tab = ((local_x - 10.0) / 82.0).floor() as i32;
-            if (0..5).contains(&tab) {
+        if (49.0..87.0).contains(&local_y) {
+            let tab = ((local_x - 18.0) / 67.0).floor() as i32;
+            if (0..5).contains(&tab) && local_x >= 18.0 {
                 let tab = tab as u8;
                 if self.active_character.as_ref().is_some_and(|character| {
                     skill_subjob_for_tab(character.stats.job, tab).is_some()
@@ -347,12 +354,8 @@ impl ClientApp {
             }
             return true;
         }
-        if (72.0..91.0).contains(&local_y) && (292.0..418.0).contains(&local_x) {
-            self.open_skill_macro_editor();
-            return true;
-        }
-        if (91.0..439.0).contains(&local_y) {
-            let row = ((local_y - 91.0) / 34.0).floor() as usize;
+        if (192.0..696.0).contains(&local_y) {
+            let row = ((local_y - 192.0) / 84.0).floor() as usize;
             let Some(entry) = self
                 .skill_book_entries
                 .get(self.skill_book_scroll_row.saturating_add(row))
@@ -360,9 +363,9 @@ impl ClientApp {
             else {
                 return true;
             };
-            if (386.0..424.0).contains(&local_x) {
+            if local_x >= SKILL_BOOK_PANEL_WIDTH as f32 - 67.0 {
                 self.spend_skill_point(&entry);
-            } else if (333.0..383.0).contains(&local_x) {
+            } else if (270.0..SKILL_BOOK_PANEL_WIDTH as f32 - 68.0).contains(&local_x) {
                 self.use_skill(&entry);
             }
             return true;
@@ -932,19 +935,19 @@ impl ClientApp {
         self.inventory_drag_source = None;
         let local_x = cursor.x - INVENTORY_PANEL_X;
         let local_y = cursor.y - INVENTORY_PANEL_Y;
-        if (139.0..171.0).contains(&local_x) && (5.0..20.0).contains(&local_y) {
+        if (156.0..169.0).contains(&local_x) && (5.0..20.0).contains(&local_y) {
             self.show_inventory = false;
             self.inventory_hover_slot = None;
             self.pending_scroll_slot = None;
             return true;
         }
-        if (142.0..155.0).contains(&local_x) && (269.0..284.0).contains(&local_y) {
+        if (126.0..138.0).contains(&local_x) && (6.0..18.0).contains(&local_y) {
             if self.inventory_tab != openstory_protocol::InventoryType::Equipped {
                 self.request_inventory_arrange(false);
             }
             return true;
         }
-        if (160.0..173.0).contains(&local_x) && (269.0..284.0).contains(&local_y) {
+        if (141.0..154.0).contains(&local_x) && (6.0..18.0).contains(&local_y) {
             if self.inventory_tab != openstory_protocol::InventoryType::Equipped {
                 self.request_inventory_arrange(true);
             }

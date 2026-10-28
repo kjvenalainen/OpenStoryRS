@@ -179,6 +179,14 @@ impl ApplicationHandler for ClientApp {
                         y: position.y as f32,
                     })
                 });
+                if let Some(cursor) = self.cursor
+                    && self.update_dialog_window_drag(cursor)
+                {
+                    if let Some(window) = self.window.as_ref() {
+                        window.request_redraw();
+                    }
+                    return;
+                }
                 if self.update_rps_game_hover()
                     && let Some(window) = self.window.as_ref()
                 {
@@ -196,6 +204,7 @@ impl ApplicationHandler for ClientApp {
                     && let Some(cursor) = self.cursor
                     && let Some(panel) = self.npc_dialogue.as_ref().map(|dialogue| dialogue.panel)
                 {
+                    let cursor = self.dialog_window_input_cursor(cursor);
                     let scroll_cursor = Point {
                         x: panel.x + 584.0,
                         y: cursor.y,
@@ -207,6 +216,7 @@ impl ApplicationHandler for ClientApp {
                     }
                 }
                 if let (Some(slider), Some(cursor)) = (self.settings_dragging, self.cursor) {
+                    let cursor = self.dialog_window_input_cursor(cursor);
                     self.set_option_setting_from_cursor(slider, cursor.x);
                     if let Some(window) = self.window.as_ref() {
                         window.request_redraw();
@@ -233,6 +243,12 @@ impl ApplicationHandler for ClientApp {
                 if self.server_notice_popup.is_some() {
                     return;
                 }
+                if self.dialog_window_drag.take().is_some() {
+                    if let Some(window) = self.window.as_ref() {
+                        window.request_redraw();
+                    }
+                    return;
+                }
                 self.messenger_drag_offset = None;
                 self.npc_dialogue_scroll_dragging = false;
                 if self.pressed_login_button.take().is_some()
@@ -248,7 +264,10 @@ impl ApplicationHandler for ClientApp {
                     return;
                 }
                 if self.inventory_drag_source.is_some() {
-                    self.finish_inventory_pointer(self.cursor);
+                    self.finish_inventory_pointer(
+                        self.cursor
+                            .map(|cursor| self.dialog_window_input_cursor(cursor)),
+                    );
                     if self.update_inventory_hover() {
                         self.refresh_inventory_texture();
                     }
@@ -269,13 +288,14 @@ impl ApplicationHandler for ClientApp {
                     if rect_contains(popup.button, cursor) {
                         self.audio
                             .play_ui_sound(&self.sound_archive, "UI.img/BtMouseClick");
-                        self.server_notice_popup = None;
-                        if let Some(window) = self.window.as_ref() {
-                            window.request_redraw();
-                        }
+                        self.respond_to_server_notice(true);
                     }
                     return;
                 }
+                if self.begin_dialog_window_drag(cursor) {
+                    return;
+                }
+                let cursor = self.dialog_window_input_cursor(cursor);
                 if self.rps_game.is_some() {
                     self.click_rps_game_button(cursor);
                     if let Some(window) = self.window.as_ref() {
@@ -724,7 +744,7 @@ impl ApplicationHandler for ClientApp {
                 } else if let Some(object_id) = self
                     .map_scene
                     .as_ref()
-                    .and_then(|scene| scene.scripted_npc_at(cursor))
+                    .and_then(|scene| scene.npc_at(cursor))
                 {
                     self.request_npc_talk(object_id);
                 } else if let Some(character_id) = self
@@ -740,8 +760,11 @@ impl ApplicationHandler for ClientApp {
                     MouseScrollDelta::LineDelta(_, y) => y,
                     MouseScrollDelta::PixelDelta(position) => position.y as f32,
                 };
+                let cursor = self
+                    .cursor
+                    .map(|cursor| self.dialog_window_input_cursor(cursor));
                 if self.event_list_open {
-                    if self.cursor.is_some_and(|cursor| {
+                    if cursor.is_some_and(|cursor| {
                         rect_contains(
                             SpriteRect {
                                 x: EVENT_LIST_PANEL_X,
@@ -758,7 +781,7 @@ impl ApplicationHandler for ClientApp {
                     return;
                 }
                 if self.show_key_config {
-                    if self.cursor.is_some_and(|cursor| {
+                    if cursor.is_some_and(|cursor| {
                         rect_contains(
                             SpriteRect {
                                 x: KEY_CONFIG_PANEL_X + 14.0,
@@ -779,7 +802,7 @@ impl ApplicationHandler for ClientApp {
                     return;
                 }
                 if self.skill_macro_editor.open {
-                    if let Some(cursor) = self.cursor {
+                    if let Some(cursor) = cursor {
                         let local_x = cursor.x - skill_macros::PANEL_X;
                         let local_y = cursor.y - skill_macros::PANEL_Y;
                         if skill_macros::skill_list_contains(local_x, local_y) {
@@ -818,7 +841,7 @@ impl ApplicationHandler for ClientApp {
                 }
                 if self.monster_book.open
                     && self.monster_book.set_effect_open
-                    && self.cursor.is_some_and(|cursor| {
+                    && cursor.is_some_and(|cursor| {
                         (self.monster_book.x..self.monster_book.x + self.monster_book.width as f32)
                             .contains(&cursor.x)
                             && (self.monster_book.y
@@ -842,7 +865,7 @@ impl ApplicationHandler for ClientApp {
                     }
                     return;
                 }
-                if let Some(cursor) = self.cursor
+                if let Some(cursor) = cursor
                     && self.party_search.as_ref().is_some_and(|state| {
                         (state.x..state.x + party_search::PANEL_WIDTH as f32).contains(&cursor.x)
                             && (state.y..state.y + party_search::PANEL_HEIGHT as f32)
@@ -860,7 +883,7 @@ impl ApplicationHandler for ClientApp {
                     return;
                 }
                 if self.hired_merchant_room.is_some() {
-                    if let Some(cursor) = self.cursor {
+                    if let Some(cursor) = cursor {
                         if self.show_inventory
                             && (INVENTORY_PANEL_X..INVENTORY_PANEL_X + INVENTORY_PANEL_WIDTH as f32)
                                 .contains(&cursor.x)
@@ -887,7 +910,7 @@ impl ApplicationHandler for ClientApp {
                         }
                     }
                 } else if self.trade_room.is_some() {
-                    if let Some(cursor) = self.cursor
+                    if let Some(cursor) = cursor
                         && self.show_inventory
                         && (INVENTORY_PANEL_X..INVENTORY_PANEL_X + INVENTORY_PANEL_WIDTH as f32)
                             .contains(&cursor.x)
@@ -929,7 +952,7 @@ impl ApplicationHandler for ClientApp {
                     return;
                 }
                 if self.show_pet_equipment
-                    && self.cursor.is_some_and(|cursor| {
+                    && cursor.is_some_and(|cursor| {
                         (634.0..1002.0).contains(&cursor.x) && (348.0..588.0).contains(&cursor.y)
                     })
                 {
@@ -970,19 +993,19 @@ impl ApplicationHandler for ClientApp {
                         window.request_redraw();
                     }
                 } else if self.storage.is_some()
-                    && self.cursor.is_some_and(|cursor| {
+                    && cursor.is_some_and(|cursor| {
                         (182.0..842.0).contains(&cursor.x) && (230.0..534.0).contains(&cursor.y)
                     })
                 {
-                    if let Some(cursor) = self.cursor {
+                    if let Some(cursor) = cursor {
                         self.scroll_storage(cursor, amount);
                     }
                     if let Some(window) = self.window.as_ref() {
                         window.request_redraw();
                     }
                 } else if self.show_quest_log
-                    && self.cursor.is_some_and(|cursor| {
-                        (QUEST_LOG_PANEL_X + 8.0..QUEST_LOG_PANEL_X + 288.0).contains(&cursor.x)
+                    && cursor.is_some_and(|cursor| {
+                        (QUEST_LOG_PANEL_X + 8.0..QUEST_LOG_PANEL_X + 238.0).contains(&cursor.x)
                             && (QUEST_LOG_PANEL_Y + 50.0..QUEST_LOG_PANEL_Y + 254.0)
                                 .contains(&cursor.y)
                     })
@@ -1006,8 +1029,11 @@ impl ApplicationHandler for ClientApp {
                         window.request_redraw();
                     }
                 } else if self.show_buddy_panel
-                    && self.cursor.is_some_and(|cursor| {
-                        (728.0..1012.0).contains(&cursor.x) && (190.0..482.0).contains(&cursor.y)
+                    && cursor.is_some_and(|cursor| {
+                        (BUDDY_PANEL_X..BUDDY_PANEL_X + BUDDY_PANEL_WIDTH as f32)
+                            .contains(&cursor.x)
+                            && (BUDDY_PANEL_Y..BUDDY_PANEL_Y + BUDDY_PANEL_HEIGHT as f32)
+                                .contains(&cursor.y)
                     })
                 {
                     let visible_rows = if self.pending_buddy_invite.is_some() {
@@ -1026,7 +1052,7 @@ impl ApplicationHandler for ClientApp {
                         window.request_redraw();
                     }
                 } else if self.show_guild_panel
-                    && self.cursor.is_some_and(|cursor| {
+                    && cursor.is_some_and(|cursor| {
                         (680.0..1016.0).contains(&cursor.x) && (174.0..594.0).contains(&cursor.y)
                     })
                 {
@@ -1044,7 +1070,7 @@ impl ApplicationHandler for ClientApp {
                         window.request_redraw();
                     }
                 } else if self.cash_shop.is_some()
-                    && self.cursor.is_some_and(|cursor| {
+                    && cursor.is_some_and(|cursor| {
                         (198.0..1004.0).contains(&cursor.x) && (78.0..610.0).contains(&cursor.y)
                     })
                 {
@@ -1071,7 +1097,7 @@ impl ApplicationHandler for ClientApp {
                         window.request_redraw();
                     }
                 } else if self.npc_shop.is_some()
-                    && self.cursor.is_some_and(|cursor| {
+                    && cursor.is_some_and(|cursor| {
                         (202.0..822.0).contains(&cursor.x) && (124.0..644.0).contains(&cursor.y)
                     })
                 {
@@ -1080,7 +1106,7 @@ impl ApplicationHandler for ClientApp {
                         window.request_redraw();
                     }
                 } else if self.show_inventory
-                    && self.cursor.is_some_and(|cursor| {
+                    && cursor.is_some_and(|cursor| {
                         (INVENTORY_PANEL_X..INVENTORY_PANEL_X + INVENTORY_PANEL_WIDTH as f32)
                             .contains(&cursor.x)
                             && (INVENTORY_PANEL_Y
@@ -1093,12 +1119,16 @@ impl ApplicationHandler for ClientApp {
                         window.request_redraw();
                     }
                 } else if self.show_skill_book
-                    && self.cursor.is_some_and(|cursor| {
-                        (586.0..1016.0).contains(&cursor.x) && (128.0..628.0).contains(&cursor.y)
+                    && cursor.is_some_and(|cursor| {
+                        (SKILL_BOOK_PANEL_X..SKILL_BOOK_PANEL_X + SKILL_BOOK_PANEL_WIDTH as f32)
+                            .contains(&cursor.x)
+                            && (SKILL_BOOK_PANEL_Y
+                                ..SKILL_BOOK_PANEL_Y + SKILL_BOOK_PANEL_HEIGHT as f32)
+                                .contains(&cursor.y)
                     })
                 {
                     let direction = if amount > 0.0 { -1_isize } else { 1 };
-                    let maximum = self.skill_book_entries.len().saturating_sub(10);
+                    let maximum = self.skill_book_entries.len().saturating_sub(6);
                     self.skill_book_scroll_row = self
                         .skill_book_scroll_row
                         .saturating_add_signed(direction)
@@ -1112,18 +1142,28 @@ impl ApplicationHandler for ClientApp {
             WindowEvent::KeyboardInput {
                 event: mut event, ..
             } => {
-                // Some macOS input paths report the logical Escape key while
-                // leaving physical_key unidentified. Normalize it once so every
-                // modal and the gameplay quit handler see the same key.
-                if matches!(&event.logical_key, Key::Named(NamedKey::Escape)) {
-                    event.physical_key = PhysicalKey::Code(KeyCode::Escape);
+                // Some macOS input paths report named keys while leaving
+                // physical_key unidentified. Normalize keys used by modal and
+                // gameplay controls before routing the event.
+                if let Key::Named(named) = &event.logical_key {
+                    event.physical_key = match named {
+                        NamedKey::Escape => PhysicalKey::Code(KeyCode::Escape),
+                        NamedKey::ArrowUp => PhysicalKey::Code(KeyCode::ArrowUp),
+                        NamedKey::ArrowDown => PhysicalKey::Code(KeyCode::ArrowDown),
+                        NamedKey::ArrowLeft => PhysicalKey::Code(KeyCode::ArrowLeft),
+                        NamedKey::ArrowRight => PhysicalKey::Code(KeyCode::ArrowRight),
+                        _ => event.physical_key,
+                    };
                 }
                 if self.server_notice_popup.is_some() {
                     if event.state == ElementState::Pressed && !event.repeat {
                         match event.physical_key {
-                            PhysicalKey::Code(
-                                KeyCode::Enter | KeyCode::NumpadEnter | KeyCode::Escape,
-                            ) => self.server_notice_popup = None,
+                            PhysicalKey::Code(KeyCode::Enter | KeyCode::NumpadEnter) => {
+                                self.respond_to_server_notice(true);
+                            }
+                            PhysicalKey::Code(KeyCode::Escape) => {
+                                self.respond_to_server_notice(false);
+                            }
                             _ => {}
                         }
                     }
@@ -2159,6 +2199,17 @@ impl ApplicationHandler for ClientApp {
                     }
                     return;
                 }
+                if event.state == ElementState::Pressed
+                    && !event.repeat
+                    && event.physical_key == PhysicalKey::Code(KeyCode::Escape)
+                    && self.current_field.is_some()
+                    && self.map_scene.is_some()
+                    && !self.quit_confirmation
+                    && !self.has_open_dialog_window()
+                {
+                    self.open_quit_confirmation();
+                    return;
+                }
                 if self.set_gameplay_key(event.physical_key, event.state, event.repeat) {
                     if self.quit_requested {
                         event_loop.exit();
@@ -2166,6 +2217,19 @@ impl ApplicationHandler for ClientApp {
                     if let Some(window) = self.window.as_ref() {
                         window.request_redraw();
                     }
+                    return;
+                }
+                // If gameplay is active but a transient state declined the key,
+                // keep Escape as a reliable way to reach the quit confirmation.
+                // The normal gameplay handler gets first refusal so its open
+                // panels can still consume Escape according to their behavior.
+                if event.state == ElementState::Pressed
+                    && !event.repeat
+                    && event.physical_key == PhysicalKey::Code(KeyCode::Escape)
+                    && self.current_field.is_some()
+                    && self.map_scene.is_some()
+                {
+                    self.open_quit_confirmation();
                     return;
                 }
                 if self.npc_shop.is_some() && event.repeat {
@@ -3095,8 +3159,8 @@ impl ApplicationHandler for ClientApp {
                 {
                     draws.push(SpriteDraw {
                         texture,
-                        x: 728.0,
-                        y: 238.0,
+                        x: PARTY_PANEL_X,
+                        y: PARTY_PANEL_Y,
                         width: PARTY_PANEL_WIDTH as f32,
                         height: PARTY_PANEL_HEIGHT as f32,
                         uv: [0.0, 0.0, 1.0, 1.0],
@@ -3112,8 +3176,8 @@ impl ApplicationHandler for ClientApp {
                 {
                     draws.push(SpriteDraw {
                         texture,
-                        x: 728.0,
-                        y: 190.0,
+                        x: BUDDY_PANEL_X,
+                        y: BUDDY_PANEL_Y,
                         width: BUDDY_PANEL_WIDTH as f32,
                         height: BUDDY_PANEL_HEIGHT as f32,
                         uv: [0.0, 0.0, 1.0, 1.0],
@@ -3260,10 +3324,10 @@ impl ApplicationHandler for ClientApp {
                     if let Some(texture) = self.skill_book_texture.as_ref() {
                         draws.push(SpriteDraw {
                             texture,
-                            x: 586.0,
-                            y: 128.0,
-                            width: 430.0,
-                            height: 500.0,
+                            x: SKILL_BOOK_PANEL_X,
+                            y: SKILL_BOOK_PANEL_Y,
+                            width: SKILL_BOOK_PANEL_WIDTH as f32,
+                            height: SKILL_BOOK_PANEL_HEIGHT as f32,
                             uv: [0.0, 0.0, 1.0, 1.0],
                             tint: [1.0, 1.0, 1.0],
                             blend_mode: BlendMode::Alpha,
@@ -4074,6 +4138,7 @@ impl ApplicationHandler for ClientApp {
                         opacity: 1.0,
                     });
                 }
+                self.apply_dialog_window_draw_offsets(&mut draws);
                 if let Some(renderer) = self.renderer.as_mut() {
                     let result = renderer.render_sprites(&draws);
                     if let Err(error) = result {

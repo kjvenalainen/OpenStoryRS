@@ -284,30 +284,58 @@ fn render_inventory_panel(
         0,
         0,
     );
-    let _ = composite_nx_ui_bitmap(
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        ui_archive,
-        "UIWindow.img/BtUIClose/normal/0",
-        139,
-        5,
-    );
+    for (path, anchor_x, anchor_y) in [
+        ("UIWindow.img/Item/BtFull/normal/0", 132, 12),
+        ("UIWindow.img/Item/BtSmall/normal/0", 144, 12),
+        ("Basic.img/BtClose/normal/0", 156, 6),
+    ] {
+        let _ = composite_nx_ui_bitmap(
+            &mut pixels,
+            WIDTH,
+            HEIGHT,
+            ui_archive,
+            path,
+            anchor_x,
+            anchor_y,
+        );
+    }
 
     let native_tabs = [
         openstory_protocol::InventoryType::Equip,
         openstory_protocol::InventoryType::Use,
-        openstory_protocol::InventoryType::Etc,
         openstory_protocol::InventoryType::Setup,
+        openstory_protocol::InventoryType::Etc,
         openstory_protocol::InventoryType::Cash,
     ];
     for (index, tab) in native_tabs.into_iter().enumerate() {
+        if tab == active_tab {
+            let x = 10 + index * 31;
+            fill_dialogue_rect(
+                &mut pixels,
+                WIDTH,
+                HEIGHT,
+                x + 1,
+                30,
+                29,
+                12,
+                [232, 91, 151, 255],
+            );
+        }
         let state = if tab == active_tab {
             "enabled"
         } else {
             "disabled"
         };
         let path = format!("UIWindow.img/Item/Tab/{state}/{index}");
+        composite_inventory_tab_shadow(
+            &mut pixels,
+            WIDTH,
+            HEIGHT,
+            ui_archive,
+            &path,
+            (10 + index * 31) as i32,
+            29,
+        );
         let _ = composite_nx_ui_bitmap(
             &mut pixels,
             WIDTH,
@@ -348,16 +376,23 @@ fn render_inventory_panel(
             if let Some((icon_width, icon_height, icon_pixels)) =
                 inventory_item_icon(item.item_id, item_archive, character_archive, icon_cache)
             {
-                composite_inventory_icon(
+                let (icon_x, icon_y) = inventory_item_icon_offset(
+                    item.item_id,
+                    item_archive,
+                    character_archive,
+                )
+                .unwrap_or((1, 0));
+                let icon_x = icon_x - 2;
+                let icon_y = icon_y - 2;
+                composite_inventory_icon_native(
                     &mut pixels,
                     WIDTH,
                     HEIGHT,
                     &icon_pixels,
                     icon_width as usize,
                     icon_height as usize,
-                    x,
-                    y,
-                    36,
+                    x.saturating_add_signed(icon_x as isize),
+                    y.saturating_add_signed(icon_y as isize),
                 );
             }
             if item.count > 1 {
@@ -380,6 +415,17 @@ fn render_inventory_panel(
             }
         }
     }
+    // The reference inventory displays the blue scrollbar thumb centered in
+    // its rail, with the rail's arrows already present in the NX background.
+    let _ = composite_nx_ui_bitmap(
+        &mut pixels,
+        WIDTH,
+        HEIGHT,
+        ui_archive,
+        "Basic.img/VScr5/enabled/thumb0",
+        152,
+        111,
+    );
     if let Some(slot) = hovered_slot {
         if let Some(item) = inventory
             .items
@@ -429,89 +475,102 @@ fn render_inventory_panel(
         let meso_text = formatted_meso
             .strip_suffix(" mesos")
             .unwrap_or(&formatted_meso);
-        let meso_width = dialogue_text_width(font, meso_text, 8.0);
+        // The legacy client uses its A11M face for the meso label.
+        let meso_width = dialogue_text_width(font, meso_text, 11.0);
         draw_dialogue_text(
             font,
             &mut pixels,
             WIDTH,
             HEIGHT,
             meso_text,
-            (137.0 - meso_width).round() as i32,
+            (132.0 - meso_width).round() as i32,
             269,
-            8.0,
-            112,
+            11.0,
+            104,
             12,
             [62, 58, 50],
         );
-        let _ = composite_nx_ui_bitmap(
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            ui_archive,
-            "UIWindow.img/Item/BtGather/normal/0",
-            148,
-            276,
-        );
-        let _ = composite_nx_ui_bitmap(
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            ui_archive,
-            "UIWindow.img/Item/BtSort/normal/0",
-            166,
-            276,
-        );
-        if pending_scroll_slot.is_some() {
-            draw_dialogue_text(
-                font,
-                &mut pixels,
-                WIDTH,
-                HEIGHT,
-                "Select gear to scroll · Esc cancels",
-                10,
-                257,
-                7.0,
-                WIDTH - 20,
-                11,
-                [136, 83, 39],
-            );
-        }
     }
-    draw_dialogue_text(
-        font,
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        "PET",
-        111,
-        270,
-        8.0,
-        22,
-        12,
-        [58, 54, 46],
-    );
-    let _ = composite_nx_ui_bitmap(
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        ui_archive,
-        "UIWindow.img/Item/BtGather/normal/0",
-        148,
-        276,
-    );
-    let _ = composite_nx_ui_bitmap(
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        ui_archive,
-        "UIWindow.img/Item/BtSort/normal/0",
-        166,
-        276,
-    );
+    if pending_scroll_slot.is_some() {
+        draw_dialogue_text(
+            font,
+            &mut pixels,
+            WIDTH,
+            HEIGHT,
+            "Select gear to scroll · Esc cancels",
+            10,
+            257,
+            7.0,
+            WIDTH - 20,
+            11,
+            [136, 83, 39],
+        );
+    }
     pixels
 }
 
-fn render_inventory_tooltip(
+fn composite_inventory_tab_shadow(
+    pixels: &mut [u8],
+    canvas_width: usize,
+    canvas_height: usize,
+    archive: &NxArchive,
+    path: &str,
+    anchor_x: i32,
+    anchor_y: i32,
+) {
+    let Ok(Some(node)) = resolve_ui_path(&archive.root(), path) else {
+        return;
+    };
+    let Ok(Some(bitmap)) = node.bitmap() else {
+        return;
+    };
+    let Ok(source) = bitmap.decode_bgra_shared() else {
+        return;
+    };
+    let origin = node
+        .child("origin")
+        .ok()
+        .flatten()
+        .and_then(|origin| origin.value().ok())
+        .and_then(|value| match value {
+            NodeValue::Vector { x, y } => Some((x, y)),
+            _ => None,
+        })
+        .unwrap_or((0, 0));
+    let width = usize::from(bitmap.width());
+    let height = usize::from(bitmap.height());
+    for (offset_x, offset_y) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
+        let left = anchor_x + offset_x - origin.0;
+        let top = anchor_y + offset_y - origin.1;
+        for source_y in 0..height {
+            let destination_y = top + source_y as i32;
+            if !(0..canvas_height as i32).contains(&destination_y) {
+                continue;
+            }
+            for source_x in 0..width {
+                let destination_x = left + source_x as i32;
+                if !(0..canvas_width as i32).contains(&destination_x) {
+                    continue;
+                }
+                let source_index = (source_y * width + source_x) * 4;
+                let destination_index = (destination_y as usize * canvas_width
+                    + destination_x as usize)
+                    * 4;
+                let alpha = u32::from(source[source_index + 3]) * 3 / 5;
+                let inverse = 255 - alpha;
+                for channel in 0..3 {
+                    let background = u32::from(pixels[destination_index + channel]);
+                    pixels[destination_index + channel] =
+                        (([42, 34, 28][channel] * alpha + background * inverse) / 255) as u8;
+                }
+                let background_alpha = u32::from(pixels[destination_index + 3]);
+                pixels[destination_index + 3] = (alpha + background_alpha * inverse / 255) as u8;
+            }
+        }
+    }
+}
+
+pub(super) fn render_inventory_tooltip(
     font: &fontdue::Font,
     item: &openstory_protocol::InventoryItem,
     ui_archive: &NxArchive,
@@ -524,29 +583,6 @@ fn render_inventory_tooltip(
     const WIDTH: usize = INVENTORY_TOOLTIP_WIDTH as usize;
     const HEIGHT: usize = INVENTORY_TOOLTIP_HEIGHT as usize;
     let mut pixels = vec![0_u8; WIDTH * HEIGHT * 4];
-    fill_dialogue_rect(&mut pixels, WIDTH, HEIGHT, 0, 0, WIDTH, HEIGHT, [31, 29, 29, 248]);
-    fill_dialogue_rect(&mut pixels, WIDTH, HEIGHT, 0, 0, WIDTH, 2, [190, 160, 106, 255]);
-    fill_dialogue_rect(
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        0,
-        HEIGHT - 2,
-        WIDTH,
-        2,
-        [190, 160, 106, 255],
-    );
-    fill_dialogue_rect(&mut pixels, WIDTH, HEIGHT, 0, 0, 2, HEIGHT, [190, 160, 106, 255]);
-    fill_dialogue_rect(
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        WIDTH - 2,
-        0,
-        2,
-        HEIGHT,
-        [190, 160, 106, 255],
-    );
     let _ = composite_nx_ui_bitmap(
         &mut pixels,
         WIDTH,
@@ -1016,10 +1052,13 @@ fn render_equipment_inventory_panel(
     const HEIGHT: usize = EQUIPMENT_INVENTORY_PANEL_HEIGHT as usize;
     let mut pixels = vec![0_u8; WIDTH * HEIGHT * 4];
 
-    for layer in ["backgrnd", "backgrnd2", "backgrnd3"] {
-        let path = format!("UIWindow2.img/Equip/character/{layer}");
-        let _ = composite_nx_ui_bitmap(&mut pixels, WIDTH, HEIGHT, ui_archive, &path, 0, 0);
-    }
+    let _ = composite_nx_ui_layers(
+        &mut pixels,
+        WIDTH,
+        HEIGHT,
+        ui_archive,
+        &[("UIWindow.img/Equip/backgrnd", 0, 0)],
+    );
     let _ = composite_nx_ui_bitmap(
         &mut pixels,
         WIDTH,
