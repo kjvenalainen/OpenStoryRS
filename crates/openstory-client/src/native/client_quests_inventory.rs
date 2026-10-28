@@ -339,9 +339,9 @@ impl ClientApp {
             self.show_skill_book = false;
             return true;
         }
-        if (49.0..87.0).contains(&local_y) {
-            let tab = ((local_x - 18.0) / 67.0).floor() as i32;
-            if (0..5).contains(&tab) && local_x >= 18.0 {
+        if (24.0..44.0).contains(&local_y) {
+            let tab = ((local_x - 5.0) / 32.0).floor() as i32;
+            if (0..5).contains(&tab) && local_x >= 5.0 {
                 let tab = tab as u8;
                 if self.active_character.as_ref().is_some_and(|character| {
                     skill_subjob_for_tab(character.stats.job, tab).is_some()
@@ -354,8 +354,12 @@ impl ClientApp {
             }
             return true;
         }
-        if (192.0..696.0).contains(&local_y) {
-            let row = ((local_y - 192.0) / 84.0).floor() as usize;
+        if local_y >= SKILL_BOOK_PANEL_HEIGHT as f32 - 29.0 && (122.0..170.0).contains(&local_x) {
+            self.open_skill_macro_editor();
+            return true;
+        }
+        if (89.0..245.0).contains(&local_y) {
+            let row = ((local_y - 89.0) / 39.0).floor() as usize;
             let Some(entry) = self
                 .skill_book_entries
                 .get(self.skill_book_scroll_row.saturating_add(row))
@@ -363,9 +367,9 @@ impl ClientApp {
             else {
                 return true;
             };
-            if local_x >= SKILL_BOOK_PANEL_WIDTH as f32 - 67.0 {
+            if local_x >= SKILL_BOOK_PANEL_WIDTH as f32 - 25.0 {
                 self.spend_skill_point(&entry);
-            } else if (270.0..SKILL_BOOK_PANEL_WIDTH as f32 - 68.0).contains(&local_x) {
+            } else if (8.0..SKILL_BOOK_PANEL_WIDTH as f32 - 25.0).contains(&local_x) {
                 self.use_skill(&entry);
             }
             return true;

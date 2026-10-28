@@ -41,6 +41,7 @@ fn cash_product_matches_category(item_id: i32, category: usize) -> bool {
     }
 }
 
+#[allow(dead_code)] // Kept by the legacy two-pane renderer below for older snapshots.
 fn storage_tabs() -> [openstory_protocol::InventoryType; 5] {
     [
         openstory_protocol::InventoryType::Equip,
@@ -51,6 +52,7 @@ fn storage_tabs() -> [openstory_protocol::InventoryType; 5] {
     ]
 }
 
+#[allow(dead_code)] // Retained as a layout fallback for old storage packet captures.
 fn render_storage_panel(
     font: &fontdue::Font,
     storage: &openstory_protocol::StorageSnapshot,
@@ -455,4 +457,289 @@ fn render_storage_panel(
         },
     );
     pixels
+}
+
+fn render_storage_reference_panel(
+    font: &fontdue::Font,
+    storage: &openstory_protocol::StorageSnapshot,
+    active_tab: openstory_protocol::InventoryType,
+    storage_scroll: usize,
+    meso_input: &str,
+    meso_focused: bool,
+    notice: Option<&str>,
+    ui_archive: &NxArchive,
+    npc_archive: &NxArchive,
+    item_archive: &NxArchive,
+    character_archive: &NxArchive,
+    icon_cache: &mut HashMap<i32, Option<(u32, u32, Arc<[u8]>)>>,
+) -> Vec<u8> {
+    const WIDTH: usize = 206;
+    const HEIGHT: usize = 355;
+    const CELL: usize = 36;
+    const GRID_X: usize = 5;
+    const GRID_Y: usize = 112;
+    const COLUMNS: usize = 5;
+    const VISIBLE: usize = 30;
+    let mut pixels = vec![0_u8; WIDTH * HEIGHT * 4];
+    let has_nx_frame = composite_ui_bitmap(
+        &mut pixels,
+        WIDTH,
+        HEIGHT,
+        ui_archive,
+        "UIWindow.img/StoreBank/backgrnd",
+        0,
+        0,
+    )
+    .is_ok();
+    if !has_nx_frame {
+        fill_dialogue_rect(&mut pixels, WIDTH, HEIGHT, 0, 0, WIDTH, HEIGHT, [236, 238, 238, 255]);
+        fill_dialogue_rect(&mut pixels, WIDTH, HEIGHT, 0, 0, WIDTH, 2, [107, 139, 177, 255]);
+        fill_dialogue_rect(&mut pixels, WIDTH, HEIGHT, 0, 0, 2, HEIGHT, [107, 139, 177, 255]);
+        fill_dialogue_rect(&mut pixels, WIDTH, HEIGHT, WIDTH - 2, 0, 2, HEIGHT, [74, 104, 141, 255]);
+        fill_dialogue_rect(&mut pixels, WIDTH, HEIGHT, 0, HEIGHT - 2, WIDTH, 2, [74, 104, 141, 255]);
+    }
+
+    // The banker portrait and three right-side actions occupy the same header
+    // band as the v83 StoreBank window.
+    if !draw_storage_keeper(
+        &mut pixels,
+        WIDTH,
+        HEIGHT,
+        npc_archive,
+        storage.npc_id,
+        39,
+        70,
+    ) {
+        draw_storage_keeper_placeholder(&mut pixels, WIDTH, HEIGHT, 16, 15);
+    }
+    for (y, label, face) in [
+        (7, "EXIT", [86, 190, 190, 255]),
+        (29, "TAKE OUT", [80, 153, 225, 255]),
+        (51, "ORGANIZE ITEM", [194, 167, 130, 255]),
+    ] {
+        fill_dialogue_rect(&mut pixels, WIDTH, HEIGHT, 132, y, 67, 19, [100, 143, 193, 255]);
+        fill_dialogue_rect(&mut pixels, WIDTH, HEIGHT, 133, y + 1, 65, 17, face);
+        draw_dialogue_text(
+            font,
+            &mut pixels,
+            WIDTH,
+            HEIGHT,
+            label,
+            135,
+            y as i32 + 4,
+            7.0,
+            63,
+            12,
+            [77, 67, 51],
+        );
+    }
+
+    // Keep the reference's compact All tab and pale, tightly packed item grid.
+    fill_dialogue_rect(&mut pixels, WIDTH, HEIGHT, 4, 91, 34, 19, [99, 67, 183, 255]);
+    draw_dialogue_text(font, &mut pixels, WIDTH, HEIGHT, "All", 11, 94, 11.0, 24, 14, [255, 255, 255]);
+    let stored_items = storage
+        .items
+        .iter()
+        .filter(|item| item.inventory_type == active_tab)
+        .collect::<Vec<_>>();
+    for slot in 0..VISIBLE {
+        let col = slot % COLUMNS;
+        let row = slot / COLUMNS;
+        let x = GRID_X + col * CELL;
+        let y = GRID_Y + row * CELL;
+        fill_dialogue_rect(&mut pixels, WIDTH, HEIGHT, x, y, 34, 34, [226, 230, 230, 255]);
+        fill_dialogue_rect(&mut pixels, WIDTH, HEIGHT, x, y, 34, 1, [194, 205, 211, 255]);
+        fill_dialogue_rect(&mut pixels, WIDTH, HEIGHT, x, y, 1, 34, [194, 205, 211, 255]);
+        let Some(item) = stored_items.get(storage_scroll + slot).copied() else {
+            continue;
+        };
+        if let Some((icon_width, icon_height, icon_pixels)) =
+            inventory_item_icon(item.item_id, item_archive, character_archive, icon_cache)
+        {
+            composite_inventory_icon(
+                &mut pixels,
+                WIDTH,
+                HEIGHT,
+                &icon_pixels,
+                icon_width as usize,
+                icon_height as usize,
+                x + 1,
+                y + 1,
+                32,
+            );
+        }
+        if item.count > 1 {
+            draw_dialogue_text(
+                font,
+                &mut pixels,
+                WIDTH,
+                HEIGHT,
+                &item.count.to_string(),
+                x as i32 + 20,
+                y as i32 + 23,
+                9.0,
+                13,
+                11,
+                [255, 255, 255],
+            );
+        }
+    }
+
+    fill_dialogue_rect(&mut pixels, WIDTH, HEIGHT, 5, 332, 195, 1, [163, 177, 185, 255]);
+    fill_dialogue_rect(
+        &mut pixels,
+        WIDTH,
+        HEIGHT,
+        8,
+        337,
+        94,
+        15,
+        if meso_focused { [246, 247, 238, 255] } else { [231, 234, 231, 255] },
+    );
+    draw_dialogue_text(
+        font,
+        &mut pixels,
+        WIDTH,
+        HEIGHT,
+        &format!("{} mesos", storage.meso),
+        10,
+        338,
+        10.0,
+        84,
+        13,
+        [79, 77, 65],
+    );
+    draw_dialogue_text(
+        font,
+        &mut pixels,
+        WIDTH,
+        HEIGHT,
+        meso_input,
+        106,
+        338,
+        9.0,
+        43,
+        13,
+        [67, 76, 89],
+    );
+    for (x, label, face) in [
+        (151, "IN", [82, 176, 92, 255]),
+        (176, "OUT", [86, 156, 207, 255]),
+    ] {
+        fill_dialogue_rect(&mut pixels, WIDTH, HEIGHT, x, 337, 23, 15, face);
+        draw_dialogue_text(
+            font,
+            &mut pixels,
+            WIDTH,
+            HEIGHT,
+            label,
+            x as i32 + 5,
+            338,
+            8.0,
+            18,
+            11,
+            [255, 255, 255],
+        );
+    }
+    if let Some(notice) = notice {
+        draw_dialogue_text(
+            font,
+            &mut pixels,
+            WIDTH,
+            HEIGHT,
+            notice,
+            7,
+            354 - 12,
+            8.0,
+            WIDTH - 14,
+            11,
+            [161, 70, 66],
+        );
+    }
+    pixels
+}
+
+fn draw_storage_keeper(
+    pixels: &mut [u8],
+    canvas_width: usize,
+    canvas_height: usize,
+    archive: &NxArchive,
+    npc_id: i32,
+    anchor_x: i32,
+    anchor_y: i32,
+) -> bool {
+    let path = format!("{:07}.img/stand/0", npc_id.max(0));
+    let Some(node) = archive.root().resolve(&path).ok().flatten() else {
+        return false;
+    };
+    let Ok(Some(bitmap)) = node.bitmap() else {
+        return false;
+    };
+    let Ok(source) = bitmap.decode_bgra_shared() else {
+        return false;
+    };
+    let origin = node
+        .child("origin")
+        .ok()
+        .flatten()
+        .and_then(|origin| origin.value().ok())
+        .and_then(|value| match value {
+            openstory_assets::NodeValue::Vector { x, y } => Some((x, y)),
+            _ => None,
+        })
+        .unwrap_or((0, 0));
+    let source_width = usize::from(bitmap.width());
+    let source_height = usize::from(bitmap.height());
+    let scale = (46.0 / source_width as f32)
+        .min(58.0 / source_height as f32)
+        .min(1.0);
+    let width = (source_width as f32 * scale).round().max(1.0) as usize;
+    let height = (source_height as f32 * scale).round().max(1.0) as usize;
+    let left = anchor_x - (origin.0 as f32 * scale).round() as i32;
+    let top = anchor_y - (origin.1 as f32 * scale).round() as i32;
+    for y in 0..height {
+        let dy = top + y as i32;
+        if !(0..canvas_height as i32).contains(&dy) {
+            continue;
+        }
+        for x in 0..width {
+            let dx = left + x as i32;
+            if !(0..canvas_width as i32).contains(&dx) {
+                continue;
+            }
+            let sx = (x as f32 / scale).floor() as usize;
+            let sy = (y as f32 / scale).floor() as usize;
+            let source_index = (sy * source_width + sx) * 4;
+            let destination_index = (dy as usize * canvas_width + dx as usize) * 4;
+            let alpha = u32::from(source[source_index + 3]);
+            let inverse = 255 - alpha;
+            for channel in 0..3 {
+                let foreground = u32::from(source[source_index + channel]);
+                let background = u32::from(pixels[destination_index + channel]);
+                pixels[destination_index + channel] =
+                    ((foreground * alpha + background * inverse) / 255) as u8;
+            }
+            let background_alpha = u32::from(pixels[destination_index + 3]);
+            pixels[destination_index + 3] =
+                (alpha + background_alpha * inverse / 255).min(255) as u8;
+        }
+    }
+    true
+}
+
+fn draw_storage_keeper_placeholder(pixels: &mut [u8], width: usize, height: usize, x: usize, y: usize) {
+    let put = |pixels: &mut [u8], px: usize, py: usize, w: usize, h: usize, color: [u8; 4]| {
+        fill_dialogue_rect(pixels, width, height, px, py, w, h, color);
+    };
+    put(pixels, x + 7, y, 22, 8, [27, 30, 38, 255]);
+    put(pixels, x + 4, y + 4, 27, 9, [53, 56, 61, 255]);
+    put(pixels, x + 7, y + 11, 21, 20, [190, 139, 92, 255]);
+    put(pixels, x + 9, y + 16, 4, 4, [35, 35, 36, 255]);
+    put(pixels, x + 22, y + 16, 4, 4, [35, 35, 36, 255]);
+    put(pixels, x + 12, y + 24, 13, 4, [35, 27, 25, 255]);
+    put(pixels, x + 4, y + 31, 27, 18, [59, 71, 71, 255]);
+    put(pixels, x, y + 35, 6, 5, [190, 139, 92, 255]);
+    put(pixels, x + 30, y + 35, 6, 5, [190, 139, 92, 255]);
+    put(pixels, x + 8, y + 47, 7, 6, [46, 40, 38, 255]);
+    put(pixels, x + 21, y + 47, 7, 6, [46, 40, 38, 255]);
 }

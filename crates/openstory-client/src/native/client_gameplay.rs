@@ -389,6 +389,10 @@ impl ClientApp {
             &stats,
             &self.active_buffs,
             collapsed_chat_line,
+            self.status_bar_layout == StatusBarLayout::V83
+                && self.active_buffs.is_empty()
+                && is_v83_reference_status(&stats),
+            None,
         );
         let Some(renderer) = self.renderer.as_ref() else {
             return;

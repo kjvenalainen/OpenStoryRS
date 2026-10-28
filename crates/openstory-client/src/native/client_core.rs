@@ -1818,8 +1818,11 @@ impl ClientApp {
             self.show_status_menu = false;
         }
 
-        let small_x = 838.0;
-        let small_y = STATUS_BAR_TOP + 5.0;
+        let small_x = match self.status_bar_layout {
+            StatusBarLayout::Modern => 838.0,
+            StatusBarLayout::V83 => V83_STATUS_BAR_WIDTH - 2.0 - (6.0 * 28.0 + 5.0 * 2.0),
+        };
+        let small_y = STATUS_BAR_TOP + 6.0;
         if (small_y..small_y + 20.0).contains(&cursor.y) {
             let icon = (0..6).find(|index| {
                 let left = small_x + *index as f32 * 30.0;
@@ -1856,28 +1859,53 @@ impl ClientApp {
             return true;
         }
 
-        let big_x = 794.0;
+        let v83 = self.status_bar_layout == StatusBarLayout::V83;
+        let big_x = if v83 {
+            V83_STATUS_BAR_BIG_BUTTON_X
+        } else {
+            794.0
+        };
         let big_y = STATUS_BAR_TOP + 35.0;
+        let big_button_width = if v83 {
+            V83_STATUS_BAR_BIG_BUTTON_WIDTH
+        } else {
+            54.0
+        };
+        let big_button_step = if v83 {
+            V83_STATUS_BAR_BIG_BUTTON_STEP
+        } else {
+            56.0
+        };
+        let big_button_count = if v83 { 3 } else { 4 };
         if (big_y..big_y + 34.0).contains(&cursor.y) {
-            let button = (0..4).find(|index| {
-                let left = big_x + *index as f32 * 56.0;
-                (left..left + 54.0).contains(&cursor.x)
+            let button = (0..big_button_count).find(|index| {
+                let left = big_x + *index as f32 * big_button_step;
+                (left..left + big_button_width).contains(&cursor.x)
             });
             match button {
-                Some(0..=3) => {
+                Some(_) => {
                     self.audio
                         .play_ui_sound(&self.sound_archive, "UI.img/BtMouseClick");
-                    match button {
-                        Some(0) => self.toggle_status_menu(),
-                        Some(1) => self.open_cash_shop(),
-                        Some(2) => self.open_settings(),
-                        Some(3) => {
-                            self.chat_target = ChatTarget::Public;
-                            self.chat_input = "/trade ".to_owned();
-                            self.chat_open = true;
-                            self.refresh_chat_texture();
+                    if v83 {
+                        match button {
+                            Some(0) => self.open_cash_shop(),
+                            Some(1) => self.toggle_status_menu(),
+                            Some(2) => self.toggle_key_config(),
+                            _ => {}
                         }
-                        _ => {}
+                    } else {
+                        match button {
+                            Some(0) => self.toggle_status_menu(),
+                            Some(1) => self.open_cash_shop(),
+                            Some(2) => self.open_settings(),
+                            Some(3) => {
+                                self.chat_target = ChatTarget::Public;
+                                self.chat_input = "/trade ".to_owned();
+                                self.chat_open = true;
+                                self.refresh_chat_texture();
+                            }
+                            _ => {}
+                        }
                     }
                 }
                 _ => return false,

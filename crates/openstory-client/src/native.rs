@@ -12,6 +12,7 @@ mod party_search;
 mod settings;
 mod skill_macros;
 mod ui_clock;
+mod ui_foundation;
 mod ui_preview;
 mod weather;
 mod world_map;

@@ -1009,9 +1009,11 @@ impl ClientApp {
             });
         }
         self.skill_book_entries = entries.into_values().collect();
-        self.skill_book_scroll_row = self
-            .skill_book_scroll_row
-            .min(self.skill_book_entries.len().saturating_sub(6));
+        self.skill_book_scroll_row = self.skill_book_scroll_row.min(
+            self.skill_book_entries
+                .len()
+                .saturating_sub(SKILL_BOOK_VISIBLE_ROWS),
+        );
     }
 
     pub(super) fn refresh_skill_book_texture(&mut self) {

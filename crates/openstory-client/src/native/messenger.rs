@@ -10,8 +10,8 @@ use std::collections::VecDeque;
 use fontdue::Font;
 use openstory_assets::{NodeValue, NxArchive, NxNode};
 
-pub const LOGICAL_WIDTH: f32 = 1024.0;
-pub const LOGICAL_HEIGHT: f32 = 768.0;
+pub const LOGICAL_WIDTH: f32 = super::ui_foundation::LOGICAL_WIDTH;
+pub const LOGICAL_HEIGHT: f32 = super::ui_foundation::LOGICAL_HEIGHT;
 pub const DEFAULT_X: f32 = 200.0;
 pub const DEFAULT_Y: f32 = 20.0;
 /// Four indices are retained for bounded protocol state; v83 displays slots 0..2.

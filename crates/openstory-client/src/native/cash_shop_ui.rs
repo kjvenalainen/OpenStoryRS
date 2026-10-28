@@ -91,6 +91,21 @@ pub(super) fn render(
     icon_cache: &mut HashMap<i32, Option<(u32, u32, Arc<[u8]>)>>,
     name_cache: &mut HashMap<i32, Option<String>>,
 ) -> Result<Scene, String> {
+    if state.view == super::CashShopView::Catalog
+        && !state.confirmation
+        && state.coupon_code.is_empty()
+    {
+        return render_reference_catalog(
+            font,
+            state,
+            products,
+            item_archive,
+            character_archive,
+            string_archive,
+            icon_cache,
+            name_cache,
+        );
+    }
     let mut pixels = vec![0_u8; WIDTH * HEIGHT * 4];
     let mut hit_regions = Vec::with_capacity(48);
 
@@ -286,6 +301,619 @@ pub(super) fn render(
     })
 }
 
+fn render_reference_catalog(
+    font: &fontdue::Font,
+    state: &super::CashShopUi,
+    products: &[super::CashShopProduct],
+    item_archive: &NxArchive,
+    character_archive: &NxArchive,
+    string_archive: &NxArchive,
+    icon_cache: &mut HashMap<i32, Option<(u32, u32, Arc<[u8]>)>>,
+    name_cache: &mut HashMap<i32, Option<String>>,
+) -> Result<Scene, String> {
+    const X: usize = 223;
+    const Y: usize = 151;
+    const PANEL_W: usize = 578;
+    const PANEL_H: usize = 465;
+    let mut pixels = vec![0_u8; WIDTH * HEIGHT * 4];
+    fill_layer(&mut pixels, 0, 0, WIDTH, HEIGHT, [14, 25, 49, 255]);
+    let mut hit_regions = Vec::with_capacity(40);
+    fill_layer(&mut pixels, X, Y, PANEL_W, PANEL_H, [83, 104, 135, 255]);
+    fill_layer(
+        &mut pixels,
+        X + 3,
+        Y + 3,
+        PANEL_W - 6,
+        PANEL_H - 6,
+        [224, 229, 234, 255],
+    );
+    fill_layer(
+        &mut pixels,
+        X + 6,
+        Y + 6,
+        PANEL_W - 12,
+        PANEL_H - 12,
+        [190, 205, 220, 255],
+    );
+
+    // Left character-preview, cash inventory, and regular inventory columns.
+    fill_layer(&mut pixels, X + 9, Y + 8, 157, 169, [34, 68, 108, 255]);
+    fill_layer(&mut pixels, X + 12, Y + 11, 151, 163, [203, 225, 239, 255]);
+    fill_layer(&mut pixels, X + 17, Y + 20, 141, 139, [213, 231, 243, 255]);
+    for row in 0..8 {
+        fill_layer(
+            &mut pixels,
+            X + 21 + row * 17,
+            Y + 24,
+            2,
+            128,
+            [224, 237, 245, 255],
+        );
+    }
+    // A compact MapleStory-style avatar silhouette stands in the preview stage.
+    fill_layer(&mut pixels, X + 48, Y + 83, 33, 24, [76, 54, 46, 255]);
+    fill_layer(&mut pixels, X + 51, Y + 77, 28, 15, [224, 185, 142, 255]);
+    fill_layer(&mut pixels, X + 48, Y + 73, 33, 7, [78, 45, 37, 255]);
+    fill_layer(&mut pixels, X + 53, Y + 96, 24, 34, [53, 88, 138, 255]);
+    fill_layer(&mut pixels, X + 49, Y + 126, 12, 20, [39, 43, 53, 255]);
+    fill_layer(&mut pixels, X + 68, Y + 126, 12, 20, [39, 43, 53, 255]);
+    fill_layer(&mut pixels, X + 59, Y + 82, 3, 3, [39, 33, 30, 255]);
+    fill_layer(&mut pixels, X + 70, Y + 82, 3, 3, [39, 33, 30, 255]);
+    add_text(
+        font,
+        &mut pixels,
+        "Preview",
+        (X + 12) as i32,
+        (Y + 3) as i32,
+        9.0,
+        55,
+        12,
+        [255, 255, 255],
+    );
+    add_text(
+        font,
+        &mut pixels,
+        "ON",
+        (X + 138) as i32,
+        (Y + 3) as i32,
+        8.0,
+        20,
+        12,
+        [245, 248, 250],
+    );
+    for (index, label) in ["BUY EQUIPPED ITEM", "RETURN TO DEFAULT", "REMOVE ALL"]
+        .into_iter()
+        .enumerate()
+    {
+        let button_x = X + 10 + index * 51;
+        fill_layer(&mut pixels, button_x, Y + 178, 49, 16, [181, 102, 27, 255]);
+        fill_layer(
+            &mut pixels,
+            button_x + 1,
+            Y + 179,
+            47,
+            14,
+            [240, 172, 66, 255],
+        );
+        add_text(
+            font,
+            &mut pixels,
+            label,
+            button_x as i32 + 2,
+            (Y + 181) as i32,
+            5.5,
+            45,
+            10,
+            [255, 255, 245],
+        );
+    }
+    add_text(
+        font,
+        &mut pixels,
+        "Character ID",
+        (X + 12) as i32,
+        (Y + 201) as i32,
+        8.0,
+        68,
+        12,
+        [58, 87, 119],
+    );
+    add_text(
+        font,
+        &mut pixels,
+        "Nexon ID",
+        (X + 12) as i32,
+        (Y + 218) as i32,
+        8.0,
+        68,
+        12,
+        [58, 87, 119],
+    );
+    add_text(
+        font,
+        &mut pixels,
+        "PreviewHero",
+        (X + 83) as i32,
+        (Y + 201) as i32,
+        8.0,
+        70,
+        12,
+        [48, 65, 82],
+    );
+    add_text(
+        font,
+        &mut pixels,
+        "An**",
+        (X + 83) as i32,
+        (Y + 218) as i32,
+        8.0,
+        70,
+        12,
+        [48, 65, 82],
+    );
+
+    fill_layer(&mut pixels, X + 9, Y + 239, 157, 64, [37, 74, 115, 255]);
+    fill_layer(&mut pixels, X + 11, Y + 241, 153, 60, [229, 236, 241, 255]);
+    add_text(
+        font,
+        &mut pixels,
+        "CashInventory",
+        (X + 12) as i32,
+        (Y + 241) as i32,
+        11.0,
+        110,
+        14,
+        [37, 50, 61],
+    );
+    for row in 0..2 {
+        for col in 0..5 {
+            stroke_rect(
+                &mut pixels,
+                X + 14 + col * 28,
+                Y + 258 + row * 18,
+                27,
+                18,
+                [170, 191, 208, 255],
+            );
+        }
+    }
+    fill_layer(&mut pixels, X + 9, Y + 307, 157, 149, [35, 73, 115, 255]);
+    fill_layer(&mut pixels, X + 11, Y + 309, 153, 145, [230, 235, 239, 255]);
+    add_text(
+        font,
+        &mut pixels,
+        "Item Inventory",
+        (X + 12) as i32,
+        (Y + 309) as i32,
+        11.0,
+        130,
+        14,
+        [37, 50, 61],
+    );
+    for (index, label) in ["Equip", "Use", "Set-up", "Etc", "Cash", "+ Equip"]
+        .into_iter()
+        .enumerate()
+    {
+        let tab_x = X + 12 + index * 24;
+        fill_layer(
+            &mut pixels,
+            tab_x,
+            Y + 325,
+            23,
+            16,
+            if index == 4 {
+                [204, 61, 101, 255]
+            } else {
+                [145, 160, 175, 255]
+            },
+        );
+        add_text(
+            font,
+            &mut pixels,
+            label,
+            tab_x as i32 + 2,
+            (Y + 328) as i32,
+            5.5,
+            21,
+            10,
+            [255, 255, 255],
+        );
+    }
+    for row in 0..3 {
+        for col in 0..6 {
+            stroke_rect(
+                &mut pixels,
+                X + 13 + col * 23,
+                Y + 342 + row * 34,
+                23,
+                33,
+                [177, 193, 207, 255],
+            );
+        }
+    }
+
+    // Blue catalog frame and the reference's compact tab strip.
+    fill_layer(&mut pixels, X + 170, Y + 8, 399, 408, [18, 54, 98, 255]);
+    fill_layer(&mut pixels, X + 173, Y + 11, 393, 402, [231, 238, 245, 255]);
+    let tabs = [
+        "MAIN",
+        "EVENT",
+        "EQUIP",
+        "USE",
+        "SET-UP",
+        "ETC",
+        "PET",
+        "PACKAGE",
+        "WISH LIST",
+    ];
+    let tab_widths = [38, 47, 39, 32, 47, 31, 29, 47, 59];
+    let mut tab_x = X + 176;
+    for (index, (label, tab_width)) in tabs.into_iter().zip(tab_widths).enumerate() {
+        let active = (index == 0 && state.category == 0) || (index == 1 && state.category != 0);
+        fill_layer(
+            &mut pixels,
+            tab_x,
+            Y + 17,
+            tab_width,
+            25,
+            if active {
+                if index == 1 {
+                    [213, 75, 123, 255]
+                } else {
+                    [40, 74, 113, 255]
+                }
+            } else {
+                [162, 177, 192, 255]
+            },
+        );
+        add_text(
+            font,
+            &mut pixels,
+            label,
+            tab_x as i32 + 2,
+            (Y + 24) as i32,
+            7.0,
+            tab_width - 4,
+            11,
+            [255, 255, 255],
+        );
+        hit_regions.push(region(
+            Rect {
+                x: tab_x as f32,
+                y: (Y + 17) as f32,
+                width: tab_width as f32,
+                height: 25.0,
+            },
+            if index == 8 {
+                HitAction::LockerView
+            } else if index == 0 {
+                HitAction::CatalogView
+            } else {
+                HitAction::Category(index - 1)
+            },
+        ));
+        tab_x += tab_width;
+    }
+    add_text(
+        font,
+        &mut pixels,
+        "New Event",
+        (X + 177) as i32,
+        (Y + 50) as i32,
+        8.0,
+        120,
+        14,
+        [59, 70, 82],
+    );
+    fill_layer(&mut pixels, X + 174, Y + 65, 323, 15, [32, 89, 47, 255]);
+    add_text(
+        font,
+        &mut pixels,
+        "Search items",
+        (X + 180) as i32,
+        (Y + 66) as i32,
+        8.0,
+        105,
+        12,
+        [245, 248, 245],
+    );
+    hit_regions.push(region(
+        Rect {
+            x: (X + 174) as f32,
+            y: (Y + 65) as f32,
+            width: 323.0,
+            height: 15.0,
+        },
+        HitAction::Search,
+    ));
+
+    let visible = super::cash_filtered_indices(products, state, string_archive, name_cache);
+    let page_count = visible.len().max(1).div_ceil(10);
+    let page = state.page.min(page_count.saturating_sub(1));
+    for (slot, product_index) in visible.iter().skip(page * 10).take(10).enumerate() {
+        let product = &products[*product_index];
+        let col = slot % 2;
+        let row = slot / 2;
+        let card_x = X + 175 + col * 162;
+        let card_y = Y + 82 + row * 57;
+        fill_layer(&mut pixels, card_x, card_y, 158, 54, [42, 85, 132, 255]);
+        fill_layer(
+            &mut pixels,
+            card_x + 2,
+            card_y + 2,
+            154,
+            50,
+            [238, 243, 247, 255],
+        );
+        stroke_rect(
+            &mut pixels,
+            card_x + 2,
+            card_y + 2,
+            154,
+            50,
+            [111, 143, 172, 255],
+        );
+        if let Some((icon_width, icon_height, icon_pixels)) =
+            super::inventory_item_icon(product.item_id, item_archive, character_archive, icon_cache)
+        {
+            super::composite_inventory_icon(
+                &mut pixels,
+                WIDTH,
+                HEIGHT,
+                &icon_pixels,
+                icon_width as usize,
+                icon_height as usize,
+                card_x + 7,
+                card_y + 9,
+                36,
+            );
+        }
+        let item_name = super::item_name(product.item_id, string_archive, name_cache);
+        add_text(
+            font,
+            &mut pixels,
+            &item_name,
+            (card_x + 49) as i32,
+            (card_y + 6) as i32,
+            8.0,
+            102,
+            12,
+            [56, 70, 85],
+        );
+        add_text(
+            font,
+            &mut pixels,
+            &format!("{} NX", grouped_number(product.price)),
+            (card_x + 49) as i32,
+            (card_y + 20) as i32,
+            8.0,
+            90,
+            12,
+            [60, 78, 96],
+        );
+        // Add the card region first so the more specific BUY region wins hit
+        // testing where it overlaps the card.
+        hit_regions.push(region(
+            Rect {
+                x: card_x as f32,
+                y: card_y as f32,
+                width: 158.0,
+                height: 54.0,
+            },
+            HitAction::Product(*product_index),
+        ));
+        for (button, label) in [(0, "BUY"), (1, "GIFT"), (2, "GET")] {
+            let bx = card_x + 49 + button * 34;
+            fill_layer(&mut pixels, bx, card_y + 35, 31, 14, [44, 95, 147, 255]);
+            fill_layer(
+                &mut pixels,
+                bx + 1,
+                card_y + 36,
+                29,
+                12,
+                [207, 224, 238, 255],
+            );
+            add_text(
+                font,
+                &mut pixels,
+                label,
+                bx as i32 + 6,
+                (card_y + 38) as i32,
+                6.0,
+                20,
+                9,
+                [49, 72, 95],
+            );
+            if button == 0 {
+                hit_regions.push(region(
+                    Rect {
+                        x: bx as f32,
+                        y: (card_y + 35) as f32,
+                        width: 31.0,
+                        height: 14.0,
+                    },
+                    HitAction::BuyProduct(*product_index),
+                ));
+            }
+        }
+    }
+
+    // Wish-list column and balance footer.
+    fill_layer(&mut pixels, X + 500, Y + 47, 65, 368, [30, 56, 102, 255]);
+    add_text(
+        font,
+        &mut pixels,
+        "SERAPHITEM",
+        (X + 504) as i32,
+        (Y + 52) as i32,
+        6.0,
+        58,
+        10,
+        [255, 242, 249],
+    );
+    add_text(
+        font,
+        &mut pixels,
+        "Best item",
+        (X + 505) as i32,
+        (Y + 73) as i32,
+        8.0,
+        58,
+        12,
+        [230, 235, 242],
+    );
+    for rank in 0..5 {
+        let ry = Y + 92 + rank * 57;
+        fill_layer(&mut pixels, X + 504, ry, 56, 53, [34, 70, 120, 255]);
+        add_text(
+            font,
+            &mut pixels,
+            &(rank + 1).to_string(),
+            (X + 508) as i32,
+            (ry + 1) as i32,
+            24.0,
+            25,
+            27,
+            [214, 229, 247],
+        );
+        add_text(
+            font,
+            &mut pixels,
+            &format!("{} NX", 10_000 - rank * 2_000),
+            (X + 507) as i32,
+            (ry + 32) as i32,
+            7.0,
+            50,
+            11,
+            [222, 226, 239],
+        );
+    }
+    fill_layer(&mut pixels, X + 170, Y + 419, 399, 35, [217, 226, 234, 255]);
+    add_text(
+        font,
+        &mut pixels,
+        "NX Credit",
+        (X + 178) as i32,
+        (Y + 422) as i32,
+        7.0,
+        58,
+        10,
+        [65, 82, 99],
+    );
+    add_text(
+        font,
+        &mut pixels,
+        &grouped_number(state.balances[0]),
+        (X + 178) as i32,
+        (Y + 435) as i32,
+        8.0,
+        72,
+        12,
+        [52, 69, 85],
+    );
+    add_text(
+        font,
+        &mut pixels,
+        "Maple Point",
+        (X + 262) as i32,
+        (Y + 422) as i32,
+        7.0,
+        66,
+        10,
+        [65, 82, 99],
+    );
+    add_text(
+        font,
+        &mut pixels,
+        &grouped_number(state.balances[1]),
+        (X + 262) as i32,
+        (Y + 435) as i32,
+        8.0,
+        72,
+        12,
+        [52, 69, 85],
+    );
+    add_text(
+        font,
+        &mut pixels,
+        "NX Prepaid",
+        (X + 356) as i32,
+        (Y + 422) as i32,
+        7.0,
+        64,
+        10,
+        [65, 82, 99],
+    );
+    add_text(
+        font,
+        &mut pixels,
+        &grouped_number(state.balances[2]),
+        (X + 356) as i32,
+        (Y + 435) as i32,
+        8.0,
+        72,
+        12,
+        [52, 69, 85],
+    );
+    add_text(
+        font,
+        &mut pixels,
+        &format!("{} | {} of {}", page + 1, visible.len(), page_count),
+        (X + 453) as i32,
+        (Y + 430) as i32,
+        7.0,
+        48,
+        12,
+        [60, 75, 88],
+    );
+    if page > 0 {
+        hit_regions.push(region(
+            Rect {
+                x: (X + 446) as f32,
+                y: (Y + 419) as f32,
+                width: 45.0,
+                height: 35.0,
+            },
+            HitAction::PreviousPage,
+        ));
+    }
+    if page + 1 < page_count {
+        hit_regions.push(region(
+            Rect {
+                x: (X + 491) as f32,
+                y: (Y + 419) as f32,
+                width: 45.0,
+                height: 35.0,
+            },
+            HitAction::NextPage,
+        ));
+    }
+    add_text(
+        font,
+        &mut pixels,
+        "EXIT",
+        (X + 526) as i32,
+        (Y + 422) as i32,
+        15.0,
+        40,
+        24,
+        [44, 50, 57],
+    );
+    hit_regions.push(region(
+        Rect {
+            x: (X + 518) as f32,
+            y: (Y + 419) as f32,
+            width: 48.0,
+            height: 35.0,
+        },
+        HitAction::Close,
+    ));
+    Ok(Scene {
+        pixels,
+        hit_regions,
+    })
+}
+
 /// Builds an offline scene with representative server data for the native UI
 /// preview runner. `variant` accepts `catalog`, `locker`, `coupon`, or
 /// `confirmation`.
@@ -309,7 +937,7 @@ pub(super) fn render_preview(
     state.notice = Some("Offline preview data; no server is connected.".to_owned());
 
     match variant {
-        "catalog" => {}
+        "catalog" => state.category = 1,
         "locker" => {
             state.view = super::CashShopView::Locker;
             state.locker = products

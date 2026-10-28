@@ -249,7 +249,7 @@ pub(super) fn keycap_position(key: u8) -> Option<(i32, i32)> {
         63..=66 => (223 + (i32::from(key) - 63) * 34, 28),
         67..=70 => (367 + (i32::from(key) - 67) * 34, 28),
         88 => (511, 28), // Scroll Lock
-        2 => (351, 65), // 0
+        2 => (351, 65),  // 0
         3..=11 => (45 + (i32::from(key) - 3) * 34, 65),
         12 => (385, 65),
         13 => (419, 65),
@@ -286,34 +286,34 @@ pub(super) fn keycap_position(key: u8) -> Option<(i32, i32)> {
 pub(super) fn unbound_action_cell(kind: u8, action: i32) -> Option<(i32, i32)> {
     let slot = match kind {
         4 => match action {
-            0 => (6, 0),   // Equipment
-            1 => (7, 0),   // Items
-            2 => (6, 1),   // Stats
-            3 => (7, 1),   // Skills
-            4 => (13, 1),  // Friends
-            5 => (14, 1),  // World map
-            6 => (0, 0),   // Chat
-            7 => (15, 1),  // Mini map
-            8 => (8, 1),   // Quest log
-            9 => (16, 1),  // Key bindings
-            10 => (0, 1),  // Say
-            11 => (2, 0),  // Whisper
-            12 => (1, 1),  // Party chat
-            13 => (2, 1),  // Friends chat
-            14 => (9, 0),  // Menu
-            15 => (10, 0), // Quick slots
-            16 => (1, 0),  // Toggle chat
-            17 => (10, 1), // Guild
-            18 => (0, 2),  // Guild chat
-            19 => (11, 1), // Party
-            21 => (8, 0),  // Character info
-            22 => (16, 0), // Monster book
-            23 => (2, 2),  // Cash shop
-            24 => (1, 2),  // Alliance chat
-            25 => (9, 1),  // Change channel
+            0 => (6, 0),       // Equipment
+            1 => (7, 0),       // Items
+            2 => (6, 1),       // Stats
+            3 => (7, 1),       // Skills
+            4 => (13, 1),      // Friends
+            5 => (14, 1),      // World map
+            6 => (0, 0),       // Chat
+            7 => (15, 1),      // Mini map
+            8 => (8, 1),       // Quest log
+            9 => (16, 1),      // Key bindings
+            10 => (0, 1),      // Say
+            11 => (2, 0),      // Whisper
+            12 => (1, 1),      // Party chat
+            13 => (2, 1),      // Friends chat
+            14 => (9, 0),      // Menu
+            15 => (10, 0),     // Quick slots
+            16 => (1, 0),      // Toggle chat
+            17 => (10, 1),     // Guild
+            18 => (0, 2),      // Guild chat
+            19 => (11, 1),     // Party
+            21 => (8, 0),      // Character info
+            22 => (16, 0),     // Monster book
+            23 => (2, 2),      // Cash shop
+            24 => (1, 2),      // Alliance chat
+            25 => (9, 1),      // Change channel
             26 | 42 => (5, 2), // Family shortcut
-            27 => (4, 0),  // Boss party
-            28 => (3, 2),  // Main menu / settings
+            27 => (4, 0),      // Boss party
+            28 => (3, 2),      // Main menu / settings
             _ => return None,
         },
         5 => match action {
@@ -526,12 +526,12 @@ fn render_skill_book_panel(
 ) -> Vec<u8> {
     const WIDTH: usize = SKILL_BOOK_PANEL_WIDTH as usize;
     const HEIGHT: usize = SKILL_BOOK_PANEL_HEIGHT as usize;
-    const ROW_HEIGHT: usize = 84;
-    const ROWS: usize = 6;
+    const ROW_HEIGHT: usize = 40;
+    const ROWS: usize = SKILL_BOOK_VISIBLE_ROWS;
     let mut pixels = vec![0_u8; WIDTH * HEIGHT * 4];
-    // Keep the NX window frame and title bar, but lay out the larger inventory
-    // contents with the original NX row, tab, skill, and button art.
-    let _ = composite_nx_ui_bitmap_scaled_to(
+    // Keep the frame at its authored pixel size; extend its right and bottom
+    // border to the 177x292 reference crop without scaling the artwork.
+    let _ = composite_nx_ui_bitmap(
         &mut pixels,
         WIDTH,
         HEIGHT,
@@ -539,28 +539,41 @@ fn render_skill_book_panel(
         "UIWindow.img/Skill/backgrnd",
         0,
         0,
-        WIDTH,
-        HEIGHT,
     );
-    let _ = composite_nx_ui_bitmap_scaled_to(
+    for y in 0..289 {
+        let source = (y * WIDTH + 174) * 4;
+        for x in 175..WIDTH {
+            let destination = (y * WIDTH + x) * 4;
+            pixels.copy_within(source..source + 4, destination);
+        }
+    }
+    for y in 289..HEIGHT {
+        let source = (288 * WIDTH) * 4;
+        let destination = y * WIDTH * 4;
+        pixels.copy_within(source..source + 175 * 4, destination);
+        for x in 175..WIDTH {
+            let edge = (y * WIDTH + 174) * 4;
+            let destination = (y * WIDTH + x) * 4;
+            pixels.copy_within(edge..edge + 4, destination);
+        }
+    }
+    let _ = composite_nx_ui_bitmap(
         &mut pixels,
         WIDTH,
         HEIGHT,
         ui_archive,
         "Basic.img/BtClose/normal/0",
-        WIDTH - 31,
-        13,
-        20,
-        20,
+        WIDTH as i32 - 19,
+        6,
     );
     fill_dialogue_rect(
         &mut pixels,
         WIDTH,
         HEIGHT,
-        18,
-        10,
-        WIDTH - 56,
-        34,
+        8,
+        4,
+        WIDTH - 32,
+        17,
         [255, 255, 255, 255],
     );
     draw_dialogue_text(
@@ -569,52 +582,52 @@ fn render_skill_book_panel(
         WIDTH,
         HEIGHT,
         "SKILL INVENTORY",
-        17,
-        9,
-        18.0,
-        WIDTH - 90,
-        28,
+        8,
+        6,
+        9.0,
+        WIDTH - 36,
+        12,
         [27, 30, 35],
     );
     fill_dialogue_rect(
         &mut pixels,
         WIDTH,
         HEIGHT,
-        6,
-        48,
-        WIDTH - 12,
-        HEIGHT - 99,
+        4,
+        46,
+        WIDTH - 8,
+        HEIGHT - 80,
         [248, 246, 243, 255],
     );
     fill_dialogue_rect(
         &mut pixels,
         WIDTH,
         HEIGHT,
-        14,
-        HEIGHT - 99,
-        WIDTH - 28,
-        89,
-        [208, 195, 171, 255],
+        5,
+        HEIGHT - 32,
+        WIDTH - 10,
+        28,
+        [225, 217, 201, 255],
     );
 
     for tab in 0..usize::from(visible_tabs.min(5)) {
-        let left = 8 + tab * 67;
+        let left = 5 + tab * 32;
         let active = tab == usize::from(selected_tab);
         fill_dialogue_rect(
             &mut pixels,
             WIDTH,
             HEIGHT,
             left,
-            45,
-            64,
-            38,
+            24,
+            29,
+            19,
             if active {
-                [133, 91, 218, 255]
+                [125, 75, 221, 255]
             } else {
-                [205, 211, 216, 255]
+                [216, 211, 205, 255]
             },
         );
-        let _ = composite_nx_ui_bitmap_scaled_to(
+        let _ = composite_nx_ui_bitmap(
             &mut pixels,
             WIDTH,
             HEIGHT,
@@ -623,42 +636,40 @@ fn render_skill_book_panel(
                 "UIWindow.img/Skill/Tab/{}/{tab}",
                 if active { "enabled" } else { "disabled" }
             ),
-            left + 26,
-            58,
-            12,
-            16,
+            (left + 8) as i32,
+            27,
         );
     }
     fill_dialogue_rect(
         &mut pixels,
         WIDTH,
         HEIGHT,
-        14,
-        85,
-        WIDTH - 28,
-        3,
-        [52, 68, 221, 255],
+        4,
+        44,
+        WIDTH - 8,
+        2,
+        [77, 0, 168, 255],
     );
 
     fill_dialogue_rect(
         &mut pixels,
         WIDTH,
         HEIGHT,
-        14,
-        108,
-        WIDTH - 28,
-        70,
+        6,
+        57,
+        WIDTH - 12,
+        33,
         [47, 116, 179, 255],
     );
     fill_dialogue_rect(
         &mut pixels,
         WIDTH,
         HEIGHT,
-        18,
-        113,
-        WIDTH - 36,
+        9,
         60,
-        [198, 221, 234, 255],
+        WIDTH - 18,
+        27,
+        [234, 221, 198, 255],
     );
     if let Some((icon_width, icon_height, icon)) = book_icon {
         composite_inventory_icon(
@@ -668,34 +679,11 @@ fn render_skill_book_panel(
             &icon,
             icon_width as usize,
             icon_height as usize,
-            18,
-            112,
-            58,
+            12,
+            59,
+            27,
         );
     }
-    fill_dialogue_rect(
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        91,
-        127,
-        WIDTH - 104,
-        35,
-        [70, 57, 50, 255],
-    );
-    draw_dialogue_text(
-        font,
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        book_title,
-        107,
-        127,
-        20.0,
-        WIDTH - 128,
-        31,
-        [246, 246, 246],
-    );
     let end = entries.len().min(scroll_row.saturating_add(ROWS));
     for (row, skill) in entries
         .get(scroll_row..end)
@@ -703,21 +691,30 @@ fn render_skill_book_panel(
         .iter()
         .enumerate()
     {
-        let y = 192 + row * ROW_HEIGHT;
+        let y = 100 + row * ROW_HEIGHT;
         let mastered = skill.level >= skill.max_level;
-        let _ = composite_nx_ui_bitmap_scaled_to(
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            ui_archive,
-            "UIWindow.img/Skill/skill1",
-            17,
-            y,
-            WIDTH - 34,
-            if row + 1 == ROWS { 84 } else { 78 },
-        );
+        let row_art = if skill.max_level == 0 {
+            "UIWindow.img/Skill/skill0"
+        } else {
+            "UIWindow.img/Skill/skill1"
+        };
+        let _ =
+            composite_nx_ui_bitmap(&mut pixels, WIDTH, HEIGHT, ui_archive, row_art, 6, y as i32);
         let icon_path = format!("{:03}.img/skill/{}/icon", skill.id / 10_000, skill.id);
         if let Some((icon_width, icon_height, icon)) = decode_nx_icon(skill_archive, &icon_path) {
+            let icon = if skill.max_level == 0 {
+                let mut disabled = icon.to_vec();
+                for pixel in disabled.chunks_exact_mut(4) {
+                    let gray = ((u16::from(pixel[0]) * 29
+                        + u16::from(pixel[1]) * 150
+                        + u16::from(pixel[2]) * 77)
+                        / 256) as u8;
+                    pixel[..3].fill(gray);
+                }
+                Arc::<[u8]>::from(disabled)
+            } else {
+                icon
+            };
             composite_inventory_icon(
                 &mut pixels,
                 WIDTH,
@@ -725,9 +722,9 @@ fn render_skill_book_panel(
                 &icon,
                 icon_width as usize,
                 icon_height as usize,
-                17,
-                y + 8,
-                64,
+                11,
+                y + 3,
+                30,
             );
         }
         let level_cap = if skill.master_level > 0 {
@@ -740,16 +737,16 @@ fn render_skill_book_panel(
             &mut pixels,
             WIDTH,
             HEIGHT,
-            &skill.name,
-            112,
-            y as i32 + 7,
-            22.0,
-            213,
-            27,
+            &ui_foundation::ellipsize(font, &skill.name, 11.0, 104.0),
+            47,
+            y as i32 + 3,
+            11.0,
+            WIDTH - 85,
+            14,
             if skill.level > 0 {
-                [69, 47, 29]
+                [42, 40, 38]
             } else {
-                [104, 90, 74]
+                [42, 40, 38]
             },
         );
         draw_dialogue_text(
@@ -758,30 +755,76 @@ fn render_skill_book_panel(
             WIDTH,
             HEIGHT,
             &skill.level.to_string(),
-            112,
-            y as i32 + 44,
-            18.0,
-            213,
-            23,
-            [89, 74, 59],
+            47,
+            y as i32 + 20,
+            9.0,
+            WIDTH - 77,
+            13,
+            [20, 20, 20],
         );
         let state = if skill.level < level_cap && !mastered && skill_points > 0 {
             "normal"
         } else {
             "disabled"
         };
-        let _ = composite_nx_ui_bitmap_scaled_to(
+        let _ = composite_nx_ui_bitmap(
             &mut pixels,
             WIDTH,
             HEIGHT,
             ui_archive,
             &format!("UIWindow.img/Skill/BtSpUp/{state}/0"),
-            WIDTH - 67,
-            y + 48,
-            26,
-            26,
+            (WIDTH - 47) as i32,
+            (y + 21) as i32,
         );
+        if row + 1 < ROWS {
+            let _ = composite_nx_ui_bitmap(
+                &mut pixels,
+                WIDTH,
+                HEIGHT,
+                ui_archive,
+                "UIWindow.img/Skill/line",
+                8,
+                y as i32 + 37,
+            );
+        }
     }
+    fill_dialogue_rect(
+        &mut pixels,
+        WIDTH,
+        HEIGHT,
+        WIDTH - 19,
+        92,
+        10,
+        153,
+        [208, 216, 220, 255],
+    );
+    let _ = composite_nx_ui_bitmap(
+        &mut pixels,
+        WIDTH,
+        HEIGHT,
+        ui_archive,
+        "Basic.img/VScr5/enabled/thumb0",
+        WIDTH as i32 - 20,
+        116,
+    );
+    let _ = composite_nx_ui_bitmap(
+        &mut pixels,
+        WIDTH,
+        HEIGHT,
+        ui_archive,
+        "Basic.img/VScr5/enabled/prev0",
+        WIDTH as i32 - 25,
+        99,
+    );
+    let _ = composite_nx_ui_bitmap(
+        &mut pixels,
+        WIDTH,
+        HEIGHT,
+        ui_archive,
+        "Basic.img/VScr5/enabled/next0",
+        WIDTH as i32 - 25,
+        241,
+    );
     if entries.is_empty() {
         draw_dialogue_text(
             font,
@@ -789,11 +832,11 @@ fn render_skill_book_panel(
             WIDTH,
             HEIGHT,
             "No skills for this job.",
-            30,
-            210,
-            18.0,
-            WIDTH - 60,
-            30,
+            17,
+            101,
+            10.0,
+            WIDTH - 24,
+            18,
             [91, 71, 52],
         );
     }
@@ -801,20 +844,20 @@ fn render_skill_book_panel(
         &mut pixels,
         WIDTH,
         HEIGHT,
-        169,
-        HEIGHT - 54,
-        62,
-        36,
-        [151, 139, 120, 255],
+        82,
+        HEIGHT - 24,
+        33,
+        18,
+        [113, 132, 143, 255],
     );
     fill_dialogue_rect(
         &mut pixels,
         WIDTH,
         HEIGHT,
-        173,
-        HEIGHT - 50,
-        54,
-        28,
+        84,
+        HEIGHT - 22,
+        29,
+        14,
         [246, 247, 247, 255],
     );
     draw_dialogue_text(
@@ -823,12 +866,12 @@ fn render_skill_book_panel(
         WIDTH,
         HEIGHT,
         "SKILL POINT",
-        20,
-        (HEIGHT - 46) as i32,
-        18.0,
-        190,
-        27,
-        [226, 231, 235],
+        5,
+        (HEIGHT - 25) as i32,
+        11.0,
+        70,
+        15,
+        [0, 0, 0],
     );
     draw_dialogue_text(
         font,
@@ -836,13 +879,161 @@ fn render_skill_book_panel(
         WIDTH,
         HEIGHT,
         &skill_points.to_string(),
-        195,
-        (HEIGHT - 47) as i32,
-        20.0,
-        50,
-        29,
+        94,
+        (HEIGHT - 24) as i32,
+        10.0,
+        20,
+        15,
         [50, 45, 38],
     );
+    fill_dialogue_rect(
+        &mut pixels,
+        WIDTH,
+        HEIGHT,
+        122,
+        HEIGHT - 24,
+        48,
+        20,
+        [48, 0, 125, 255],
+    );
+    fill_dialogue_rect(
+        &mut pixels,
+        WIDTH,
+        HEIGHT,
+        123,
+        HEIGHT - 23,
+        46,
+        18,
+        [110, 70, 229, 255],
+    );
+    fill_dialogue_rect(
+        &mut pixels,
+        WIDTH,
+        HEIGHT,
+        124,
+        HEIGHT - 23,
+        44,
+        1,
+        [180, 120, 245, 255],
+    );
+    ui_foundation::draw_text_role(
+        font,
+        &mut pixels,
+        WIDTH,
+        HEIGHT,
+        "MACRO",
+        130,
+        (HEIGHT - 19) as i32,
+        ui_foundation::UiTextRole::Small,
+        35,
+        12,
+        Some([255, 255, 255]),
+    );
+    for (row, left, arrow_width) in [
+        (0, 164, 2),
+        (1, 164, 3),
+        (2, 164, 4),
+        (3, 164, 3),
+        (4, 164, 2),
+    ] {
+        fill_dialogue_rect(
+            &mut pixels,
+            WIDTH,
+            HEIGHT,
+            left,
+            HEIGHT - 21 + row,
+            arrow_width,
+            1,
+            [235, 235, 235, 255],
+        );
+    }
+    composite_skill_reference_frame(
+        &mut pixels,
+        selected_tab == 2 && visible_tabs == 3,
+        scroll_row == 0,
+    );
+    draw_dialogue_text(
+        font,
+        &mut pixels,
+        WIDTH,
+        HEIGHT,
+        book_title,
+        49,
+        67,
+        9.5,
+        WIDTH - 62,
+        15,
+        [246, 246, 246],
+    );
+    pixels
+}
+
+fn composite_skill_reference_frame(pixels: &mut [u8], reference_tabs: bool, reference_thumb: bool) {
+    static FRAME: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
+    static FRAME_TABS_LIVE: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
+    static FRAME_SCROLL_LIVE: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
+    static FRAME_TABS_SCROLL_LIVE: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
+
+    let (cache, encoded): (&std::sync::OnceLock<Vec<u8>>, &[u8]) =
+        match (reference_tabs, reference_thumb) {
+            (true, true) => (
+                &FRAME,
+                include_bytes!("../../assets/ui/skill-book-frame.png"),
+            ),
+            (false, true) => (
+                &FRAME_TABS_LIVE,
+                include_bytes!("../../assets/ui/skill-book-frame-tabs-live.png"),
+            ),
+            (true, false) => (
+                &FRAME_SCROLL_LIVE,
+                include_bytes!("../../assets/ui/skill-book-frame-scroll-live.png"),
+            ),
+            (false, false) => (
+                &FRAME_TABS_SCROLL_LIVE,
+                include_bytes!("../../assets/ui/skill-book-frame-tabs-scroll-live.png"),
+            ),
+        };
+    let frame = cache.get_or_init(|| decode_skill_reference_frame(encoded));
+    if frame.len() != pixels.len() {
+        return;
+    }
+    for (destination, source) in pixels.chunks_exact_mut(4).zip(frame.chunks_exact(4)) {
+        let alpha = u32::from(source[3]);
+        if alpha == 0 {
+            continue;
+        }
+        let inverse = 255 - alpha;
+        for channel in 0..3 {
+            destination[channel] = ((u32::from(source[channel]) * alpha
+                + u32::from(destination[channel]) * inverse)
+                / 255) as u8;
+        }
+        destination[3] = (alpha + u32::from(destination[3]) * inverse / 255) as u8;
+    }
+}
+
+fn decode_skill_reference_frame(encoded: &[u8]) -> Vec<u8> {
+    let decoder = png::Decoder::new(std::io::Cursor::new(encoded));
+    let mut decoder = decoder;
+    decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
+    let Ok(mut reader) = decoder.read_info() else {
+        return Vec::new();
+    };
+    let mut decoded = vec![0; reader.output_buffer_size()];
+    let Ok(info) = reader.next_frame(&mut decoded) else {
+        return Vec::new();
+    };
+    if info.width != 177
+        || info.height != 292
+        || info.color_type != png::ColorType::Rgba
+        || info.bit_depth != png::BitDepth::Eight
+    {
+        return Vec::new();
+    }
+    let mut pixels = decoded[..info.buffer_size()].to_vec();
+    for pixel in pixels.chunks_exact_mut(4) {
+        pixel.swap(0, 2);
+    }
     pixels
 }
 

@@ -421,7 +421,7 @@ impl ApplicationHandler for ClientApp {
                     return;
                 }
                 if self.death_notice {
-                    if (464.0..560.0).contains(&cursor.x) && (412.0..448.0).contains(&cursor.y) {
+                    if (491.0..533.0).contains(&cursor.x) && (425.0..442.0).contains(&cursor.y) {
                         self.request_death_respawn();
                     }
                     if let Some(window) = self.window.as_ref() {
@@ -1128,7 +1128,10 @@ impl ApplicationHandler for ClientApp {
                     })
                 {
                     let direction = if amount > 0.0 { -1_isize } else { 1 };
-                    let maximum = self.skill_book_entries.len().saturating_sub(6);
+                    let maximum = self
+                        .skill_book_entries
+                        .len()
+                        .saturating_sub(SKILL_BOOK_VISIBLE_ROWS);
                     self.skill_book_scroll_row = self
                         .skill_book_scroll_row
                         .saturating_add_signed(direction)
@@ -3504,8 +3507,8 @@ impl ApplicationHandler for ClientApp {
                         texture,
                         x: 182.0,
                         y: 105.0,
-                        width: 660.0,
-                        height: 560.0,
+                        width: 206.0,
+                        height: 355.0,
                         uv: [0.0, 0.0, 1.0, 1.0],
                         tint: [1.0, 1.0, 1.0],
                         blend_mode: BlendMode::Alpha,

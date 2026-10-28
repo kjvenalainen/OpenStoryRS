@@ -1191,8 +1191,9 @@ fn render_npc_dialogue(
             NpcDialogueLayout::NPC_BAR_X,
             NpcDialogueLayout::NPC_BAR_Y,
         );
-        let name_width = dialogue_text_width(font, &name, 12.0).ceil() as i32;
-        draw_dialogue_text(
+        let name_style = ui_foundation::UiTextRole::Label.style();
+        let name_width = (dialogue_text_width(font, &name, name_style.size).ceil() as i32) + 1;
+        ui_foundation::draw_text_role(
             font,
             &mut pixels,
             width,
@@ -1200,17 +1201,18 @@ fn render_npc_dialogue(
             &name,
             NpcDialogueLayout::NPC_BAR_X + (NpcDialogueLayout::NPC_BAR_WIDTH - name_width) / 2,
             NpcDialogueLayout::NPC_BAR_Y + 2,
-            12.0,
+            ui_foundation::UiTextRole::Label,
             NpcDialogueLayout::NPC_BAR_WIDTH as usize,
             17,
-            [255, 255, 255],
+            Some([255, 255, 255]),
         );
     }
     let text_view_height = npc_dialogue_text_view_height(message_type);
+    let body_style = ui_foundation::UiTextRole::Body.style();
     let text_content_height = dialogue_text_content_height(
         font,
         text,
-        14.0,
+        body_style.size,
         NpcDialogueLayout::TEXT_WIDTH,
         inline_icons,
     );
@@ -1228,7 +1230,7 @@ fn render_npc_dialogue(
         text,
         NpcDialogueLayout::TEXT_X,
         NpcDialogueLayout::TEXT_Y,
-        14.0,
+        body_style.size,
         NpcDialogueLayout::TEXT_WIDTH,
         text_view_height,
         [46, 46, 46],
@@ -1716,18 +1718,7 @@ fn draw_dialogue_button_with_icons(
 }
 
 fn dialogue_text_width(font: &fontdue::Font, text: &str, size: f32) -> f32 {
-    let mut width = 0.0;
-    let mut previous = None;
-    for character in text.chars() {
-        if let Some(previous) = previous {
-            width += font
-                .horizontal_kern(previous, character, size)
-                .unwrap_or(0.0);
-        }
-        width += font.metrics(character, size).advance_width;
-        previous = Some(character);
-    }
-    width
+    ui_foundation::measure_text(font, text, size)
 }
 
 fn rasterize_maple_tv_text(
@@ -1815,6 +1806,8 @@ fn draw_dialogue_text(
     max_height: usize,
     color: [u8; 3],
 ) {
+    let x = ui_foundation::snap(x as f32) as i32;
+    let y = ui_foundation::snap(y as f32) as i32;
     draw_dialogue_text_with_icons(
         font,
         pixels,
@@ -1881,7 +1874,8 @@ fn draw_dialogue_text_with_icons_scrolled(
     let mut pen_x = x as f32;
     let mut line_y = y;
     let mut previous = None;
-    for character in text.chars() {
+    let wrapped_text = wrap_dialogue_text(font, text, size, max_width, inline_icons);
+    for character in wrapped_text.chars() {
         if character == '\n' {
             pen_x = x as f32;
             line_y += line_height;
@@ -1962,6 +1956,62 @@ fn draw_dialogue_text_with_icons_scrolled(
         pen_x += metrics.advance_width;
         previous = Some(character);
     }
+}
+
+fn wrap_dialogue_text(
+    font: &fontdue::Font,
+    text: &str,
+    size: f32,
+    max_width: usize,
+    inline_icons: &NpcInlineIcons,
+) -> String {
+    let mut output = String::new();
+    for (paragraph_index, paragraph) in text.split('\n').enumerate() {
+        if paragraph_index > 0 {
+            output.push('\n');
+        }
+        let mut line = String::new();
+        for word in paragraph.split_whitespace() {
+            let candidate = if line.is_empty() {
+                word.to_owned()
+            } else {
+                format!("{line} {word}")
+            };
+            let mut width = 0.0_f32;
+            let mut previous = None;
+            for character in candidate.chars() {
+                if inline_icons.contains_key(&character) {
+                    width += (size.ceil() as usize + 4).clamp(16, 32) as f32;
+                    previous = None;
+                } else {
+                    if let Some(previous) = previous {
+                        width += font
+                            .horizontal_kern(previous, character, size)
+                            .unwrap_or(0.0);
+                    }
+                    width += font.metrics(character, size).advance_width;
+                    previous = Some(character);
+                }
+            }
+            if !line.is_empty() && width > max_width as f32 {
+                if !output.is_empty() && !output.ends_with('\n') {
+                    output.push('\n');
+                }
+                output.push_str(&line);
+                line.clear();
+                line.push_str(word);
+            } else {
+                line = candidate;
+            }
+        }
+        if !line.is_empty() {
+            if !output.is_empty() && !output.ends_with('\n') {
+                output.push('\n');
+            }
+            output.push_str(&line);
+        }
+    }
+    output
 }
 
 fn fill_dialogue_rect(

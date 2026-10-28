@@ -159,32 +159,30 @@ impl ClientApp {
     }
 
     pub(super) fn refresh_storage_texture(&mut self) {
-        let (Some(storage), Some(inventory)) = (self.storage.as_ref(), self.inventory.as_ref())
+        let (Some(storage), Some(_inventory)) = (self.storage.as_ref(), self.inventory.as_ref())
         else {
             self.storage_texture = None;
             return;
         };
-        let pixels = render_storage_panel(
+        let pixels = render_storage_reference_panel(
             &self.font,
             &storage.state,
-            inventory,
             storage.tab,
             storage.storage_scroll,
-            storage.inventory_scroll,
             &storage.meso_input,
             storage.meso_focused,
             storage.notice.as_deref(),
+            &self.legacy_ui_archive,
+            &self.npc_archive,
             &self.item_archive,
             &self.character_archive,
-            &self.string_archive,
             &mut self.inventory_icon_cache,
-            &mut self.item_name_cache,
         );
         let Some(renderer) = self.renderer.as_ref() else {
             return;
         };
-        const WIDTH: u32 = 660;
-        const HEIGHT: u32 = 560;
+        const WIDTH: u32 = 206;
+        const HEIGHT: u32 = 355;
         let result = if let Some(texture) = self.storage_texture.as_ref() {
             renderer.update_bgra(texture, &pixels).map(|()| None)
         } else {
@@ -1277,43 +1275,75 @@ impl ClientApp {
         const TOP: f32 = 105.0;
         let local_x = cursor.x - LEFT;
         let local_y = cursor.y - TOP;
-        if !(0.0..660.0).contains(&local_x) || !(0.0..560.0).contains(&local_y) {
-            return;
-        }
-        if !((190.0..400.0).contains(&local_x) && (462.0..510.0).contains(&local_y))
-            && let Some(storage) = self.storage.as_mut()
-        {
-            storage.meso_focused = false;
-        }
-        if local_x >= 620.0 && local_y < 48.0 {
-            self.close_storage();
-            return;
-        }
-        if (56.0..88.0).contains(&local_y) && local_x >= 14.0 {
-            let index = ((local_x - 14.0) / 128.0).floor() as usize;
-            if index < 5 {
-                if let Some(storage) = self.storage.as_mut() {
-                    storage.tab = storage_tabs()[index];
-                    storage.storage_scroll = 0;
-                    storage.inventory_scroll = 0;
-                    storage.meso_focused = false;
-                    storage.notice = None;
+        if !(0.0..206.0).contains(&local_x) || !(0.0..355.0).contains(&local_y) {
+            // The storage keeper remains open while the player inventory is
+            // visible beside it; clicking an inventory item stores that item.
+            if self.show_inventory
+                && let Some(slot) = inventory_slot_at(cursor, self.inventory_scroll_row)
+            {
+                let item = self.inventory.as_ref().and_then(|inventory| {
+                    inventory
+                        .items
+                        .iter()
+                        .find(|item| item.inventory_type == self.inventory_tab && item.slot == slot)
+                        .cloned()
+                });
+                if let Some(item) = item {
+                    if item.inventory_type != openstory_protocol::InventoryType::Equip
+                        && item.count > 1
+                    {
+                        self.open_storage_quantity_prompt(
+                            InventoryQuantityAction::StorageStore,
+                            &item,
+                            1,
+                        );
+                    } else {
+                        self.request_storage_store(&item, item.count.max(1));
+                    }
                 }
-                self.refresh_storage_texture();
             }
             return;
         }
-
-        if (125.0..429.0).contains(&local_y) {
-            let row = ((local_y - 125.0) / 38.0).floor() as usize;
-            if (14.0..316.0).contains(&local_x) {
+        if let Some(storage) = self.storage.as_mut() {
+            storage.meso_focused = false;
+        }
+        if (132.0..200.0).contains(&local_x) && (7.0..26.0).contains(&local_y) {
+            self.close_storage();
+            return;
+        }
+        if (132.0..200.0).contains(&local_x) && (29.0..48.0).contains(&local_y) {
+            let target = self.storage.as_ref().and_then(|storage| {
+                storage
+                    .state
+                    .items
+                    .iter()
+                    .filter(|item| item.inventory_type == storage.tab)
+                    .nth(storage.storage_scroll)
+                    .cloned()
+            });
+            if let Some(item) = target {
+                self.request_storage_take_out(&item, item.count.max(1));
+            }
+            return;
+        }
+        if (132.0..200.0).contains(&local_x) && (51.0..70.0).contains(&local_y) {
+            if let Some(storage) = self.storage.as_mut() {
+                storage.notice = Some("Organize items in your inventory first.".to_owned());
+            }
+            self.refresh_storage_texture();
+            return;
+        }
+        if (5.0..185.0).contains(&local_x) && (112.0..328.0).contains(&local_y) {
+            let col = ((local_x - 5.0) / 36.0).floor() as usize;
+            let row = ((local_y - 112.0) / 36.0).floor() as usize;
+            if col < 5 && row < 6 {
                 let target = self.storage.as_ref().and_then(|storage| {
                     storage
                         .state
                         .items
                         .iter()
                         .filter(|item| item.inventory_type == storage.tab)
-                        .nth(storage.storage_scroll + row)
+                        .nth(storage.storage_scroll + row * 5 + col)
                         .cloned()
                 });
                 if let Some(item) = target {
@@ -1331,36 +1361,9 @@ impl ClientApp {
                 }
                 return;
             }
-            if (336.0..646.0).contains(&local_x) {
-                let target = self.storage.as_ref().and_then(|storage| {
-                    self.inventory.as_ref().and_then(|inventory| {
-                        inventory
-                            .items
-                            .iter()
-                            .filter(|item| item.inventory_type == storage.tab)
-                            .nth(storage.inventory_scroll + row)
-                            .cloned()
-                    })
-                });
-                if let Some(item) = target {
-                    if item.inventory_type != openstory_protocol::InventoryType::Equip
-                        && item.count > 1
-                    {
-                        self.open_storage_quantity_prompt(
-                            InventoryQuantityAction::StorageStore,
-                            &item,
-                            1,
-                        );
-                    } else {
-                        self.request_storage_store(&item, item.count.max(1));
-                    }
-                }
-                return;
-            }
         }
-
-        if (462.0..510.0).contains(&local_y) {
-            if (190.0..400.0).contains(&local_x) {
+        if (337.0..353.0).contains(&local_y) {
+            if (105.0..150.0).contains(&local_x) {
                 if let Some(storage) = self.storage.as_mut() {
                     if !storage.meso_focused {
                         storage.meso_input.clear();
@@ -1377,23 +1380,18 @@ impl ClientApp {
                 .and_then(|storage| storage.meso_input.parse::<i32>().ok())
                 .filter(|amount| *amount > 0)
             {
-                if (14.0..160.0).contains(&local_x) {
+                if (151.0..175.0).contains(&local_x) {
                     self.send_storage_action(
                         openstory_protocol::storage_meso_packet(-amount),
                         "deposit mesos",
                     );
-                } else if (500.0..646.0).contains(&local_x) {
+                } else if (176.0..200.0).contains(&local_x) {
                     self.send_storage_action(
                         openstory_protocol::storage_meso_packet(amount),
                         "withdraw mesos",
                     );
                 }
             }
-            return;
-        }
-
-        if let Some(storage) = self.storage.as_mut() {
-            storage.meso_focused = false;
         }
     }
 
@@ -1403,36 +1401,22 @@ impl ClientApp {
         let Some(storage) = self.storage.as_mut() else {
             return;
         };
-        if !(TOP + 125.0..TOP + 429.0).contains(&cursor.y) {
+        if !(TOP + 112.0..TOP + 328.0).contains(&cursor.y)
+            || !(LEFT + 5.0..LEFT + 185.0).contains(&cursor.x)
+        {
             return;
         }
         let step = if amount > 0.0 { -1_isize } else { 1 };
-        if (LEFT + 14.0..LEFT + 316.0).contains(&cursor.x) {
-            let count = storage
-                .state
-                .items
-                .iter()
-                .filter(|item| item.inventory_type == storage.tab)
-                .count();
-            storage.storage_scroll = storage
-                .storage_scroll
-                .saturating_add_signed(step)
-                .min(count.saturating_sub(8));
-        } else if (LEFT + 336.0..LEFT + 646.0).contains(&cursor.x) {
-            let count = self.inventory.as_ref().map_or(0, |inventory| {
-                inventory
-                    .items
-                    .iter()
-                    .filter(|item| item.inventory_type == storage.tab)
-                    .count()
-            });
-            storage.inventory_scroll = storage
-                .inventory_scroll
-                .saturating_add_signed(step)
-                .min(count.saturating_sub(8));
-        } else {
-            return;
-        }
+        let count = storage
+            .state
+            .items
+            .iter()
+            .filter(|item| item.inventory_type == storage.tab)
+            .count();
+        storage.storage_scroll = storage
+            .storage_scroll
+            .saturating_add_signed(step)
+            .min(count.saturating_sub(30));
         self.refresh_storage_texture();
     }
 
@@ -1448,7 +1432,6 @@ impl ClientApp {
                     state,
                     tab: openstory_protocol::InventoryType::Equip,
                     storage_scroll: 0,
-                    inventory_scroll: 0,
                     meso_input: "1000".to_owned(),
                     meso_focused: false,
                     notice: None,

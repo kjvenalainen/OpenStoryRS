@@ -1029,21 +1029,21 @@ fn render_status_panel(
     let stats = &character.stats;
     let color = [56, 42, 31];
     let values = [
-        (stats.name.clone(), 59, 30),
+        (stats.name.clone(), 59, 31),
         (character_job_name(stats.job), 59, 48),
-        (stats.level.to_string(), 59, 66),
-        ("-".to_owned(), 59, 84),
-        (format!("{} / {}", stats.hp, stats.max_hp), 59, 102),
-        (format!("{} / {}", stats.mp, stats.max_mp), 59, 120),
-        (stats.experience.to_string(), 59, 138),
-        (stats.fame.to_string(), 59, 156),
+        (stats.level.to_string(), 59, 77),
+        ("-".to_owned(), 59, 95),
+        (format!("{} / {}", stats.hp, stats.max_hp), 59, 112),
+        (format!("{} / {}", stats.mp, stats.max_mp), 59, 130),
+        (stats.experience.to_string(), 59, 149),
+        (stats.fame.to_string(), 59, 167),
         (stats.strength.to_string(), 59, 244),
         (stats.dexterity.to_string(), 59, 262),
         (stats.intelligence.to_string(), 59, 280),
         (stats.luck.to_string(), 59, 298),
     ];
     for (value, x, y) in values {
-        draw_dialogue_text(
+        ui_foundation::draw_text_role(
             font,
             &mut pixels,
             WIDTH,
@@ -1051,28 +1051,18 @@ fn render_status_panel(
             &value,
             x,
             y,
-            11.0,
+            ui_foundation::UiTextRole::Value,
             111,
             16,
-            color,
+            Some(color),
         );
     }
-    draw_dialogue_text(
-        font,
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        "ABILITY POINT",
-        13,
-        196,
-        11.0,
-        WIDTH - 26,
-        16,
-        color,
-    );
     let ability_points = stats.ability_points.to_string();
-    let ability_points_width = dialogue_text_width(font, &ability_points, 11.0).ceil() as i32;
-    draw_dialogue_text(
+    let emphasis_style = ui_foundation::UiTextRole::Emphasis.style();
+    let ability_points_width = dialogue_text_width(font, &ability_points, emphasis_style.size)
+        .ceil() as i32
+        + 1;
+    ui_foundation::draw_text_role(
         font,
         &mut pixels,
         WIDTH,
@@ -1080,10 +1070,10 @@ fn render_status_panel(
         &ability_points,
         61 + (29 - ability_points_width) / 2,
         214,
-        11.0,
+        ui_foundation::UiTextRole::Emphasis,
         29,
         15,
-        color,
+        Some(color),
     );
 
     if auto_confirmation {
@@ -1166,8 +1156,6 @@ fn render_status_detail_panel(
         0,
         0,
     );
-    recolor_v83_detail_labels(&mut pixels, WIDTH, HEIGHT);
-
     let combat = status_detail_combat_values(
         character,
         inventory,
@@ -1208,52 +1196,42 @@ fn render_status_detail_panel(
                 || "—".to_owned(),
                 |(minimum, maximum)| format!("{minimum} ~ {maximum}"),
             ),
-            7,
+            9,
         ),
-        (weapon_defense.to_string(), 25),
-        (combat.magic.to_string(), 43),
-        (magic_defense.to_string(), 61),
-        (combat.accuracy.to_string(), 79),
-        (avoidability.to_string(), 97),
-        (hands.to_string(), 115),
-        (format!("{}%", combat.speed), 133),
-        (format!("{}%", combat.jump), 151),
+        (weapon_defense.to_string(), 27),
+        (combat.magic.to_string(), 45),
+        (magic_defense.to_string(), 63),
+        (combat.accuracy.to_string(), 81),
+        (avoidability.to_string(), 99),
+        (hands.to_string(), 117),
+        (format!("{}%", combat.speed), 135),
+        (format!("{}%", combat.jump), 153),
     ];
     for (value, y) in rows {
-        draw_dialogue_text(
+        ui_foundation::draw_text_role(
             font,
             &mut pixels,
             WIDTH,
             HEIGHT,
             &value,
-            86,
+            84,
             y,
-            10.0,
-            82,
+            ui_foundation::UiTextRole::Value,
+            WIDTH - 85,
             16,
-            [48, 41, 33],
+            Some([48, 41, 33]),
         );
     }
-
+    let _ = composite_nx_ui_bitmap(
+        &mut pixels,
+        WIDTH,
+        HEIGHT,
+        ui_archive,
+        "Basic.img/BtHide/normal/0",
+        154,
+        177,
+    );
     pixels
-}
-
-fn recolor_v83_detail_labels(pixels: &mut [u8], width: usize, height: usize) {
-    for y in 6..171.min(height) {
-        for x in 12..76.min(width) {
-            let index = (y * width + x) * 4;
-            let blue = pixels[index];
-            let green = pixels[index + 1];
-            let red = pixels[index + 2];
-            if pixels[index + 3] == 0 || blue < red.saturating_add(22) {
-                continue;
-            }
-            let gray = ((u16::from(blue) + u16::from(green) + u16::from(red)) / 3) as u8;
-            pixels[index] = gray;
-            pixels[index + 1] = gray;
-            pixels[index + 2] = gray;
-        }
-    }
 }
 
 const KEY_CONFIG_ACTIONS: [(&str, u8, i32, bool); 41] = [

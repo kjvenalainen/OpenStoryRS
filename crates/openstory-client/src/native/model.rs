@@ -2195,7 +2195,6 @@ struct StorageUi {
     state: openstory_protocol::StorageSnapshot,
     tab: openstory_protocol::InventoryType,
     storage_scroll: usize,
-    inventory_scroll: usize,
     meso_input: String,
     meso_focused: bool,
     notice: Option<String>,

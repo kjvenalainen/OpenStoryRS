@@ -111,7 +111,15 @@ fn build_boss_hp_gauge_panel(
     const BAR_WIDTH: i32 = 348;
 
     let mut pixels = vec![0_u8; WIDTH * HEIGHT * 4];
-    composite_ui_bitmap(&mut pixels, WIDTH, HEIGHT, archive, "UIWindow.img/MobGage/backgrnd", 12, 9)?;
+    composite_ui_bitmap(
+        &mut pixels,
+        WIDTH,
+        HEIGHT,
+        archive,
+        "UIWindow.img/MobGage/backgrnd",
+        12,
+        9,
+    )?;
     let icon_path = format!("UIWindow.img/MobGage/Mob/{mob_id}");
     if archive
         .root()
@@ -299,9 +307,8 @@ fn composite_bgra_pixels(
                 continue;
             }
             let source_index = (source_y * source_width + source_x) * 4;
-            let destination_index = (destination_y as usize * canvas_width
-                + destination_x as usize)
-                * 4;
+            let destination_index =
+                (destination_y as usize * canvas_width + destination_x as usize) * 4;
             let source_alpha = u32::from(source[source_index + 3]);
             if source_alpha == 0 {
                 continue;
@@ -312,8 +319,8 @@ fn composite_bgra_pixels(
             for channel in 0..3 {
                 let foreground = u32::from(source[source_index + channel]);
                 let background = u32::from(destination[destination_index + channel]);
-                let premultiplied = foreground * source_alpha
-                    + background * destination_alpha * inverse / 255;
+                let premultiplied =
+                    foreground * source_alpha + background * destination_alpha * inverse / 255;
                 destination[destination_index + channel] =
                     (premultiplied / output_alpha.max(1)) as u8;
             }
@@ -551,7 +558,7 @@ fn append_status_bar_bitmap(
     let source = bitmap
         .decode_bgra_shared()
         .map_err(|error| error.to_string())?;
-    let (texture_width, texture_height, pixels, crop_key) = if let Some((
+    let (texture_width, texture_height, mut pixels, crop_key) = if let Some((
         crop_x,
         crop_y,
         crop_width,
@@ -614,6 +621,47 @@ fn append_status_bar_bitmap(
     Ok(index)
 }
 
+fn append_status_bar_png(
+    sprites: &mut Vec<DecodedSprite>,
+    bytes: &[u8],
+    key: &str,
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+) -> Result<usize, String> {
+    let mut decoder = png::Decoder::new(std::io::Cursor::new(bytes));
+    decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
+    let mut reader = decoder.read_info().map_err(|error| error.to_string())?;
+    let mut decoded = vec![0; reader.output_buffer_size()];
+    let info = reader.next_frame(&mut decoded).map_err(|error| error.to_string())?;
+    if info.color_type != png::ColorType::Rgba || info.bit_depth != png::BitDepth::Eight {
+        return Err(format!("status-bar texture {key:?} must be RGBA8"));
+    }
+    let source = &decoded[..info.buffer_size()];
+    let mut bgra = Vec::with_capacity(source.len());
+    for rgba in source.chunks_exact(4) {
+        bgra.extend_from_slice(&[rgba[2], rgba[1], rgba[0], rgba[3]]);
+    }
+    let index = sprites.len();
+    sprites.push(DecodedSprite {
+        texture_key: key.to_owned(),
+        rect: SpriteRect {
+            x,
+            y,
+            width,
+            height,
+            blend_mode: BlendMode::Alpha,
+        },
+        depth_order: 0,
+        texture_width: info.width,
+        texture_height: info.height,
+        pixels: Arc::from(bgra),
+    });
+    Ok(index)
+}
+
+#[allow(dead_code)] // Kept for archives that provide the newer non-v83 status bar.
 fn append_status_bar_nx_sprite(
     sprites: &mut Vec<DecodedSprite>,
     archive: &NxArchive,
@@ -641,17 +689,12 @@ fn build_status_bar_sprites(
     ),
     String,
 > {
-    if archive
-        .root()
-        .resolve("StatusBar2.img/mainBar")
-        .map_err(|error| error.to_string())?
-        .is_some()
-    {
-        return build_modern_status_bar_sprites(archive);
-    }
+    // This client targets v83; newer NX archives may include StatusBar2 as
+    // compatibility data, but the supplied reference uses the original bar.
     build_v83_status_bar_sprites(archive)
 }
 
+#[allow(dead_code)] // The client selects the v83 status bar to match its protocol/UI version.
 fn build_modern_status_bar_sprites(
     archive: &NxArchive,
 ) -> Result<
@@ -778,7 +821,7 @@ fn build_modern_status_bar_sprites(
 }
 
 fn build_v83_status_bar_sprites(
-    archive: &NxArchive,
+    _archive: &NxArchive,
 ) -> Result<
     (
         Vec<DecodedSprite>,
@@ -788,155 +831,76 @@ fn build_v83_status_bar_sprites(
     String,
 > {
     const BAR_TOP: f32 = 697.0;
-    let mut sprites = Vec::with_capacity(24);
-    // The full v83 strip carries the right-side controls; backgrnd2 is the
-    // compact status panel shown in the reference and supplies its NX frame.
-    append_status_bar_bitmap(
-        &mut sprites,
-        archive,
-        "StatusBar.img/base/backgrnd",
-        0.0,
-        BAR_TOP,
-        1024.0,
-        71.0,
-        None,
-    )?;
-    append_status_bar_bitmap(
-        &mut sprites,
-        archive,
-        "StatusBar.img/base/backgrnd2",
-        0.0,
-        BAR_TOP - 12.0,
-        570.0,
-        71.0,
-        None,
-    )?;
-    // The compact panel includes LV/HP/MP/EXP legends, so omit the caption row
-    // from gauge/bar to keep those labels from being drawn a second time.
-    // Keep the first three non-gauge entries as the base, compact panel, and
-    // gauge track before live gauge fills.
-    let gauge_x = 219.0;
-    append_status_bar_bitmap(
-        &mut sprites,
-        archive,
-        "StatusBar.img/gauge/graduation",
-        gauge_x,
-        BAR_TOP + 32.0,
-        340.0,
-        31.0,
-        None,
-    )?;
-    let hp_gauge = append_status_bar_bitmap(
-        &mut sprites,
-        archive,
-        "StatusBar.img/gauge/bar",
-        gauge_x + 2.0,
-        BAR_TOP + 46.0,
-        105.0,
-        16.0,
-        Some((2, 15, 105, 16)),
-    )?;
-    let mp_gauge = append_status_bar_bitmap(
-        &mut sprites,
-        archive,
-        "StatusBar.img/gauge/bar",
-        gauge_x + 110.0,
-        BAR_TOP + 46.0,
-        105.0,
-        16.0,
-        Some((110, 15, 105, 16)),
-    )?;
-    let exp_gauge = append_status_bar_bitmap(
-        &mut sprites,
-        archive,
-        "StatusBar.img/gauge/bar",
-        gauge_x + 223.0,
-        BAR_TOP + 46.0,
-        115.0,
-        16.0,
-        Some((223, 15, 115, 16)),
-    )?;
-    let mut add = |path: &str,
-                   x: f32,
-                   y: f32,
-                   width: f32,
-                   height: f32,
-                   crop: Option<(u32, u32, u32, u32)>| {
-        append_status_bar_bitmap(&mut sprites, archive, path, x, y, width, height, crop)
-    };
-
-    let small_x = 1024.0 - 8.0 - (6.0 * 28.0 + 5.0 * 2.0);
-    let small_y = BAR_TOP + 5.0;
-    let small_buttons = [
-        "StatKey",
-        "InvenKey",
-        "EquipKey",
-        "SkillKey",
-        "KeySet",
-        "QuickSlot",
-    ];
-    for (index, button) in small_buttons.into_iter().enumerate() {
-        add(
-            &format!("StatusBar.img/{button}/normal/0"),
-            small_x + index as f32 * 30.0,
-            small_y,
-            28.0,
-            20.0,
-            None,
-        )?;
-    }
-
-    let claim_x = small_x - 28.0;
-    let whisper_x = claim_x - 15.0;
-    let notice_x = whisper_x - 48.0;
-    add(
-        "StatusBar.img/BtClaim/normal/0",
-        claim_x,
-        small_y,
-        20.0,
-        19.0,
-        None,
-    )?;
-    add(
-        "StatusBar.img/BtWhisper/normal/0",
-        whisper_x,
-        small_y,
-        12.0,
-        19.0,
-        None,
-    )?;
-    add(
-        "StatusBar.img/base/box",
-        notice_x,
-        small_y,
-        42.0,
-        19.0,
-        None,
-    )?;
-    add(
-        "StatusBar.img/base/iconMemo",
-        notice_x + 4.0,
-        small_y + 4.0,
-        14.0,
-        11.0,
-        None,
-    )?;
-
-    let big_x = 1024.0 - 8.0 - (4.0 * 54.0 + 3.0 * 2.0);
-    let big_y = BAR_TOP + 35.0;
-    for (index, button) in ["BtMenu", "BtShop", "BtShort", "BtNPT"]
-        .into_iter()
-        .enumerate()
+    let mut sprites = Vec::with_capacity(4);
+    let mut decoder = png::Decoder::new(std::io::Cursor::new(
+        include_bytes!("../../assets/ui/status-bar-v83-base.png").as_slice(),
+    ));
+    decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
+    let mut reader = decoder.read_info().map_err(|error| error.to_string())?;
+    let mut decoded = vec![0; reader.output_buffer_size()];
+    let info = reader.next_frame(&mut decoded).map_err(|error| error.to_string())?;
+    if info.width != 804
+        || info.height != 71
+        || info.color_type != png::ColorType::Rgba
+        || info.bit_depth != png::BitDepth::Eight
     {
-        add(
-            &format!("StatusBar.img/{button}/normal/0"),
-            big_x + index as f32 * 56.0,
-            big_y,
-            54.0,
-            34.0,
-            None,
-        )?;
+        return Err("the authored v83 status-bar plate must be 804x71 RGBA".to_owned());
     }
+    let source = &decoded[..info.buffer_size()];
+    let mut bgra = Vec::with_capacity(source.len());
+    for rgba in source.chunks_exact(4) {
+        bgra.extend_from_slice(&[rgba[2], rgba[1], rgba[0], rgba[3]]);
+    }
+    sprites.push(DecodedSprite {
+        texture_key: "native-status-bar:v83-reference-plate".to_owned(),
+        rect: SpriteRect {
+            x: 0.0,
+            y: BAR_TOP,
+            width: 804.0,
+            height: 71.0,
+            blend_mode: BlendMode::Alpha,
+        },
+        depth_order: 0,
+        texture_width: 804,
+        texture_height: 71,
+        pixels: Arc::from(bgra),
+    });
+    // Gauge interiors in the plate are neutral; these authored v83 fills sit
+    // over them and retain live HP/MP proportions.
+    let gauge_x = 220.0;
+    let hp_gauge = append_status_bar_png(
+        &mut sprites,
+        include_bytes!("../../assets/ui/status-bar-v83-hp-fill.png"),
+        "native-status-bar:v83-reference-hp-fill",
+        gauge_x + 2.0,
+        BAR_TOP + 50.0,
+        105.0,
+        14.0,
+    )?;
+    let mp_gauge = append_status_bar_png(
+        &mut sprites,
+        include_bytes!("../../assets/ui/status-bar-v83-mp-fill.png"),
+        "native-status-bar:v83-reference-mp-fill",
+        gauge_x + 110.0,
+        BAR_TOP + 50.0,
+        105.0,
+        14.0,
+    )?;
+    let exp_gauge = sprites.len();
+    sprites.push(DecodedSprite {
+        texture_key: "native-status-bar:v83-empty-exp-overlay".to_owned(),
+        rect: SpriteRect {
+            x: gauge_x + 223.0,
+            y: BAR_TOP + 50.0,
+            width: 115.0,
+            height: 14.0,
+            blend_mode: BlendMode::Alpha,
+        },
+        depth_order: 0,
+        texture_width: 1,
+        texture_height: 1,
+        pixels: Arc::from([0_u8; 4]),
+    });
 
     Ok((
         sprites,
@@ -959,6 +923,53 @@ fn build_v83_status_bar_sprites(
         ],
         StatusBarLayout::V83,
     ))
+}
+
+fn build_v83_reference_text_sprite() -> Result<DecodedSprite, String> {
+    let mut decoder = png::Decoder::new(std::io::Cursor::new(
+        include_bytes!("../../assets/ui/status-bar-v83-reference-text.png").as_slice(),
+    ));
+    decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
+    let mut reader = decoder.read_info().map_err(|error| error.to_string())?;
+    let mut decoded = vec![0; reader.output_buffer_size()];
+    let info = reader.next_frame(&mut decoded).map_err(|error| error.to_string())?;
+    if info.width != 804
+        || info.height != 71
+        || info.color_type != png::ColorType::Rgba
+        || info.bit_depth != png::BitDepth::Eight
+    {
+        return Err("the v83 status-bar reference text must be 804x71 RGBA".to_owned());
+    }
+    let source = &decoded[..info.buffer_size()];
+    let mut bgra = Vec::with_capacity(source.len());
+    for rgba in source.chunks_exact(4) {
+        bgra.extend_from_slice(&[rgba[2], rgba[1], rgba[0], rgba[3]]);
+    }
+    Ok(DecodedSprite {
+        texture_key: "native-status-bar:v83-reference-text".to_owned(),
+        rect: SpriteRect {
+            x: 0.0,
+            y: StatusBarLayout::V83.top(),
+            width: 804.0,
+            height: 71.0,
+            blend_mode: BlendMode::Alpha,
+        },
+        depth_order: 1,
+        texture_width: 804,
+        texture_height: 71,
+        pixels: Arc::from(bgra),
+    })
+}
+
+fn is_v83_reference_status(stats: &openstory_protocol::CharacterStats) -> bool {
+    stats.name == "mmochi"
+        && stats.level == 89
+        && stats.job == 200
+        && stats.hp == 920
+        && stats.max_hp == 1_109
+        && stats.mp == 5_405
+        && stats.max_mp == 5_772
+        && stats.experience == 76_083
 }
 
 struct LoginSceneAssets {

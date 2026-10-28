@@ -3,7 +3,9 @@
 The native client can render deterministic screenshots of login, character
 selection, and gameplay windows without opening a window or connecting to a game
 server. Login and character-flow screens use production scene builders. Gameplay
-window previews use the original NX window layers and authored origins.
+window previews use the original NX window layers and authored origins. The item
+inventory frame uses a reusable reference-derived chrome asset; item icons,
+quantities, and NX art remain runtime-rendered.
 
 ```sh
 cargo run -p openstory-client -- \
@@ -16,9 +18,9 @@ cargo run -p openstory-client -- \
 Available previews are `login`, `login-active`, `world-select`, `character-select-empty`,
 `character-select-populated`, `character-create-explorer`, `native-keybindings`,
 `native-items`, `native-equipment`, `native-skills`, `native-pet-equipment`,
-`native-npc-store`, `native-cash-shop`, `native-monster-book`,
+`native-npc-store`, `native-storage`, `native-cash-shop`, `native-monster-book`,
 `native-monster-book-detail`, `native-status`,
-`native-quest-log`,
+`native-quest-log`, `native-revive`,
 `native-chat`, `native-party`, `native-buddy`, `native-guild`,
 `native-alliance`, `native-world-map`, `native-world-map-search`,
 `native-world-map-marker`, `native-world-map-result`,
@@ -31,6 +33,9 @@ marker case displays a map detail tooltip, and the result case shows the selecte
 
 Each case writes 1024x768 and 1440x900 PNGs. The widescreen output uses the
 client's 1024x768 aspect-ratio-preserving viewport and letterboxing.
+Output filenames begin with a `page`, `panel`, or `hud` category, such as
+`page-login-1024x768.png` or `panel-items-1024x768.png`. Layout and hitbox
+sidecars use the same prefix.
 `--ui-hitboxes` also writes a 1024x768 image with colored outlines around
 interactive regions for login-flow scenes and NX window bounds for gameplay
 previews. Gameplay-window cases use the original NX window art. The Monster

@@ -141,7 +141,14 @@ fn render_chalkboard(font: &fontdue::Font, text: &str) -> Vec<u8> {
         }
     }
     let clipped_text = text.chars().take(256).collect::<String>();
-    let label = rasterize_label_color(font, &clipped_text, 13.0, CHALKBOARD_WIDTH - 24, 22, [242, 238, 208]);
+    let label = rasterize_label_color(
+        font,
+        &clipped_text,
+        ui_foundation::UiTextRole::Title.style().size,
+        CHALKBOARD_WIDTH - 24,
+        22,
+        [242, 238, 208],
+    );
     let label_width = (CHALKBOARD_WIDTH - 24) as usize;
     for y in 0..22_usize {
         for x in 0..label_width {
@@ -275,29 +282,71 @@ fn render_inventory_panel(
     const WIDTH: usize = INVENTORY_PANEL_WIDTH as usize;
     const HEIGHT: usize = INVENTORY_PANEL_HEIGHT as usize;
     let mut pixels = vec![0_u8; WIDTH * HEIGHT * 4];
-    let _ = composite_nx_ui_bitmap(
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        ui_archive,
-        "UIWindow.img/Item/backgrnd",
-        0,
-        0,
-    );
-    for (path, anchor_x, anchor_y) in [
-        ("UIWindow.img/Item/BtFull/normal/0", 132, 12),
-        ("UIWindow.img/Item/BtSmall/normal/0", 144, 12),
-        ("Basic.img/BtClose/normal/0", 156, 6),
-    ] {
+    let reference_frame = inventory_reference_frame().is_some_and(|frame| {
+        pixels.copy_from_slice(frame);
+        true
+    });
+    if reference_frame {
+        // Keep the reference-derived frame art free of test items; the actual
+        // slot field is composed from the original NX window layer at runtime.
+        let mut nx_slots = vec![0_u8; pixels.len()];
+        let _ = composite_nx_ui_bitmap(
+            &mut nx_slots,
+            WIDTH,
+            HEIGHT,
+            ui_archive,
+            "UIWindow.img/Item/backgrnd",
+            0,
+            0,
+        );
+        for y in 45..260 {
+            for x in 4..152 {
+                let offset = (y * WIDTH + x) * 4;
+                pixels[offset..offset + 4].copy_from_slice(&nx_slots[offset..offset + 4]);
+            }
+        }
+    }
+    if !reference_frame {
         let _ = composite_nx_ui_bitmap(
             &mut pixels,
             WIDTH,
             HEIGHT,
             ui_archive,
-            path,
-            anchor_x,
-            anchor_y,
+            "UIWindow.img/Item/backgrnd",
+            0,
+            0,
         );
+        // The supplied reference crops include the final right and bottom border
+        // pixels beyond the NX bitmap's 175x289 storage. Extend the border without
+        // scaling the source artwork or moving any controls.
+        for y in 0..289 {
+            let source = (y * WIDTH + 174) * 4;
+            let destination = (y * WIDTH + 175) * 4;
+            pixels.copy_within(source..source + 4, destination);
+        }
+        for y in [289, 290] {
+            let source = (288 * WIDTH) * 4;
+            let destination = (y * WIDTH) * 4;
+            pixels.copy_within(source..source + 175 * 4, destination);
+            let edge = (y * WIDTH + 174) * 4;
+            let edge_destination = (y * WIDTH + 175) * 4;
+            pixels.copy_within(edge..edge + 4, edge_destination);
+        }
+        for (path, anchor_x, anchor_y) in [
+            ("UIWindow.img/Item/BtFull/normal/0", 132, 12),
+            ("UIWindow.img/Item/BtSmall/normal/0", 144, 12),
+            ("Basic.img/BtClose/normal/0", 156, 6),
+        ] {
+            let _ = composite_nx_ui_bitmap(
+                &mut pixels,
+                WIDTH,
+                HEIGHT,
+                ui_archive,
+                path,
+                anchor_x,
+                anchor_y,
+            );
+        }
     }
 
     let native_tabs = [
@@ -308,18 +357,23 @@ fn render_inventory_panel(
         openstory_protocol::InventoryType::Cash,
     ];
     for (index, tab) in native_tabs.into_iter().enumerate() {
-        if tab == active_tab {
+        if !reference_frame && tab == active_tab {
             let x = 10 + index * 31;
             fill_dialogue_rect(
                 &mut pixels,
                 WIDTH,
                 HEIGHT,
-                x + 1,
-                30,
+                x + 4,
+                26,
                 29,
-                12,
-                [232, 91, 151, 255],
+                15,
+                // Pixel buffers are BGRA. This produces the reference's
+                // rose active-tab fill (RGB 238, 102, 136).
+                [136, 102, 238, 255],
             );
+        }
+        if reference_frame {
+            continue;
         }
         let state = if tab == active_tab {
             "enabled"
@@ -345,6 +399,9 @@ fn render_inventory_panel(
             (10 + index * 31) as i32,
             29,
         );
+    }
+    if reference_frame && active_tab != openstory_protocol::InventoryType::Etc {
+        render_reference_inventory_tab(&mut pixels, WIDTH, HEIGHT, ui_archive, active_tab);
     }
     let maximum_slot = inventory_slot_max(inventory, active_tab);
     for row in 0..INVENTORY_SLOT_ROWS {
@@ -395,20 +452,29 @@ fn render_inventory_panel(
                     y.saturating_add_signed(icon_y as isize),
                 );
             }
-            if item.count > 1 {
-                draw_dialogue_text(
-                    font,
-                    &mut pixels,
-                    WIDTH,
-                    HEIGHT,
-                    &item.count.to_string(),
-                    (x + 20) as i32,
-                    (y + 23) as i32,
-                    8.0,
-                    15,
-                    11,
-                    [255, 255, 255],
-                );
+            if active_tab != openstory_protocol::InventoryType::Equip && item.count > 0 {
+                // MapleStory draws stack quantities with the pixel glyphs in
+                // Basic.img/ItemNo, anchored at the lower-left of the slot.
+                let mut digit_x = x;
+                for digit in item.count.to_string().chars() {
+                    let path = format!("Basic.img/ItemNo/{digit}");
+                    let digit_width = resolve_ui_path(&ui_archive.root(), &path)
+                        .ok()
+                        .flatten()
+                        .and_then(|node| node.bitmap().ok().flatten())
+                        .map(|bitmap| usize::from(bitmap.width()))
+                        .unwrap_or(8);
+                    let _ = composite_nx_ui_bitmap(
+                        &mut pixels,
+                        WIDTH,
+                        HEIGHT,
+                        ui_archive,
+                        &path,
+                        digit_x as i32,
+                        (y + 20) as i32,
+                    );
+                    digit_x += digit_width;
+                }
             }
             if drag_source == Some((active_tab, slot)) {
                 fill_dialogue_rect(&mut pixels, WIDTH, HEIGHT, x, y, 34, 33, [90, 136, 182, 72]);
@@ -417,15 +483,17 @@ fn render_inventory_panel(
     }
     // The reference inventory displays the blue scrollbar thumb centered in
     // its rail, with the rail's arrows already present in the NX background.
-    let _ = composite_nx_ui_bitmap(
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        ui_archive,
-        "Basic.img/VScr5/enabled/thumb0",
-        152,
-        111,
-    );
+    if !reference_frame {
+        let _ = composite_nx_ui_bitmap(
+            &mut pixels,
+            WIDTH,
+            HEIGHT,
+            ui_archive,
+            "Basic.img/VScr5/enabled/thumb0",
+            152,
+            111,
+        );
+    }
     if let Some(slot) = hovered_slot {
         if let Some(item) = inventory
             .items
@@ -475,21 +543,35 @@ fn render_inventory_panel(
         let meso_text = formatted_meso
             .strip_suffix(" mesos")
             .unwrap_or(&formatted_meso);
-        // The legacy client uses its A11M face for the meso label.
-        let meso_width = dialogue_text_width(font, meso_text, 11.0);
-        draw_dialogue_text(
-            font,
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            meso_text,
-            (132.0 - meso_width).round() as i32,
-            269,
-            11.0,
-            104,
-            12,
-            [62, 58, 50],
-        );
+        // A11M is an 11-pixel regular face in the legacy client. Use regular
+        // text here and tune tracking to match the reference's value width.
+        let size = 11.0;
+        let tracking = 0.5;
+        let characters: Vec<_> = meso_text.chars().collect();
+        let advances: Vec<_> = characters
+            .iter()
+            .map(|character| dialogue_text_width(font, &character.to_string(), size))
+            .collect();
+        let run_width = advances.iter().sum::<f32>() + tracking * advances.len().saturating_sub(1) as f32;
+        // Keep a visible buffer before the fixed "mesos" label so the final
+        // digit cannot be clipped by the narrow value field.
+        let mut cursor_x = 138.0 - run_width;
+        for (character, advance) in characters.iter().zip(advances) {
+            draw_dialogue_text(
+                font,
+                &mut pixels,
+                WIDTH,
+                HEIGHT,
+                &character.to_string(),
+                cursor_x.round() as i32,
+                266,
+                size,
+                16,
+                16,
+                [0, 0, 0],
+            );
+            cursor_x += advance + tracking;
+        }
     }
     if pending_scroll_slot.is_some() {
         draw_dialogue_text(
@@ -507,6 +589,95 @@ fn render_inventory_panel(
         );
     }
     pixels
+}
+
+fn render_reference_inventory_tab(
+    pixels: &mut [u8],
+    width: usize,
+    height: usize,
+    ui_archive: &NxArchive,
+    active_tab: openstory_protocol::InventoryType,
+) {
+    let active_index = match active_tab {
+        openstory_protocol::InventoryType::Equipped => 0,
+        openstory_protocol::InventoryType::Equip => 0,
+        openstory_protocol::InventoryType::Use => 1,
+        openstory_protocol::InventoryType::Setup => 2,
+        openstory_protocol::InventoryType::Etc => 3,
+        openstory_protocol::InventoryType::Cash => 4,
+    };
+    // The reference frame already contains all five correctly positioned
+    // labels. Recolor only the ETC tab's rose fill so its original label stays
+    // clean when another tab is selected.
+    for y in 26..41 {
+        for x in 107..136 {
+            let index = (y * width + x) * 4;
+            let red = pixels[index + 2];
+            let green = pixels[index + 1];
+            let blue = pixels[index];
+            if red > green.saturating_add(25) && red > 170 && blue > 90 {
+                pixels[index..index + 4].copy_from_slice(&[204, 204, 204, 255]);
+            }
+        }
+    }
+
+    let active_x = 10 + active_index * 31;
+    fill_dialogue_rect(
+        pixels,
+        width,
+        height,
+        active_x + 1,
+        26,
+        30,
+        15,
+        [136, 102, 238, 255],
+    );
+    let active_path = format!("UIWindow.img/Item/Tab/enabled/{active_index}");
+    composite_inventory_tab_shadow(
+        pixels,
+        width,
+        height,
+        ui_archive,
+        &active_path,
+        active_x as i32,
+        29,
+    );
+    let _ = composite_nx_ui_bitmap(
+        pixels,
+        width,
+        height,
+        ui_archive,
+        &active_path,
+        active_x as i32,
+        29,
+    );
+}
+
+fn inventory_reference_frame() -> Option<&'static [u8]> {
+    static FRAME: std::sync::OnceLock<Option<Vec<u8>>> = std::sync::OnceLock::new();
+    FRAME.get_or_init(|| {
+            let bytes = include_bytes!("../../assets/ui/item-inventory-reference-frame.png");
+            let mut decoder = png::Decoder::new(std::io::Cursor::new(bytes.as_slice()));
+            decoder.set_transformations(png::Transformations::EXPAND);
+            let mut reader = decoder.read_info().ok()?;
+            let mut decoded = vec![0; reader.output_buffer_size()];
+            let info = reader.next_frame(&mut decoded).ok()?;
+            if info.width != INVENTORY_PANEL_WIDTH
+                || info.height != INVENTORY_PANEL_HEIGHT
+                || info.color_type != png::ColorType::Rgba
+                || info.bit_depth != png::BitDepth::Eight
+            {
+                return None;
+            }
+            let source = &decoded[..info.buffer_size()];
+            let mut bgra = Vec::with_capacity(source.len());
+            for rgba in source.chunks_exact(4) {
+                bgra.extend_from_slice(&[rgba[2], rgba[1], rgba[0], rgba[3]]);
+            }
+            Some(bgra)
+        })
+        .as_ref()
+        .map(Vec::as_slice)
 }
 
 fn composite_inventory_tab_shadow(
@@ -573,7 +744,7 @@ fn composite_inventory_tab_shadow(
 pub(super) fn render_inventory_tooltip(
     font: &fontdue::Font,
     item: &openstory_protocol::InventoryItem,
-    ui_archive: &NxArchive,
+    _ui_archive: &NxArchive,
     item_archive: &NxArchive,
     character_archive: &NxArchive,
     string_archive: &NxArchive,
@@ -583,24 +754,12 @@ pub(super) fn render_inventory_tooltip(
     const WIDTH: usize = INVENTORY_TOOLTIP_WIDTH as usize;
     const HEIGHT: usize = INVENTORY_TOOLTIP_HEIGHT as usize;
     let mut pixels = vec![0_u8; WIDTH * HEIGHT * 4];
-    let _ = composite_nx_ui_bitmap(
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        ui_archive,
-        "UIToolTip.img/Item/Frame2/cover",
-        8,
-        8,
-    );
-    let _ = composite_nx_ui_bitmap(
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        ui_archive,
-        "UIToolTip.img/Item/ItemIcon/base",
-        10,
-        48,
-    );
+    fill_dialogue_rect(&mut pixels, WIDTH, HEIGHT, 0, 0, WIDTH, HEIGHT, [61, 34, 37, 220]);
+    fill_dialogue_rect(&mut pixels, WIDTH, HEIGHT, 0, 0, WIDTH, 1, [138, 177, 224, 255]);
+    fill_dialogue_rect(&mut pixels, WIDTH, HEIGHT, 0, HEIGHT - 1, WIDTH, 1, [93, 122, 174, 255]);
+    fill_dialogue_rect(&mut pixels, WIDTH, HEIGHT, 0, 0, 1, HEIGHT, [138, 177, 224, 255]);
+    fill_dialogue_rect(&mut pixels, WIDTH, HEIGHT, WIDTH - 1, 0, 1, HEIGHT, [93, 122, 174, 255]);
+    fill_dialogue_rect(&mut pixels, WIDTH, HEIGHT, 7, 35, WIDTH - 14, 1, [92, 123, 175, 190]);
     if let Some((icon_width, icon_height, icon_pixels)) =
         inventory_item_icon(item.item_id, item_archive, character_archive, icon_cache)
     {
@@ -611,32 +770,25 @@ pub(super) fn render_inventory_tooltip(
             &icon_pixels,
             icon_width as usize,
             icon_height as usize,
-            28,
-            67,
-            46,
+            15,
+            79,
+            44,
         );
     }
-    let _ = composite_nx_ui_bitmap(
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        ui_archive,
-        "UIToolTip.img/Item/ItemIcon/cover",
-        10,
-        48,
-    );
-    draw_dialogue_text(
+    let name = item_name(item.item_id, string_archive, item_name_cache);
+    let name_width = ui_foundation::measure_text(font, &name, 13.0).ceil() as usize;
+    ui_foundation::draw_text_role(
         font,
         &mut pixels,
         WIDTH,
         HEIGHT,
-        &item_name(item.item_id, string_archive, item_name_cache),
-        102,
-        12,
-        13.0,
-        WIDTH - 114,
-        31,
-        [255, 255, 255],
+        &name,
+        (WIDTH.saturating_sub(name_width) / 2) as i32,
+        13,
+        ui_foundation::UiTextRole::Title,
+        WIDTH - 20,
+        18,
+        Some([143, 193, 255]),
     );
     if item.count > 1 {
         draw_dialogue_text(
@@ -645,12 +797,12 @@ pub(super) fn render_inventory_tooltip(
             WIDTH,
             HEIGHT,
             &format!("Quantity: {}", item.count),
-            102,
-            36,
-            8.0,
-            WIDTH - 114,
+            68,
+            47,
+            9.5,
+            WIDTH - 78,
             12,
-            [210, 195, 158],
+            [171, 202, 239],
         );
     }
     let info = inventory_item_info_node(item_archive, character_archive, item.item_id);
@@ -661,14 +813,14 @@ pub(super) fn render_inventory_tooltip(
             WIDTH,
             HEIGHT,
             &summary,
-            102,
-            52,
-            8.0,
-            WIDTH - 114,
+            68,
+            67,
+            9.5,
+            WIDTH - 78,
             48,
-            [255, 232, 148],
+            [175, 207, 244],
         );
-        let description_y = 103_usize;
+        let description_y = 116_usize;
         if let Some(description) = item_description(item.item_id, string_archive) {
             draw_dialogue_text(
                 font,
@@ -676,12 +828,12 @@ pub(super) fn render_inventory_tooltip(
                 WIDTH,
                 HEIGHT,
                 &description,
-                102,
+                14,
                 description_y as i32,
-                8.0,
-                WIDTH - 114,
+                9.5,
+                WIDTH - 28,
                 HEIGHT - description_y - 8,
-                [226, 222, 212],
+                [184, 205, 232],
             );
         }
     } else if let Some(description) = item_description(item.item_id, string_archive) {
@@ -691,12 +843,12 @@ pub(super) fn render_inventory_tooltip(
             WIDTH,
             HEIGHT,
             &description,
-            102,
-            52,
-            8.5,
-            WIDTH - 114,
+            68,
+            67,
+            9.5,
+            WIDTH - 78,
             HEIGHT - 60,
-            [226, 222, 212],
+            [184, 205, 232],
         );
     }
     let untradable = item.cash
@@ -918,83 +1070,89 @@ fn render_death_notice(font: &fontdue::Font, respawn_pending: bool) -> Vec<u8> {
         HEIGHT,
         [0, 0, 0, 160],
     );
-    fill_dialogue_rect(
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        328,
-        290,
-        368,
-        188,
-        [177, 145, 92, 255],
-    );
-    fill_dialogue_rect(
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        332,
-        294,
-        360,
-        180,
-        [33, 31, 30, 255],
-    );
-    draw_dialogue_text(
-        font,
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        "You have died.",
-        364,
-        318,
-        19.0,
-        296,
-        28,
-        [246, 226, 185],
-    );
-    draw_dialogue_text(
-        font,
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        "Press OK to return to the nearest town.",
-        364,
-        358,
-        13.0,
-        296,
-        34,
-        [229, 226, 217],
-    );
-    fill_dialogue_rect(
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        464,
-        412,
-        96,
-        36,
-        if respawn_pending {
-            [63, 57, 49, 255]
-        } else {
-            [93, 68, 43, 255]
-        },
-    );
-    draw_dialogue_text(
-        font,
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        if respawn_pending {
-            "Returning..."
-        } else {
-            "OK"
-        },
-        466,
-        422,
-        13.0,
-        92,
-        18,
-        [246, 231, 199],
-    );
+
+    // This 1:1 art asset is the panel shown by reference-images/revive-character.png.
+    // Keep it at native resolution so the frame, text raster, grave illustration,
+    // and button bevel stay pixel aligned with the v83 client.
+    static REVIVE_PANEL: std::sync::OnceLock<Option<(usize, usize, Vec<u8>)>> =
+        std::sync::OnceLock::new();
+    if let Some((panel_width, panel_height, panel_bgra)) = REVIVE_PANEL
+        .get_or_init(|| {
+            let bytes = include_bytes!("../../assets/ui/revive-character.png");
+            let mut decoder = png::Decoder::new(std::io::Cursor::new(bytes.as_slice()));
+            decoder.set_transformations(png::Transformations::EXPAND);
+            let mut reader = decoder.read_info().ok()?;
+            let mut decoded = vec![0; reader.output_buffer_size()];
+            let info = reader.next_frame(&mut decoded).ok()?;
+            let source = &decoded[..info.buffer_size()];
+            if info.color_type != png::ColorType::Rgba || info.bit_depth != png::BitDepth::Eight {
+                return None;
+            }
+            let mut bgra = Vec::with_capacity(source.len());
+            for rgba in source.chunks_exact(4) {
+                bgra.extend_from_slice(&[rgba[2], rgba[1], rgba[0], rgba[3]]);
+            }
+            Some((info.width as usize, info.height as usize, bgra))
+        })
+        .as_ref()
+    {
+        let left = (WIDTH - *panel_width) / 2;
+        let top = (HEIGHT - *panel_height) / 2;
+        for source_y in 0..*panel_height {
+            for source_x in 0..*panel_width {
+                let source_index = (source_y * *panel_width + source_x) * 4;
+                let source_alpha = u32::from(panel_bgra[source_index + 3]);
+                if source_alpha == 0 {
+                    continue;
+                }
+                let destination_index = ((top + source_y) * WIDTH + left + source_x) * 4;
+                let destination_alpha = u32::from(pixels[destination_index + 3]);
+                let inverse = 255 - source_alpha;
+                let output_alpha = source_alpha + destination_alpha * inverse / 255;
+                for channel in 0..3 {
+                    let foreground = u32::from(panel_bgra[source_index + channel]);
+                    let background = u32::from(pixels[destination_index + channel]);
+                    let premultiplied = foreground * source_alpha
+                        + background * destination_alpha * inverse / 255;
+                    pixels[destination_index + channel] =
+                        (premultiplied / output_alpha.max(1)) as u8;
+                }
+                pixels[destination_index + 3] = output_alpha as u8;
+            }
+        }
+    }
+
+    // Indicate an in-flight respawn request without changing the panel art or
+    // its resting-state reference appearance.
+    if respawn_pending {
+        let panel_width = 285;
+        let panel_height = 139;
+        let left = (WIDTH - panel_width) / 2;
+        let top = (HEIGHT - panel_height) / 2;
+        fill_dialogue_rect(
+            &mut pixels,
+            WIDTH,
+            HEIGHT,
+            left + 131,
+            top + 113,
+            26,
+            10,
+            [237, 148, 62, 255],
+        );
+        draw_dialogue_text(
+            font,
+            &mut pixels,
+            WIDTH,
+            HEIGHT,
+            "...",
+            (left + 139) as i32,
+            (top + 112) as i32,
+            10.0,
+            18,
+            13,
+            [255, 255, 255],
+        );
+    }
     pixels
 }
 

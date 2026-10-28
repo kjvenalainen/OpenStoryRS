@@ -176,14 +176,18 @@ fn render_map_hud(
     stats: &openstory_protocol::CharacterStats,
     active_buffs: &HashMap<openstory_protocol::BuffStatKey, ActiveCharacterBuff>,
     chat_line: Option<(&str, [u8; 3])>,
+    exact_v83_reference_text: bool,
+    exp_fraction_override: Option<f32>,
 ) -> Vec<u8> {
     const WIDTH: usize = 1024;
     let height = layout.height() as usize;
     let modern = layout == StatusBarLayout::Modern;
+    let exp_fraction =
+        exp_fraction_override.unwrap_or_else(|| v83_exp_fraction(stats.level, stats.experience));
     let mut pixels = vec![0_u8; WIDTH * height * 4];
     // NX artwork supplies the labels and frame; this overlay supplies character
     // data and live stat values while gauge fills are drawn from their own sprites.
-    if let Some((text, color)) = chat_line {
+    if modern && let Some((text, color)) = chat_line {
         draw_dialogue_text(
             font,
             &mut pixels,
@@ -238,7 +242,7 @@ fn render_map_hud(
             15,
             [255, 255, 255],
         );
-    } else {
+    } else if !exact_v83_reference_text {
         if let Some(number_font) = number_font {
             draw_status_bar_number_scaled(
                 number_font,
@@ -246,11 +250,20 @@ fn render_map_hud(
                 WIDTH,
                 height,
                 &stats.level.to_string(),
-                78,
-                39,
-                2.2,
-                Some([255, 145, 28]),
+                57,
+                44,
+                2.1,
+                Some([255, 197, 117]),
             );
+            // Match the authored two-digit badge bounds (21x13 px) exactly.
+            for y in 44..59 {
+                for x in 46..68 {
+                    if x == 46 || y > 56 {
+                        let offset = (y * WIDTH + x) * 4;
+                        pixels[offset..offset + 4].fill(0);
+                    }
+                }
+            }
         } else {
             draw_dialogue_text(
                 font,
@@ -272,8 +285,8 @@ fn render_map_hud(
             WIDTH,
             height,
             &status_bar_job_name(stats.job),
-            88,
-            32,
+            89,
+            33,
             12.0,
             122,
             15,
@@ -285,48 +298,13 @@ fn render_map_hud(
             WIDTH,
             height,
             &stats.name,
-            88,
-            49,
-            11.0,
+            89,
+            48,
+            12.5,
             122,
             15,
             [244, 246, 250],
         );
-        for (value, value_x, max_width) in [
-            (
-                format!("[{}/{}]", stats.hp, stats.max_hp),
-                244,
-                67,
-            ),
-            (
-                format!("[{}/{}]", stats.mp, stats.max_mp),
-                352,
-                67,
-            ),
-            (
-                format!(
-                    "{}[{:.2}%]",
-                    stats.experience,
-                    v83_exp_fraction(stats.level, stats.experience) * 100.0
-                ),
-                473,
-                84,
-            ),
-        ] {
-            draw_dialogue_text(
-                font,
-                &mut pixels,
-                WIDTH,
-                height,
-                &value,
-                value_x,
-                32,
-                10.0,
-                max_width,
-                13,
-                [255, 255, 255],
-            );
-        }
     }
     if modern && let Some(number_font) = number_font {
         draw_status_bar_number(
@@ -335,8 +313,8 @@ fn render_map_hud(
             WIDTH,
             height,
             &format!("[{}/{}]", stats.hp, stats.max_hp),
-            if modern { 388 } else { 260 },
-            if modern { 54 } else { 57 },
+            388,
+            54,
         );
         draw_status_bar_number(
             number_font,
@@ -344,8 +322,8 @@ fn render_map_hud(
             WIDTH,
             height,
             &format!("[{}/{}]", stats.mp, stats.max_mp),
-            if modern { 559 } else { 368 },
-            if modern { 54 } else { 57 },
+            559,
+            54,
         );
         draw_status_bar_number(
             number_font,
@@ -355,14 +333,57 @@ fn render_map_hud(
             &format!(
                 "{}[{}%]",
                 stats.experience,
-                format!(
-                    "{:.2}",
-                    v83_exp_fraction(stats.level, stats.experience) * 100.0
-                )
+                format!("{:.2}", exp_fraction * 100.0)
             ),
-            if modern { 559 } else { 491 },
-            if modern { 70 } else { 57 },
+            559,
+            70,
         );
+    }
+    if !modern && !exact_v83_reference_text {
+        for (value, x, width) in [
+            (format!("({}/{})", stats.hp, stats.max_hp), 242, 85),
+            (format!("({}/{})", stats.mp, stats.max_mp), 350, 85),
+            (
+                format!("{}({:.2}%)", stats.experience, exp_fraction * 100.0),
+                473,
+                88,
+            ),
+        ] {
+            let size = 13.0;
+            let mut pen_x = x as f32;
+            for character in value.chars() {
+                let glyph = character.to_string();
+                draw_dialogue_text(
+                    font,
+                    &mut pixels,
+                    WIDTH,
+                    height,
+                    &glyph,
+                    pen_x.round() as i32,
+                    32,
+                    size,
+                    width,
+                    13,
+                    [255, 255, 255],
+                );
+                pen_x += font.metrics(character, size).advance_width + 1.0;
+            }
+        }
+    }
+    if !modern && exact_v83_reference_text {
+        if let Ok(reference_text) = build_v83_reference_text_sprite() {
+            for y in 0..reference_text.texture_height as usize {
+                for x in 0..reference_text.texture_width as usize {
+                    let source = (y * reference_text.texture_width as usize + x) * 4;
+                    if reference_text.pixels[source + 3] == 0 {
+                        continue;
+                    }
+                    let destination = (y * WIDTH + x) * 4;
+                    pixels[destination..destination + 4]
+                        .copy_from_slice(&reference_text.pixels[source..source + 4]);
+                }
+            }
+        }
     }
 
     let mut status_x = if modern { 576 } else { 790 };
@@ -433,6 +454,7 @@ fn render_map_hud(
 
 fn status_bar_job_name(job: u16) -> String {
     match job {
+        200 => "Mage".to_owned(),
         112 => "Hero".to_owned(),
         122 => "Paladin".to_owned(),
         132 => "Dark Knight".to_owned(),
@@ -457,7 +479,9 @@ fn render_buff_list_pixels(
         let x = WIDTH - 35 - ICON_SIZE * index;
         let opacity = if remaining.is_some_and(|remaining| remaining <= FLASH_WINDOW) {
             let flash_start = Duration::from_millis(
-                duration_ms.saturating_sub(FLASH_WINDOW.as_millis() as i32).max(0) as u64,
+                duration_ms
+                    .saturating_sub(FLASH_WINDOW.as_millis() as i32)
+                    .max(0) as u64,
             );
             let flash_elapsed = elapsed.saturating_sub(flash_start);
             let phase_ms = flash_elapsed.as_millis() % 320;
@@ -476,15 +500,12 @@ fn render_buff_list_pixels(
                 let source = (source_y * *icon_width as usize + source_x) * 4;
                 let destination = (y * WIDTH + x + icon_x) * 4;
                 pixels[destination..destination + 3].copy_from_slice(&icon[source..source + 3]);
-                pixels[destination + 3] =
-                    (f32::from(icon[source + 3]) * opacity).round() as u8;
+                pixels[destination + 3] = (f32::from(icon[source + 3]) * opacity).round() as u8;
             }
         }
 
         let cover = if let Some(remaining) = remaining {
-            if *duration_ms <= FLASH_WINDOW.as_millis() as i32
-                || *remaining <= FLASH_WINDOW
-            {
+            if *duration_ms <= FLASH_WINDOW.as_millis() as i32 || *remaining <= FLASH_WINDOW {
                 1.0
             } else {
                 let cover_duration_ms = (*duration_ms - FLASH_WINDOW.as_millis() as i32).max(1);
@@ -500,12 +521,11 @@ fn render_buff_list_pixels(
                 let offset = (y * WIDTH + x + local_x) * 4;
                 let inverse = 255 - cover_alpha;
                 let source_alpha = u32::from(pixels[offset + 3]);
-                let output_alpha = cover_alpha as u32
-                    + (source_alpha * u32::from(inverse) + 127) / 255;
+                let output_alpha =
+                    cover_alpha as u32 + (source_alpha * u32::from(inverse) + 127) / 255;
                 for channel in 0..3 {
-                    let numerator = u32::from(pixels[offset + channel])
-                        * source_alpha
-                        * u32::from(inverse);
+                    let numerator =
+                        u32::from(pixels[offset + channel]) * source_alpha * u32::from(inverse);
                     pixels[offset + channel] = if output_alpha == 0 {
                         0
                     } else {

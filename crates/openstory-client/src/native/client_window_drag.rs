@@ -63,7 +63,7 @@ impl ClientApp {
                 (panel.x, panel.y, panel.width, panel.height)
             }
             DialogWindow::NpcShop if self.npc_shop.is_some() => (202.0, 124.0, 620.0, 520.0),
-            DialogWindow::Storage if self.storage.is_some() => (182.0, 105.0, 660.0, 560.0),
+            DialogWindow::Storage if self.storage.is_some() => (182.0, 105.0, 206.0, 355.0),
             DialogWindow::HiredMerchant if self.hired_merchant_room.is_some() => (
                 HIRED_MERCHANT_PANEL_X,
                 HIRED_MERCHANT_PANEL_Y,
@@ -136,12 +136,22 @@ impl ClientApp {
                 EVENT_LIST_PANEL_WIDTH as f32,
                 EVENT_LIST_PANEL_HEIGHT as f32,
             ),
-            DialogWindow::Wedding if self.wedding_panel_open => (
-                (1024.0 - WEDDING_PANEL_WIDTH as f32) * 0.5,
-                (768.0 - WEDDING_PANEL_HEIGHT as f32) * 0.5,
-                WEDDING_PANEL_WIDTH as f32,
-                WEDDING_PANEL_HEIGHT as f32,
-            ),
+            DialogWindow::Wedding if self.wedding_panel_open => {
+                let canvas = ui_foundation::UiRect::new(
+                    0.0,
+                    0.0,
+                    ui_foundation::LOGICAL_WIDTH,
+                    ui_foundation::LOGICAL_HEIGHT,
+                );
+                let panel = ui_foundation::UiRect::new(
+                    0.0,
+                    0.0,
+                    WEDDING_PANEL_WIDTH as f32,
+                    WEDDING_PANEL_HEIGHT as f32,
+                )
+                .centered_in(canvas);
+                (panel.x, panel.y, panel.width, panel.height)
+            }
             DialogWindow::ChannelSwitch if self.channel_switch_open => (
                 channel_switch::DEFAULT_X,
                 channel_switch::DEFAULT_Y,
@@ -275,10 +285,10 @@ impl ClientApp {
         };
         let origin_x = cursor.x - drag.grab_x;
         let origin_y = cursor.y - drag.grab_y;
-        let clamped_x = origin_x.clamp(0.0, (1024.0 - base.width).max(0.0));
-        let clamped_y = origin_y.clamp(0.0, (768.0 - base.height).max(0.0));
+        let clamped = ui_foundation::UiRect::new(origin_x, origin_y, base.width, base.height)
+            .clamped_to_canvas();
         self.dialog_window_offsets
-            .insert(drag.window, (clamped_x - base.x, clamped_y - base.y));
+            .insert(drag.window, (clamped.x - base.x, clamped.y - base.y));
         true
     }
 

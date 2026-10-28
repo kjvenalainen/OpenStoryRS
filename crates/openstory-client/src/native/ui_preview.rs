@@ -8,8 +8,8 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-const CANVAS_WIDTH: u32 = 1024;
-const CANVAS_HEIGHT: u32 = 768;
+const CANVAS_WIDTH: u32 = super::ui_foundation::LOGICAL_WIDTH as u32;
+const CANVAS_HEIGHT: u32 = super::ui_foundation::LOGICAL_HEIGHT as u32;
 const PREVIEW_SIZES: [(u32, u32); 2] = [(1024, 768), (1440, 900)];
 
 pub(super) fn run(
@@ -40,6 +40,7 @@ pub(super) fn run(
         "stats" => "native-status",
         "stats-detail" => "native-status-detail",
         "npc-chat" => "native-npc-dialogue",
+        "revive-character" => "native-revive",
         "item-tooltip" => "native-item-tooltip",
         other => other,
     };
@@ -68,6 +69,7 @@ pub(super) fn run(
             "native-minimap-normal",
             "native-minimap-expanded",
             "native-npc-store",
+            "native-storage",
             "native-cash-shop",
             "native-cash-shop-locker",
             "native-cash-shop-coupon",
@@ -82,6 +84,7 @@ pub(super) fn run(
             "native-first-map",
             "native-second-map",
             "native-npc-dialogue",
+            "native-revive",
             "native-clock",
             "native-wedding",
             "native-rps",
@@ -130,6 +133,7 @@ pub(super) fn run(
         | "native-minimap-normal"
         | "native-minimap-expanded"
         | "native-npc-store"
+        | "native-storage"
         | "native-cash-shop"
         | "native-cash-shop-locker"
         | "native-cash-shop-coupon"
@@ -144,6 +148,7 @@ pub(super) fn run(
         | "native-first-map"
         | "native-second-map"
         | "native-npc-dialogue"
+        | "native-revive"
         | "native-clock"
         | "native-wedding"
         | "native-rps"
@@ -214,7 +219,8 @@ pub(super) fn run(
                 "Screen: {name}\nCanvas: {CANVAS_WIDTH}x{CANVAS_HEIGHT}\nRenderer: live Cash Shop {variant} renderer\nInteractive regions: {}\n",
                 scene.hit_regions.len()
             );
-            let report_path = output_dir.join(format!("{name}-layout.txt"));
+            let preview_name = preview_stem(name);
+            let report_path = output_dir.join(format!("{preview_name}-layout.txt"));
             fs::write(&report_path, report.as_bytes())
                 .map_err(|error| format!("could not write {}: {error}", report_path.display()))?;
             print!("{report}");
@@ -226,7 +232,7 @@ pub(super) fn run(
                     .map_err(|error| format!("could not write {}: {error}", path.display()))?;
             }
             if let Some(annotated) = annotated.as_ref() {
-                let path = output_dir.join(format!("{name}-hitboxes-1024x768.png"));
+                let path = output_dir.join(format!("{preview_name}-hitboxes-1024x768.png"));
                 write_png(&path, CANVAS_WIDTH, CANVAS_HEIGHT, annotated)
                     .map_err(|error| format!("could not write {}: {error}", path.display()))?;
             }
@@ -244,6 +250,8 @@ pub(super) fn run(
             build_inventory_panel_scene(map, legacy_ui, characters, items, strings, font)?
         } else if *name == "native-equipment" {
             build_equipment_panel_scene(map, legacy_ui, characters, items, font)?
+        } else if *name == "native-storage" {
+            build_storage_panel_scene(map, legacy_ui, npcs, characters, items, strings, font)?
         } else if *name == "native-item-tooltip" {
             build_item_tooltip_scene(map, characters, items, strings, ui, font)?
         } else if matches!(*name, "native-quest-log" | "native-quest-log-detail") {
@@ -275,6 +283,35 @@ pub(super) fn run(
                 depth_order: 0,
                 texture_width: width.round() as u32,
                 texture_height: height.round() as u32,
+                pixels: Arc::from(pixels),
+            });
+            scene
+        } else if *name == "native-revive" {
+            let mut scene = build_scene(
+                "native-first-map",
+                map,
+                legacy_ui,
+                ui,
+                characters,
+                items,
+                skills,
+                etc,
+                strings,
+                font,
+            )?;
+            let pixels = super::render_death_notice(font, false);
+            scene.sprites.push(DecodedSprite {
+                texture_key: "native-revive-preview".to_owned(),
+                rect: SpriteRect {
+                    x: 0.0,
+                    y: 0.0,
+                    width: CANVAS_WIDTH as f32,
+                    height: CANVAS_HEIGHT as f32,
+                    blend_mode: BlendMode::Alpha,
+                },
+                depth_order: 0,
+                texture_width: CANVAS_WIDTH,
+                texture_height: CANVAS_HEIGHT,
                 pixels: Arc::from(pixels),
             });
             scene
@@ -754,7 +791,8 @@ pub(super) fn run(
         });
 
         let report = geometry_report(name, &scene, CANVAS_WIDTH, CANVAS_HEIGHT);
-        let report_path = output_dir.join(format!("{name}-layout.txt"));
+        let preview_name = preview_stem(name);
+        let report_path = output_dir.join(format!("{preview_name}-layout.txt"));
         fs::write(&report_path, report.as_bytes())
             .map_err(|error| format!("could not write {}: {error}", report_path.display()))?;
         print!("{report}");
@@ -766,7 +804,7 @@ pub(super) fn run(
                 .map_err(|error| format!("could not write {}: {error}", path.display()))?;
         }
         if let Some(annotated) = annotated.as_ref() {
-            let path = output_dir.join(format!("{name}-hitboxes-1024x768.png"));
+            let path = output_dir.join(format!("{preview_name}-hitboxes-1024x768.png"));
             write_png(&path, CANVAS_WIDTH, CANVAS_HEIGHT, annotated)
                 .map_err(|error| format!("could not write {}: {error}", path.display()))?;
         }
@@ -844,18 +882,27 @@ fn build_scene(
             let (bar_sprites, gauge_assets, layout) = build_status_bar_sprites(legacy_ui)?;
             let status_bar_preview = name == "native-status-bar";
             let stats = openstory_protocol::CharacterStats {
-                name: if status_bar_preview { "Ronan" } else { "Bobby" }.to_owned(),
-                level: if status_bar_preview { 200 } else { 12 },
-                job: if status_bar_preview { 122 } else { 0 },
-                hp: if status_bar_preview { 4_641 } else { 50 },
-                max_hp: if status_bar_preview { 4_641 } else { 50 },
-                mp: if status_bar_preview { 3_165 } else { 50 },
-                max_mp: if status_bar_preview { 3_165 } else { 78 },
-                experience: if status_bar_preview { 0 } else { 82 },
+                name: if status_bar_preview {
+                    "mmochi"
+                } else {
+                    "Bobby"
+                }
+                .to_owned(),
+                level: if status_bar_preview { 89 } else { 12 },
+                job: if status_bar_preview { 200 } else { 0 },
+                hp: if status_bar_preview { 920 } else { 50 },
+                max_hp: if status_bar_preview { 1_109 } else { 50 },
+                mp: if status_bar_preview { 5_405 } else { 50 },
+                max_mp: if status_bar_preview { 5_772 } else { 78 },
+                experience: if status_bar_preview { 76_083 } else { 82 },
                 ..Default::default()
             };
             let fractions = if status_bar_preview {
-                [1.0_f32, 1.0, 0.0]
+                [
+                    stats.hp as f32 / stats.max_hp.max(1) as f32,
+                    stats.mp as f32 / stats.max_mp.max(1) as f32,
+                    0.0133,
+                ]
             } else {
                 [1.0_f32, 50.0 / 78.0, 0.18]
             };
@@ -869,7 +916,23 @@ fn build_scene(
                     if fill_fraction <= 0.0 {
                         continue;
                     }
-                    sprite.rect.width *= fill_fraction;
+                    if layout == StatusBarLayout::V83 {
+                        let source_width = sprite.texture_width as usize;
+                        let fill_width = ((source_width as f32 * fill_fraction).round() as usize)
+                            .clamp(1, source_width);
+                        let mut cropped =
+                            Vec::with_capacity(fill_width * sprite.texture_height as usize * 4);
+                        for row in 0..sprite.texture_height as usize {
+                            let start = row * source_width * 4;
+                            cropped
+                                .extend_from_slice(&sprite.pixels[start..start + fill_width * 4]);
+                        }
+                        sprite.texture_width = fill_width as u32;
+                        sprite.pixels = Arc::from(cropped);
+                        sprite.rect.width = fill_width as f32;
+                    } else {
+                        sprite.rect.width *= fill_fraction;
+                    }
                 } else if let Some(gauge) = gauge_assets
                     .iter()
                     .position(|asset| asset.start_index == Some(index))
@@ -906,6 +969,8 @@ fn build_scene(
                 &stats,
                 &HashMap::new(),
                 Some(("[Welcome] Welcome to MapleStory!", [255, 220, 44])),
+                status_bar_preview,
+                status_bar_preview.then_some(0.0133),
             );
             sprites.push(DecodedSprite {
                 texture_key: "native-status-bar-preview:hud-text".to_owned(),
@@ -1466,7 +1531,7 @@ fn build_inventory_panel_scene(
     font: &fontdue::Font,
 ) -> Result<LoginSceneAssets, String> {
     let inventory = openstory_protocol::InventorySnapshot {
-        meso: 2_145_892,
+        meso: 1_765_592,
         slot_maxima: [24; 5],
         equipped_slot_maximum: 59,
         items: (4_000_000..=4_000_010)
@@ -1475,7 +1540,7 @@ fn build_inventory_panel_scene(
                 inventory_type: openstory_protocol::InventoryType::Etc,
                 slot: index as u16 + 1,
                 item_id,
-                count: 1,
+                count: [8, 1, 10, 5, 2, 1, 1, 1, 1, 1, 1][index],
                 ..Default::default()
             })
             .collect(),
@@ -1520,6 +1585,69 @@ fn build_inventory_panel_scene(
     })
 }
 
+fn build_storage_panel_scene(
+    map_archive: &NxArchive,
+    ui_archive: &NxArchive,
+    npc_archive: &NxArchive,
+    character_archive: &NxArchive,
+    item_archive: &NxArchive,
+    string_archive: &NxArchive,
+    font: &fontdue::Font,
+) -> Result<LoginSceneAssets, String> {
+    let storage = openstory_protocol::StorageSnapshot {
+        npc_id: 1052001,
+        slot_capacity: 24,
+        meso: 96_000,
+        items: (0..22)
+            .map(|index| openstory_protocol::InventoryItem {
+                inventory_type: openstory_protocol::InventoryType::Etc,
+                slot: index + 1,
+                item_id: 4_000_000 + i32::from(index % 11),
+                count: if index % 4 == 0 { 100 } else { 1 },
+                ..Default::default()
+            })
+            .collect(),
+    };
+    let pixels = super::render_storage_reference_panel(
+        font,
+        &storage,
+        openstory_protocol::InventoryType::Etc,
+        0,
+        "",
+        false,
+        None,
+        ui_archive,
+        npc_archive,
+        item_archive,
+        character_archive,
+        &mut HashMap::new(),
+    );
+    let mut sprites = gameplay_backdrop(map_archive, character_archive, font)?;
+    sprites.push(DecodedSprite {
+        texture_key: "nx-window:live-storage".to_owned(),
+        rect: SpriteRect {
+            x: 182.0,
+            y: 105.0,
+            width: 206.0,
+            height: 355.0,
+            blend_mode: BlendMode::Alpha,
+        },
+        depth_order: 0,
+        texture_width: 206,
+        texture_height: 355,
+        pixels: Arc::from(pixels),
+    });
+    let _ = string_archive;
+    Ok(LoginSceneAssets {
+        sprites,
+        actions: Vec::new(),
+        map_scene: None,
+        animated_art: Vec::new(),
+        login_buttons: Vec::new(),
+        save_id_indicator_draws: None,
+    })
+}
+
 fn build_item_tooltip_scene(
     map_archive: &NxArchive,
     character_archive: &NxArchive,
@@ -1546,35 +1674,6 @@ fn build_item_tooltip_scene(
         &mut HashMap::new(),
     );
     let mut sprites = gameplay_backdrop(map_archive, character_archive, font)?;
-    let tooltip_width = super::INVENTORY_TOOLTIP_WIDTH as usize;
-    let tooltip_height = super::INVENTORY_TOOLTIP_HEIGHT as usize;
-    let mut frame = vec![0_u8; tooltip_width * tooltip_height * 4];
-    for y in 0..tooltip_height {
-        for x in 0..tooltip_width {
-            let edge = x < 2 || y < 2 || x >= tooltip_width - 2 || y >= tooltip_height - 2;
-            let color = if edge {
-                [202, 166, 103, 255]
-            } else {
-                [35, 29, 24, 238]
-            };
-            let offset = (y * tooltip_width + x) * 4;
-            frame[offset..offset + 4].copy_from_slice(&color);
-        }
-    }
-    sprites.push(DecodedSprite {
-        texture_key: "inventory-tooltip:preview-frame".to_owned(),
-        rect: SpriteRect {
-            x: 520.0,
-            y: 240.0,
-            width: tooltip_width as f32,
-            height: tooltip_height as f32,
-            blend_mode: BlendMode::Alpha,
-        },
-        depth_order: 0,
-        texture_width: tooltip_width as u32,
-        texture_height: tooltip_height as u32,
-        pixels: Arc::from(frame),
-    });
     sprites.push(DecodedSprite {
         texture_key: "inventory-tooltip:preview".to_owned(),
         rect: SpriteRect {
@@ -2168,33 +2267,33 @@ fn build_native_window_scene(
 
     if name == "native-skills" {
         let mut entries = preview_skill_entries();
-        for (entry, (id, skill_name, level)) in entries.iter_mut().zip([
-            (4_000_000, "Nimble Body", 15),
-            (4_000_001, "Keen Eyes", 15),
-            (4_001_002, "Disorder", 10),
-            (4_001_003, "Dark Sight", 1),
-            (4_001_344, "Double Stab", 0),
-        ]) {
+        for (index, (entry, (id, skill_name))) in entries
+            .iter_mut()
+            .zip([
+                (1_100_000, "Sword Mastery"),
+                (1_100_001, "Axe Mastery"),
+                (1_100_002, "Final Attack: Sword"),
+                (1_100_003, "Final Attack: Axe"),
+            ])
+            .enumerate()
+        {
             entry.id = id;
             entry.name = skill_name.to_owned();
-            entry.level = level;
+            entry.level = 0;
+            entry.max_level = if index < 2 { 20 } else { 0 };
         }
-        let mut lucky_seven = preview_skill_entry();
-        lucky_seven.id = 4_001_334;
-        lucky_seven.name = "Lucky Seven".to_owned();
-        lucky_seven.level = 20;
-        entries.push(lucky_seven);
-        let book_icon = decode_nx_icon(skill_archive, "400.img/info/icon");
+        entries.truncate(4);
+        let book_icon = decode_nx_icon(skill_archive, "110.img/info/icon");
         let pixels = render_skill_book_panel(
             font,
             ui_archive,
             skill_archive,
             &entries,
-            "Introduction to the Thief",
+            "Fighter Techniques",
             book_icon,
-            0,
-            1,
             2,
+            2,
+            3,
             0,
         );
         sprites.push(DecodedSprite {
@@ -2707,7 +2806,47 @@ fn scale_to_viewport(source: &[u8], width: u32, height: u32) -> Vec<u8> {
 }
 
 fn preview_path(output_dir: &Path, screen: &str, width: u32, height: u32) -> PathBuf {
-    output_dir.join(format!("{screen}-{width}x{height}.png"))
+    output_dir.join(format!("{}-{width}x{height}.png", preview_stem(screen)))
+}
+
+fn preview_stem(screen: &str) -> String {
+    let kind = preview_kind(screen);
+    let screen = screen.strip_prefix("native-").unwrap_or(screen);
+    format!("{kind}-{screen}")
+}
+
+fn preview_kind(screen: &str) -> &'static str {
+    match screen {
+        "login"
+        | "login-active"
+        | "world-select"
+        | "character-select-empty"
+        | "character-select-populated"
+        | "character-create-class"
+        | "character-create-explorer"
+        | "character-create-error"
+        | "native-first-map"
+        | "native-second-map"
+        | "native-world-map"
+        | "native-world-map-link"
+        | "native-world-map-marker"
+        | "native-world-map-search"
+        | "native-world-map-result"
+        | "native-cash-shop"
+        | "native-cash-shop-locker"
+        | "native-cash-shop-coupon"
+        | "native-cash-shop-confirmation" => "page",
+        "native-status-bar"
+        | "native-clock"
+        | "native-minimap-collapsed"
+        | "native-minimap-normal"
+        | "native-minimap-expanded"
+        | "native-chat"
+        | "native-quickslots"
+        | "native-avatar-megaphone"
+        | "native-item-megaphone" => "hud",
+        _ => "panel",
+    }
 }
 
 fn write_png(path: &Path, width: u32, height: u32, bgra: &[u8]) -> io::Result<()> {
