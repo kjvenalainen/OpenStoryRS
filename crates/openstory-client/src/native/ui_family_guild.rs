@@ -16,29 +16,27 @@ fn render_family_panel(
         height,
         [18, 15, 12, 242],
     );
-    draw_family_nx_background(
+    let _ = composite_nx_ui_bitmap_scaled_to(
         &mut pixels,
         width,
         height,
         ui_archive,
-        "UIWindow2.img/Family/backgrnd",
-        1.28,
+        "UIWindow.img/Family/backgrnd",
+        0,
+        0,
+        width,
+        height,
     );
 
-    draw_dialogue_text(
-        font,
+    let _ = composite_nx_ui_bitmap(
         &mut pixels,
         width,
         height,
-        "Family",
-        15,
-        11,
-        15.0,
-        width - 52,
-        20,
-        [255, 235, 191],
+        ui_archive,
+        "UIWindow.img/Family/BtClose/normal/0",
+        250,
+        10,
     );
-    draw_guild_button(font, &mut pixels, width, height, (242, 5, 24, 24), "X");
 
     if let Some(info) = state.info.as_ref() {
         draw_dialogue_text(
@@ -163,7 +161,7 @@ fn render_family_panel(
             10.0,
             width - 36,
             30,
-            [220, 211, 188],
+            [70, 74, 80],
         );
     }
 
@@ -219,8 +217,12 @@ fn render_family_panel(
         16,
         [255, 225, 144],
     );
-    draw_guild_button(font, &mut pixels, width, height, (196, 299, 29, 25), "<");
-    draw_guild_button(font, &mut pixels, width, height, (236, 299, 29, 25), ">");
+    for (path, x) in [
+        ("UIWindow.img/Family/BtLeft/normal/0", 204),
+        ("UIWindow.img/Family/BtRight/normal/0", 244),
+    ] {
+        let _ = composite_nx_ui_bitmap(&mut pixels, width, height, ui_archive, path, x, 305);
+    }
     draw_dialogue_text(
         font,
         &mut pixels,
@@ -267,22 +269,19 @@ fn render_family_panel(
             [255, 157, 132],
         );
     }
-    draw_guild_button(font, &mut pixels, width, height, (12, 390, 60, 32), "Tree");
-    draw_guild_button(font, &mut pixels, width, height, (76, 390, 50, 32), "Use");
+    for (path, x) in [
+        ("UIWindow.img/Family/BtTree/normal/0", 10),
+        ("UIWindow.img/Family/BtSpecial/normal/0", 69),
+        ("UIWindow.img/Family/BtJuniorEntry/normal/0", 128),
+    ] {
+        let _ = composite_nx_ui_bitmap(&mut pixels, width, height, ui_archive, path, x, 397);
+    }
     draw_guild_button(
         font,
         &mut pixels,
         width,
         height,
-        (130, 390, 58, 32),
-        "Invite",
-    );
-    draw_guild_button(
-        font,
-        &mut pixels,
-        width,
-        height,
-        (192, 390, 68, 32),
+        (201, 390, 68, 32),
         "Leave",
     );
 
@@ -468,74 +467,57 @@ fn render_family_tree_panel(
         width,
         height,
         ui_archive,
-        "UIWindow2.img/FamilyTree/backgrnd",
-        1.28,
+        "UIWindow.img/FamilyTree/backgrnd",
+        1.0,
     );
-    draw_dialogue_text(
-        font,
-        &mut pixels,
-        width,
-        height,
-        "Family tree",
-        18,
-        11,
-        15.0,
-        width - 66,
-        20,
-        [255, 235, 191],
-    );
-    draw_guild_button(font, &mut pixels, width, height, (542, 5, 28, 25), "X");
     if let Some(chart) = state.chart.as_ref() {
         draw_dialogue_text(
             font,
             &mut pixels,
             width,
             height,
-            &format!("{} family members", chart.entries.len()),
-            18,
-            29,
+            &chart.entries.len().to_string(),
+            25,
+            40,
             9.0,
             width - 36,
             15,
-            [197, 188, 167],
+            [45, 40, 32],
         );
-        for (row, entry) in chart.entries.iter().take(10).enumerate() {
-            let y = 44 + row as i32 * 30;
-            let selected = state.selected_member == Some(entry.character_id);
-            fill_dialogue_rect(
-                &mut pixels,
-                width,
-                height,
-                12,
-                y as usize,
-                width - 24,
-                27,
-                if selected {
-                    [78, 61, 37, 242]
-                } else {
-                    [29, 26, 22, 225]
-                },
-            );
-            let indent = if entry.parent_id == 0 { 0 } else { 16 };
+        for (index, x, y) in family_tree_slots(chart) {
+            let entry = &chart.entries[index];
+            let path = if entry.parent_id == 0 {
+                "UIWindow.img/FamilyTree/PlateLeader/0"
+            } else {
+                "UIWindow.img/FamilyTree/PlateOthers/0"
+            };
+            let _ = composite_nx_ui_bitmap(&mut pixels, width, height, ui_archive, path, x, y);
+            if state.selected_member == Some(entry.character_id) {
+                let _ = composite_nx_ui_bitmap(
+                    &mut pixels,
+                    width,
+                    height,
+                    ui_archive,
+                    "UIWindow.img/FamilyTree/selected",
+                    x - 3,
+                    y - 3,
+                );
+            }
             draw_dialogue_text(
                 font,
                 &mut pixels,
                 width,
                 height,
-                &format!(
-                    "{}{}",
-                    if entry.parent_id == 0 { "★ " } else { "↳ " },
-                    entry.name
-                ),
-                20 + indent,
-                y + 4,
-                9.0,
-                248,
-                15,
+                &entry.name,
+                x + 7,
+                y + 3,
+                10.0,
+                120,
+                14,
                 if entry.online {
-                    [255, 232, 173]
+                    [35, 31, 27]
                 } else {
-                    [203, 194, 173]
+                    [92, 88, 82]
                 },
             );
             draw_dialogue_text(
@@ -544,18 +526,15 @@ fn render_family_tree_panel(
                 width,
                 height,
                 &format!(
-                    "Lv. {}  Job {}  Rep {}  {}",
-                    entry.level,
-                    entry.job,
-                    entry.current_reputation,
-                    if entry.online { "online" } else { "offline" }
+                    "Lv. {}  Job {}  Rep {}",
+                    entry.level, entry.job, entry.current_reputation
                 ),
-                292,
-                y + 4,
+                x + 7,
+                y + 17,
                 8.0,
-                width - 312,
-                15,
-                [205, 197, 179],
+                120,
+                12,
+                [58, 54, 49],
             );
         }
     } else {
@@ -565,8 +544,8 @@ fn render_family_tree_panel(
             width,
             height,
             "Family pedigree data has not arrived yet.",
-            18,
-            56,
+            170,
+            345,
             10.0,
             width - 36,
             26,
@@ -574,6 +553,69 @@ fn render_family_tree_panel(
         );
     }
     pixels
+}
+
+// The artwork has room for the viewed member, two seniors, two juniors and
+// two juniors per junior. Clicking a plate requests that member's own chart.
+fn family_tree_slots(chart: &openstory_protocol::FamilyChart) -> Vec<(usize, i32, i32)> {
+    let Some(viewed) = chart
+        .entries
+        .iter()
+        .position(|entry| entry.character_id == chart.viewed_character_id)
+        .or_else(|| (!chart.entries.is_empty()).then_some(0))
+    else {
+        return Vec::new();
+    };
+    let mut slots = vec![(viewed, 223, 200)];
+    let mut senior = viewed;
+    for y in [147, 42] {
+        let parent = chart.entries[senior].parent_id;
+        let Some(index) = chart
+            .entries
+            .iter()
+            .position(|entry| entry.character_id == parent && parent != 0)
+        else {
+            break;
+        };
+        if slots.iter().any(|(seen, _, _)| *seen == index) {
+            break;
+        }
+        slots.push((index, 223, y));
+        senior = index;
+    }
+    let children: Vec<usize> = chart
+        .entries
+        .iter()
+        .enumerate()
+        .filter(|(_, entry)| {
+            entry.parent_id == chart.entries[viewed].character_id
+                && entry.character_id != chart.entries[viewed].character_id
+        })
+        .map(|(index, _)| index)
+        .take(2)
+        .collect();
+    for (side, child) in children.into_iter().enumerate() {
+        if slots.iter().any(|(seen, _, _)| *seen == child) {
+            continue;
+        }
+        slots.push((child, [80, 365][side], 253));
+        for (branch, (index, _)) in chart
+            .entries
+            .iter()
+            .enumerate()
+            .filter(|(index, entry)| {
+                entry.parent_id == chart.entries[child].character_id
+                    && !slots.iter().any(|(seen, _, _)| *seen == *index)
+            })
+            .take(2)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .enumerate()
+        {
+            slots.push((index, [14, 149, 298, 433][side * 2 + branch], 305));
+        }
+    }
+    slots
 }
 
 fn draw_family_nx_background(
@@ -1496,11 +1538,7 @@ fn render_alliance_panel(
                 11.0,
                 width - 36,
                 18,
-                if local {
-                    [128, 83, 0]
-                } else {
-                    [52, 52, 52]
-                },
+                if local { [128, 83, 0] } else { [52, 52, 52] },
             );
         }
         if alliance.guilds.is_empty() {

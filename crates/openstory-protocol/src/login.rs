@@ -197,6 +197,22 @@ pub enum SetField {
     },
 }
 
+/// Full character snapshot embedded in the v83 `SET_ITC` MTS transition.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MtsOpenSnapshot {
+    pub character_id: i32,
+    pub stats: CharacterStats,
+    pub inventory: InventorySnapshot,
+    pub skills: Vec<SkillEntry>,
+    pub cooldowns: Vec<SkillCooldown>,
+    pub quest_log: QuestLog,
+    pub teleport_rock: TeleportRockLocations,
+    pub monster_book: MonsterBookSnapshot,
+    pub buddy_capacity: u8,
+    pub linked_character_name: Option<String>,
+    pub account_name: String,
+}
+
 /// Decodes the account result packet and the account data sent on success.
 pub fn parse_login_result(body: &[u8]) -> Result<LoginResult, PacketError> {
     let mut packet = PacketReader::new(body);
@@ -417,7 +433,7 @@ pub fn parse_set_field(body: &[u8]) -> Result<SetField, PacketError> {
     }
     packet.skip(23)?;
     let character_id = packet.read_i32()?;
-    let stats = read_character_stats(&mut packet)?;
+    let stats = read_character_stats(&mut packet, false)?;
     let inventory = if packet.is_empty() {
         None
     } else {
@@ -460,6 +476,97 @@ pub fn parse_set_field(body: &[u8]) -> Result<SetField, PacketError> {
     })
 }
 
+/// Reads the full character snapshot carried before the MTS account/config
+/// fields in the v83 `SET_ITC` response.
+pub(crate) fn parse_mts_character_snapshot(body: &[u8]) -> Result<MtsOpenSnapshot, PacketError> {
+    use crate::mts::OPCODE_SET_MTS;
+
+    let mut packet = PacketReader::new(body);
+    expect_opcode(&mut packet, OPCODE_SET_MTS)?;
+    packet.read_i64()?; // character-entry timestamp
+    packet.read_u8()?; // transition marker
+    let character_id = packet.read_i32()?;
+    let mut stats = read_character_stats(&mut packet, true)?;
+    let buddy_capacity = packet.read_u8()?;
+    let linked_character_name = if packet.read_bool()? {
+        Some(packet.read_string()?)
+    } else {
+        None
+    };
+
+    let inventory = parse_initial_inventory(&mut packet)?;
+    stats.meso = i32::try_from(inventory.meso).ok();
+    let skills = parse_initial_skillbook(&mut packet)?;
+    let cooldowns = parse_initial_cooldowns(&mut packet)?;
+    let quest_log = parse_initial_quest_log(&mut packet)?;
+    skip_initial_minigame_and_rings(&mut packet)?;
+    let teleport_rock = TeleportRockLocations {
+        normal: read_initial_map_ids(&mut packet, 5)?,
+        vip: read_initial_map_ids(&mut packet, 10)?,
+    };
+    let monster_book = parse_initial_monster_book(&mut packet)?;
+    skip_initial_new_year_and_area_info(&mut packet)?;
+    packet.read_i16()?; // character snapshot terminator
+    let account_name = packet.read_string()?;
+    packet.skip(28)?; // MTS configuration block supplied by Cosmic
+
+    Ok(MtsOpenSnapshot {
+        character_id,
+        stats,
+        inventory,
+        skills,
+        cooldowns,
+        quest_log,
+        teleport_rock,
+        monster_book,
+        buddy_capacity,
+        linked_character_name,
+        account_name,
+    })
+}
+
+fn skip_initial_new_year_and_area_info(packet: &mut PacketReader<'_>) -> Result<(), PacketError> {
+    let new_year_count = read_initial_count(packet, "New Year cards")?;
+    for _ in 0..new_year_count {
+        packet.skip(8)?; // card and sender IDs
+        packet.read_string()?;
+        packet.read_bool()?;
+        packet.read_i64()?;
+        packet.read_i32()?; // receiver ID
+        packet.read_string()?;
+        packet.read_bool()?;
+        packet.read_bool()?;
+        packet.read_i64()?;
+        packet.read_string()?;
+    }
+
+    let area_count = read_initial_count(packet, "area info")?;
+    for _ in 0..area_count {
+        packet.read_i16()?;
+        packet.read_string()?;
+    }
+    Ok(())
+}
+
+fn read_initial_count(
+    packet: &mut PacketReader<'_>,
+    section: &'static str,
+) -> Result<usize, PacketError> {
+    const MAX_INITIAL_ENTRIES: usize = 4096;
+    let count = packet.read_i16()?;
+    if count < 0 {
+        return Err(PacketError::InvalidInitialSetFieldCount { section, count });
+    }
+    let count = count as usize;
+    if count > MAX_INITIAL_ENTRIES {
+        return Err(PacketError::TooManyInitialSetFieldEntries {
+            section,
+            maximum: MAX_INITIAL_ENTRIES,
+        });
+    }
+    Ok(count)
+}
+
 fn read_initial_map_ids(
     packet: &mut PacketReader<'_>,
     count: usize,
@@ -477,7 +584,7 @@ pub fn parse_map_change(body: &[u8]) -> Result<Option<MapChange>, PacketError> {
 
 fn read_character(packet: &mut PacketReader<'_>) -> Result<CharacterInfo, PacketError> {
     let id = packet.read_i32()?;
-    let mut stats = read_character_stats(packet)?;
+    let mut stats = read_character_stats(packet, false)?;
     let look = read_character_look(packet)?;
 
     packet.read_bool()?; // rank info is present
@@ -493,7 +600,10 @@ fn read_character(packet: &mut PacketReader<'_>) -> Result<CharacterInfo, Packet
     Ok(CharacterInfo { id, stats, look })
 }
 
-fn read_character_stats(packet: &mut PacketReader<'_>) -> Result<CharacterStats, PacketError> {
+fn read_character_stats(
+    packet: &mut PacketReader<'_>,
+    has_sp_table: bool,
+) -> Result<CharacterStats, PacketError> {
     let name = packet.read_string_bytes(13)?;
     let female = packet.read_bool()?;
     let _skin = packet.read_u8()?;
@@ -514,7 +624,19 @@ fn read_character_stats(packet: &mut PacketReader<'_>) -> Result<CharacterStats,
     let mp = packet.read_u16()?;
     let max_mp = packet.read_u16()?;
     let ability_points = packet.read_u16()?;
-    let skill_points = packet.read_u16()?;
+    let (skill_points, skill_points_by_job) = if has_sp_table && has_evan_sp_table(job) {
+        let count = usize::from(packet.read_u8()?);
+        if count > 32 {
+            return Err(PacketError::TooManySkillEntries(32));
+        }
+        let mut points = Vec::with_capacity(count);
+        for _ in 0..count {
+            points.push((packet.read_u8()?, packet.read_u8()?));
+        }
+        (0, points)
+    } else {
+        (packet.read_u16()?, Vec::new())
+    };
     let experience = packet.read_i32()?;
     let fame = packet.read_u16()?;
     packet.skip(4)?; // gacha experience
@@ -537,7 +659,7 @@ fn read_character_stats(packet: &mut PacketReader<'_>) -> Result<CharacterStats,
         max_mp,
         ability_points,
         skill_points,
-        skill_points_by_job: Vec::new(),
+        skill_points_by_job,
         experience,
         meso: None,
         fame,
@@ -546,6 +668,10 @@ fn read_character_stats(packet: &mut PacketReader<'_>) -> Result<CharacterStats,
         rank: None,
         job_rank: None,
     })
+}
+
+fn has_evan_sp_table(job: u16) -> bool {
+    matches!(job, 2001 | 2200 | 2210..=2218)
 }
 
 pub(crate) fn read_character_look(

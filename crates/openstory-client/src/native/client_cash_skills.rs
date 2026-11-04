@@ -13,6 +13,7 @@ impl ClientApp {
         let pixels = render_pet_equipment_panel(
             &self.font,
             inventory,
+            &self.legacy_ui_archive,
             &self.item_archive,
             &self.character_archive,
             &self.string_archive,
@@ -70,6 +71,8 @@ impl ClientApp {
             &self.item_archive,
             &self.character_archive,
             &self.string_archive,
+            self.active_character.as_ref(),
+            self.inventory.as_ref(),
             &mut self.inventory_icon_cache,
             &mut self.item_name_cache,
         ) {
@@ -1087,6 +1090,7 @@ impl ClientApp {
             &self.quest_archive,
             &self.quest_start_npc_index,
             self.active_character.as_ref(),
+            self.inventory.as_ref(),
         );
         let quest_ids =
             quest_ids_for_tab(&self.quest_log, &self.available_quests, self.quest_log_tab);
@@ -1154,6 +1158,7 @@ impl ClientApp {
             self.active_character.as_ref(),
             self.quest_forfeit_confirmation,
             &self.legacy_ui_archive,
+            &self.npc_archive,
         );
         let Some(renderer) = self.renderer.as_ref() else {
             return;

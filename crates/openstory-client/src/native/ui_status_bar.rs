@@ -391,9 +391,65 @@ fn load_status_bar_number_font(
         );
     }
     if !('0'..='9').all(|digit| glyphs.contains_key(&digit)) {
-        return Err("StatusBar.img/number is missing one or more digit glyphs".to_owned());
+        return Err(format!("{path} is missing one or more digit glyphs"));
     }
     Ok(StatusBarNumberFont { glyphs })
+}
+
+fn load_v83_status_bar_level_font(archive: &NxArchive) -> Result<StatusBarNumberFont, String> {
+    let mut font = load_status_bar_number_font(archive, "Basic.img/LevelNo")?;
+    for glyph in font.glyphs.values_mut() {
+        let mut pixels = glyph.pixels.to_vec();
+        for pixel in pixels.chunks_exact_mut(4) {
+            if pixel[3] == 0 {
+                continue;
+            }
+            let blue = u32::from(pixel[0]);
+            let green = u32::from(pixel[1]);
+            let red = u32::from(pixel[2]);
+            let luminance = (red * 77 + green * 150 + blue * 29 + 128) / 256;
+            let highlight = luminance.saturating_sub(200).min(55);
+            // The status-bar tiles use a softer amber than the saturated NX
+            // level digits, with warm, light glyphs inside each tile.
+            pixel[2] = ((red + luminance) / 2) as u8;
+            pixel[1] = ((green + luminance) / 2)
+                .saturating_sub((highlight * 26 + 27) / 55) as u8;
+            pixel[0] = ((blue + luminance) / 2)
+                .saturating_sub((highlight * 86 + 27) / 55) as u8;
+        }
+        glyph.pixels = Arc::from(pixels);
+    }
+    Ok(font)
+}
+
+fn draw_v83_level_tile_glow(
+    pixels: &mut [u8],
+    canvas_width: usize,
+    canvas_height: usize,
+    left: i32,
+    top: i32,
+    width: u32,
+    height: u32,
+) {
+    let right = left + width as i32 - 1;
+    let bottom = top + height as i32 - 1;
+    for y in (top - 3).max(0)..=(bottom + 3).min(canvas_height as i32 - 1) {
+        for x in (left - 3).max(0)..=(right + 3).min(canvas_width as i32 - 1) {
+            let dx = (left - x).max(0).max(x - right);
+            let dy = (top - y).max(0).max(y - bottom);
+            let alpha = match dx.max(dy) {
+                0 => 70,
+                1 => 110,
+                2 => 55,
+                3 => 20,
+                _ => 0,
+            };
+            let index = (y as usize * canvas_width + x as usize) * 4;
+            if pixels[index + 3] < alpha {
+                pixels[index..index + 4].copy_from_slice(&[0, 22, 85, alpha]);
+            }
+        }
+    }
 }
 
 fn draw_status_bar_number(
@@ -558,7 +614,7 @@ fn append_status_bar_bitmap(
     let source = bitmap
         .decode_bgra_shared()
         .map_err(|error| error.to_string())?;
-    let (texture_width, texture_height, mut pixels, crop_key) = if let Some((
+    let (texture_width, texture_height, pixels, crop_key) = if let Some((
         crop_x,
         crop_y,
         crop_width,
@@ -621,46 +677,6 @@ fn append_status_bar_bitmap(
     Ok(index)
 }
 
-fn append_status_bar_png(
-    sprites: &mut Vec<DecodedSprite>,
-    bytes: &[u8],
-    key: &str,
-    x: f32,
-    y: f32,
-    width: f32,
-    height: f32,
-) -> Result<usize, String> {
-    let mut decoder = png::Decoder::new(std::io::Cursor::new(bytes));
-    decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
-    let mut reader = decoder.read_info().map_err(|error| error.to_string())?;
-    let mut decoded = vec![0; reader.output_buffer_size()];
-    let info = reader.next_frame(&mut decoded).map_err(|error| error.to_string())?;
-    if info.color_type != png::ColorType::Rgba || info.bit_depth != png::BitDepth::Eight {
-        return Err(format!("status-bar texture {key:?} must be RGBA8"));
-    }
-    let source = &decoded[..info.buffer_size()];
-    let mut bgra = Vec::with_capacity(source.len());
-    for rgba in source.chunks_exact(4) {
-        bgra.extend_from_slice(&[rgba[2], rgba[1], rgba[0], rgba[3]]);
-    }
-    let index = sprites.len();
-    sprites.push(DecodedSprite {
-        texture_key: key.to_owned(),
-        rect: SpriteRect {
-            x,
-            y,
-            width,
-            height,
-            blend_mode: BlendMode::Alpha,
-        },
-        depth_order: 0,
-        texture_width: info.width,
-        texture_height: info.height,
-        pixels: Arc::from(bgra),
-    });
-    Ok(index)
-}
-
 #[allow(dead_code)] // Kept for archives that provide the newer non-v83 status bar.
 fn append_status_bar_nx_sprite(
     sprites: &mut Vec<DecodedSprite>,
@@ -677,6 +693,38 @@ fn append_status_bar_nx_sprite(
     let index = sprites.len();
     append_node_sprite(sprites, &node, path, anchor_x, anchor_y, 1.0)?;
     Ok(index)
+}
+
+fn widen_v83_level_panel(sprite: &mut DecodedSprite) -> Result<(), String> {
+    // This column is inside the empty level plate, before its rounded edge.
+    // Repeat it so the native LV. art and the chrome keep their original size.
+    const SEAM_X: usize = 68;
+    let width = sprite.texture_width as usize;
+    let height = sprite.texture_height as usize;
+    if width <= SEAM_X || sprite.pixels.len() != width * height * 4 {
+        return Err("unexpected v83 status-bar background dimensions".to_owned());
+    }
+    let new_width = width + V83_LEVEL_PANEL_EXTRA_WIDTH;
+    let mut pixels = vec![0; new_width * height * 4];
+    let split = SEAM_X * 4;
+    let extension = V83_LEVEL_PANEL_EXTRA_WIDTH * 4;
+    for (source, destination) in sprite
+        .pixels
+        .chunks_exact(width * 4)
+        .zip(pixels.chunks_exact_mut(new_width * 4))
+    {
+        destination[..split].copy_from_slice(&source[..split]);
+        let seam_pixel = &source[split - 4..split];
+        for pixel in destination[split..split + extension].chunks_exact_mut(4) {
+            pixel.copy_from_slice(seam_pixel);
+        }
+        destination[split + extension..].copy_from_slice(&source[split..]);
+    }
+    sprite.texture_width = new_width as u32;
+    sprite.rect.width += V83_LEVEL_PANEL_EXTRA_WIDTH as f32;
+    sprite.pixels = Arc::from(pixels);
+    sprite.texture_key.push_str(":wider-level-panel");
+    Ok(())
 }
 
 fn build_status_bar_sprites(
@@ -821,7 +869,7 @@ fn build_modern_status_bar_sprites(
 }
 
 fn build_v83_status_bar_sprites(
-    _archive: &NxArchive,
+    archive: &NxArchive,
 ) -> Result<
     (
         Vec<DecodedSprite>,
@@ -830,146 +878,153 @@ fn build_v83_status_bar_sprites(
     ),
     String,
 > {
-    const BAR_TOP: f32 = 697.0;
-    let mut sprites = Vec::with_capacity(4);
-    let mut decoder = png::Decoder::new(std::io::Cursor::new(
-        include_bytes!("../../assets/ui/status-bar-v83-base.png").as_slice(),
-    ));
-    decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
-    let mut reader = decoder.read_info().map_err(|error| error.to_string())?;
-    let mut decoded = vec![0; reader.output_buffer_size()];
-    let info = reader.next_frame(&mut decoded).map_err(|error| error.to_string())?;
-    if info.width != 804
-        || info.height != 71
-        || info.color_type != png::ColorType::Rgba
-        || info.bit_depth != png::BitDepth::Eight
-    {
-        return Err("the authored v83 status-bar plate must be 804x71 RGBA".to_owned());
+    const TOP: f32 = 697.0;
+    const BAR_GAUGE_X: f32 = 220.0 + V83_LEVEL_PANEL_EXTRA_WIDTH as f32;
+    const BAR_GAUGE_Y: f32 = 35.0;
+    let mut sprites = Vec::new();
+    append_status_bar_bitmap(
+        &mut sprites,
+        archive,
+        "StatusBar.img/base/backgrnd",
+        0.0,
+        TOP,
+        V83_STATUS_BAR_WIDTH,
+        71.0,
+        None,
+    )?;
+    let identity_index = append_status_bar_nx_sprite(
+        &mut sprites,
+        archive,
+        "StatusBar.img/base/backgrnd2",
+        0.0,
+        TOP,
+    )?;
+    widen_v83_level_panel(&mut sprites[identity_index])?;
+    // The archive supplies the neutral gauge background as a one-pixel
+    // vertical strip. Repeat it across each empty track at its native height.
+    let gray = archive.root().resolve("StatusBar.img/gauge/gray")
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "missing StatusBar.img/gauge/gray".to_owned())?
+        .bitmap().map_err(|error| error.to_string())?
+        .ok_or_else(|| "missing gauge gray bitmap".to_owned())?;
+    if gray.width() != 1 || gray.height() != 16 {
+        return Err("unexpected v83 gauge gray dimensions".to_owned());
     }
-    let source = &decoded[..info.buffer_size()];
-    let mut bgra = Vec::with_capacity(source.len());
-    for rgba in source.chunks_exact(4) {
-        bgra.extend_from_slice(&[rgba[2], rgba[1], rgba[0], rgba[3]]);
+    let gray_pixels = gray.decode_bgra_shared().map_err(|error| error.to_string())?;
+    let mut track = vec![0; 340 * 31 * 4];
+    for y in 0..16 {
+        for (x, width) in [(2, 105), (110, 105), (223, 115)] {
+            for column in x..x + width {
+                let dest = ((y + 15) * 340 + column) * 4;
+                track[dest..dest + 4].copy_from_slice(&gray_pixels[y * 4..y * 4 + 4]);
+            }
+        }
     }
+    // The renderer draws the first three non-gauge sprites under live fills.
     sprites.push(DecodedSprite {
-        texture_key: "native-status-bar:v83-reference-plate".to_owned(),
+        texture_key: "hud:v83-gauge-track".to_owned(),
         rect: SpriteRect {
-            x: 0.0,
-            y: BAR_TOP,
-            width: 804.0,
-            height: 71.0,
+            x: BAR_GAUGE_X,
+            y: TOP + BAR_GAUGE_Y,
+            width: 340.0,
+            height: 31.0,
             blend_mode: BlendMode::Alpha,
         },
         depth_order: 0,
-        texture_width: 804,
-        texture_height: 71,
-        pixels: Arc::from(bgra),
+        texture_width: 340,
+        texture_height: 31,
+        pixels: Arc::from(track),
     });
-    // Gauge interiors in the plate are neutral; these authored v83 fills sit
-    // over them and retain live HP/MP proportions.
-    let gauge_x = 220.0;
-    let hp_gauge = append_status_bar_png(
-        &mut sprites,
-        include_bytes!("../../assets/ui/status-bar-v83-hp-fill.png"),
-        "native-status-bar:v83-reference-hp-fill",
-        gauge_x + 2.0,
-        BAR_TOP + 50.0,
-        105.0,
-        14.0,
-    )?;
-    let mp_gauge = append_status_bar_png(
-        &mut sprites,
-        include_bytes!("../../assets/ui/status-bar-v83-mp-fill.png"),
-        "native-status-bar:v83-reference-mp-fill",
-        gauge_x + 110.0,
-        BAR_TOP + 50.0,
-        105.0,
-        14.0,
-    )?;
-    let exp_gauge = sprites.len();
+
+    let mut labels = vec![0; 340 * 31 * 4];
+    // Keep the stock labels above the native graduated gauge tracks. The fill
+    // textures remain separate so live fractions crop the original color art.
+    let sheet = archive
+        .root()
+        .resolve("StatusBar.img/gauge/bar")
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "missing StatusBar.img/gauge/bar".to_owned())?;
+    let bitmap = sheet
+        .bitmap()
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "missing gauge bitmap".to_owned())?;
+    let source = bitmap.decode_bgra_shared().map_err(|e| e.to_string())?;
+    if bitmap.width() != 340 || bitmap.height() != 31 {
+        return Err("unexpected v83 gauge sheet dimensions".to_owned());
+    }
+    labels[..340 * 15 * 4].copy_from_slice(&source[..340 * 15 * 4]);
     sprites.push(DecodedSprite {
-        texture_key: "native-status-bar:v83-empty-exp-overlay".to_owned(),
+        texture_key: "hud:gauge-labels".to_owned(),
         rect: SpriteRect {
-            x: gauge_x + 223.0,
-            y: BAR_TOP + 50.0,
-            width: 115.0,
-            height: 14.0,
+            x: BAR_GAUGE_X,
+            y: TOP + BAR_GAUGE_Y,
+            width: 340.0,
+            height: 31.0,
             blend_mode: BlendMode::Alpha,
         },
         depth_order: 0,
-        texture_width: 1,
-        texture_height: 1,
-        pixels: Arc::from([0_u8; 4]),
+        texture_width: 340,
+        texture_height: 31,
+        pixels: Arc::from(labels),
     });
-
-    Ok((
-        sprites,
-        [
-            StatusBarGaugeAsset {
-                fill_index: hp_gauge,
-                start_index: None,
-                end_index: None,
-            },
-            StatusBarGaugeAsset {
-                fill_index: mp_gauge,
-                start_index: None,
-                end_index: None,
-            },
-            StatusBarGaugeAsset {
-                fill_index: exp_gauge,
-                start_index: None,
-                end_index: None,
-            },
-        ],
-        StatusBarLayout::V83,
-    ))
-}
-
-fn build_v83_reference_text_sprite() -> Result<DecodedSprite, String> {
-    let mut decoder = png::Decoder::new(std::io::Cursor::new(
-        include_bytes!("../../assets/ui/status-bar-v83-reference-text.png").as_slice(),
-    ));
-    decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
-    let mut reader = decoder.read_info().map_err(|error| error.to_string())?;
-    let mut decoded = vec![0; reader.output_buffer_size()];
-    let info = reader.next_frame(&mut decoded).map_err(|error| error.to_string())?;
-    if info.width != 804
-        || info.height != 71
-        || info.color_type != png::ColorType::Rgba
-        || info.bit_depth != png::BitDepth::Eight
+    let mut assets = [StatusBarGaugeAsset {
+        fill_index: 0,
+        start_index: None,
+        end_index: None,
+    }; 3];
+    for (index, (x, width)) in [(2, 105), (110, 105), (223, 115)].into_iter().enumerate() {
+        let fill_index = append_status_bar_bitmap(
+            &mut sprites,
+            archive,
+            "StatusBar.img/gauge/bar",
+            BAR_GAUGE_X + x as f32,
+            TOP + BAR_GAUGE_Y + 15.0,
+            width as f32,
+            16.0,
+            Some((x, 15, width, 16)),
+        )?;
+        assets[index].fill_index = fill_index;
+    }
+    // Keep the native chrome over both the live fills and the empty tracks.
+    append_status_bar_nx_sprite(
+        &mut sprites,
+        archive,
+        "StatusBar.img/gauge/graduation",
+        BAR_GAUGE_X,
+        TOP + BAR_GAUGE_Y,
+    )?;
+    for (index, button) in [
+        "StatKey",
+        "InvenKey",
+        "EquipKey",
+        "SkillKey",
+        "KeySet",
+        "QuickSlot",
+    ]
+    .into_iter()
+    .enumerate()
     {
-        return Err("the v83 status-bar reference text must be 804x71 RGBA".to_owned());
+        let small_x = V83_STATUS_BAR_WIDTH
+            - V83_STATUS_BAR_EDGE_PAD
+            - (6.0 * 28.0 + 5.0 * 2.0);
+        append_status_bar_nx_sprite(
+            &mut sprites,
+            archive,
+            &format!("StatusBar.img/{button}/normal/0"),
+            small_x + index as f32 * 30.0,
+            TOP + 6.0,
+        )?;
     }
-    let source = &decoded[..info.buffer_size()];
-    let mut bgra = Vec::with_capacity(source.len());
-    for rgba in source.chunks_exact(4) {
-        bgra.extend_from_slice(&[rgba[2], rgba[1], rgba[0], rgba[3]]);
+    for (index, button) in ["BtShop", "BtMenu", "BtShort"].into_iter().enumerate() {
+        append_status_bar_nx_sprite(
+            &mut sprites,
+            archive,
+            &format!("StatusBar.img/{button}/normal/0"),
+            V83_STATUS_BAR_BIG_BUTTON_X + index as f32 * V83_STATUS_BAR_BIG_BUTTON_STEP,
+            TOP + 35.0,
+        )?;
     }
-    Ok(DecodedSprite {
-        texture_key: "native-status-bar:v83-reference-text".to_owned(),
-        rect: SpriteRect {
-            x: 0.0,
-            y: StatusBarLayout::V83.top(),
-            width: 804.0,
-            height: 71.0,
-            blend_mode: BlendMode::Alpha,
-        },
-        depth_order: 1,
-        texture_width: 804,
-        texture_height: 71,
-        pixels: Arc::from(bgra),
-    })
-}
-
-fn is_v83_reference_status(stats: &openstory_protocol::CharacterStats) -> bool {
-    stats.name == "mmochi"
-        && stats.level == 89
-        && stats.job == 200
-        && stats.hp == 920
-        && stats.max_hp == 1_109
-        && stats.mp == 5_405
-        && stats.max_mp == 5_772
-        && stats.experience == 76_083
+    Ok((sprites, assets, StatusBarLayout::V83))
 }
 
 struct LoginSceneAssets {

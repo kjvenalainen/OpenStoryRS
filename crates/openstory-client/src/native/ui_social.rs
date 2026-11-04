@@ -10,91 +10,109 @@ fn render_chat_panel(
     let width = CHAT_WIDTH as usize;
     let height = CHAT_HEIGHT as usize;
     let mut pixels = vec![0; width * height * 4];
+    let history_height = height - 25;
     if open {
-        // Keep this authored v83 frame at its native 295x240 size.
-        let _ = composite_nx_ui_bitmap(
+        fill_dialogue_rect(
             &mut pixels,
             width,
             height,
-            ui_archive,
-            "UIWindow.img/Messenger/backgrnd2",
-            0,
-            0,
-        );
-    } else {
-        // The collapsed chat surface follows the v83 status-bar chat strip.
-        let _ = composite_nx_ui_bitmap_scaled_to(
-            &mut pixels,
-            width,
-            height,
-            ui_archive,
-            "StatusBar.img/base/backgrnd2",
             0,
             0,
             width,
-            71,
+            history_height,
+            [20, 20, 20, 112],
         );
     }
-    let first = lines.len().saturating_sub(if open { 6 } else { 1 });
+    let visible_rows = if open { 9 } else { 1 };
+    let first = lines.len().saturating_sub(visible_rows);
     for (row, line) in lines.iter().skip(first).enumerate() {
+        let text = ui_foundation::ellipsize(font, &line.text, 11.0, (width - 14) as f32);
         draw_dialogue_text(
             font,
             &mut pixels,
             width,
             height,
-            &line.text,
-            12,
-            (if open { 52 } else { 27 }) + row as i32 * 15,
-            12.0,
-            width - 24,
-            16,
-            readable_chat_panel_color(line.color),
+            &text,
+            3,
+            row as i32 * 12,
+            11.0,
+            width - 14,
+            13,
+            line.color,
         );
     }
-    if open {
-        let _ = composite_nx_ui_bitmap(
-            &mut pixels,
-            width,
-            height,
-            ui_archive,
-            "StatusBar.img/base/chat",
-            6,
-            height as i32 - 32,
-        );
-    }
-    let prompt = if open {
-        format!("[{}] >", composer_label.unwrap_or_else(|| target.label()))
-    } else {
-        "> Press Enter to chat".to_owned()
-    };
-    let input_x = 12 + dialogue_text_width(font, &prompt, 12.0).ceil() as i32 + 5;
+    // The white input strip and its native v83 target/edge sprites share the
+    // bottom edge with the status bar. History stays transparent over the map.
+    fill_dialogue_rect(
+        &mut pixels,
+        width,
+        height,
+        0,
+        history_height,
+        width,
+        25,
+        [247, 248, 247, 255],
+    );
+    let _ = composite_nx_ui_bitmap(
+        &mut pixels,
+        width,
+        height,
+        ui_archive,
+        "StatusBar.img/base/chat",
+        3,
+        history_height as i32 - 2,
+    );
+    let _ = composite_nx_ui_bitmap(
+        &mut pixels,
+        width,
+        height,
+        ui_archive,
+        "StatusBar.img/base/chatTarget",
+        0,
+        history_height as i32 + 3,
+    );
+    let prompt = composer_label.unwrap_or_else(|| target.label());
     draw_dialogue_text(
         font,
         &mut pixels,
         width,
         height,
-        &prompt,
-        12,
-        if open { height as i32 - 23 } else { 43 },
-        12.0,
-        width - 24,
-        16,
-        [76, 59, 43],
+        prompt,
+        5,
+        history_height as i32 + 5,
+        10.0,
+        70,
+        14,
+        [255, 255, 255],
     );
-    if !input.is_empty() {
-        draw_dialogue_text(
-            font,
-            &mut pixels,
-            width,
-            height,
-            input,
-            input_x,
-            if open { height as i32 - 23 } else { 43 },
-            12.0,
-            (width as i32 - input_x - 12).max(1) as usize,
-            16,
-            [58, 47, 38],
-        );
+    let text = if open { input } else { "Press Enter to chat" };
+    draw_dialogue_text(
+        font,
+        &mut pixels,
+        width,
+        height,
+        text,
+        88,
+        history_height as i32 + 5,
+        11.0,
+        width - 110,
+        15,
+        [35, 35, 35],
+    );
+    if open {
+        let caret_x = 88 + dialogue_text_width(font, input, 11.0).ceil() as usize;
+        if caret_x < width - 20 {
+            fill_dialogue_rect(
+                &mut pixels,
+                width,
+                height,
+                caret_x,
+                history_height + 6,
+                1,
+                12,
+                [35, 35, 35, 255],
+            );
+        }
     }
     pixels
 }
@@ -113,8 +131,8 @@ fn render_whisper_panel(
     ui_archive: &NxArchive,
     font: &fontdue::Font,
     conversation: &WhisperConversation,
-    input_focused: bool,
-    target_focused: bool,
+    _input_focused: bool,
+    _target_focused: bool,
 ) -> Vec<u8> {
     let width = WHISPER_PANEL_WIDTH as usize;
     let height = WHISPER_PANEL_HEIGHT as usize;
@@ -126,9 +144,7 @@ fn render_whisper_panel(
         ui_archive,
         &[
             ("UIWindow.img/Messenger/backgrnd", 0, 0),
-            ("UIWindow.img/Messenger/backgrnd2", 0, 0),
-            ("UIWindow.img/Messenger/backgrnd3", 14, 330),
-            ("UIWindow.img/Messenger/BtEnter/normal/0", 205, 333),
+            ("UIWindow.img/Messenger/BtEnter/normal/0", 225, 315),
         ],
     );
     let recipient = if conversation.target.is_empty() {
@@ -153,7 +169,7 @@ fn render_whisper_panel(
     let visible_lines = 9;
     let first = conversation.lines.len().saturating_sub(visible_lines);
     let visible_messages = conversation.lines.iter().skip(first).collect::<Vec<_>>();
-    let row_start = 120;
+    let row_start = 154;
     for (row, line) in visible_messages.into_iter().enumerate() {
         let wrapped = wrap_speech_text(font, &line.text, 12.0, width - 24, 1);
         if let Some(text) = wrapped.first() {
@@ -183,10 +199,8 @@ fn render_whisper_panel(
             visible_input.remove(0);
         }
         visible_input.insert(0, '…');
-    } else if !input_focused || target_focused || input.is_empty() {
-        visible_input.clear();
     }
-    if input_focused && !target_focused && !visible_input.is_empty() {
+    if !visible_input.is_empty() {
         draw_dialogue_text(
             font,
             &mut pixels,
@@ -194,7 +208,7 @@ fn render_whisper_panel(
             height,
             &visible_input,
             20,
-            height as i32 - 30,
+            319,
             12.0,
             input_width,
             18,
@@ -221,10 +235,10 @@ fn render_party_panel(
         ui_archive,
         &[
             ("UIWindow.img/UserList/backgrnd", 0, 0),
-            ("UIWindow.img/UserList/Tab/disabled/0", 0, 0),
-            ("UIWindow.img/UserList/Tab/enabled/1", 0, 0),
-            ("UIWindow.img/UserList/Tab/disabled/2", 0, 0),
-            ("UIWindow.img/UserList/Tab/disabled/3", 0, 0),
+            ("UIWindow.img/UserList/Tab/disabled/0", 15, 32),
+            ("UIWindow.img/UserList/Tab/enabled/1", 65, 32),
+            ("UIWindow.img/UserList/Tab/disabled/2", 112, 32),
+            ("UIWindow.img/UserList/Tab/disabled/3", 160, 32),
             ("UIWindow.img/UserList/Party/party0", 10, 115),
         ],
     );
@@ -277,7 +291,7 @@ fn render_party_panel(
             );
         }
         for (index, member) in party.members.iter().take(6).enumerate() {
-            let y = 142 + index as i32 * 18;
+            let y = 142 + index as i32 * 30;
             let leader_mark = if member.character_id == party.leader_id {
                 "★ "
             } else {
@@ -880,12 +894,12 @@ fn render_buddy_panel(
         &[
             ("UIWindow.img/UserList/backgrnd", 0, 0),
             ("UIWindow.img/UserList/backgrnd2", 0, 0),
-            ("UIWindow.img/UserList/Tab/enabled/0", 0, 0),
-            ("UIWindow.img/UserList/Tab/disabled/1", 0, 0),
-            ("UIWindow.img/UserList/Tab/disabled/2", 0, 0),
-            ("UIWindow.img/UserList/Tab/disabled/3", 0, 0),
-            ("UIWindow.img/UserList/Friend/friend0", 0, 0),
-            ("UIWindow.img/UserList/Friend/line", 132, 115),
+            ("UIWindow.img/UserList/Tab/enabled/0", 15, 32),
+            ("UIWindow.img/UserList/Tab/disabled/1", 65, 32),
+            ("UIWindow.img/UserList/Tab/disabled/2", 112, 32),
+            ("UIWindow.img/UserList/Tab/disabled/3", 160, 32),
+            ("UIWindow.img/UserList/Friend/friend0", 10, 115),
+            ("UIWindow.img/UserList/Friend/line", 132, 142),
         ],
     );
     let online = buddies.iter().filter(|buddy| buddy.channel >= 0).count();
@@ -933,7 +947,7 @@ fn render_buddy_panel(
                 "No buddies yet. Use /buddy add <name>."
             },
             20,
-            116,
+            146,
             10.0,
             width - 24,
             30,
@@ -941,7 +955,7 @@ fn render_buddy_panel(
         );
     }
     for (row, buddy) in buddies.iter().skip(scroll).take(row_limit).enumerate() {
-        let y = 116 + row as i32 * 24;
+        let y = 146 + row as i32 * 24;
         let _ = composite_nx_ui_bitmap(
             &mut pixels,
             width,

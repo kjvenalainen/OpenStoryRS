@@ -41,6 +41,17 @@ fn load_system_font() -> Result<fontdue::Font, String> {
         return fontdue::Font::from_bytes(bytes, fontdue::FontSettings::default())
             .map_err(|error| format!("could not load font {}: {error}", path.display()));
     }
+    for path in [
+        "/System/Library/Fonts/Supplemental/Arial.ttf",
+        "C:/Windows/Fonts/arial.ttf",
+        "/usr/share/fonts/truetype/msttcorefonts/Arial.ttf",
+    ] {
+        if let Ok(bytes) = fs::read(path)
+            && let Ok(font) = fontdue::Font::from_bytes(bytes, fontdue::FontSettings::default())
+        {
+            return Ok(font);
+        }
+    }
     fontdue::Font::from_bytes(
         include_bytes!("../../assets/fonts/Roboto-Regular.ttf").as_slice(),
         fontdue::FontSettings::default(),
@@ -172,11 +183,11 @@ fn rasterize_pic_dialog(
 fn render_map_hud(
     font: &fontdue::Font,
     number_font: Option<&StatusBarNumberFont>,
+    level_font: Option<&StatusBarNumberFont>,
     layout: StatusBarLayout,
     stats: &openstory_protocol::CharacterStats,
-    active_buffs: &HashMap<openstory_protocol::BuffStatKey, ActiveCharacterBuff>,
+    active_buffs: &CharacterBuffs,
     chat_line: Option<(&str, [u8; 3])>,
-    exact_v83_reference_text: bool,
     exp_fraction_override: Option<f32>,
 ) -> Vec<u8> {
     const WIDTH: usize = 1024;
@@ -242,26 +253,32 @@ fn render_map_hud(
             15,
             [255, 255, 255],
         );
-    } else if !exact_v83_reference_text {
-        if let Some(number_font) = number_font {
-            draw_status_bar_number_scaled(
-                number_font,
-                &mut pixels,
-                WIDTH,
-                height,
-                &stats.level.to_string(),
-                57,
-                44,
-                2.1,
-                Some([255, 197, 117]),
-            );
-            // Match the authored two-digit badge bounds (21x13 px) exactly.
-            for y in 44..59 {
-                for x in 46..68 {
-                    if x == 46 || y > 56 {
-                        let offset = (y * WIDTH + x) * 4;
-                        pixels[offset..offset + 4].fill(0);
-                    }
+    } else {
+        let level_text = stats.level.to_string();
+        if let Some(level_font) = level_font {
+            let mut x = 42_i32;
+            for digit in level_text.chars() {
+                if let Some(glyph) = level_font.glyphs.get(&digit) {
+                    draw_v83_level_tile_glow(
+                        &mut pixels,
+                        WIDTH,
+                        height,
+                        x - glyph.origin_x,
+                        47 - glyph.origin_y,
+                        glyph.width,
+                        glyph.height,
+                    );
+                    composite_bgra_pixels(
+                        &mut pixels,
+                        WIDTH,
+                        height,
+                        &glyph.pixels,
+                        glyph.width as usize,
+                        glyph.height as usize,
+                        x - glyph.origin_x,
+                        47 - glyph.origin_y,
+                    );
+                    x += glyph.width as i32 + 1;
                 }
             }
         } else {
@@ -270,23 +287,26 @@ fn render_map_hud(
                 &mut pixels,
                 WIDTH,
                 height,
-                &stats.level.to_string(),
-                40,
-                37,
-                14.0,
-                55,
-                29,
-                [255, 178, 42],
+                &level_text,
+                42,
+                43,
+                12.0,
+                36,
+                16,
+                [255, 225, 156],
             );
         }
+        let job = ui_foundation::ellipsize(font, &status_bar_job_name(stats.job), 12.0, 122.0);
+        let name = ui_foundation::ellipsize(font, &stats.name, 12.5, 122.0);
+        let character_info_x = 85 + V83_LEVEL_PANEL_EXTRA_WIDTH as i32;
         draw_dialogue_text(
             font,
             &mut pixels,
             WIDTH,
             height,
-            &status_bar_job_name(stats.job),
-            89,
-            33,
+            &job,
+            character_info_x,
+            37,
             12.0,
             122,
             15,
@@ -297,14 +317,25 @@ fn render_map_hud(
             &mut pixels,
             WIDTH,
             height,
-            &stats.name,
-            89,
-            48,
+            &name,
+            character_info_x,
+            51,
             12.5,
             122,
             15,
             [244, 246, 250],
         );
+        // The reference uses crisp, opaque small text on this dark plate.
+        for y in 36..66 {
+            for x in character_info_x as usize..character_info_x as usize + 122 {
+                let index = (y * WIDTH + x) * 4;
+                if pixels[index + 3] >= 140 {
+                    pixels[index..index + 4].copy_from_slice(&[255, 255, 255, 255]);
+                } else {
+                    pixels[index..index + 4].fill(0);
+                }
+            }
+        }
     }
     if modern && let Some(number_font) = number_font {
         draw_status_bar_number(
@@ -339,50 +370,33 @@ fn render_map_hud(
             70,
         );
     }
-    if !modern && !exact_v83_reference_text {
-        for (value, x, width) in [
-            (format!("({}/{})", stats.hp, stats.max_hp), 242, 85),
-            (format!("({}/{})", stats.mp, stats.max_mp), 350, 85),
+    if !modern {
+        for (value, left, right) in [
+            (format!("({}/{})", stats.hp, stats.max_hp), 240, 327),
+            (format!("({}/{})", stats.mp, stats.max_mp), 348, 435),
             (
                 format!("{}({:.2}%)", stats.experience, exp_fraction * 100.0),
-                473,
-                88,
+                466,
+                558,
             ),
         ] {
-            let size = 13.0;
-            let mut pen_x = x as f32;
-            for character in value.chars() {
-                let glyph = character.to_string();
-                draw_dialogue_text(
-                    font,
-                    &mut pixels,
-                    WIDTH,
-                    height,
-                    &glyph,
-                    pen_x.round() as i32,
-                    32,
-                    size,
-                    width,
-                    13,
-                    [255, 255, 255],
-                );
-                pen_x += font.metrics(character, size).advance_width + 1.0;
-            }
-        }
-    }
-    if !modern && exact_v83_reference_text {
-        if let Ok(reference_text) = build_v83_reference_text_sprite() {
-            for y in 0..reference_text.texture_height as usize {
-                for x in 0..reference_text.texture_width as usize {
-                    let source = (y * reference_text.texture_width as usize + x) * 4;
-                    if reference_text.pixels[source + 3] == 0 {
-                        continue;
-                    }
-                    let destination = (y * WIDTH + x) * 4;
-                    pixels[destination..destination + 4]
-                        .copy_from_slice(&reference_text.pixels[source..source + 4]);
-                }
-            }
+            let left = left + V83_LEVEL_PANEL_EXTRA_WIDTH as i32;
+            let right = right + V83_LEVEL_PANEL_EXTRA_WIDTH as i32;
+            let value = ui_foundation::ellipsize(font, &value, 10.0, (right - left) as f32);
+            let x = right - dialogue_text_width(font, &value, 10.0).ceil() as i32;
+            draw_dialogue_text(
+                font,
+                &mut pixels,
+                WIDTH,
+                height,
+                &value,
+                x,
+                34,
+                10.0,
+                (right - x) as usize,
+                13,
+                [255, 255, 255],
+            );
         }
     }
 

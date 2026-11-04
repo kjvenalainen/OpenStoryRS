@@ -103,15 +103,10 @@ fn render_quickslot_panel_pixels(
         }
     }
     for slot in 0..8 {
-        let column = slot % 4;
-        let row = slot / 4;
-        let x = 7 + column * 35;
-        let y = 8 + row * 34;
-        if has_nx_background {
-            // StatusBar.img's v83 panel has fixed, baked-in legends. Clear the
-            // caption strip so rebinding a key cannot leave the old label
-            // visible beneath its live caption. The slot's top interior is a
-            // light neutral fill in the source art.
+        let cell = ui_foundation::QUICKSLOT_GRID.cell(slot);
+        let (x, y) = (cell.x as usize, cell.y as usize);
+        if has_nx_background && keys[slot] != DEFAULT_QUICKSLOT_KEYS[slot] {
+            // Clear the caption strip when replacing a key assignment.
             fill_dialogue_rect(
                 &mut pixels,
                 WIDTH,
@@ -131,15 +126,15 @@ fn render_quickslot_panel_pixels(
                 icon,
                 *icon_width as usize,
                 *icon_height as usize,
-                x + 5,
-                y + 1,
-                22,
+                x,
+                y,
+                32,
             );
         }
         let path = format!("UIWindow.img/KeyConfig/quickslotConfig/key/{}", keys[slot]);
-        if let Some((glyph_width, glyph_height, _)) = decode_nx_icon(ui_archive, &path) {
+        if let Some((glyph_width, _glyph_height, _)) = decode_nx_icon(ui_archive, &path) {
             let glyph_x = x as i32 + (32 - glyph_width as i32) / 2;
-            let glyph_y = y as i32 + (30 - glyph_height as i32) / 2;
+            let glyph_y = y as i32 + 2;
             let _ = composite_nx_ui_bitmap(
                 &mut pixels,
                 WIDTH,

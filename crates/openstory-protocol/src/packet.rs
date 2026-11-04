@@ -33,6 +33,8 @@ pub enum PacketError {
         expected: usize,
         actual: usize,
     },
+    InvalidSummonAttackTargetCount(i8),
+    InvalidParcelCount(i8),
     InvalidAttackDamage(i32),
     InvalidForcedStatMask(u32),
     InvalidTraction,
@@ -121,6 +123,10 @@ pub enum PacketError {
     TooManyEventEntries(usize),
     InvalidEventRewardCount(i16),
     TooManyEventRewards(usize),
+    InvalidMtsCount(i32),
+    TooManyMtsListings(usize),
+    InvalidBotInventoryCount(i16),
+    TooManyBotInventoryItems(usize),
 }
 
 impl fmt::Display for PacketError {
@@ -177,6 +183,13 @@ impl fmt::Display for PacketError {
                 f,
                 "attack target has {actual} damage lines; {expected} were declared"
             ),
+            Self::InvalidSummonAttackTargetCount(count) => write!(
+                f,
+                "summon attack contains invalid target count {count}; v83 permits 0..=15"
+            ),
+            Self::InvalidParcelCount(count) => {
+                write!(f, "parcel package list contains invalid count {count}")
+            }
             Self::InvalidAttackDamage(damage) => {
                 write!(f, "attack damage cannot be negative: {damage}")
             }
@@ -427,6 +440,18 @@ impl fmt::Display for PacketError {
             }
             Self::TooManyEventRewards(count) => {
                 write!(f, "event contains {count} rewards; maximum is 64")
+            }
+            Self::InvalidMtsCount(count) => {
+                write!(f, "MTS packet contains an invalid item count: {count}")
+            }
+            Self::TooManyMtsListings(maximum) => {
+                write!(f, "MTS packet exceeds the {maximum}-listing limit")
+            }
+            Self::InvalidBotInventoryCount(count) => {
+                write!(f, "bot inventory packet contains an invalid count: {count}")
+            }
+            Self::TooManyBotInventoryItems(maximum) => {
+                write!(f, "bot inventory packet exceeds the {maximum}-item limit")
             }
         }
     }

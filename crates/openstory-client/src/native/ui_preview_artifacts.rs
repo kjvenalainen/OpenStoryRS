@@ -1,0 +1,417 @@
+// Reference crops and comparison output belong to the offline harness only.
+
+/// The source rectangle is in the logical composition. Reference dimensions
+/// belong to comparison output, never to live layout or pointer coordinates.
+fn reference_crop(
+    name: &str,
+    scene: Option<&LoginSceneAssets>,
+) -> Option<(u32, u32, u32, u32, u32, u32)> {
+    let rect = match name {
+        "hud-bottom-bar" => (0, 697, 804, 71, 804, 71),
+        "hud-chat" => (
+            CHAT_X as u32,
+            CHAT_Y as u32,
+            CHAT_WIDTH,
+            CHAT_HEIGHT,
+            575,
+            142,
+        ),
+        "hud-quickslot" => (865, 615, 152, 83, 152, 83),
+        "hud-minimap-collapsed" | "hud-minimap-normal" | "hud-minimap-expanded" => {
+            let sprite = scene?.sprites.last()?;
+            let (w, h) = match name {
+                "hud-minimap-collapsed" => (149, 26),
+                "hud-minimap-normal" => (151, 138),
+                _ => (222, 198),
+            };
+            (sprite.rect.x as u32, sprite.rect.y as u32, w, h, w, h)
+        }
+        "panel-item-inventory" => (
+            INVENTORY_PANEL_X as u32,
+            INVENTORY_PANEL_Y as u32,
+            INVENTORY_PANEL_WIDTH,
+            INVENTORY_PANEL_HEIGHT,
+            176,
+            291,
+        ),
+        "panel-item-inventory-tabs" => (0, 20, 896, 291, 635, 211),
+        "panel-equipment-inventory" => (
+            EQUIPMENT_INVENTORY_PANEL_X as u32,
+            EQUIPMENT_INVENTORY_PANEL_Y as u32,
+            187,
+            296,
+            187,
+            296,
+        ),
+        "panel-item-tooltip" => (
+            520,
+            240,
+            INVENTORY_TOOLTIP_WIDTH,
+            INVENTORY_TOOLTIP_HEIGHT,
+            237,
+            183,
+        ),
+        "panel-skill-inventory" => (
+            SKILL_BOOK_PANEL_X as u32,
+            SKILL_BOOK_PANEL_Y as u32,
+            SKILL_BOOK_PANEL_WIDTH,
+            SKILL_BOOK_PANEL_HEIGHT,
+            177,
+            292,
+        ),
+        "panel-stats" => (
+            STATUS_PANEL_X as u32,
+            STATUS_PANEL_Y as u32,
+            348,
+            350,
+            348,
+            350,
+        ),
+        "panel-npc-chat" => (
+            NpcDialogueLayout::PANEL_X as u32,
+            NpcDialogueLayout::PANEL_Y as u32,
+            NpcDialogueLayout::WIDTH as u32,
+            NpcDialogueLayout::HEIGHT as u32,
+            530,
+            325,
+        ),
+        "panel-npc-storage" => (182, 105, 206, 355, 206, 355),
+        name if name.starts_with("panel-keyboard-settings") => (
+            KEY_CONFIG_PANEL_X as u32,
+            KEY_CONFIG_PANEL_Y as u32,
+            633,
+            343,
+            633,
+            343,
+        ),
+        "panel-system-options" => (
+            SETTINGS_PANEL_X as u32,
+            SETTINGS_PANEL_Y as u32,
+            300,
+            397,
+            300,
+            397,
+        ),
+        "panel-revive-character" => (369, 311, 285, 139, 285, 139),
+        "panel-quests" => (
+            QUEST_LOG_PANEL_X as u32,
+            QUEST_LOG_PANEL_Y as u32,
+            617,
+            447,
+            617,
+            447,
+        ),
+        "panel-monster-book" => (276, 20, 564, 420, 564, 420),
+        "page-cash-shop" => (112, 84, 800, 600, 576, 437),
+        _ => return None,
+    };
+    Some(rect)
+}
+
+fn write_reference_artifacts(
+    output: &Path,
+    name: &str,
+    base: &[u8],
+    scene: Option<&LoginSceneAssets>,
+) -> Result<(), String> {
+    let Some((x, y, width, height, target_width, target_height)) = reference_crop(name, scene)
+    else {
+        return Ok(());
+    };
+    let mut crop = vec![0; target_width as usize * target_height as usize * 4];
+    for row in 0..target_height {
+        for column in 0..target_width {
+            let sx = x + column * width / target_width;
+            let sy = y + row * height / target_height;
+            if sx < CANVAS_WIDTH && sy < CANVAS_HEIGHT {
+                let src = ((sy * CANVAS_WIDTH + sx) * 4) as usize;
+                let dst = ((row * target_width + column) * 4) as usize;
+                crop[dst..dst + 4].copy_from_slice(&base[src..src + 4]);
+            }
+        }
+    }
+    write_png(
+        &output.join(format!("{name}.png")),
+        target_width,
+        target_height,
+        &crop,
+    )
+    .map_err(|e| e.to_string())?;
+    let reference_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../reference-images")
+        .join(format!("{name}.png"));
+    let file = match fs::File::open(&reference_path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(format!("{}: {error}", reference_path.display())),
+    };
+    let mut decoder = png::Decoder::new(file);
+    decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
+    let mut reader = decoder.read_info().map_err(|e| e.to_string())?;
+    let mut decoded = vec![0; reader.output_buffer_size()];
+    let info = reader.next_frame(&mut decoded).map_err(|e| e.to_string())?;
+    if info.width != target_width || info.height != target_height {
+        return Err(format!(
+            "reference {name} is {}x{}, expected {target_width}x{target_height}",
+            info.width, info.height
+        ));
+    }
+    let channels = match info.color_type {
+        png::ColorType::Rgb => 3,
+        png::ColorType::Rgba => 4,
+        _ => return Err(format!("unsupported reference color for {name}")),
+    };
+    let mut comparison = vec![255; target_width as usize * 2 * target_height as usize * 4];
+    let mut difference = vec![255; crop.len()];
+    for row in 0..target_height as usize {
+        for col in 0..target_width as usize {
+            let index = row * target_width as usize + col;
+            let source = &decoded[index * channels..(index + 1) * channels];
+            let reference = [source[2], source[1], source[0], 255];
+            let left = (row * target_width as usize * 2 + col) * 4;
+            let right = left + target_width as usize * 4;
+            comparison[left..left + 4].copy_from_slice(&reference);
+            comparison[right..right + 4].copy_from_slice(&crop[index * 4..index * 4 + 4]);
+            for channel in 0..3 {
+                difference[index * 4 + channel] =
+                    reference[channel].abs_diff(crop[index * 4 + channel]);
+            }
+        }
+    }
+    write_png(
+        &output.join(format!("{name}-comparison.png")),
+        target_width * 2,
+        target_height,
+        &comparison,
+    )
+    .map_err(|e| e.to_string())?;
+    write_png(
+        &output.join(format!("{name}-difference.png")),
+        target_width,
+        target_height,
+        &difference,
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn write_asset_catalog(archive: &NxArchive, output: &Path) -> Result<(), String> {
+    fn visit(
+        node: openstory_assets::NxNode,
+        path: String,
+        rows: &mut String,
+    ) -> Result<(), String> {
+        if let Some(bitmap) = node.bitmap().map_err(|e| e.to_string())? {
+            let origin = node
+                .child("origin")
+                .map_err(|e| e.to_string())?
+                .and_then(|n| n.value().ok());
+            let delay = node
+                .child("delay")
+                .map_err(|e| e.to_string())?
+                .and_then(|n| n.value().ok());
+            rows.push_str(&format!(
+                "{path}\t{}\t{}\t{origin:?}\t{delay:?}\n",
+                bitmap.width(),
+                bitmap.height()
+            ));
+        }
+        for child in node.children().map_err(|e| e.to_string())? {
+            let name = child.name().map_err(|e| e.to_string())?;
+            visit(child, format!("{path}/{name}"), rows)?;
+        }
+        Ok(())
+    }
+    let mut rows = "path\twidth\theight\torigin\tdelay\n".to_owned();
+    for path in [
+        "StatusBar.img",
+        "MapHelper.img",
+        "UIWindow.img/Item",
+        "UIWindow.img/Equip",
+        "UIWindow.img/Skill",
+        "UIWindow.img/Stat",
+        "UIWindow.img/StatDetail",
+        "UIWindow.img/UtilDlgEx",
+        "UIWindow.img/Trunk",
+        "UIWindow.img/KeyConfig",
+        "UIWindow.img/SysOpt",
+        "UIWindow.img/GameOpt",
+        "UIWindow.img/Quest",
+        "UIWindow2.img/MonsterBook",
+        "CashShop.img",
+        "CashShopGL.img",
+        "Basic.img",
+    ] {
+        if let Some(node) = resolve_ui_path(&archive.root(), path)? {
+            visit(node, path.to_owned(), &mut rows)?;
+        } else {
+            rows.push_str(&format!("{path}\tMISSING\n"));
+        }
+    }
+    for path in [
+        "StatusBar.img/base/backgrnd",
+        "StatusBar.img/base/backgrnd2",
+        "StatusBar.img/gauge/bar",
+        "StatusBar.img/gauge/graduation",
+        "StatusBar.img/number/3",
+        "Basic.img/LevelNo/8",
+        "Basic.img/LevelNo/9",
+        "Basic.img/LevelNo/blank",
+        "UIWindow.img/Skill/backgrnd",
+        "UIWindow.img/Item/backgrnd",
+        "UIWindow.img/KeyConfig/backgrnd",
+        "UIWindow.img/KeyConfig/key/2",
+        "UIWindow.img/KeyConfig/key/3",
+        "UIWindow.img/KeyConfig/icon/52",
+        "UIWindow.img/KeyConfig/icon/100",
+        "UIWindow.img/Equip/backgrnd",
+        "UIWindow.img/UtilDlgEx/backgrnd",
+        "UIWindow.img/SysOpt/backgrnd",
+        "CashShop.img/Base/backgrnd",
+        "CashShop.img/CSList/Base",
+        "CashShop.img/Base/Preview/0",
+    ] {
+        if let Some(node) = resolve_ui_path(&archive.root(), path)?
+            && let Some(bitmap) = node.bitmap().map_err(|e| e.to_string())?
+        {
+            let pixels = bitmap.decode_bgra_shared().map_err(|e| e.to_string())?;
+            let name = format!("nx-{}.png", path.replace(['/', '.'], "-"));
+            write_png(
+                &output.join(name),
+                u32::from(bitmap.width()),
+                u32::from(bitmap.height()),
+                &pixels,
+            )
+            .map_err(|e| e.to_string())?;
+        }
+    }
+    fs::write(output.join("nx-assets.tsv"), rows).map_err(|e| e.to_string())
+}
+
+fn write_typography_preview(font: &fontdue::Font, output: &Path) -> Result<(), String> {
+    const WIDTH: usize = 720;
+    const HEIGHT: usize = 180;
+    let mut pixels = vec![248; WIDTH * HEIGHT * 4];
+    for pixel in pixels.chunks_exact_mut(4) {
+        pixel[3] = 255;
+    }
+    for (index, role) in [
+        ui_foundation::UiTextRole::Title,
+        ui_foundation::UiTextRole::Label,
+        ui_foundation::UiTextRole::Body,
+        ui_foundation::UiTextRole::Small,
+        ui_foundation::UiTextRole::Value,
+        ui_foundation::UiTextRole::Emphasis,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        ui_foundation::draw_text_role(
+            font,
+            &mut pixels,
+            WIDTH,
+            HEIGHT,
+            "MapleStory 0123456789 | Sword Mastery | 1,765,592 | Agjpq Il1 MW",
+            12,
+            8 + index as i32 * 25,
+            role,
+            WIDTH - 24,
+            24,
+            None,
+        );
+    }
+    write_png(
+        &output.join("typography.png"),
+        WIDTH as u32,
+        HEIGHT as u32,
+        &pixels,
+    )
+    .map_err(|error| error.to_string())?;
+    fs::write(output.join("typography.txt"), format!("Regular: {}\nBold: {}\nRasterizer: fontdue, grayscale coverage; logical-pixel snapping\n",
+        font.name().unwrap_or("unnamed custom font"), ui_foundation::bold_font().and_then(|font| font.name()).unwrap_or("regular fallback")))
+        .map_err(|error| error.to_string())
+}
+
+fn write_keyboard_art_catalog(
+    ui: &NxArchive,
+    skills: &NxArchive,
+    items: &NxArchive,
+    characters: &NxArchive,
+    font: &fontdue::Font,
+    output: &Path,
+) -> Result<(), String> {
+    let mut entries = (0..42)
+        .map(|id| {
+            (
+                id,
+                decode_nx_icon(ui, &format!("UIWindow.img/KeyConfig/icon/{id}")),
+            )
+        })
+        .collect::<Vec<_>>();
+    for class in [200, 210, 211] {
+        if let Some(root) = skills
+            .root()
+            .resolve(&format!("{class}.img/skill"))
+            .map_err(|e| e.to_string())?
+        {
+            for node in root.children().map_err(|e| e.to_string())? {
+                if let Ok(id) = node.name().map_err(|e| e.to_string())?.parse::<i32>() {
+                    entries.push((
+                        id,
+                        decode_nx_icon(skills, &format!("{class}.img/skill/{id}/icon")),
+                    ));
+                }
+            }
+        }
+    }
+    for id in 2_000_000..=2_000_006 {
+        entries.push((
+            id,
+            inventory_item_icon(id, items, characters, &mut HashMap::new()),
+        ));
+    }
+    let width = 640;
+    let height = entries.len().div_ceil(10) * 60;
+    let mut pixels = vec![245; width * height * 4];
+    for pixel in pixels.chunks_exact_mut(4) {
+        pixel[3] = 255;
+    }
+    for (index, (id, icon)) in entries.into_iter().enumerate() {
+        let x = index % 10 * 64;
+        let y = index / 10 * 60;
+        if let Some((w, h, image)) = icon {
+            write_png(&output.join(format!("keyboard-art-{id}.png")), w, h, &image)
+                .map_err(|e| e.to_string())?;
+            composite_bgra_pixels(
+                &mut pixels,
+                width,
+                height,
+                &image,
+                w as usize,
+                h as usize,
+                x as i32 + 16,
+                y as i32,
+            );
+        }
+        draw_dialogue_text(
+            font,
+            &mut pixels,
+            width,
+            height,
+            &id.to_string(),
+            x as i32 + 2,
+            y as i32 + 35,
+            9.0,
+            62,
+            14,
+            [20, 20, 20],
+        );
+    }
+    write_png(
+        &output.join("keyboard-art-catalog.png"),
+        width as u32,
+        height as u32,
+        &pixels,
+    )
+    .map_err(|e| e.to_string())
+}

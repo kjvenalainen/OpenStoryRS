@@ -1104,6 +1104,89 @@ fn body_action_hit_delays_ms(archive: &NxArchive, action: &str) -> Option<Vec<u3
     Some(hits)
 }
 
+/// Resolves custom and fallback NX afterimages for one weapon attack stance.
+fn weapon_afterimage_candidates(
+    archive: &NxArchive,
+    look: &openstory_protocol::CharacterLook,
+    stance_name: &str,
+) -> Vec<(String, openstory_assets::NxNode)> {
+    let Some(weapon_id) = character_weapon_id(look) else {
+        return Vec::new();
+    };
+    let weapon_type = weapon_id / 10_000;
+    let weapon_info = archive
+        .root()
+        .resolve(&format!("Weapon/0{weapon_id}.img/info"))
+        .ok()
+        .flatten();
+    let custom_afterimage = weapon_info
+        .as_ref()
+        .and_then(|info| string_property(info, "afterImage"))
+        .filter(|name| !name.is_empty());
+    let default_afterimage = default_weapon_afterimage(weapon_type);
+    let mut afterimage_names = Vec::with_capacity(2);
+    if let Some(name) = custom_afterimage.as_deref() {
+        afterimage_names.push(name);
+    }
+    if !afterimage_names.contains(&default_afterimage) {
+        afterimage_names.push(default_afterimage);
+    }
+    let weapon_level = weapon_info
+        .as_ref()
+        .and_then(|info| integer_property(info, "reqLevel"))
+        .unwrap_or(0)
+        .max(0)
+        / 10;
+    let levels = if weapon_level == 0 {
+        vec![0]
+    } else {
+        vec![weapon_level, 0]
+    };
+
+    let mut candidates = Vec::new();
+    for level in levels {
+        for afterimage_name in &afterimage_names {
+            let path = format!("Afterimage/{afterimage_name}.img/{level}/{stance_name}");
+            if let Some(node) = archive.root().resolve(&path).ok().flatten() {
+                candidates.push((path, node));
+            }
+        }
+    }
+    candidates
+}
+
+/// Mirrors the legacy regular close attack range selected from the weapon's afterimage.
+fn normal_weapon_attack_range(
+    character_archive: &NxArchive,
+    look: &openstory_protocol::CharacterLook,
+    stance: u8,
+) -> Option<[i16; 4]> {
+    let stance_name = attack_stance_name(stance)?;
+    weapon_afterimage_candidates(character_archive, look, stance_name)
+        .into_iter()
+        .find_map(|(_, afterimage)| {
+            let read_point = |name: &str| {
+                let node = afterimage.child(name).ok().flatten()?;
+                match node.value().ok()? {
+                    openstory_assets::NodeValue::Vector { x, y } => Some((x, y)),
+                    _ => None,
+                }
+            };
+            let (left, top) = read_point("lt")?;
+            let (right, bottom) = read_point("rb")?;
+            // Some custom weapons point at a blank or incomplete afterimage.
+            // Treat its zero-sized rectangle as missing so the type's valid
+            // afterimage supplies both a visible swing and usable range.
+            if left >= right || top >= bottom {
+                return None;
+            }
+            Some(
+                [left, right, top, bottom]
+                    .map(|value| value.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16),
+            )
+        })
+}
+
 fn afterimage_hit_delay_ms(
     character_archive: &NxArchive,
     skill_archive: &NxArchive,

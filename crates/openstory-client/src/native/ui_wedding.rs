@@ -1,4 +1,5 @@
-const WEDDING_PANEL_WIDTH: usize = 234;
+const WEDDING_INVITATION_WIDTH: usize = 234;
+const WEDDING_PANEL_WIDTH: usize = 338;
 const WEDDING_PANEL_HEIGHT: usize = 250;
 
 struct WeddingPanel {
@@ -28,8 +29,8 @@ fn build_wedding_panel(
             WEDDING_PANEL_HEIGHT,
             archive,
             "UIWindow.img/Wedding/Counter/StopWatch",
-            117,
-            135,
+            240,
+            82,
         )?;
         let countdown = format!(
             "{}:{:02}",
@@ -52,8 +53,8 @@ fn build_wedding_panel(
             &label,
             label_width.max(1) as usize,
             20,
-            117 - label_width as i32 / 2,
-            155,
+            289 - label_width as i32 / 2,
+            132,
         );
     }
 

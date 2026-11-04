@@ -462,7 +462,7 @@ fn render_storage_panel(
 fn render_storage_reference_panel(
     font: &fontdue::Font,
     storage: &openstory_protocol::StorageSnapshot,
-    active_tab: openstory_protocol::InventoryType,
+    _active_tab: openstory_protocol::InventoryType,
     storage_scroll: usize,
     meso_input: &str,
     meso_focused: bool,
@@ -475,30 +475,48 @@ fn render_storage_reference_panel(
 ) -> Vec<u8> {
     const WIDTH: usize = 206;
     const HEIGHT: usize = 355;
-    const CELL: usize = 36;
-    const GRID_X: usize = 5;
-    const GRID_Y: usize = 112;
-    const COLUMNS: usize = 5;
     const VISIBLE: usize = 30;
     let mut pixels = vec![0_u8; WIDTH * HEIGHT * 4];
-    let has_nx_frame = composite_ui_bitmap(
+    fill_dialogue_rect(
         &mut pixels,
         WIDTH,
         HEIGHT,
-        ui_archive,
-        "UIWindow.img/StoreBank/backgrnd",
         0,
         0,
-    )
-    .is_ok();
-    if !has_nx_frame {
-        fill_dialogue_rect(&mut pixels, WIDTH, HEIGHT, 0, 0, WIDTH, HEIGHT, [236, 238, 238, 255]);
-        fill_dialogue_rect(&mut pixels, WIDTH, HEIGHT, 0, 0, WIDTH, 2, [107, 139, 177, 255]);
-        fill_dialogue_rect(&mut pixels, WIDTH, HEIGHT, 0, 0, 2, HEIGHT, [107, 139, 177, 255]);
-        fill_dialogue_rect(&mut pixels, WIDTH, HEIGHT, WIDTH - 2, 0, 2, HEIGHT, [74, 104, 141, 255]);
-        fill_dialogue_rect(&mut pixels, WIDTH, HEIGHT, 0, HEIGHT - 2, WIDTH, 2, [74, 104, 141, 255]);
-    }
-
+        WIDTH,
+        HEIGHT,
+        [95, 118, 137, 255],
+    );
+    fill_dialogue_rect(
+        &mut pixels,
+        WIDTH,
+        HEIGHT,
+        1,
+        1,
+        WIDTH - 2,
+        HEIGHT - 2,
+        [250, 250, 250, 255],
+    );
+    fill_dialogue_rect(
+        &mut pixels,
+        WIDTH,
+        HEIGHT,
+        3,
+        3,
+        WIDTH - 6,
+        79,
+        [225, 225, 220, 255],
+    );
+    fill_dialogue_rect(
+        &mut pixels,
+        WIDTH,
+        HEIGHT,
+        3,
+        84,
+        WIDTH - 6,
+        2,
+        [245, 147, 183, 255],
+    );
     // The banker portrait and three right-side actions occupy the same header
     // band as the v83 StoreBank window.
     if !draw_storage_keeper(
@@ -512,44 +530,80 @@ fn render_storage_reference_panel(
     ) {
         draw_storage_keeper_placeholder(&mut pixels, WIDTH, HEIGHT, 16, 15);
     }
-    for (y, label, face) in [
-        (7, "EXIT", [86, 190, 190, 255]),
-        (29, "TAKE OUT", [80, 153, 225, 255]),
-        (51, "ORGANIZE ITEM", [194, 167, 130, 255]),
+    for (y, path, anchor_x, anchor_y, label, face) in [
+        (7, "UIWindow.img/Trunk/BtExit/normal/0", 132, 7, "EXIT", [86, 190, 190, 255]),
+        (29, "UIWindow.img/Trunk/BtGet/normal/0", 132, 29, "TAKE OUT", [80, 153, 225, 255]),
+        (51, "UIWindow.img/Trunk/BtSort/normal/0", 167, 60, "ORGANIZE ITEM", [194, 167, 130, 255]),
     ] {
-        fill_dialogue_rect(&mut pixels, WIDTH, HEIGHT, 132, y, 67, 19, [100, 143, 193, 255]);
-        fill_dialogue_rect(&mut pixels, WIDTH, HEIGHT, 133, y + 1, 65, 17, face);
-        draw_dialogue_text(
-            font,
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            label,
-            135,
-            y as i32 + 4,
-            7.0,
-            63,
-            12,
-            [77, 67, 51],
-        );
+        if composite_nx_ui_bitmap(
+            &mut pixels, WIDTH, HEIGHT, ui_archive, path, anchor_x, anchor_y,
+        ).is_err() {
+            fill_dialogue_rect(&mut pixels, WIDTH, HEIGHT, 132, y, 70, 18, face);
+            draw_dialogue_text(
+                font, &mut pixels, WIDTH, HEIGHT, label, 135, y as i32 + 4,
+                7.0, 63, 12, [77, 67, 51],
+            );
+        }
     }
 
     // Keep the reference's compact All tab and pale, tightly packed item grid.
-    fill_dialogue_rect(&mut pixels, WIDTH, HEIGHT, 4, 91, 34, 19, [99, 67, 183, 255]);
-    draw_dialogue_text(font, &mut pixels, WIDTH, HEIGHT, "All", 11, 94, 11.0, 24, 14, [255, 255, 255]);
-    let stored_items = storage
-        .items
-        .iter()
-        .filter(|item| item.inventory_type == active_tab)
-        .collect::<Vec<_>>();
+    fill_dialogue_rect(
+        &mut pixels,
+        WIDTH,
+        HEIGHT,
+        4,
+        91,
+        34,
+        19,
+        [136, 102, 238, 255],
+    );
+    draw_dialogue_text(
+        font,
+        &mut pixels,
+        WIDTH,
+        HEIGHT,
+        "All",
+        11,
+        94,
+        11.0,
+        24,
+        14,
+        [255, 255, 255],
+    );
+    let stored_items = storage.items.iter().collect::<Vec<_>>();
     for slot in 0..VISIBLE {
-        let col = slot % COLUMNS;
-        let row = slot / COLUMNS;
-        let x = GRID_X + col * CELL;
-        let y = GRID_Y + row * CELL;
-        fill_dialogue_rect(&mut pixels, WIDTH, HEIGHT, x, y, 34, 34, [226, 230, 230, 255]);
-        fill_dialogue_rect(&mut pixels, WIDTH, HEIGHT, x, y, 34, 1, [194, 205, 211, 255]);
-        fill_dialogue_rect(&mut pixels, WIDTH, HEIGHT, x, y, 1, 34, [194, 205, 211, 255]);
+        let cell = ui_foundation::STORAGE_GRID.cell(slot);
+        let (x, y) = (cell.x as usize, cell.y as usize);
+        fill_dialogue_rect(
+            &mut pixels,
+            WIDTH,
+            HEIGHT,
+            x,
+            y,
+            34,
+            34,
+            [226, 230, 230, 255],
+        );
+        fill_dialogue_rect(
+            &mut pixels,
+            WIDTH,
+            HEIGHT,
+            x,
+            y,
+            34,
+            1,
+            [194, 205, 211, 255],
+        );
+        fill_dialogue_rect(
+            &mut pixels,
+            WIDTH,
+            HEIGHT,
+            x,
+            y,
+            1,
+            34,
+            [194, 205, 211, 255],
+        );
         let Some(item) = stored_items.get(storage_scroll + slot).copied() else {
             continue;
         };
@@ -585,7 +639,16 @@ fn render_storage_reference_panel(
         }
     }
 
-    fill_dialogue_rect(&mut pixels, WIDTH, HEIGHT, 5, 332, 195, 1, [163, 177, 185, 255]);
+    fill_dialogue_rect(
+        &mut pixels,
+        WIDTH,
+        HEIGHT,
+        5,
+        332,
+        195,
+        1,
+        [163, 177, 185, 255],
+    );
     fill_dialogue_rect(
         &mut pixels,
         WIDTH,
@@ -594,7 +657,11 @@ fn render_storage_reference_panel(
         337,
         94,
         15,
-        if meso_focused { [246, 247, 238, 255] } else { [231, 234, 231, 255] },
+        if meso_focused {
+            [246, 247, 238, 255]
+        } else {
+            [231, 234, 231, 255]
+        },
     );
     draw_dialogue_text(
         font,
@@ -727,7 +794,13 @@ fn draw_storage_keeper(
     true
 }
 
-fn draw_storage_keeper_placeholder(pixels: &mut [u8], width: usize, height: usize, x: usize, y: usize) {
+fn draw_storage_keeper_placeholder(
+    pixels: &mut [u8],
+    width: usize,
+    height: usize,
+    x: usize,
+    y: usize,
+) {
     let put = |pixels: &mut [u8], px: usize, py: usize, w: usize, h: usize, color: [u8; 4]| {
         fill_dialogue_rect(pixels, width, height, px, py, w, h, color);
     };

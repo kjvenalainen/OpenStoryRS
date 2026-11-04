@@ -84,7 +84,7 @@ fn append_chalkboard_draw<'a>(
 
 fn append_map_entity_draws<'a>(
     scene: &MapSceneRuntime,
-    active_buffs: &HashMap<openstory_protocol::BuffStatKey, ActiveCharacterBuff>,
+    active_buffs: &CharacterBuffs,
     textures: &'a [GpuTexture],
     solid_textures: &'a [GpuTexture],
     maple_tv_idle_texture: Option<&'a GpuTexture>,
@@ -1118,11 +1118,12 @@ fn append_map_entity_draws<'a>(
             }
             Actor::LocalPlayer(frame) => {
                 let facing_right = scene.facing_right;
-                let hidden = character_has_buff(
-                    active_buffs,
-                    openstory_protocol::BuffMaskGroup::Second,
-                    STATUS_DARKSIGHT,
-                );
+                let hidden = scene.gm_hidden
+                    || character_has_buff(
+                        active_buffs,
+                        openstory_protocol::BuffMaskGroup::Second,
+                        STATUS_DARKSIGHT,
+                    );
                 let (tint, opacity) =
                     character_damage_tint(scene.local_invincibility_remaining, hidden);
                 let sit_offset_y = scene

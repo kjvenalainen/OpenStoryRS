@@ -3,6 +3,7 @@
 //! Safe, bounded MapleStory packet primitives and v83 framing/cipher support.
 
 mod alliance;
+mod bot_inventory;
 mod capture;
 mod cash_shop;
 mod events;
@@ -14,11 +15,14 @@ mod guild;
 mod guild_bbs;
 mod inventory;
 mod keymap;
+mod legacy_requests;
 mod login;
 mod maker;
 mod maple;
 mod messenger;
+mod misc;
 mod monster_book;
+mod mts;
 mod packet;
 mod party_search;
 mod quest;
@@ -38,6 +42,11 @@ pub use alliance::{
     alliance_expel_guild_packet, alliance_info_request_packet, alliance_invite_packet,
     alliance_leave_packet, alliance_notice_packet, alliance_rank_titles_packet,
     deny_alliance_invite_packet, parse_alliance_operation,
+};
+pub use bot_inventory::{
+    BotInventoryEvent, BotInventoryItem, BotInventorySnapshot, OPCODE_BOT_INVENTORY,
+    OPCODE_BOT_INVENTORY_ACTION, bot_inventory_equip_packet, bot_inventory_give_packet,
+    bot_inventory_take_packet, parse_bot_inventory,
 };
 pub use capture::{
     CatchResult, OPCODE_BRIDLE_MOB_CATCH_FAIL, OPCODE_CATCH_MONSTER,
@@ -142,16 +151,16 @@ pub use gameplay::{
     RemoteCharacterLookUpdate, RemoteCharacterMiniRoomUpdate, RemoteCharacterMovement,
     RemoteCharacterSpawn, RemoteFacialExpression, RemoteGuildMarkUpdate, RemoteGuildNameUpdate,
     RemotePlayerDamage, ScrollResult, ServerMessage, ServerMessageStyle, SkillLearnItemResult,
-    SummonSkillUpdate, TamingMobInfo, WhisperMessage, accept_buddy_packet, add_buddy_packet,
-    build_player_attack_packet, change_channel_packet, change_map_packet,
-    change_party_leader_packet, character_info_request_packet, create_party_packet,
-    damage_reactor_packet, delete_buddy_packet, deny_party_invite_packet,
-    expel_party_member_packet, face_expression, find_player_packet, general_chat_packet,
-    give_fame_packet, heal_over_time_packet, invite_to_party_packet, join_party_packet,
-    leave_party_packet, move_mob, move_mob_action, move_player, multi_chat_packet,
-    npc_shop_item_action, npc_shop_leave, npc_shop_recharge, npc_talk_more, npc_talk_number,
-    npc_talk_selection, npc_talk_text, parse_add_cooldown, parse_auto_hp_pot, parse_auto_mp_pot,
-    parse_blow_weather, parse_buddy_list, parse_chair_cancel, parse_chair_show,
+    SummonAttack, SummonAttackTarget, SummonDamage, SummonSkillUpdate, TamingMobInfo,
+    WhisperMessage, accept_buddy_packet, add_buddy_packet, build_player_attack_packet,
+    change_channel_packet, change_map_packet, change_party_leader_packet,
+    character_info_request_packet, create_party_packet, damage_reactor_packet, delete_buddy_packet,
+    deny_party_invite_packet, expel_party_member_packet, face_expression, find_player_packet,
+    general_chat_packet, give_fame_packet, heal_over_time_packet, invite_to_party_packet,
+    join_party_packet, leave_party_packet, move_mob, move_mob_action, move_player,
+    multi_chat_packet, npc_shop_item_action, npc_shop_leave, npc_shop_recharge, npc_talk_more,
+    npc_talk_number, npc_talk_selection, npc_talk_text, parse_add_cooldown, parse_auto_hp_pot,
+    parse_auto_mp_pot, parse_blow_weather, parse_buddy_list, parse_chair_cancel, parse_chair_show,
     parse_character_buff_cancel, parse_character_buff_update, parse_character_info,
     parse_character_stat_update, parse_chat_received, parse_clear_avatar_megaphone, parse_clock,
     parse_dragon_movement, parse_dragon_remove, parse_dragon_spawn, parse_drop_remove,
@@ -175,10 +184,10 @@ pub use gameplay::{
     parse_remote_guild_name, parse_remote_player_damage, parse_remove_tv, parse_scroll_result,
     parse_send_tv, parse_server_message, parse_set_avatar_megaphone, parse_set_back_effect,
     parse_set_traction, parse_show_combo, parse_show_foreign_effect, parse_skill_learn_item_result,
-    parse_stop_clock, parse_summon_movement, parse_summon_remove, parse_summon_skill,
-    parse_summon_spawn, parse_taming_mob_info, parse_whisper, pet_loot_packet, pickup_item,
-    set_buddy_group_packet, spend_ability_point_packet, take_damage_packet, talk_to_npc,
-    whisper_packet,
+    parse_stop_clock, parse_summon_attack, parse_summon_damage, parse_summon_movement,
+    parse_summon_remove, parse_summon_skill, parse_summon_spawn, parse_taming_mob_info,
+    parse_whisper, pet_loot_packet, pickup_item, set_buddy_group_packet,
+    spend_ability_point_packet, take_damage_packet, talk_to_npc, whisper_packet,
 };
 pub use guide::{GuideEvent, OPCODE_SPAWN_GUIDE, OPCODE_TALK_GUIDE, parse_guide_packet};
 pub use guild::{
@@ -214,25 +223,34 @@ pub use keymap::{
     OPCODE_QUICKSLOT_INIT, QUICKSLOT_KEY_COUNT, QuickSlotInit, change_keymap_packet, parse_keymap,
     parse_quickslot_init,
 };
+pub use legacy_requests::{
+    AdminMapOperation, Gender, OPCODE_ADMIN_COMMAND_SEND, OPCODE_MONSTER_BOOK_COVER_SEND,
+    OPCODE_PET_CHAT_SEND, OPCODE_PET_COMMAND_SEND, OPCODE_PLAYER_MAP_TRANSFER_SEND,
+    OPCODE_PLAYER_UPDATE_SEND, OPCODE_REPORT_SEND, OPCODE_SET_GENDER_SEND,
+    OPCODE_WEDDING_ACTION_SEND, ReportRequest, admin_enter_map_packet, monster_book_cover_packet,
+    pet_chat_packet, pet_command_packet, player_map_transfer_packet, player_update_packet,
+    report_packet, set_gender_packet, wedding_add_item_packet, wedding_take_item_packet,
+};
 pub use login::{
     AccountInfo, ChannelTransfer, CharacterInfo, CharacterList, CharacterLook, CharacterStats,
-    DeleteCharacterResult, LoginResult, MapChange, OPCODE_ACCEPT_TOS, OPCODE_AFTER_LOGIN_ERROR,
-    OPCODE_CHANNEL_TRANSFER, OPCODE_CHARACTER_NAME_REQUEST, OPCODE_CHARACTER_NAME_RESULT,
-    OPCODE_CHARLIST_REQUEST, OPCODE_CHARLIST_RESULT, OPCODE_CHECK_PIC_RESULT,
-    OPCODE_CREATE_CHARACTER, OPCODE_CREATE_CHARACTER_RESULT, OPCODE_DELETE_CHARACTER,
-    OPCODE_DELETE_CHARACTER_RESULT, OPCODE_LAST_CONNECTED_WORLD, OPCODE_LOGIN, OPCODE_LOGIN_RESULT,
-    OPCODE_LOGIN_START, OPCODE_PLAYER_LOGIN, OPCODE_PONG, OPCODE_RECOMMENDED_WORLDS,
-    OPCODE_REGISTER_PIC, OPCODE_SELECT_CHARACTER, OPCODE_SELECT_CHARACTER_PIC, OPCODE_SERVER_IP,
-    OPCODE_SERVERLIST_REQUEST, OPCODE_SERVERLIST_RESULT, OPCODE_SERVERSTATUS_REQUEST,
-    OPCODE_SERVERSTATUS_RESULT, OPCODE_SET_FIELD, PicResult, RecommendedWorld, ServerListBatch,
-    ServerRedirect, ServerStatus, SetField, WorldChannel, WorldInfo, accept_terms_of_service,
-    create_character, delete_character, login_request, login_start, parse_after_login_error,
-    parse_channel_transfer, parse_character_list, parse_character_name_result,
-    parse_created_character, parse_delete_character_result, parse_last_connected_world,
-    parse_login_result, parse_map_change, parse_pic_result, parse_recommended_worlds,
-    parse_server_list, parse_server_redirect, parse_server_status, parse_set_field, player_login,
-    pong, register_character_pic, request_character_name, request_characters,
-    request_server_status, request_world_list, select_character, select_character_with_pic,
+    DeleteCharacterResult, LoginResult, MapChange, MtsOpenSnapshot, OPCODE_ACCEPT_TOS,
+    OPCODE_AFTER_LOGIN_ERROR, OPCODE_CHANNEL_TRANSFER, OPCODE_CHARACTER_NAME_REQUEST,
+    OPCODE_CHARACTER_NAME_RESULT, OPCODE_CHARLIST_REQUEST, OPCODE_CHARLIST_RESULT,
+    OPCODE_CHECK_PIC_RESULT, OPCODE_CREATE_CHARACTER, OPCODE_CREATE_CHARACTER_RESULT,
+    OPCODE_DELETE_CHARACTER, OPCODE_DELETE_CHARACTER_RESULT, OPCODE_LAST_CONNECTED_WORLD,
+    OPCODE_LOGIN, OPCODE_LOGIN_RESULT, OPCODE_LOGIN_START, OPCODE_PLAYER_LOGIN, OPCODE_PONG,
+    OPCODE_RECOMMENDED_WORLDS, OPCODE_REGISTER_PIC, OPCODE_SELECT_CHARACTER,
+    OPCODE_SELECT_CHARACTER_PIC, OPCODE_SERVER_IP, OPCODE_SERVERLIST_REQUEST,
+    OPCODE_SERVERLIST_RESULT, OPCODE_SERVERSTATUS_REQUEST, OPCODE_SERVERSTATUS_RESULT,
+    OPCODE_SET_FIELD, PicResult, RecommendedWorld, ServerListBatch, ServerRedirect, ServerStatus,
+    SetField, WorldChannel, WorldInfo, accept_terms_of_service, create_character, delete_character,
+    login_request, login_start, parse_after_login_error, parse_channel_transfer,
+    parse_character_list, parse_character_name_result, parse_created_character,
+    parse_delete_character_result, parse_last_connected_world, parse_login_result,
+    parse_map_change, parse_pic_result, parse_recommended_worlds, parse_server_list,
+    parse_server_redirect, parse_server_status, parse_set_field, player_login, pong,
+    register_character_pic, request_character_name, request_characters, request_server_status,
+    request_world_list, select_character, select_character_with_pic,
 };
 pub use maker::{MakerResult, OPCODE_MAKER_RESULT, parse_maker_result};
 pub use maple::{MAX_ENCRYPTED_PACKET_LENGTH, MapleCipher, MapleFrameDecoder};
@@ -241,10 +259,23 @@ pub use messenger::{
     messenger_chat_packet, messenger_decline_invite_packet, messenger_invite_packet,
     messenger_leave_packet, messenger_open_packet, parse_messenger,
 };
+pub use misc::{
+    MemoResult, MiscServerEvent, OPCODE_ADMIN_RESULT, OPCODE_DATA_CRC_CHECK_FAILED,
+    OPCODE_FREDRICK, OPCODE_FREDRICK_MESSAGE, OPCODE_GMEVENT_INSTRUCTIONS, OPCODE_MEMO_RESULT,
+    OPCODE_PARCEL, OPCODE_RELOG_RESPONSE, OPCODE_SESSION_VALUE, OPCODE_SET_GENDER, ParcelEvent,
+    parse_misc_server_packet,
+};
 pub use monster_book::{
     MonsterBookCardUpdate, MonsterBookCoverUpdate, MonsterBookSnapshot,
     OPCODE_MONSTER_BOOK_SET_CARD, OPCODE_MONSTER_BOOK_SET_COVER, parse_monster_book_set_card,
     parse_monster_book_set_cover,
+};
+pub use mts::{
+    MtsEvent, MtsListing, OPCODE_ENTER_MTS, OPCODE_MTS_CASH, OPCODE_MTS_OPERATION,
+    OPCODE_MTS_OPERATION_SEND, OPCODE_SET_MTS, enter_mts_packet, mts_add_cart_packet,
+    mts_buy_from_cart_packet, mts_buy_packet, mts_cancel_sale_packet, mts_change_page_packet,
+    mts_remove_cart_packet, mts_search_packet, mts_sell_packet, mts_transfer_packet,
+    parse_mts_cash, parse_mts_open, parse_mts_operation,
 };
 pub use packet::{PacketError, PacketReader, PacketWriter};
 pub use party_search::{

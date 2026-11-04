@@ -986,6 +986,43 @@ fn read_inventory_item(
     Ok(item)
 }
 
+/// Validates and skips one ordinary v83 item record, as used by shop and Duey
+/// packet lists that need only the serialized record's item ID.
+pub(crate) fn skip_item_record(packet: &mut PacketReader<'_>) -> Result<i32, PacketError> {
+    let item_type = packet.read_i8()?;
+    let item_id = packet.read_i32()?;
+    let cash = packet.read_bool()?;
+    if cash {
+        packet.skip(8)?; // cash/pet/ring ID
+    }
+    packet.skip(8)?; // expiration
+
+    if (5_000_000..=5_000_102).contains(&item_id) {
+        packet.skip(13 + 1 + 2 + 1 + 18)?;
+    } else if item_type == 1 {
+        packet.skip(2 + EQUIP_STAT_COUNT * 2)?;
+        packet.read_string()?; // owner
+        packet.skip(2)?; // flags
+        if cash {
+            packet.skip(10)?;
+        } else {
+            packet.skip(1 + 1 + 2 + 2 + 4 + 8)?;
+        }
+        packet.skip(8 + 4)?; // expiration tail and -1 sentinel
+    } else {
+        let count = packet.read_i16()?;
+        if count < 0 {
+            return Err(PacketError::InvalidInventoryCount(count));
+        }
+        packet.read_string()?; // owner
+        packet.skip(2)?; // flags
+        if matches!(item_id / 10_000, 207 | 233) {
+            packet.skip(8)?; // rechargeable data
+        }
+    }
+    Ok(item_id)
+}
+
 fn read_nonnegative_count(packet: &mut PacketReader<'_>) -> Result<u16, PacketError> {
     let count = packet.read_i16()?;
     u16::try_from(count).map_err(|_| PacketError::InvalidInventoryCount(count))

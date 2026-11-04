@@ -294,11 +294,10 @@ impl ClientApp {
 
     pub(super) fn set_option_setting_from_cursor(&mut self, slider: OptionControl, x: f32) {
         const TRACK_LEFT: f32 = SETTINGS_PANEL_X + 104.0;
-        const TRACK_WIDTH: f32 = 152.0;
         if slider.track_y().is_none() {
             return;
         }
-        let percent = ((x - TRACK_LEFT) / TRACK_WIDTH * 100.0)
+        let percent = ((x - TRACK_LEFT) / slider.track_width() as f32 * 100.0)
             .round()
             .clamp(0.0, 100.0);
         self.settings_selected_slider = slider;
@@ -355,9 +354,9 @@ impl ClientApp {
         } else if let Some(control) = option_permission_at(local_x, local_y) {
             self.settings_selected_slider = control;
             self.toggle_selected_option_setting();
-        } else if (338.0..365.0).contains(&local_y) && (204.0..252.0).contains(&local_x) {
+        } else if (338.0..365.0).contains(&local_y) && (204.0..251.0).contains(&local_x) {
             self.save_settings();
-        } else if (338.0..365.0).contains(&local_y) && (253.0..296.0).contains(&local_x) {
+        } else if (338.0..365.0).contains(&local_y) && (251.0..298.0).contains(&local_x) {
             self.cancel_settings();
         }
     }
@@ -800,7 +799,7 @@ impl ClientApp {
             self.whisper_input_focused = true;
             self.whisper_target_focused = true;
             self.gameplay_input = GameplayInput::default();
-        } else if local_y >= WHISPER_PANEL_HEIGHT as f32 - 36.0 {
+        } else if local_y >= 310.0 {
             self.whisper_input_focused = true;
             self.whisper_target_focused = false;
             self.gameplay_input = GameplayInput::default();

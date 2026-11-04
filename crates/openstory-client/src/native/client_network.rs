@@ -348,10 +348,10 @@ impl ClientApp {
         }
         let riding = self
             .active_buffs
-            .get(&openstory_protocol::BuffStatKey {
-                group: openstory_protocol::BuffMaskGroup::First,
-                flag: STATUS_MONSTER_RIDING,
-            })
+            .get(&character_buff_key(
+                openstory_protocol::BuffMaskGroup::First,
+                STATUS_MONSTER_RIDING,
+            ))
             .is_some_and(|buff| buff.value > 0);
         let item_id = if riding { equipped_mount_id(look) } else { 0 };
         let mount = match self.load_remote_mount(item_id) {

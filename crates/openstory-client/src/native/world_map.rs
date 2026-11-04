@@ -787,17 +787,30 @@ pub(super) fn render(
                 1.0,
             );
         }
+        if !search_panel_in_side {
+            fill_rect(
+                &mut pixels,
+                width,
+                height,
+                search_content_x as usize + 15,
+                search_input_top as usize + 1,
+                78,
+                18,
+                [244, 246, 247, 255],
+            );
+        }
         let visible_query = if search_query.is_empty() {
             "Search maps"
         } else {
             search_query
         };
-        draw_shadowed_text_color(
+        let visible_query = fit_text(font, visible_query, 76.0);
+        draw_text_color(
             &mut pixels,
             width,
             height,
             font,
-            visible_query,
+            &visible_query,
             search_content_x + 16.0,
             search_input_top + 2.0,
             if search_query.is_empty() {
@@ -807,7 +820,13 @@ pub(super) fn render(
             },
         );
         if search_focused {
-            let caret_x = search_content_x + 16.0 + (search_query.chars().count() as f32 * 7.0);
+            let caret_x = search_content_x
+                + 16.0
+                + if search_query.is_empty() {
+                    0.0
+                } else {
+                    text_width(font, &visible_query).min(75.0)
+                };
             fill_rect(
                 &mut pixels,
                 width,
@@ -824,7 +843,7 @@ pub(super) fn render(
         let list_x = if search_panel_in_side {
             border_width as usize + 8
         } else {
-            border_width.saturating_sub(330) + 8
+            search_content_x as usize + 14
         };
         let list_width = if search_panel_in_side {
             search_width.saturating_sub(16)
@@ -836,7 +855,30 @@ pub(super) fn render(
         } else {
             format!("{} matches", search_result_count)
         };
-        draw_shadowed_text_color(
+        let list_top = search_input_top as usize + 24;
+        if !search_panel_in_side {
+            fill_rect(
+                &mut pixels,
+                width,
+                height,
+                list_x,
+                list_top,
+                list_width,
+                106,
+                [90, 80, 71, 255],
+            );
+            fill_rect(
+                &mut pixels,
+                width,
+                height,
+                list_x + 1,
+                list_top + 1,
+                list_width - 2,
+                104,
+                [241, 242, 239, 255],
+            );
+        }
+        draw_text_color(
             &mut pixels,
             width,
             height,
@@ -846,14 +888,18 @@ pub(super) fn render(
             if search_panel_in_side {
                 40.0
             } else {
-                (33 + base_sprite.height.saturating_sub(112)) as f32
+                list_top as f32 + 3.0
             },
-            [255, 255, 255],
+            if search_panel_in_side {
+                [255, 255, 255]
+            } else {
+                [65, 55, 45]
+            },
         );
         let search_results_top = if search_panel_in_side {
             SEARCH_RESULT_TOP
         } else {
-            (33 + base_sprite.height.saturating_sub(74)) as f32
+            list_top as f32 + 23.0
         };
         let mut visible_index = 0;
         let mut remaining_skip = first_result;
@@ -874,15 +920,19 @@ pub(super) fn render(
                     .take(MAX_VISIBLE_SEARCH_RESULTS.saturating_sub(visible_index))
                 {
                     let row_y = search_results_top + visible_index as f32 * SEARCH_RESULT_HEIGHT;
-                    draw_shadowed_text_color(
+                    draw_text_color(
                         &mut pixels,
                         width,
                         height,
                         font,
-                        &result.title.chars().take(17).collect::<String>(),
+                        &fit_text(font, &result.title, list_width.saturating_sub(8) as f32),
                         list_x as f32 + 4.0,
                         row_y + 1.0,
-                        [255, 255, 255],
+                        if search_panel_in_side {
+                            [255, 255, 255]
+                        } else {
+                            [40, 35, 30]
+                        },
                     );
                     search_hits.push(SearchHit {
                         bounds: HitRect {
@@ -1316,6 +1366,31 @@ fn fill_rect(
             canvas[index..index + 4].copy_from_slice(&color);
         }
     }
+}
+
+fn text_width(font: &Font, text: &str) -> f32 {
+    text.chars()
+        .map(|character| font.metrics(character, 14.0).advance_width)
+        .sum()
+}
+
+fn fit_text(font: &Font, text: &str, width: f32) -> String {
+    if text_width(font, text) <= width {
+        return text.to_owned();
+    }
+    let mut fitted = String::new();
+    let ellipsis_width = text_width(font, "…");
+    let mut used = 0.0;
+    for character in text.chars() {
+        let next = font.metrics(character, 14.0).advance_width;
+        if used + next + ellipsis_width > width {
+            break;
+        }
+        fitted.push(character);
+        used += next;
+    }
+    fitted.push('…');
+    fitted
 }
 
 fn draw_text_color(

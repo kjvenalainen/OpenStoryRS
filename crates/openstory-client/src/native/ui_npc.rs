@@ -37,6 +37,11 @@ fn map_string_name(archive: &NxArchive, map_id: i32) -> Option<String> {
     nx_string_value(archive, &format!("Map.img/{category}/{map_id}/mapName"))
 }
 
+fn map_string_street_name(archive: &NxArchive, map_id: i32) -> Option<String> {
+    let category = map_string_category(map_id);
+    nx_string_value(archive, &format!("Map.img/{category}/{map_id}/streetName"))
+}
+
 fn format_npc_dialogue_text(
     text: &str,
     player_name: &str,
@@ -48,7 +53,8 @@ fn format_npc_dialogue_text(
     ui_archive: &NxArchive,
     icon_cache: &mut HashMap<i32, Option<(u32, u32, Arc<[u8]>)>>,
 ) -> (String, NpcInlineIcons) {
-    let characters = text.chars().collect::<Vec<_>>();
+    let normalized = text.replace("\\r\\n", "\n").replace("\\r", "\n");
+    let characters = normalized.chars().collect::<Vec<_>>();
     let mut output = String::with_capacity(text.len());
     let mut item_macro_ids = Vec::new();
     let mut inline_icons = NpcInlineIcons::new();
@@ -74,7 +80,21 @@ fn format_npc_dialogue_text(
             output.push('#');
             break;
         };
-        if matches!(code, 'b' | 'k' | 'r' | 'd' | 'c' | 'e' | 'n' | 'g') {
+        if let Some(style) = match code {
+            'b' => Some('\u{f0000}'),
+            'k' => Some('\u{f0001}'),
+            'r' => Some('\u{f0002}'),
+            'd' => Some('\u{f0003}'),
+            'e' => Some('\u{f0004}'),
+            'n' => Some('\u{f0005}'),
+            'g' => Some('\u{f0006}'),
+            _ => None,
+        } {
+            output.push(style);
+            index += 2;
+            continue;
+        }
+        if code == 'c' {
             index += 2;
             continue;
         }
@@ -242,19 +262,31 @@ fn parse_npc_selections(text: &str) -> (String, Vec<(i32, String)>) {
             continue;
         };
         let label_start = id_end + 1;
-        let Some(label_end_relative) = text[label_start..].find("#l") else {
-            plain.push_str(&text[start..]);
-            return (clean_npc_markup(&plain), selections);
-        };
-        let label_end = label_start + label_end_relative;
+        // Several shipped island quiz pages omit #l, including Robin's last question.
+        let rest = &text[label_start..];
+        let terminator = rest.find("#l");
+        let next_option = rest.find("#L");
+        let label_length = [terminator, next_option]
+            .into_iter()
+            .flatten()
+            .min()
+            .unwrap_or(rest.len());
+        let label_end = label_start + label_length;
         selections.push((
             selection_id,
-            clean_npc_markup(&text[label_start..label_end]),
+            clean_npc_markup(&text[label_start..label_end])
+                .trim()
+                .to_owned(),
         ));
-        cursor = label_end + 2;
+        cursor = label_end
+            + if terminator == Some(label_length) {
+                2
+            } else {
+                0
+            };
     }
     plain.push_str(&text[cursor..]);
-    (clean_npc_markup(&plain), selections)
+    (clean_npc_markup(&plain).trim().to_owned(), selections)
 }
 
 fn clean_npc_markup(text: &str) -> String {
@@ -432,6 +464,8 @@ fn render_npc_shop_panel(
     inventory: Option<&openstory_protocol::InventorySnapshot>,
     notice: Option<&str>,
     confirmation: Option<NpcShopConfirmation>,
+    ui_archive: &NxArchive,
+    npc_archive: &NxArchive,
     item_archive: &NxArchive,
     string_archive: &NxArchive,
     character_archive: &NxArchive,
@@ -440,555 +474,199 @@ fn render_npc_shop_panel(
 ) -> (Vec<u8>, SpriteRect) {
     const WIDTH: usize = 620;
     const HEIGHT: usize = 520;
-    const PANEL_X: f32 = 202.0;
-    const PANEL_Y: f32 = 124.0;
-    let sell_items = inventory
-        .map(|inventory| npc_shop_sellable_items(inventory, item_archive, character_archive))
-        .unwrap_or_default();
-    let item_count = match mode {
-        NpcShopMode::Buy => shop.items.len(),
-        NpcShopMode::Sell => sell_items.len(),
-    };
-    let mut pixels = vec![0_u8; WIDTH * HEIGHT * 4];
-    fill_dialogue_rect(
+    // Keep the existing confirmation dialog and its hit regions until it has
+    // a corresponding native dialog.
+    let mut pixels = vec![0; WIDTH * HEIGHT * 4];
+    if composite_nx_ui_bitmap(
         &mut pixels,
         WIDTH,
         HEIGHT,
-        0,
-        0,
-        WIDTH,
-        HEIGHT,
-        [25, 27, 31, 248],
-    );
-    fill_dialogue_rect(
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        0,
-        0,
-        WIDTH,
-        42,
-        [83, 63, 40, 255],
-    );
-    fill_dialogue_rect(
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        0,
-        0,
-        WIDTH,
-        2,
-        [207, 176, 119, 255],
-    );
-    fill_dialogue_rect(
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        0,
-        HEIGHT - 2,
-        WIDTH,
-        2,
-        [207, 176, 119, 255],
-    );
-    fill_dialogue_rect(
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        0,
-        0,
-        2,
-        HEIGHT,
-        [207, 176, 119, 255],
-    );
-    fill_dialogue_rect(
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        WIDTH - 2,
-        0,
-        2,
-        HEIGHT,
-        [207, 176, 119, 255],
-    );
-    draw_dialogue_text(
-        font,
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        &format!("Shop · NPC {}", shop.npc_id),
-        18,
-        10,
-        20.0,
-        330,
-        26,
-        [246, 226, 185],
-    );
-    for (x, label, active) in [
-        (420, "Buy", mode == NpcShopMode::Buy),
-        (490, "Sell", mode == NpcShopMode::Sell),
-    ] {
+        ui_archive,
+        "UIWindow.img/Shop/backgrnd",
+        78,
+        35,
+    )
+    .is_err()
+    {
         fill_dialogue_rect(
             &mut pixels,
             WIDTH,
             HEIGHT,
-            x,
-            9,
-            60,
-            26,
-            if active {
-                [112, 81, 45, 255]
-            } else {
-                [53, 51, 47, 255]
-            },
+            78,
+            35,
+            463,
+            339,
+            [230, 235, 238, 255],
         );
+    }
+    for (x, label) in [(165, "Shop"), (325, "Your items")] {
         draw_dialogue_text(
             font,
             &mut pixels,
             WIDTH,
             HEIGHT,
             label,
-            (x + 14) as i32,
-            13,
+            x,
+            52,
             12.0,
-            36,
+            150,
             16,
-            [246, 231, 199],
+            [40, 40, 40],
         );
     }
-    let currency = if mode == NpcShopMode::Sell {
-        "Choose an item from your inventory to sell".to_owned()
-    } else if shop.currency_item_id > 0 {
-        format!(
-            "Currency: {}",
-            item_name(shop.currency_item_id, string_archive, name_cache)
-        )
-    } else {
-        "Currency: mesos".to_owned()
-    };
-    draw_dialogue_text(
-        font,
+    draw_storage_keeper(
         &mut pixels,
         WIDTH,
         HEIGHT,
-        &currency,
-        20,
-        48,
-        12.0,
-        WIDTH - 40,
-        17,
-        [210, 207, 196],
+        npc_archive,
+        shop.npc_id,
+        120,
+        111,
     );
-    fill_dialogue_rect(
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        584,
-        9,
-        26,
-        26,
-        [65, 43, 37, 255],
-    );
-    draw_dialogue_text(
-        font,
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        "X",
-        593,
-        12,
-        14.0,
-        14,
-        18,
-        [255, 225, 210],
-    );
-    for visible_row in 0..9 {
-        let index = first_visible.saturating_add(visible_row);
-        let y = 66 + visible_row * 40;
-        let row_data = match mode {
-            NpcShopMode::Buy => shop.items.get(index).map(|item| {
-                let pitch_owned = if item.price <= 0 && item.pitch > 0 {
-                    Some(inventory.map_or(0, |inventory| {
-                        inventory_item_count(
-                            inventory,
-                            openstory_protocol::InventoryType::Etc,
-                            PERFECT_PITCH_ITEM_ID,
-                        )
-                    }))
-                } else {
-                    None
-                };
-                let display_price = if item.charge_price > 0 && item.price == 0 {
-                    i32::from(item.charge_price)
-                } else {
-                    item.price
-                };
-                let price = if item.price <= 0 && item.pitch > 0 {
-                    format!(
-                        "{} {}",
-                        item.pitch,
-                        item_name(PERFECT_PITCH_ITEM_ID, string_archive, name_cache)
-                    )
-                } else {
-                    let currency = if shop.currency_item_id > 0 {
-                        item_name(shop.currency_item_id, string_archive, name_cache)
-                    } else {
-                        "meso".to_owned()
-                    };
-                    format!("{} {currency}", display_price.max(0))
-                };
-                let stock = if let Some(pitch_owned) = pitch_owned {
-                    let stock = if item.buyable == 0 {
-                        "unlimited".to_owned()
-                    } else {
-                        item.buyable.max(0).to_string()
-                    };
-                    format!("Stock: {stock} · Have {pitch_owned}")
-                } else if item.buyable == 0 {
-                    "Stock: unlimited".to_owned()
-                } else {
-                    format!("Stock: {}", item.buyable.max(0))
-                };
-                (
-                    item.item_id,
-                    if item.rechargeable {
-                        format!(
-                            "{} ({})  (Rechargeable)",
-                            item_name(item.item_id, string_archive, name_cache),
-                            item.item_id
-                        )
-                    } else {
-                        format!(
-                            "{} ({})",
-                            item_name(item.item_id, string_archive, name_cache),
-                            item.item_id
-                        )
-                    },
-                    price,
-                    stock,
-                )
-            }),
-            NpcShopMode::Sell => sell_items.get(index).map(|item| {
-                (
-                    item.item_id,
-                    format!(
-                        "{} ({})  ·  Slot {}",
-                        item_name(item.item_id, string_archive, name_cache),
-                        item.item_id,
-                        item.slot
-                    ),
-                    npc_shop_item_price(item_archive, character_archive, item.item_id)
-                        .map(format_meso_amount)
-                        .unwrap_or_else(|| "Price unavailable".to_owned()),
-                    format!("Count: {}", item.count),
-                )
-            }),
+    if let Some(inventory) = inventory {
+        let balance = inventory.meso.max(0).to_string();
+        draw_dialogue_text(
+            font,
+            &mut pixels,
+            WIDTH,
+            HEIGHT,
+            &balance,
+            440,
+            99,
+            10.0,
+            90,
+            14,
+            [40, 40, 40],
+        );
+    }
+    let sell_items = inventory
+        .map(|i| npc_shop_sellable_items(i, item_archive, character_archive))
+        .unwrap_or_default();
+    for (column, column_mode) in [(0, NpcShopMode::Buy), (1, NpcShopMode::Sell)] {
+        let x = 83 + column * 230;
+        let start = if mode == column_mode {
+            first_visible
+        } else {
+            0
         };
-        if let Some((item_id, label, price, stock)) = row_data {
-            let is_selected = index == selected;
-            fill_dialogue_rect(
-                &mut pixels,
-                WIDTH,
-                HEIGHT,
-                12,
-                y,
-                WIDTH - 24,
-                36,
-                if is_selected {
-                    [83, 67, 45, 255]
-                } else {
-                    [38, 40, 44, 255]
-                },
-            );
-            fill_dialogue_rect(
-                &mut pixels,
-                WIDTH,
-                HEIGHT,
-                12,
-                y + 35,
-                WIDTH - 24,
-                1,
-                [77, 74, 67, 255],
-            );
-            if let Some((icon_width, icon_height, icon_pixels)) =
+        for row in 0..5 {
+            let index = start + row;
+            let data = if column_mode == NpcShopMode::Buy {
+                shop.items.get(index).map(|item| {
+                    (
+                        item.item_id,
+                        if item.price <= 0 && item.pitch > 0 {
+                            format!(
+                                "{} {}",
+                                item.pitch,
+                                item_name(PERFECT_PITCH_ITEM_ID, string_archive, name_cache)
+                            )
+                        } else if item.price == 0 && item.charge_price > 0 {
+                            format!("{} mesos", item.charge_price)
+                        } else if shop.currency_item_id > 0 {
+                            format!(
+                                "{} {}",
+                                item.price.max(0),
+                                item_name(shop.currency_item_id, string_archive, name_cache)
+                            )
+                        } else {
+                            format!("{} mesos", item.price.max(0))
+                        },
+                        if item.buyable == 0 {
+                            "Unlimited".to_owned()
+                        } else {
+                            format!("Stock: {}", item.buyable)
+                        },
+                    )
+                })
+            } else {
+                sell_items.get(index).map(|item| {
+                    (
+                        item.item_id,
+                        npc_shop_item_price(item_archive, character_archive, item.item_id)
+                            .map(|price| price.to_string())
+                            .unwrap_or_else(|| "—".to_owned()),
+                        format!("Count: {}", item.count),
+                    )
+                })
+            };
+            let Some((item_id, price, stock)) = data else {
+                continue;
+            };
+            let y = 161 + row * 40;
+            if mode == column_mode && index == selected {
+                let _ = composite_nx_ui_bitmap(
+                    &mut pixels,
+                    WIDTH,
+                    HEIGHT,
+                    ui_archive,
+                    "UIWindow.img/Shop/select",
+                    (x + 38) as i32,
+                    y as i32,
+                );
+            }
+            if let Some((w, h, icon)) =
                 inventory_item_icon(item_id, item_archive, character_archive, icon_cache)
             {
                 composite_inventory_icon(
                     &mut pixels,
                     WIDTH,
                     HEIGHT,
-                    &icon_pixels,
-                    icon_width as usize,
-                    icon_height as usize,
-                    18,
-                    y + 3,
-                    30,
+                    &icon,
+                    w as usize,
+                    h as usize,
+                    x,
+                    y + 2,
+                    32,
                 );
             }
+            let name = item_name(item_id, string_archive, name_cache);
+            let name = ui_foundation::ellipsize(font, &name, 11.0, 154.0);
             draw_dialogue_text(
                 font,
                 &mut pixels,
                 WIDTH,
                 HEIGHT,
-                &label,
-                58,
-                (y + 3) as i32,
-                13.0,
-                270,
-                17,
-                [238, 237, 229],
+                &name,
+                (x + 40) as i32,
+                (y + 2) as i32,
+                11.0,
+                154,
+                14,
+                [30, 30, 30],
             );
+            let details =
+                ui_foundation::ellipsize(font, &format!("{price} · {stock}"), 10.0, 154.0);
             draw_dialogue_text(
                 font,
                 &mut pixels,
                 WIDTH,
                 HEIGHT,
-                &price,
-                354,
-                (y + 4) as i32,
-                12.0,
-                240,
-                16,
-                [232, 216, 171],
-            );
-            draw_dialogue_text(
-                font,
-                &mut pixels,
-                WIDTH,
-                HEIGHT,
-                &stock,
-                58,
-                (y + 20) as i32,
+                &details,
+                (x + 40) as i32,
+                (y + 19) as i32,
                 10.0,
-                250,
+                154,
                 13,
-                [177, 177, 171],
+                [60, 60, 60],
             );
         }
     }
-    if item_count == 0 {
-        draw_dialogue_text(
-            font,
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            if mode == NpcShopMode::Buy {
-                "This shop has no items."
-            } else {
-                "You have no items to sell."
-            },
-            160,
-            250,
-            16.0,
-            300,
-            22,
-            [205, 205, 201],
-        );
-    }
-    fill_dialogue_rect(
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        16,
-        434,
-        WIDTH - 32,
-        1,
-        [108, 99, 80, 255],
-    );
-    draw_dialogue_text(
-        font,
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        notice.unwrap_or("Select an item, then buy or sell. Scroll to browse."),
-        18,
-        436,
-        10.0,
-        WIDTH - 36,
-        14,
-        [218, 203, 166],
-    );
-    let selected_buy = if mode == NpcShopMode::Buy {
-        shop.items.get(selected)
-    } else {
-        None
-    };
-    let selected_sell = if mode == NpcShopMode::Sell {
-        sell_items.get(selected).copied()
-    } else {
-        None
-    };
-    let max_quantity = match (selected_buy, selected_sell) {
-        (Some(item), _) if item.buyable == 0 => 100,
-        (Some(item), _) => item.buyable.max(1),
-        (_, Some(item)) => i16::try_from(item.count.max(1)).unwrap_or(i16::MAX),
-        _ => 1,
-    };
-    draw_dialogue_text(
-        font,
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        &format!(
-            "Quantity: {} / {}",
-            quantity.clamp(1, max_quantity),
-            max_quantity
-        ),
-        150,
-        466,
-        13.0,
-        112,
-        18,
-        [233, 231, 221],
-    );
-    for (x, label) in [(270, "−"), (310, "+")] {
-        fill_dialogue_rect(
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            x,
-            454,
-            36,
-            32,
-            [65, 63, 57, 255],
-        );
-        draw_dialogue_text(
-            font,
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            label,
-            (x + 12) as i32,
-            461,
-            16.0,
-            14,
-            20,
-            [245, 236, 215],
-        );
-    }
-    for (x, width, label, enabled) in [
-        (
-            354,
-            80,
-            "Recharge",
-            selected_buy.is_some_and(|item| item.rechargeable),
-        ),
-        (
-            442,
-            78,
-            if mode == NpcShopMode::Buy {
-                "Buy"
-            } else {
-                "Sell"
-            },
-            selected_buy.is_some_and(|item| !item.rechargeable) || selected_sell.is_some(),
-        ),
-        (528, 80, "Leave", true),
+    for (path, x, label) in [
+        ("UIWindow.img/Shop/BtBuy/normal/0", 83, "Buy"),
+        ("UIWindow.img/Shop/BtSell/normal/0", 313, "Sell"),
+        ("UIWindow.img/Shop/BtExit/normal/0", 455, "Leave"),
     ] {
-        fill_dialogue_rect(
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            x,
-            454,
-            width,
-            32,
-            if enabled {
-                [88, 68, 45, 255]
-            } else {
-                [47, 47, 46, 255]
-            },
-        );
-        draw_dialogue_text(
-            font,
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            label,
-            (x + 7) as i32,
-            461,
-            11.0,
-            width - 14,
-            18,
-            if enabled {
-                [246, 231, 199]
-            } else {
-                [132, 132, 127]
-            },
-        );
-    }
-    if let Some(confirmation) = confirmation {
-        fill_dialogue_rect(
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            0,
-            0,
-            WIDTH,
-            HEIGHT,
-            [0, 0, 0, 190],
-        );
-        fill_dialogue_rect(
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            90,
-            160,
-            440,
-            190,
-            [177, 145, 92, 255],
-        );
-        fill_dialogue_rect(
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            94,
-            164,
-            432,
-            182,
-            [33, 31, 30, 255],
-        );
-        draw_dialogue_text(
-            font,
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            "Confirm transaction",
-            120,
-            184,
-            18.0,
-            380,
-            24,
-            [246, 231, 199],
-        );
-        draw_dialogue_text(
-            font,
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            if confirmation.recharge {
-                "Are you sure you want to recharge this item?"
-            } else if confirmation.mode == NpcShopMode::Buy {
-                "Are you sure you want to buy this item?"
-            } else {
-                "Are you sure you want to sell this item?"
-            },
-            118,
-            222,
-            13.0,
-            384,
-            20,
-            [231, 226, 214],
-        );
-        for (x, label) in [(150, "Yes"), (340, "No")] {
+        if composite_nx_ui_bitmap(&mut pixels, WIDTH, HEIGHT, ui_archive, path, x, 382).is_err() {
             fill_dialogue_rect(
                 &mut pixels,
                 WIDTH,
                 HEIGHT,
-                x,
-                280,
-                130,
-                36,
-                [88, 68, 45, 255],
+                x as usize,
+                382,
+                80,
+                18,
+                [115, 138, 153, 255],
             );
             draw_dialogue_text(
                 font,
@@ -996,20 +674,138 @@ fn render_npc_shop_panel(
                 WIDTH,
                 HEIGHT,
                 label,
-                x as i32 + 46,
-                287,
-                14.0,
-                40,
-                20,
-                [246, 231, 199],
+                x + 6,
+                383,
+                11.0,
+                68,
+                15,
+                [255, 255, 255],
             );
+        }
+    }
+    fill_dialogue_rect(
+        &mut pixels,
+        WIDTH,
+        HEIGHT,
+        78,
+        408,
+        463,
+        67,
+        [235, 238, 238, 255],
+    );
+    draw_dialogue_text(
+        font,
+        &mut pixels,
+        WIDTH,
+        HEIGHT,
+        &format!("Quantity: {quantity}"),
+        88,
+        416,
+        12.0,
+        100,
+        18,
+        [30, 30, 30],
+    );
+    for (x, label) in [(193, "−"), (230, "+")] {
+        let width = 32;
+        fill_dialogue_rect(
+            &mut pixels,
+            WIDTH,
+            HEIGHT,
+            x,
+            412,
+            width,
+            25,
+            [115, 138, 153, 255],
+        );
+        draw_dialogue_text(
+            font,
+            &mut pixels,
+            WIDTH,
+            HEIGHT,
+            label,
+            (x + 6) as i32,
+            416,
+            11.0,
+            width - 10,
+            16,
+            [255, 255, 255],
+        );
+    }
+    let recharge_path = if mode == NpcShopMode::Buy
+        && shop
+            .items
+            .get(selected)
+            .is_some_and(|item| item.rechargeable)
+    {
+        "UIWindow.img/Shop/BtRecharge/normal/0"
+    } else {
+        "UIWindow.img/Shop/BtRecharge/disabled/0"
+    };
+    let _ = composite_nx_ui_bitmap(
+        &mut pixels,
+        WIDTH,
+        HEIGHT,
+        ui_archive,
+        recharge_path,
+        280,
+        416,
+    );
+    draw_dialogue_text(
+        font,
+        &mut pixels,
+        WIDTH,
+        HEIGHT,
+        notice.unwrap_or("Select an item; scroll to browse."),
+        88,
+        449,
+        10.0,
+        440,
+        18,
+        [45, 45, 45],
+    );
+    if let Some(confirmation) = confirmation {
+        let _ = composite_nx_ui_bitmap(
+            &mut pixels,
+            WIDTH,
+            HEIGHT,
+            ui_archive,
+            "Basic.img/Notice/backgrnd",
+            178,
+            193,
+        );
+        let question = if confirmation.recharge {
+            "Recharge this item?"
+        } else if confirmation.mode == NpcShopMode::Buy {
+            "Buy this item?"
+        } else {
+            "Sell this item?"
+        };
+        draw_dialogue_text(
+            font,
+            &mut pixels,
+            WIDTH,
+            HEIGHT,
+            question,
+            205,
+            222,
+            13.0,
+            215,
+            24,
+            [30, 30, 30],
+        );
+        for (path, x) in [
+            ("Basic.img/BtYes/normal/0", 224),
+            ("Basic.img/BtNo/normal/0", 330),
+        ] {
+            let _ = composite_nx_ui_bitmap(&mut pixels, WIDTH, HEIGHT, ui_archive, path, x, 286);
         }
     }
     (
         pixels,
         SpriteRect {
-            x: PANEL_X,
-            y: PANEL_Y,
+            x: 202.0,
+            y: 124.0,
             width: WIDTH as f32,
             height: HEIGHT as f32,
             blend_mode: BlendMode::Alpha,
@@ -1039,17 +835,13 @@ impl NpcDialogueLayout {
     const TEXT_Y: i32 = 48;
     const TEXT_WIDTH: usize = 320;
     const SCROLL_X: usize = 490;
-    const SCROLL_WIDTH: usize = 5;
     const INPUT_X: i32 = Self::TEXT_X + 8;
     const INPUT_Y: i32 = 177;
     const INPUT_HEIGHT: usize = 20;
     const SELECTION_ROW_STEP: i32 = 25;
     const SELECTION_HEIGHT: usize = 23;
-    const SELECTION_BORDER: usize = 2;
     const ADJUST_MINUS_X: i32 = 328;
     const ADJUST_PLUS_X: i32 = 365;
-    const ADJUST_WIDTH: f32 = 32.0;
-    const ADJUST_HEIGHT: f32 = 18.0;
     const CLOSE_X: i32 = 9;
     const YES_X: i32 = 400;
     const NO_X: i32 = 465;
@@ -1059,11 +851,50 @@ impl NpcDialogueLayout {
     const BUTTON_Y: i32 = 236;
 }
 
+fn append_npc_dialogue_input(input: &mut String, message_type: i8, text: &str) {
+    let limit = match message_type {
+        2 => 50,
+        3 => 16,
+        _ => return,
+    };
+    for character in text.chars() {
+        if input.chars().count() >= limit {
+            break;
+        }
+        let accepted = if message_type == 2 {
+            !character.is_control()
+        } else {
+            character.is_ascii_digit() || (character == '-' && input.is_empty())
+        };
+        if accepted {
+            input.push(character);
+        }
+    }
+}
+
+fn npc_dialogue_number(input: &str, bounds: Option<(i32, i32, i32)>) -> i32 {
+    let value = input
+        .parse::<i64>()
+        .unwrap_or_else(|_| i64::from(bounds.map_or(0, |bounds| bounds.0)))
+        .clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32;
+    match bounds {
+        Some((_, minimum, maximum)) if minimum <= maximum => value.clamp(minimum, maximum),
+        _ => value,
+    }
+}
+
+fn npc_dialogue_cancel_response(message_type: i8) -> i8 {
+    match message_type {
+        0 | 1 | 5 | 6 => -1,
+        _ => 0,
+    }
+}
+
 fn npc_dialogue_text_view_height(message_type: i8) -> usize {
     match message_type {
         2 | 3 => 112,
-        4 => 58,
-        _ => 145,
+        4 => 106,
+        _ => 240,
     }
 }
 
@@ -1078,8 +909,28 @@ fn dialogue_text_content_height(
     let mut line_y = 0_usize;
     let mut pen_x = 0.0_f32;
     let mut previous = None;
+    let mut bold = false;
     let mut has_content = false;
-    for character in text.chars() {
+    let wrapped = wrap_dialogue_text(font, text, size, max_width, inline_icons);
+    for character in wrapped.chars() {
+        if character == '\u{f0004}' {
+            bold = true;
+            previous = None;
+            continue;
+        }
+        if character == '\u{f0005}' {
+            bold = false;
+            previous = None;
+            continue;
+        }
+        if (0xf0000..=0xf0006).contains(&(character as u32)) {
+            continue;
+        }
+        let font = if bold {
+            ui_foundation::bold_font().unwrap_or(font)
+        } else {
+            font
+        };
         has_content = true;
         if character == '\n' {
             line_y = line_y.saturating_add(line_height);
@@ -1125,12 +976,14 @@ fn render_npc_dialogue(
     npc_id: i32,
     speaker: i8,
     message_type: i8,
+    navigation: Option<(bool, bool)>,
     text: &str,
     text_scroll: usize,
     inline_icons: &NpcInlineIcons,
     selections: &[(i32, String)],
     selected_selection: usize,
     first_visible_selection: usize,
+    hovered_selection: Option<usize>,
     input: &str,
 ) -> (Vec<u8>, SpriteRect, Vec<NpcDialogueButton>, usize) {
     let (width, height) = (NpcDialogueLayout::WIDTH, NpcDialogueLayout::HEIGHT);
@@ -1161,7 +1014,23 @@ fn render_npc_dialogue(
         );
     }
     if speaker == 0 {
-        let npc_path = format!("{:07}.img/stand/0", npc_id.max(0));
+        let mut npc_path = format!("{:07}.img", npc_id.max(0));
+        for _ in 0..8 {
+            let link = npc_archive
+                .root()
+                .resolve(&format!("{npc_path}/info/link"))
+                .ok()
+                .flatten()
+                .and_then(|node| match node.value().ok()? {
+                    NodeValue::String(link) => Some(link),
+                    _ => None,
+                });
+            let Some(link) = link else {
+                break;
+            };
+            npc_path = format!("{link}.img");
+        }
+        let npc_path = format!("{npc_path}/stand/0");
         let name = string_archive
             .root()
             .resolve(&format!("Npc.img/{npc_id}/name"))
@@ -1207,20 +1076,28 @@ fn render_npc_dialogue(
             Some([255, 255, 255]),
         );
     }
-    let text_view_height = npc_dialogue_text_view_height(message_type);
     let body_style = ui_foundation::UiTextRole::Body.style();
-    let text_content_height = dialogue_text_content_height(
-        font,
-        text,
-        body_style.size,
-        NpcDialogueLayout::TEXT_WIDTH,
-        inline_icons,
-    );
-    let text_max_scroll = if message_type == 4 {
+    let text_content_height = if text.trim().is_empty() {
         0
     } else {
-        text_content_height.saturating_sub(text_view_height)
+        dialogue_text_content_height(
+            font,
+            text,
+            body_style.size,
+            NpcDialogueLayout::TEXT_WIDTH,
+            inline_icons,
+        )
     };
+    let text_view_height = if message_type == 4 {
+        if text.trim().is_empty() {
+            0
+        } else {
+            text_content_height.min(npc_dialogue_text_view_height(4))
+        }
+    } else {
+        npc_dialogue_text_view_height(message_type)
+    };
+    let text_max_scroll = text_content_height.saturating_sub(text_view_height);
     let text_scroll = text_scroll.min(text_max_scroll);
     draw_dialogue_text_with_icons_scrolled(
         font,
@@ -1237,34 +1114,16 @@ fn render_npc_dialogue(
         inline_icons,
         text_scroll,
     );
-    if text_max_scroll > 0 {
-        const SCROLL_TRACK_Y: usize = NpcDialogueLayout::TEXT_Y as usize;
-        fill_dialogue_rect(
-            &mut pixels,
-            width,
-            height,
-            NpcDialogueLayout::SCROLL_X,
-            SCROLL_TRACK_Y,
-            NpcDialogueLayout::SCROLL_WIDTH,
-            text_view_height,
-            [56, 53, 48, 255],
-        );
-        let content_height = text_view_height.saturating_add(text_max_scroll);
-        let thumb_height =
-            (text_view_height * text_view_height / content_height).clamp(18, text_view_height);
-        let thumb_range = text_view_height.saturating_sub(thumb_height);
-        let thumb_y = SCROLL_TRACK_Y + thumb_range * text_scroll / text_max_scroll;
-        fill_dialogue_rect(
-            &mut pixels,
-            width,
-            height,
-            NpcDialogueLayout::SCROLL_X,
-            thumb_y,
-            NpcDialogueLayout::SCROLL_WIDTH,
-            thumb_height,
-            [198, 169, 116, 255],
-        );
-    }
+    ui_foundation::draw_scrollbar(
+        &mut pixels,
+        width,
+        height,
+        ui_archive,
+        NpcDialogueLayout::SCROLL_X as i32,
+        NpcDialogueLayout::TEXT_Y,
+        text_view_height,
+        ui_foundation::scroll_fraction(text_scroll, text_content_height, text_view_height),
+    );
 
     let mut buttons = Vec::new();
     if message_type == 4 {
@@ -1275,74 +1134,67 @@ fn render_npc_dialogue(
             .take(5)
             .enumerate()
         {
-            let local_y =
-                NpcDialogueLayout::TEXT_Y + row as i32 * NpcDialogueLayout::SELECTION_ROW_STEP;
+            let local_y = NpcDialogueLayout::TEXT_Y
+                + if text_view_height == 0 {
+                    0
+                } else {
+                    text_view_height as i32 + 8
+                }
+                + row as i32 * NpcDialogueLayout::SELECTION_ROW_STEP;
+            let body_size = body_style.size;
+            let label_width = dialogue_text_width(font, label, body_size)
+                .ceil()
+                .clamp(12.0, (NpcDialogueLayout::TEXT_WIDTH - 24) as f32);
+            let label_x = NpcDialogueLayout::TEXT_X + 24;
             let rect = SpriteRect {
-                x: panel_x + NpcDialogueLayout::TEXT_X as f32,
+                x: panel_x + (label_x - 14) as f32,
                 y: panel_y + local_y as f32,
-                width: NpcDialogueLayout::TEXT_WIDTH as f32,
+                width: (label_width + 20.0).min(NpcDialogueLayout::TEXT_WIDTH as f32 - 8.0),
                 height: NpcDialogueLayout::SELECTION_HEIGHT as f32,
                 blend_mode: BlendMode::Alpha,
             };
-            draw_dialogue_button_with_icons(
+            let hovered = hovered_selection == Some(index);
+            let selected = index == selected_selection;
+            let marker = if selected || hovered { "dot1" } else { "dot0" };
+            let _ = composite_nx_ui_bitmap(
+                &mut pixels,
+                width,
+                height,
+                ui_archive,
+                &format!("UIWindow.img/UtilDlgEx/{marker}"),
+                NpcDialogueLayout::TEXT_X + 10,
+                local_y + 7,
+            );
+            let link_color = if hovered {
+                [132, 71, 168]
+            } else {
+                [108, 61, 145]
+            };
+            draw_dialogue_text_with_icons(
                 font,
                 &mut pixels,
                 width,
                 height,
-                rect,
-                panel_x,
-                panel_y,
                 label,
+                label_x,
+                local_y + 2,
+                body_size,
+                NpcDialogueLayout::TEXT_WIDTH - 26,
+                NpcDialogueLayout::SELECTION_HEIGHT,
+                link_color,
                 inline_icons,
             );
-            if index == selected_selection {
-                let x = NpcDialogueLayout::TEXT_X as usize;
-                let y = local_y as usize;
-                let color = [244, 210, 124, 255];
-                let selection_width = NpcDialogueLayout::TEXT_WIDTH;
-                let border = NpcDialogueLayout::SELECTION_BORDER;
-                let selection_height = NpcDialogueLayout::SELECTION_HEIGHT;
-                fill_dialogue_rect(
-                    &mut pixels,
-                    width,
-                    height,
-                    x,
-                    y,
-                    selection_width,
-                    border,
-                    color,
-                );
-                fill_dialogue_rect(
-                    &mut pixels,
-                    width,
-                    height,
-                    x,
-                    y + selection_height - border,
-                    selection_width,
-                    border,
-                    color,
-                );
-                fill_dialogue_rect(
-                    &mut pixels,
-                    width,
-                    height,
-                    x,
-                    y,
-                    border,
-                    selection_height,
-                    color,
-                );
-                fill_dialogue_rect(
-                    &mut pixels,
-                    width,
-                    height,
-                    x + selection_width - border,
-                    y,
-                    border,
-                    selection_height,
-                    color,
-                );
-            }
+            let underline_width = label_width.ceil() as usize;
+            fill_dialogue_rect(
+                &mut pixels,
+                width,
+                height,
+                label_x as usize,
+                (local_y + 20) as usize,
+                underline_width,
+                if hovered { 2 } else { 1 },
+                [link_color[0], link_color[1], link_color[2], 255],
+            );
             buttons.push(NpcDialogueButton {
                 rect,
                 action: NpcDialogueAction::Select(*selection),
@@ -1361,12 +1213,20 @@ fn render_npc_dialogue(
         );
     } else {
         if message_type == 2 || message_type == 3 {
+            let mut visible = input;
+            while dialogue_text_width(font, visible, 16.0) > 287.0 {
+                let Some((index, _)) = visible.char_indices().nth(1) else {
+                    break;
+                };
+                visible = &visible[index..];
+            }
+            let visible_with_caret = format!("{visible}|");
             draw_dialogue_text(
                 font,
                 &mut pixels,
                 width,
                 height,
-                input,
+                &visible_with_caret,
                 NpcDialogueLayout::INPUT_X,
                 NpcDialogueLayout::INPUT_Y,
                 16.0,
@@ -1382,9 +1242,9 @@ fn render_npc_dialogue(
             width,
             height,
             "UIWindow.img/UtilDlgEx/BtClose/normal/0",
-            9,
+            NpcDialogueLayout::CLOSE_X,
             NpcDialogueLayout::BUTTON_Y,
-            NpcDialogueAction::More(0),
+            NpcDialogueAction::More(npc_dialogue_cancel_response(message_type)),
         );
         match message_type {
             1 => {
@@ -1402,36 +1262,29 @@ fn render_npc_dialogue(
                 NpcDialogueAction::SubmitText,
             ),
             3 => {
-                for (x, label, action) in [
+                for (x, path, delta) in [
                     (
                         NpcDialogueLayout::ADJUST_MINUS_X,
-                        "−",
-                        NpcDialogueAction::AdjustNumber(-1),
+                        "Basic.img/BtMin/normal/0",
+                        -1,
                     ),
                     (
                         NpcDialogueLayout::ADJUST_PLUS_X,
-                        "+",
-                        NpcDialogueAction::AdjustNumber(1),
+                        "Basic.img/BtMax/normal/0",
+                        1,
                     ),
                 ] {
-                    let rect = SpriteRect {
-                        x: panel_x + x as f32,
-                        y: panel_y + NpcDialogueLayout::BUTTON_Y as f32,
-                        width: NpcDialogueLayout::ADJUST_WIDTH,
-                        height: NpcDialogueLayout::ADJUST_HEIGHT,
-                        blend_mode: BlendMode::Alpha,
-                    };
-                    draw_dialogue_button(
-                        font,
+                    push_nx_dialogue_button(
                         &mut pixels,
+                        &mut buttons,
+                        ui_archive,
                         width,
                         height,
-                        rect,
-                        panel_x,
-                        panel_y,
-                        label,
+                        path,
+                        x + 10,
+                        NpcDialogueLayout::BUTTON_Y + 3,
+                        NpcDialogueAction::AdjustNumber(delta),
                     );
-                    buttons.push(NpcDialogueButton { rect, action });
                 }
                 push_nx_dialogue_button(
                     &mut pixels,
@@ -1480,7 +1333,63 @@ fn render_npc_dialogue(
                     NpcDialogueAction::More(1),
                 );
             }
-            12 => push_nx_yes_no_buttons(&mut pixels, &mut buttons, ui_archive, width, height),
+            12 => {
+                for (path, x, response) in [
+                    (
+                        "UIWindow.img/UtilDlgEx/BtQYes/normal/0",
+                        NpcDialogueLayout::YES_X,
+                        1,
+                    ),
+                    (
+                        "UIWindow.img/UtilDlgEx/BtQNo/normal/0",
+                        NpcDialogueLayout::NO_X,
+                        0,
+                    ),
+                ] {
+                    push_nx_dialogue_button(
+                        &mut pixels,
+                        &mut buttons,
+                        ui_archive,
+                        width,
+                        height,
+                        path,
+                        x,
+                        NpcDialogueLayout::BUTTON_Y,
+                        NpcDialogueAction::More(response),
+                    );
+                }
+            }
+            0 if navigation.is_some_and(|(previous, next)| previous || next) => {
+                let (previous, next) = navigation.unwrap_or_default();
+                for (visible, path, x, response) in [
+                    (
+                        previous,
+                        "UIWindow.img/UtilDlgEx/BtPrev/normal/0",
+                        NpcDialogueLayout::PREV_X,
+                        0,
+                    ),
+                    (
+                        next,
+                        "UIWindow.img/UtilDlgEx/BtNext/normal/0",
+                        NpcDialogueLayout::NEXT_X,
+                        1,
+                    ),
+                ] {
+                    if visible {
+                        push_nx_dialogue_button(
+                            &mut pixels,
+                            &mut buttons,
+                            ui_archive,
+                            width,
+                            height,
+                            path,
+                            x,
+                            NpcDialogueLayout::BUTTON_Y,
+                            NpcDialogueAction::More(response),
+                        );
+                    }
+                }
+            }
             _ => push_nx_dialogue_button(
                 &mut pixels,
                 &mut buttons,
@@ -1523,7 +1432,7 @@ fn push_nx_yes_no_buttons(
         height,
         "UIWindow.img/UtilDlgEx/BtYes/normal/0",
         NpcDialogueLayout::YES_X,
-        236,
+        NpcDialogueLayout::BUTTON_Y,
         NpcDialogueAction::More(1),
     );
     push_nx_dialogue_button(
@@ -1534,7 +1443,7 @@ fn push_nx_yes_no_buttons(
         height,
         "UIWindow.img/UtilDlgEx/BtNo/normal/0",
         NpcDialogueLayout::NO_X,
-        236,
+        NpcDialogueLayout::BUTTON_Y,
         NpcDialogueAction::More(0),
     );
 }
@@ -1636,85 +1545,20 @@ pub(super) fn render_npc_dialogue_preview(
         ui_archive,
         npc_archive,
         string_archive,
-        2101,
+        ui_preview::fixture_named_id(string_archive, "Npc.img", "Robin", 2007),
         0,
-        1,
-        "Are you done with your training? If you wish, I will send you out from this training camp.",
+        0,
+        None,
+        "\u{f0004}Ascension Powers\u{f0005}\n\n\u{f0000}Upon reaching level 200, you have unlocked new command:\n\u{f0002}@ascension <option>\u{f0001}\n\n\u{f0004}Available Options:\u{f0005}\n0 - View your active ascensions\n1 - Hoarder Ascension: Gain 5x EXP and drop rates for all characters\n2 - Resilient Ascension: Characters become immune to debuffs\n\n\u{f0004}Please Note:\u{f0005} \u{f0002}Ascending will send your current character to level 1.",
         0,
         &NpcInlineIcons::new(),
         &[],
         0,
         0,
+        None,
         "",
     );
     (pixels, (panel.x, panel.y, panel.width, panel.height))
-}
-
-fn draw_dialogue_button(
-    font: &fontdue::Font,
-    pixels: &mut [u8],
-    width: usize,
-    height: usize,
-    rect: SpriteRect,
-    panel_x: f32,
-    panel_y: f32,
-    label: &str,
-) {
-    draw_dialogue_button_with_icons(
-        font,
-        pixels,
-        width,
-        height,
-        rect,
-        panel_x,
-        panel_y,
-        label,
-        &EMPTY_NPC_INLINE_ICONS,
-    );
-}
-
-fn draw_dialogue_button_with_icons(
-    font: &fontdue::Font,
-    pixels: &mut [u8],
-    width: usize,
-    height: usize,
-    rect: SpriteRect,
-    panel_x: f32,
-    panel_y: f32,
-    label: &str,
-    inline_icons: &NpcInlineIcons,
-) {
-    let x = (rect.x - panel_x).round().max(0.0) as usize;
-    let y = (rect.y - panel_y).round().max(0.0) as usize;
-    let button_width = rect.width.round().max(0.0) as usize;
-    let button_height = rect.height.round().max(0.0) as usize;
-    fill_dialogue_rect(
-        pixels,
-        width,
-        height,
-        x,
-        y,
-        button_width,
-        button_height,
-        [108, 91, 64, 255],
-    );
-    let text_width = dialogue_text_width(font, label, 15.0);
-    let text_x = x as i32 + ((button_width as f32 - text_width) / 2.0).max(4.0) as i32;
-    let text_y = y as i32 + ((button_height as f32 - 18.0) / 2.0).max(0.0) as i32;
-    draw_dialogue_text_with_icons(
-        font,
-        pixels,
-        width,
-        height,
-        label,
-        text_x,
-        text_y,
-        15.0,
-        button_width.saturating_sub(8),
-        button_height,
-        [255, 255, 255],
-        inline_icons,
-    );
 }
 
 fn dialogue_text_width(font: &fontdue::Font, text: &str, size: f32) -> f32 {
@@ -1874,8 +1718,53 @@ fn draw_dialogue_text_with_icons_scrolled(
     let mut pen_x = x as f32;
     let mut line_y = y;
     let mut previous = None;
+    let mut text_color = color;
+    let mut bold = false;
     let wrapped_text = wrap_dialogue_text(font, text, size, max_width, inline_icons);
     for character in wrapped_text.chars() {
+        match character {
+            '\u{f0000}' => {
+                text_color = [108, 61, 145];
+                previous = None;
+                continue;
+            }
+            '\u{f0001}' => {
+                text_color = color;
+                previous = None;
+                continue;
+            }
+            '\u{f0002}' => {
+                text_color = [225, 45, 36];
+                previous = None;
+                continue;
+            }
+            '\u{f0003}' => {
+                text_color = [80, 80, 80];
+                previous = None;
+                continue;
+            }
+            '\u{f0004}' => {
+                bold = true;
+                previous = None;
+                continue;
+            }
+            '\u{f0005}' => {
+                bold = false;
+                previous = None;
+                continue;
+            }
+            '\u{f0006}' => {
+                text_color = [35, 130, 45];
+                previous = None;
+                continue;
+            }
+            _ => {}
+        }
+        let font = if bold {
+            ui_foundation::bold_font().unwrap_or(font)
+        } else {
+            font
+        };
         if character == '\n' {
             pen_x = x as f32;
             line_y += line_height;
@@ -1884,7 +1773,7 @@ fn draw_dialogue_text_with_icons_scrolled(
         }
         if let Some((icon_width, icon_height, icon_pixels)) = inline_icons.get(&character) {
             let icon_size = (size.ceil() as usize + 4).clamp(16, 32);
-            if pen_x + icon_size as f32 > (x as usize + max_width) as f32 {
+            if pen_x + icon_size as f32 > x as f32 + max_width as f32 {
                 pen_x = x as f32;
                 line_y += line_height;
             }
@@ -1912,7 +1801,7 @@ fn draw_dialogue_text_with_icons_scrolled(
                 .unwrap_or(0.0);
         }
         let (metrics, coverage) = rasterize_ui_glyph(font, character, size);
-        if pen_x + metrics.advance_width > (x as usize + max_width) as f32 {
+        if pen_x + metrics.advance_width > x as f32 + max_width as f32 {
             pen_x = x as f32;
             line_y += line_height;
         }
@@ -1924,8 +1813,9 @@ fn draw_dialogue_text_with_icons_scrolled(
             for column in 0..metrics.width {
                 let px = left + column as i32;
                 let py = top + row as i32;
-                if px < 0
-                    || py < y
+                if px < x.max(0)
+                    || px >= x.saturating_add(max_width.min(i32::MAX as usize) as i32)
+                    || py < y.max(0)
                     || px >= width as i32
                     || py >= (y + max_height as i32).min(height as i32)
                 {
@@ -1943,7 +1833,9 @@ fn draw_dialogue_text_with_icons_scrolled(
                 if output_alpha == 0 {
                     continue;
                 }
-                for (channel, foreground) in [color[2], color[1], color[0]].into_iter().enumerate()
+                for (channel, foreground) in [text_color[2], text_color[1], text_color[0]]
+                    .into_iter()
+                    .enumerate()
                 {
                     let destination = u32::from(pixels[index + channel]);
                     let premultiplied = u32::from(foreground) * source_alpha
@@ -1980,6 +1872,9 @@ fn wrap_dialogue_text(
             let mut width = 0.0_f32;
             let mut previous = None;
             for character in candidate.chars() {
+                if (0xf0000..=0xf0006).contains(&(character as u32)) {
+                    continue;
+                }
                 if inline_icons.contains_key(&character) {
                     width += (size.ceil() as usize + 4).clamp(16, 32) as f32;
                     previous = None;

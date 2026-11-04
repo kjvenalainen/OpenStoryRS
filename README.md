@@ -45,8 +45,10 @@ clothing, shoe, and weapon pools from `Etc.nx`, previews the selected avatar, ch
 forbidden names locally, and uses the v83 name-check/create packets. The server's new
 character entry is added to the current selection list.
 
-Set `OPENSTORY_FONT_PATH` to select a TrueType font; macOS, Windows, and Linux
-system-font locations are used as fallbacks. The client connects to
+Set `OPENSTORY_FONT_PATH` to select a TrueType font and optionally
+`OPENSTORY_BOLD_FONT_PATH` for its bold face. The UI prefers system Arial and
+falls back to bundled Roboto when Arial is unavailable. Proprietary fonts are
+not bundled. The client connects to
 `127.0.0.1:8484` by default so the packaged app can reach a local v83 server without
 command-line arguments. Set `OPENSTORY_SERVER=HOST:PORT` to choose another default, or
 use `--connect HOST:PORT` to override it. The client completes the Maple handshake and
@@ -85,22 +87,36 @@ three-second display after a reset.
 The first `SET_FIELD` transition
 uses the selected character's map and portal from the character list. The map scene shows
 the selected character's body, head, face, hair, and equipped items. Character selection
-shows a compact equipped-avatar preview beside each character row. Use Left/Right or A/D
-to walk; left or right Option jumps; Space talks to the nearest nearby NPC. Movement
+shows a compact equipped-avatar preview beside each character row. Use Left/Right
+to walk; the bound Jump action (Option by default) jumps, and NPC interaction (Space by
+default) talks to the nearest nearby NPC. Movement
 acceleration and jump force use equipped and buffed SPEED/JUMP with the legacy stat caps;
-hold Up or W to activate map portals. The avatar uses NX-authored one-handed or two-handed
+hold Up to activate map portals. The avatar uses NX-authored one-handed or two-handed
 stand/walk frames and jump frames, including the legacy body arm and hand z layers.
 Press F1–F7 to play and broadcast the matching facial expression; NX-authored face
 frames animate locally and for other visible players.
 Press Backslash to open the key bindings panel. The client loads the v83 server key map,
-uses bound skills, items, and gameplay actions, and lets you rebind 40 supported built-in
+uses bound skills, items, and gameplay actions, and lets you rebind 44 supported built-in
 menu, gameplay, and face actions. It preserves unsupported saved actions so they remain
 visible and can be cleared. The Family shortcut uses the v83 action 26. The panel also
 lists learned active skills and usable inventory items by their localized names; stale
 skill/item bindings stay visible so they can be cleared.
-Click an action or press 1–8 to choose it, then press the replacement key; Backspace clears
-its binding and the mouse wheel scrolls the list. The panel shows the eight quick-slot keys
-supplied by the server; click a slot and press a key to rebind it. Local quick-slot edits use
+Click a bound key or an action in the two-row tray, then click or press the replacement
+key. You can also drag an action onto a key, or drag a bound action into the tray to
+unbind it; Backspace clears the selected binding. The mouse wheel and Up/Down scroll
+additional tray rows; 1–8 select the first eight visible unbound actions.
+**OK** (or Enter) applies the draft using the existing v83 key-map request;
+**Cancel**, the close button, and Escape discard it. **Default** restores the
+classic layout and quick-slot keys, and **Clear All** clears the binding draft. Click
+**Change Quick Slots** or press F12 inside this panel to open the original quick-slot editor;
+select a slot and press its new key, or click a visible key outside the editor. Reusing a key
+swaps its previous slot. Click **Change Quick Slots** again or press Escape to return to the keyboard. Escape remains
+reserved for closing dialogs. Equipment opens the worn-equipment window, Messenger opens
+the Messenger panel. The displayed default layout also drives gameplay until the server
+provides a key map; cleared or rebound keys never fall back to hard-coded shortcuts.
+The default Z key picks up nearby items. The default U and V keys open Alliance and Guild BBS. Pet equipment and Events are also
+assignable from the tray. The client extensions use menu action IDs 43–45 for Guild BBS,
+Alliance, and pet equipment; existing v83 action IDs are unchanged. Quick-slot edits are saved with OK and use
 the legacy `QuickSlotKeys` setting and override the server's login-time layout. Skill macro
 editor opens from the Skills window. It edits the three server-backed macros, their shout
 setting, and ordered learned-skill slots; a bound macro key shouts its name when enabled and
@@ -162,9 +178,19 @@ send server-authoritative `DAMAGE_REACTOR` requests when a hittable reactor inte
 attack arc. Regular portals animate from `MapHelper.img`; hidden portals reveal their
 animation when approached. Hold Up or W in a portal to request a server map change;
 same-map portals move the player to their named destination after the legacy cooldown.
+Visible portal entry covers the authored glow horizontally while retaining the legacy
+vertical bounds, so standing on another platform does not activate it.
 Click an NPC to request dialogue, including NPCs whose scripts are supplied by the server.
-When an NPC has an available scripted quest but no regular NPC script, clicking it starts
-that quest's server-authored dialogue.
+NPC clicks and the bound NPC Chat key also open available quest conversations.
+Unscripted tutorial quests read their pages from `Quest.nx/Say.img` and send the v83
+quest action only after confirmation; scripted quests keep their server-authored dialogue.
+The NPC menu lists every available or active quest alongside Talk, so normal server
+scripts and services remain reachable. Local quizzes use the NX answer and feedback
+branches; Rain's quizzes and Robin's multi-page quiz must be answered before turn-in.
+Pio's recycling returns to its starting NPC when the end NPC is omitted. Lucas's
+training turn-in checks all prerequisite quests. NPCs without a server response
+open a local dialogue saying `Nothing to say...` after 1.5 seconds. Shops and travel
+stay server-authoritative.
 The dialogue panel handles selection lists, yes/no and accept/decline prompts, text and
 number input, and page navigation. Its frame and standard controls use the NX
 `UIWindow.img/UtilDlgEx` artwork. Long dialogue pages scroll inside their panel with the
@@ -269,6 +295,9 @@ send a one-hit regular attack; guild/family level-up and job-advancement broadca
 in yellow chat notices, spouse/fiance messages appear in red, and v83 ship departure,
 arrival, and transit status messages appear in yellow. The client
 uses the equipped weapon data, plays its NX stance, and targets the nearest mob ahead.
+Weapon attacks also render the NX afterimage on its authored attack frames.
+Normal close attacks use the equipped weapon's NX `Afterimage` range for the selected
+stance, matching the legacy client; ranged attacks use the standard projectile range.
 Bow, crossbow, claw, and gun attacks select a compatible projectile stack, add any NX
 attack bonus it provides, use the v83 ranged packet and range, and animate the projectile.
 Remote ranged attacks also animate their server-reported projectile; the server owns ammo
@@ -286,8 +315,9 @@ mob's ordered `info/skill` entries and plays its matching NX animation. `SPAWN_M
 `REMOVE_MIST` render and clear the legacy translucent poison, smoke-screen, and mob-skill
 area effects. NPC shops now show NX item names and icons, support buying, selling, rechargeable stock, and server transaction
 results. Perfect Pitch purchases show their item cost and available balance, and requests
-are blocked when the ETC inventory lacks enough. NPC storage uses a two-column, NX-backed item view with category tabs, item
-store/take actions, and meso transfers. Clicking a stack opens a quantity prompt for partial
+are blocked when the ETC inventory lacks enough. NPC storage uses a compact five-column All view with native item icons,
+store/take actions, and meso transfers. All stored item categories share its
+selection and scrolling order. Clicking a stack opens a quantity prompt for partial
 deposits and withdrawals; withdrawals retrieve the v83 stack and return the unselected
 remainder to storage after the inventory update. Inventory and storage contents remain
 server-authoritative. Press K to open a class-tabbed skill book built from `Skill.nx` and `String.nx`;
@@ -341,7 +371,7 @@ and swap packets update that snapshot, including equip/unequip moves. `INVENTORY
 updates the server-authoritative capacity and the inventory grid immediately;
 `SET_EXTRA_PENDANT_SLOT` records the pendant-slot entitlement and reports activation changes.
 Press `I` in the
-field to open a letterbox-scaled inventory with six category tabs, a scrollable four-column
+field to open a letterbox-scaled inventory with five category tabs, a scrollable four-column
 slot grid, cached NX icons, stack counts, meso, and slot capacity. Ordinary Use items send
 the legacy `USE_ITEM` request and play their one-shot `Effect.nx/ItemEff.img` animation when
 one exists; item consumption and effects on character stats remain server-authoritative.
@@ -398,14 +428,14 @@ The v83 move request does not support partial
 stack moves within a bag, while drop and storage quantity prompts remain available. The
 legacy client rejects drags between inventory categories, so slot moves stay within the
 selected bag.
-Press `P` to open Pet Equipment, or use the Pets button in the inventory. It shows pet
+Assign the Pet equipment action in Keyboard Settings, or use the Pets button in the inventory. It shows pet
 names, level and fullness alongside pet gear in the Equip inventory. Use a gear item while
 the intended pet is summoned; the server inventory update remains authoritative.
-Press `C` in the field to open Character Stats. Spend AP with the `+` buttons or use Auto
+Use the Stats binding (`S` in the default layout) in the field to open Character Stats. Spend AP with the `+` buttons or use Auto
 to confirm allocation to the character's primary stat; each point is sent to the server and
 the panel waits for the authoritative stat update. Server `FORCED_STAT_SET` updates also
 apply to combat and movement totals, appear in the stats panel, and are cleared by the
-server's `RECALCULATE_STATS` packet. Press the grave accent key to enter the
+server's `RECALCULATE_STATS` packet. Use the Cash Shop binding or the HUD Cash Shop button to enter the
 rebuilt Cash Shop. Its resizable catalog reads only
 on-sale products with a valid commodity SN from `Etc.nx/Commodity.img`; it supports search,
 category filters, item details and icon preview, currency balances, purchase confirmation,
@@ -423,3 +453,14 @@ cache bounded to 128 MiB and 16,384 entries; decoded NX string bytes and bitmap 
 use separate bounded least-recently-used caches per archive. GPU textures are reused for
 the active scene. To inspect the stand, walk, and jump frames for a base appearance, run
 `OpenStoryRS --data-dir /path/to/wz --inspect-avatar 0 20000 30000`.
+
+### Offline UI rebuild previews
+
+Run `cargo run -p openstory-client -- --ui-preview all --ui-hitboxes` to render
+canonical reference cases and retained secondary screens under
+`target/ui-previews`. Use `--help` for the current case names; the previous
+`native-*` names and friendly aliases have been removed. Reference cases produce
+native-size crops, comparisons and differences in addition to full logical and
+resized compositions. The live client does not use the reference screenshots.
+See [UI_REBUILD.md](UI_REBUILD.md) for implemented changes and outstanding work;
+the complete UI rebuild is still in progress.

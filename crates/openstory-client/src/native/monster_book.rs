@@ -2164,7 +2164,13 @@ impl Canvas {
                 for column in 0..metrics.width {
                     let px = left + column as i32;
                     let py = top + row as i32;
-                    if px < 0 || py < 0 || px >= self.width as i32 || py >= self.height as i32 {
+                    if px < 0
+                        || py < 0
+                        || px >= self.width as i32
+                        || py >= self.height as i32
+                        || (px as f32) < start_x
+                        || (px as f32) >= start_x + max_width
+                    {
                         continue;
                     }
                     let alpha = coverage[row * metrics.width + column];
@@ -2228,4 +2234,37 @@ fn blend_bgra(destination: &mut [u8], source: &[u8]) {
         };
     }
     destination[3] = output_alpha.min(255) as u8;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn text_stays_within_its_requested_width() {
+        let font = Font::from_bytes(
+            include_bytes!("../../assets/fonts/Roboto-Regular.ttf").as_slice(),
+            fontdue::FontSettings::default(),
+        )
+        .unwrap();
+        let mut canvas = Canvas::new(64, 32);
+        canvas.draw_text(
+            &font,
+            "WWWWWW",
+            12.0,
+            4.0,
+            14.0,
+            [255, 255, 255],
+            Align::Left,
+            20.0,
+        );
+        assert!(canvas.pixels.chunks_exact(4).any(|pixel| pixel[3] != 0));
+        for y in 0..canvas.height {
+            for x in 0..canvas.width {
+                if !(12..32).contains(&x) {
+                    assert_eq!(canvas.pixels[(y * canvas.width + x) * 4 + 3], 0);
+                }
+            }
+        }
+    }
 }

@@ -8,9 +8,82 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+include!("ui_preview_artifacts.rs");
+
 const CANVAS_WIDTH: u32 = super::ui_foundation::LOGICAL_WIDTH as u32;
 const CANVAS_HEIGHT: u32 = super::ui_foundation::LOGICAL_HEIGHT as u32;
 const PREVIEW_SIZES: [(u32, u32); 2] = [(1024, 768), (1440, 900)];
+
+struct KeyboardPreviewFixture {
+    bindings: Vec<openstory_protocol::KeyBinding>,
+    actions: Vec<KeyConfigAction>,
+    capture: Option<usize>,
+    quickslot_capture: Option<usize>,
+    first_row: usize,
+}
+
+fn keyboard_preview_fixture(name: &str) -> KeyboardPreviewFixture {
+    let reference = keyboard_settings::reference_bindings();
+    let empty = name.ends_with("-empty") || name.ends_with("-scroll");
+    let bindings = if empty {
+        vec![openstory_protocol::KeyBinding::default(); 90]
+    } else {
+        reference
+    };
+    let mut actions = static_key_config_actions()
+        .into_iter()
+        .filter(|action| {
+            empty
+                || bindings
+                    .iter()
+                    .any(|binding| binding.kind == action.kind && binding.action == action.action)
+                || (action.kind == 5 && matches!(action.action, 51 | 52))
+        })
+        .collect::<Vec<_>>();
+    if !empty {
+        actions.push(KeyConfigAction {
+            label: "Messenger".to_owned(),
+            kind: 4,
+            action: 6,
+            assignable: true,
+        });
+    }
+    KeyboardPreviewFixture {
+        bindings,
+        actions,
+        capture: name.ends_with("-capture").then_some(0),
+        quickslot_capture: name.ends_with("-quickslots").then_some(2),
+        first_row: if name.ends_with("-scroll") { 2 } else { 0 },
+    }
+}
+
+fn keyboard_preview_regions(fixture: &KeyboardPreviewFixture) -> Vec<ui_foundation::UiRect> {
+    let mut regions = keyboard_settings::buttons()
+        .into_iter()
+        .map(|(_, rect, _)| rect)
+        .collect::<Vec<_>>();
+    regions.extend(
+        fixture
+            .bindings
+            .iter()
+            .enumerate()
+            .filter(|(_, binding)| binding.kind != 0)
+            .filter_map(|(key, _)| keyboard_settings::key_rect(key as u8)),
+    );
+    if fixture.quickslot_capture.is_some() {
+        regions.extend((0..8).map(keyboard_settings::quickslot_rect));
+    } else {
+        regions.extend(
+            keyboard_settings::tray_entries(&fixture.actions, &fixture.bindings)
+                .into_iter()
+                .filter(|(_, cell)| {
+                    *cell >= fixture.first_row * 18 && *cell < (fixture.first_row + 2) * 18
+                })
+                .map(|(_, cell)| keyboard_settings::TRAY.cell(cell - fixture.first_row * 18)),
+        );
+    }
+    regions
+}
 
 pub(super) fn run(
     screen: &str,
@@ -29,173 +102,39 @@ pub(super) fn run(
     strings: &NxArchive,
     font: &fontdue::Font,
 ) -> Result<(), String> {
-    // Keep short, task-oriented names convenient while retaining the existing
-    // native-* names used by the client preview catalogue.
-    let screen = match screen {
-        "inventory" | "native-inventory" => "native-items",
-        "equipment" => "native-equipment",
-        "pet-equipment" => "native-pet-equipment",
-        "keybindings" => "native-keybindings",
-        "skills" => "native-skills",
-        "stats" => "native-status",
-        "stats-detail" => "native-status-detail",
-        "npc-chat" => "native-npc-dialogue",
-        "revive-character" => "native-revive",
-        "item-tooltip" => "native-item-tooltip",
-        other => other,
-    };
     fs::create_dir_all(output_dir)
         .map_err(|error| format!("could not create {}: {error}", output_dir.display()))?;
 
-    let screens: &[&str] = match screen {
-        "all" => &[
-            "login",
-            "login-active",
-            "world-select",
-            "character-select-empty",
-            "character-select-populated",
-            "character-create-class",
-            "character-create-explorer",
-            "character-create-error",
-            "native-keybindings",
-            "native-quickslots",
-            "native-skill-macros",
-            "native-items",
-            "native-item-tooltip",
-            "native-equipment",
-            "native-skills",
-            "native-pet-equipment",
-            "native-minimap-collapsed",
-            "native-minimap-normal",
-            "native-minimap-expanded",
-            "native-npc-store",
-            "native-storage",
-            "native-cash-shop",
-            "native-cash-shop-locker",
-            "native-cash-shop-coupon",
-            "native-cash-shop-confirmation",
-            "native-monster-book",
-            "native-monster-book-detail",
-            "native-monster-book-detail-move",
-            "native-monster-book-detail-die",
-            "native-status",
-            "native-status-detail",
-            "native-status-bar",
-            "native-first-map",
-            "native-second-map",
-            "native-npc-dialogue",
-            "native-revive",
-            "native-clock",
-            "native-wedding",
-            "native-rps",
-            "native-event-list",
-            "native-dragon",
-            "native-monster-carnival",
-            "native-avatar-megaphone",
-            "native-quit-confirmation",
-            "native-server-notice",
-            "native-tos-acceptance",
-            "native-quest-log",
-            "native-quest-log-detail",
-            "native-chat",
-            "native-whisper",
-            "native-item-megaphone",
-            "native-party",
-            "native-buddy",
-            "native-guild",
-            "native-alliance",
-            "native-character-info",
-            "native-world-map",
-            "native-world-map-link",
-            "native-world-map-marker",
-            "native-world-map-search",
-            "native-world-map-result",
-            "native-options",
-            "native-audio-settings",
-        ],
-        "login"
-        | "login-active"
-        | "world-select"
-        | "character-select-empty"
-        | "character-select-populated"
-        | "character-create-class"
-        | "character-create-explorer"
-        | "character-create-error"
-        | "native-keybindings"
-        | "native-quickslots"
-        | "native-skill-macros"
-        | "native-items"
-        | "native-item-tooltip"
-        | "native-equipment"
-        | "native-skills"
-        | "native-pet-equipment"
-        | "native-minimap-collapsed"
-        | "native-minimap-normal"
-        | "native-minimap-expanded"
-        | "native-npc-store"
-        | "native-storage"
-        | "native-cash-shop"
-        | "native-cash-shop-locker"
-        | "native-cash-shop-coupon"
-        | "native-cash-shop-confirmation"
-        | "native-monster-book"
-        | "native-monster-book-detail"
-        | "native-monster-book-detail-move"
-        | "native-monster-book-detail-die"
-        | "native-status"
-        | "native-status-detail"
-        | "native-status-bar"
-        | "native-first-map"
-        | "native-second-map"
-        | "native-npc-dialogue"
-        | "native-revive"
-        | "native-clock"
-        | "native-wedding"
-        | "native-rps"
-        | "native-event-list"
-        | "native-dragon"
-        | "native-monster-carnival"
-        | "native-avatar-megaphone"
-        | "native-quit-confirmation"
-        | "native-server-notice"
-        | "native-tos-acceptance"
-        | "native-quest-log"
-        | "native-quest-log-detail"
-        | "native-chat"
-        | "native-whisper"
-        | "native-item-megaphone"
-        | "native-party"
-        | "native-buddy"
-        | "native-guild"
-        | "native-alliance"
-        | "native-character-info"
-        | "native-world-map"
-        | "native-world-map-link"
-        | "native-world-map-marker"
-        | "native-world-map-search"
-        | "native-world-map-result"
-        | "native-options"
-        | "native-audio-settings" => std::slice::from_ref(&screen),
-        _ => {
-            return Err(format!(
-                "unknown UI preview {screen:?}; use --help to list preview names"
-            ));
-        }
+    if screen == "all" || screen.starts_with("panel-keyboard-settings") {
+        write_keyboard_art_catalog(ui, skills, items, characters, font, output_dir)?;
+    }
+    write_asset_catalog(ui, output_dir)?;
+    write_typography_preview(font, output_dir)?;
+
+    let screens: &[&str] = if screen == "all" {
+        super::ui_catalog::CASES
+    } else if super::ui_catalog::CASES.contains(&screen) {
+        std::slice::from_ref(&screen)
+    } else {
+        return Err(format!(
+            "unknown UI preview {screen:?}; use --help to list preview names"
+        ));
     };
 
     for name in screens {
-        if name.starts_with("native-cash-shop") {
+        if name.starts_with("page-cash-shop") {
             let variant = match *name {
-                "native-cash-shop" => "catalog",
-                "native-cash-shop-locker" => "locker",
-                "native-cash-shop-coupon" => "coupon",
-                "native-cash-shop-confirmation" => "confirmation",
+                "page-cash-shop" => "catalog",
+                "page-cash-shop-locker" => "locker",
+                "page-cash-shop-coupon" => "coupon",
+                "page-cash-shop-confirmation" => "confirmation",
                 _ => unreachable!("cash shop screen name was validated above"),
             };
             let scene = super::cash_shop_ui::render_preview(
                 variant, ui, font, etc, items, characters, strings,
             )?;
             let base = scene.pixels;
+            write_reference_artifacts(output_dir, name, &base, None)?;
             let annotated = include_hitboxes.then(|| {
                 let mut image = base.clone();
                 for (index, region) in scene.hit_regions.iter().enumerate() {
@@ -239,26 +178,59 @@ pub(super) fn run(
             continue;
         }
         let detail_animation_mode = match *name {
-            "native-monster-book-detail" => Some(0),
-            "native-monster-book-detail-move" => Some(1),
-            "native-monster-book-detail-die" => Some(2),
+            "panel-monster-book-detail" => Some(0),
+            "panel-monster-book-detail-move" => Some(1),
+            "panel-monster-book-detail-die" => Some(2),
             _ => None,
         };
         let scene = if let Some(mode) = detail_animation_mode {
             build_monster_book_detail_scene(map, ui, items, characters, mobs, strings, font, mode)?
-        } else if *name == "native-items" {
-            build_inventory_panel_scene(map, legacy_ui, characters, items, strings, font)?
-        } else if *name == "native-equipment" {
+        } else if *name == "panel-monster-book" {
+            build_monster_book_detail_scene(
+                map,
+                ui,
+                items,
+                characters,
+                mobs,
+                strings,
+                font,
+                usize::MAX,
+            )?
+        } else if *name == "panel-item-inventory-tabs" {
+            build_inventory_tabs_scene(map, legacy_ui, characters, items, strings, font)?
+        } else if name.starts_with("panel-item-inventory") {
+            build_inventory_panel_scene(name, map, legacy_ui, characters, items, strings, font)?
+        } else if *name == "panel-equipment-inventory" {
             build_equipment_panel_scene(map, legacy_ui, characters, items, font)?
-        } else if *name == "native-storage" {
+        } else if *name == "panel-trade-room" {
+            build_trade_panel_scene(map, legacy_ui, characters, font)?
+        } else if *name == "panel-npc-storage" {
             build_storage_panel_scene(map, legacy_ui, npcs, characters, items, strings, font)?
-        } else if *name == "native-item-tooltip" {
+        } else if name.starts_with("panel-npc-store") {
+            build_npc_store_panel_scene(name, map, legacy_ui, npcs, characters, items, strings, font)?
+        } else if *name == "panel-item-tooltip" {
             build_item_tooltip_scene(map, characters, items, strings, ui, font)?
-        } else if matches!(*name, "native-quest-log" | "native-quest-log-detail") {
-            build_quest_log_panel_scene(name, map, legacy_ui, quests, strings, characters, font)?
-        } else if *name == "native-npc-dialogue" {
+        } else if name.starts_with("panel-pet-equipment") {
+            build_pet_equipment_scene(name, map, legacy_ui, characters, items, strings, font)?
+        } else if matches!(*name, "panel-quests" | "panel-quests-detail") {
+            build_quest_log_panel_scene(
+                name, map, legacy_ui, quests, strings, characters, npcs, font,
+            )?
+        } else if matches!(
+            *name,
+            "panel-npc-chat"
+                | "panel-npc-chat-tutorial"
+                | "panel-npc-chat-menu"
+                | "panel-npc-chat-option"
+                | "panel-npc-chat-quiz"
+                | "panel-npc-chat-feedback"
+                | "panel-npc-chat-navigation"
+                | "panel-npc-chat-text-input"
+                | "panel-npc-chat-number-input"
+                | "panel-npc-chat-unimplemented"
+        ) {
             let mut scene = build_scene(
-                "native-first-map",
+                "page-first-map",
                 map,
                 legacy_ui,
                 ui,
@@ -269,8 +241,74 @@ pub(super) fn run(
                 strings,
                 font,
             )?;
-            let (pixels, (x, y, width, height)) =
-                super::render_npc_dialogue_preview(font, legacy_ui, npcs, strings);
+            let (pixels, (x, y, width, height)) = if *name != "panel-npc-chat" {
+                let (npc_id, message_type, navigation, raw_text) = match *name {
+                    "panel-npc-chat-unimplemented" => (2004, 0, None,
+                        super::client_npc_interaction::UNIMPLEMENTED_NPC_TEXT.to_owned()),
+                    "panel-npc-chat-menu" => {
+                        let choices = vec![NpcQuestChoice { quest_id: 1038, side: 1, ready: true },
+                            NpcQuestChoice { quest_id: 1040, side: 0, ready: true }];
+                        let (text, _) = super::client_npc_interaction::npc_quest_menu(quests, 1, choices);
+                        (12000, 4, None, text)
+                    }
+                    "panel-npc-chat-option" => (fixture_named_id(strings, "Npc.img", "Shammos", 2007), 4, None,
+                        "Hehe...I need to gather up the strength right now!\\n\\n#r! QUEST AVAILABLE#k\\n\\n#L0#Shammo's Request#l".to_owned()),
+                    "panel-npc-chat-quiz" => (2003, 4, None,
+                        quest_dialogue_pages(quests, "Say.img/1036/1")[2].clone()),
+                    "panel-npc-chat-feedback" => (12101, 0, None,
+                        nx_string_value(quests, "Say.img/1009/1/stop/0/1").unwrap()),
+                    "panel-npc-chat-text-input" => (2004, 2, None,
+                        "What would you like to say?".to_owned()),
+                    "panel-npc-chat-number-input" => (2004, 3, None,
+                        "How many would you like?".to_owned()),
+                    "panel-npc-chat-navigation" => (22000, 0, Some((true, true)),
+                        "Take this ship to Victoria Island. Once you leave Maple Island, you cannot return.".to_owned()),
+                    _ => (2004, 12, None,
+                        quest_dialogue_pages(quests, "Say.img/1035/0").last().cloned()
+                            .ok_or("missing Todd tutorial dialogue")?),
+                };
+                let (text, icons) = format_npc_dialogue_text(
+                    &raw_text,
+                    "Mapler",
+                    strings,
+                    &mut HashMap::new(),
+                    items,
+                    characters,
+                    skills,
+                    ui,
+                    &mut HashMap::new(),
+                );
+                let (plain, selections) = if message_type == 4 {
+                    parse_npc_selections(&text)
+                } else {
+                    (text, Vec::new())
+                };
+                let (pixels, panel, _, _) = render_npc_dialogue(
+                    font,
+                    legacy_ui,
+                    npcs,
+                    strings,
+                    npc_id,
+                    0,
+                    message_type,
+                    navigation,
+                    &plain,
+                    0,
+                    &icons,
+                    &selections,
+                    0,
+                    0,
+                    None,
+                    match *name {
+                        "panel-npc-chat-text-input" => "Hello Maple World",
+                        "panel-npc-chat-number-input" => "25",
+                        _ => "",
+                    },
+                );
+                (pixels, (panel.x, panel.y, panel.width, panel.height))
+            } else {
+                super::render_npc_dialogue_preview(font, legacy_ui, npcs, strings)
+            };
             scene.sprites.push(DecodedSprite {
                 texture_key: "native-npc-dialogue-preview".to_owned(),
                 rect: SpriteRect {
@@ -286,9 +324,9 @@ pub(super) fn run(
                 pixels: Arc::from(pixels),
             });
             scene
-        } else if *name == "native-revive" {
+        } else if *name == "panel-revive-character" {
             let mut scene = build_scene(
-                "native-first-map",
+                "page-first-map",
                 map,
                 legacy_ui,
                 ui,
@@ -299,7 +337,7 @@ pub(super) fn run(
                 strings,
                 font,
             )?;
-            let pixels = super::render_death_notice(font, false);
+            let pixels = super::render_death_notice(font, legacy_ui, false);
             scene.sprites.push(DecodedSprite {
                 texture_key: "native-revive-preview".to_owned(),
                 rect: SpriteRect {
@@ -315,7 +353,7 @@ pub(super) fn run(
                 pixels: Arc::from(pixels),
             });
             scene
-        } else if *name == "native-clock" {
+        } else if *name == "hud-clock" {
             let panel = super::ui_clock::render(
                 ui,
                 super::ui_clock::ClockState::Countdown {
@@ -346,13 +384,13 @@ pub(super) fn run(
                 login_buttons: Vec::new(),
                 save_id_indicator_draws: None,
             }
-        } else if *name == "native-wedding" {
+        } else if *name == "panel-wedding" {
             let panel = build_wedding_panel(ui, font, 83)?;
             let mut sprites = gameplay_backdrop(map, characters, font)?;
             sprites.push(DecodedSprite {
                 texture_key: "native-wedding-preview".to_owned(),
                 rect: SpriteRect {
-                    x: (CANVAS_WIDTH - WEDDING_PANEL_WIDTH as u32) as f32 * 0.5,
+                    x: (CANVAS_WIDTH - WEDDING_INVITATION_WIDTH as u32) as f32 * 0.5,
                     y: (CANVAS_HEIGHT - WEDDING_PANEL_HEIGHT as u32) as f32 * 0.5,
                     width: WEDDING_PANEL_WIDTH as f32,
                     height: WEDDING_PANEL_HEIGHT as f32,
@@ -371,7 +409,7 @@ pub(super) fn run(
                 login_buttons: Vec::new(),
                 save_id_indicator_draws: None,
             }
-        } else if *name == "native-rps" {
+        } else if *name == "panel-rps" {
             let mut game = RpsGameRuntime::new();
             game.phase = RpsGamePhase::Result;
             game.player_choice = Some(0);
@@ -403,7 +441,7 @@ pub(super) fn run(
                 login_buttons: Vec::new(),
                 save_id_indicator_draws: None,
             }
-        } else if *name == "native-event-list" {
+        } else if *name == "panel-event-list" {
             let events = vec![
                 EventListEntry {
                     event: openstory_protocol::ServerEventInfo {
@@ -486,7 +524,7 @@ pub(super) fn run(
                 login_buttons: Vec::new(),
                 save_id_indicator_draws: None,
             }
-        } else if *name == "native-dragon" {
+        } else if *name == "panel-dragon" {
             let mut dragon_sprites = Vec::new();
             let frames = append_dragon_animation(
                 &mut dragon_sprites,
@@ -513,8 +551,12 @@ pub(super) fn run(
                 login_buttons: Vec::new(),
                 save_id_indicator_draws: None,
             }
-        } else if *name == "native-monster-carnival" {
+        } else if matches!(
+            *name,
+            "panel-monster-carnival" | "panel-monster-carnival-side"
+        ) {
             let mut state = super::monster_carnival::State::default();
+            state.side_view = *name == "panel-monster-carnival-side";
             state.team = Some(0);
             state.my_cp = 32;
             state.my_total_cp = 50;
@@ -545,7 +587,7 @@ pub(super) fn run(
                 login_buttons: Vec::new(),
                 save_id_indicator_draws: None,
             }
-        } else if *name == "native-avatar-megaphone" {
+        } else if *name == "hud-avatar-megaphone" {
             let mut sprites = gameplay_backdrop(map, characters, font)?;
             let x = CANVAS_WIDTH as f32 - super::avatar_megaphone::PANEL_WIDTH as f32 + 4.0;
             let y = 4.0;
@@ -597,7 +639,7 @@ pub(super) fn run(
                 login_buttons: Vec::new(),
                 save_id_indicator_draws: None,
             }
-        } else if *name == "native-quit-confirmation" {
+        } else if *name == "panel-quit-confirmation" {
             let mut sprites = gameplay_backdrop(map, characters, font)?;
             let dim_pixels: Arc<[u8]> = Arc::from([0_u8, 0, 0, 140]);
             sprites.push(DecodedSprite {
@@ -625,7 +667,7 @@ pub(super) fn run(
                 login_buttons: Vec::new(),
                 save_id_indicator_draws: None,
             }
-        } else if *name == "native-server-notice" || *name == "native-tos-acceptance" {
+        } else if *name == "panel-server-notice" || *name == "panel-tos-acceptance" {
             let mut sprites = gameplay_backdrop(map, characters, font)?;
             let dim_pixels: Arc<[u8]> = Arc::from([0_u8, 0, 0, 140]);
             sprites.push(DecodedSprite {
@@ -642,7 +684,7 @@ pub(super) fn run(
                 texture_height: 1,
                 pixels: dim_pixels,
             });
-            let message = if *name == "native-tos-acceptance" {
+            let message = if *name == "panel-tos-acceptance" {
                 "Server Terms of Service required. Review them first. Click OK or Enter to accept; Escape cancels."
             } else {
                 "The server will restart in five minutes. Please move to a safe place."
@@ -666,7 +708,7 @@ pub(super) fn run(
                 login_buttons: Vec::new(),
                 save_id_indicator_draws: None,
             }
-        } else if name.starts_with("native-minimap-") {
+        } else if name.starts_with("hud-minimap-") {
             build_minimap_scene(name, map, ui, strings, font)?
         } else {
             build_scene(
@@ -674,6 +716,7 @@ pub(super) fn run(
             )?
         };
         let base = compose_scene(&scene.sprites, CANVAS_WIDTH, CANVAS_HEIGHT);
+        write_reference_artifacts(output_dir, name, &base, Some(&scene))?;
         let annotated = include_hitboxes.then(|| {
             let mut image = base.clone();
             for (index, action) in scene.actions.iter().enumerate() {
@@ -696,7 +739,25 @@ pub(super) fn run(
                     );
                 }
             }
-            if *name == "native-quickslots" {
+            if name.starts_with("panel-keyboard-settings") {
+                let fixture = keyboard_preview_fixture(name);
+                for (index, rect) in keyboard_preview_regions(&fixture).into_iter().enumerate() {
+                    draw_rect_outline(
+                        &mut image,
+                        CANVAS_WIDTH,
+                        CANVAS_HEIGHT,
+                        SpriteRect {
+                            x: KEY_CONFIG_PANEL_X + rect.x,
+                            y: KEY_CONFIG_PANEL_Y + rect.y,
+                            width: rect.width,
+                            height: rect.height,
+                            blend_mode: BlendMode::Alpha,
+                        },
+                        hitbox_color(index),
+                    );
+                }
+            }
+            if *name == "hud-quickslot" {
                 for slot in 0..8 {
                     draw_rect_outline(
                         &mut image,
@@ -713,17 +774,17 @@ pub(super) fn run(
                     );
                 }
             }
-            if *name == "native-items" {
+            if *name == "panel-item-inventory" {
                 for tab in 0..5 {
                     draw_rect_outline(
                         &mut image,
                         CANVAS_WIDTH,
                         CANVAS_HEIGHT,
                         SpriteRect {
-                            x: super::INVENTORY_PANEL_X + 10.0 + tab as f32 * 31.0,
-                            y: super::INVENTORY_PANEL_Y + 27.0,
-                            width: 31.0,
-                            height: 16.0,
+                            x: super::INVENTORY_PANEL_X + ui_foundation::inventory_tab(tab).x,
+                            y: super::INVENTORY_PANEL_Y + ui_foundation::inventory_tab(tab).y,
+                            width: ui_foundation::inventory_tab(tab).width,
+                            height: ui_foundation::inventory_tab(tab).height,
                             blend_mode: BlendMode::Alpha,
                         },
                         hitbox_color(tab),
@@ -752,7 +813,7 @@ pub(super) fn run(
                     }
                 }
             }
-            if matches!(*name, "native-quest-log" | "native-quest-log-detail") {
+            if matches!(*name, "panel-quests" | "panel-quests-detail") {
                 for (index, (left, width)) in [(10.0, 66.0), (78.0, 70.0), (150.0, 70.0)]
                     .into_iter()
                     .enumerate()
@@ -778,9 +839,9 @@ pub(super) fn run(
                         CANVAS_HEIGHT,
                         SpriteRect {
                             x: super::QUEST_LOG_PANEL_X + 8.0,
-                            y: super::QUEST_LOG_PANEL_Y + 50.0 + row as f32 * 25.0,
+                            y: super::QUEST_LOG_PANEL_Y + ui_foundation::QUEST_GRID.cell(row).y,
                             width: 236.0,
-                            height: 25.0,
+                            height: ui_foundation::QUEST_GRID.cell(row).height,
                             blend_mode: BlendMode::Alpha,
                         },
                         hitbox_color(3 + row),
@@ -790,7 +851,16 @@ pub(super) fn run(
             image
         });
 
-        let report = geometry_report(name, &scene, CANVAS_WIDTH, CANVAS_HEIGHT);
+        let mut report = geometry_report(name, &scene, CANVAS_WIDTH, CANVAS_HEIGHT);
+        if name.starts_with("panel-keyboard-settings") {
+            let fixture = keyboard_preview_fixture(name);
+            report.push_str(&format!(
+                "Keyboard controls: {} (shared live geometry)\nNative panel: {}x{}\n",
+                keyboard_preview_regions(&fixture).len(),
+                KEY_CONFIG_PANEL_WIDTH,
+                KEY_CONFIG_PANEL_HEIGHT
+            ));
+        }
         let preview_name = preview_stem(name);
         let report_path = output_dir.join(format!("{preview_name}-layout.txt"));
         fs::write(&report_path, report.as_bytes())
@@ -827,7 +897,7 @@ fn build_scene(
     font: &fontdue::Font,
 ) -> Result<LoginSceneAssets, String> {
     match name {
-        "native-options" => {
+        "panel-system-options" => {
             let mut sprites = gameplay_backdrop(map, character_archive, font)?;
             let pixels = render_options_panel(
                 font,
@@ -868,10 +938,10 @@ fn build_scene(
                 save_id_indicator_draws: None,
             })
         }
-        "native-status-bar" | "native-first-map" | "native-second-map" => {
+        "hud-bottom-bar" | "page-first-map" | "page-second-map" => {
             let map_id = match name {
-                "native-first-map" => Some(10_000),
-                "native-second-map" => Some(20_000),
+                "page-first-map" => Some(10_000),
+                "page-second-map" => Some(20_000),
                 _ => None,
             };
             let mut sprites = if let Some(map_id) = map_id {
@@ -880,7 +950,7 @@ fn build_scene(
                 gameplay_backdrop(map, character_archive, font)?
             };
             let (bar_sprites, gauge_assets, layout) = build_status_bar_sprites(legacy_ui)?;
-            let status_bar_preview = name == "native-status-bar";
+            let status_bar_preview = name == "hud-bottom-bar";
             let stats = openstory_protocol::CharacterStats {
                 name: if status_bar_preview {
                     "mmochi"
@@ -962,14 +1032,19 @@ fn build_scene(
                 StatusBarLayout::V83 => legacy_ui,
             };
             let number_font = load_status_bar_number_font(number_archive, number_path)?;
+            let level_font = if layout == StatusBarLayout::V83 {
+                Some(load_v83_status_bar_level_font(legacy_ui)?)
+            } else {
+                None
+            };
             let hud_pixels = render_map_hud(
                 font,
                 Some(&number_font),
+                level_font.as_ref(),
                 layout,
                 &stats,
-                &HashMap::new(),
+                &CharacterBuffs::default(),
                 Some(("[Welcome] Welcome to MapleStory!", [255, 220, 44])),
-                status_bar_preview,
                 status_bar_preview.then_some(0.0133),
             );
             sprites.push(DecodedSprite {
@@ -995,7 +1070,7 @@ fn build_scene(
                 save_id_indicator_draws: None,
             })
         }
-        "native-item-megaphone" => {
+        "hud-item-megaphone" => {
             let mut sprites = gameplay_backdrop(map, character_archive, font)?;
             let panel = item_megaphone::render(
                 legacy_ui,
@@ -1030,7 +1105,7 @@ fn build_scene(
                 save_id_indicator_draws: None,
             })
         }
-        "login" | "login-active" => {
+        "page-login" | "page-login-active" => {
             let mut scene = load_login_scene(map, legacy_ui)?;
             scene.sprites.push(field_sprite(
                 font,
@@ -1046,7 +1121,7 @@ fn build_scene(
                 PASSWORD_Y,
                 "preview:password",
             ));
-            if name == "login-active" {
+            if name == "page-login-active" {
                 let mut button_draws = HashSet::new();
                 let mut active_draws = HashSet::new();
                 for (index, button) in scene.login_buttons.iter().enumerate() {
@@ -1080,12 +1155,12 @@ fn build_scene(
             }
             Ok(scene)
         }
-        "native-world-map"
-        | "native-world-map-link"
-        | "native-world-map-marker"
-        | "native-world-map-search"
-        | "native-world-map-result" => {
-            let query = if matches!(name, "native-world-map-search" | "native-world-map-result") {
+        "page-world-map"
+        | "page-world-map-link"
+        | "page-world-map-marker"
+        | "page-world-map-search"
+        | "page-world-map-result" => {
+            let query = if matches!(name, "page-world-map-search" | "page-world-map-result") {
                 "Orbis"
             } else {
                 ""
@@ -1095,15 +1170,15 @@ fn build_scene(
                 map,
                 ui,
                 100_000_000,
-                (name == "native-world-map-result").then_some("WorldMap020"),
+                (name == "page-world-map-result").then_some("WorldMap020"),
                 true,
                 query,
-                name == "native-world-map-search",
+                name == "page-world-map-search",
                 Some(&search_catalog),
                 0,
-                (name == "native-world-map-link").then_some(0),
-                (name == "native-world-map-marker").then_some(0),
-                (name == "native-world-map-result").then_some(200_000_000),
+                (name == "page-world-map-link").then_some(0),
+                (name == "page-world-map-marker").then_some(0),
+                (name == "page-world-map-result").then_some(200_000_000),
                 strings,
                 font,
             )?;
@@ -1130,7 +1205,7 @@ fn build_scene(
                 save_id_indicator_draws: None,
             })
         }
-        "world-select" => {
+        "page-world-select" => {
             let worlds = vec![openstory_protocol::WorldInfo {
                 id: 0,
                 name: "Scania".to_owned(),
@@ -1145,8 +1220,8 @@ fn build_scene(
             }];
             load_world_selection_scene(map, legacy_ui, &worlds, Some(0), 0)
         }
-        "character-select-empty" | "character-select-populated" => {
-            let characters = if name == "character-select-empty" {
+        "page-character-select-empty" | "page-character-select-populated" => {
+            let characters = if name == "page-character-select-empty" {
                 openstory_protocol::CharacterList {
                     channel_id: 0,
                     characters: Vec::new(),
@@ -1192,8 +1267,8 @@ fn build_scene(
                 None,
             )
         }
-        "character-create-class" => load_character_class_scene(map, legacy_ui, font),
-        "character-create-explorer" => {
+        "page-character-create-class" => load_character_class_scene(map, legacy_ui, font),
+        "page-character-create-explorer" => {
             let pools = load_character_creation_options(etc, 1, false)?;
             let creation = CharacterCreationState::customize(1, pools);
             load_character_customization_scene(
@@ -1207,7 +1282,7 @@ fn build_scene(
                 font,
             )
         }
-        "character-create-error" => {
+        "page-character-create-error" => {
             let pools = load_character_creation_options(etc, 1, false)?;
             let mut creation = CharacterCreationState::customize(1, pools);
             creation.notice =
@@ -1223,26 +1298,31 @@ fn build_scene(
                 font,
             )
         }
-        "native-keybindings"
-        | "native-quickslots"
-        | "native-skill-macros"
-        | "native-items"
-        | "native-equipment"
-        | "native-skills"
-        | "native-pet-equipment"
-        | "native-npc-store"
-        | "native-cash-shop"
-        | "native-monster-book"
-        | "native-status"
-        | "native-status-detail"
-        | "native-quest-log"
-        | "native-chat"
-        | "native-whisper"
-        | "native-party"
-        | "native-buddy"
-        | "native-guild"
-        | "native-alliance"
-        | "native-audio-settings" => build_native_window_scene(
+        "panel-keyboard-settings"
+        | "panel-keyboard-settings-empty"
+        | "panel-keyboard-settings-capture"
+        | "panel-keyboard-settings-scroll"
+        | "panel-keyboard-settings-quickslots"
+        | "hud-quickslot"
+        | "panel-skill-macros"
+        | "panel-item-inventory"
+        | "panel-equipment-inventory"
+        | "panel-skill-inventory"
+        | "panel-npc-store"
+        | "panel-npc-store-sell"
+        | "panel-npc-store-confirmation"
+        | "page-cash-shop"
+        | "panel-monster-book"
+        | "panel-stats"
+        | "panel-stats-detail"
+        | "panel-quests"
+        | "hud-chat"
+        | "panel-whisper"
+        | "panel-party"
+        | "panel-buddy"
+        | "panel-guild"
+        | "panel-alliance"
+        | "panel-audio-settings" => build_native_window_scene(
             name,
             map,
             legacy_ui,
@@ -1252,16 +1332,109 @@ fn build_scene(
             skill_archive,
             font,
         ),
-        "native-character-info" => {
-            build_character_info_scene(map, character_archive, strings, font)
+        "panel-character-info" => {
+            build_character_info_scene(map, character_archive, legacy_ui, strings, font)
         }
+        "panel-family" | "panel-family-tree" => build_family_scene(
+            map,
+            character_archive,
+            legacy_ui,
+            font,
+            name == "panel-family-tree",
+        ),
         _ => Err(format!("unsupported UI preview {name:?}")),
     }
+}
+
+fn build_family_scene(
+    map_archive: &NxArchive,
+    character_archive: &NxArchive,
+    ui_archive: &NxArchive,
+    font: &fontdue::Font,
+    tree: bool,
+) -> Result<LoginSceneAssets, String> {
+    let mut sprites = gameplay_backdrop(map_archive, character_archive, font)?;
+    let (pixels, width, height) = if tree {
+        let entries = [
+            (1, 0, "MapleElder"),
+            (2, 1, "OakSenior"),
+            (3, 2, "PreviewHero"),
+            (4, 3, "Maya"),
+            (5, 3, "Rin"),
+            (6, 4, "Alex"),
+            (7, 4, "Leaf"),
+            (8, 5, "Milo"),
+            (9, 5, "Ash"),
+        ]
+        .into_iter()
+        .map(
+            |(character_id, parent_id, name)| openstory_protocol::FamilyChartEntry {
+                character_id,
+                parent_id,
+                name: name.to_owned(),
+                job: 100,
+                level: 30,
+                online: character_id % 2 != 0,
+                current_reputation: 125,
+                total_reputation: 200,
+                reputation_to_senior: 0,
+                todays_reputation: 0,
+                channel: 0,
+                time_online: 0,
+            },
+        )
+        .collect();
+        let state = FamilyUiState {
+            chart: Some(openstory_protocol::FamilyChart {
+                viewed_character_id: 3,
+                entries,
+                member_counters: Vec::new(),
+                entitlement_usage: Vec::new(),
+                add_button: None,
+            }),
+            selected_member: Some(3),
+            ..FamilyUiState::default()
+        };
+        (
+            render_family_tree_panel(font, ui_archive, &state),
+            FAMILY_TREE_PANEL_WIDTH,
+            FAMILY_TREE_PANEL_HEIGHT,
+        )
+    } else {
+        (
+            render_family_panel(font, ui_archive, &FamilyUiState::default()),
+            FAMILY_PANEL_WIDTH,
+            FAMILY_PANEL_HEIGHT,
+        )
+    };
+    sprites.push(DecodedSprite {
+        texture_key: "family-preview".to_owned(),
+        rect: SpriteRect {
+            x: (1024.0 - width as f32) / 2.0,
+            y: 165.0,
+            width: width as f32,
+            height: height as f32,
+            blend_mode: BlendMode::Alpha,
+        },
+        depth_order: 0,
+        texture_width: width,
+        texture_height: height,
+        pixels: Arc::from(pixels),
+    });
+    Ok(LoginSceneAssets {
+        sprites,
+        actions: Vec::new(),
+        map_scene: None,
+        animated_art: Vec::new(),
+        login_buttons: Vec::new(),
+        save_id_indicator_draws: None,
+    })
 }
 
 fn build_character_info_scene(
     map_archive: &NxArchive,
     character_archive: &NxArchive,
+    ui_archive: &NxArchive,
     string_archive: &NxArchive,
     font: &fontdue::Font,
 ) -> Result<LoginSceneAssets, String> {
@@ -1304,7 +1477,8 @@ fn build_character_info_scene(
         },
         fame_pending: false,
     };
-    let pixels = render_character_info_panel(font, &ui, string_archive, &mut HashMap::new());
+    let pixels =
+        render_character_info_panel(font, &ui, ui_archive, string_archive, &mut HashMap::new());
     sprites.push(DecodedSprite {
         texture_key: "character-info-preview".to_owned(),
         rect: SpriteRect {
@@ -1336,14 +1510,14 @@ fn build_minimap_scene(
     string_archive: &NxArchive,
     font: &fontdue::Font,
 ) -> Result<LoginSceneAssets, String> {
-    let map_id = 10_000;
+    let map_id = 211_000_000;
     let data = minimap::MiniMapData::load(map_archive, map_id)?
         .ok_or_else(|| format!("map {map_id} has no minimap to preview"))?;
     let ui_assets = minimap::UiAssets::load(ui_archive)?;
     let presentation = match name {
-        "native-minimap-collapsed" => minimap::Presentation::Collapsed,
-        "native-minimap-normal" => minimap::Presentation::Normal,
-        "native-minimap-expanded" => minimap::Presentation::Expanded,
+        "hud-minimap-collapsed" => minimap::Presentation::Collapsed,
+        "hud-minimap-normal" => minimap::Presentation::Normal,
+        "hud-minimap-expanded" => minimap::Presentation::Expanded,
         _ => return Err(format!("unknown minimap preview {name:?}")),
     };
     let units = 2.0_f32.powi(i32::from(data.magnification));
@@ -1372,11 +1546,14 @@ fn build_minimap_scene(
     ];
     let map_name =
         map_string_name(string_archive, map_id).unwrap_or_else(|| format!("Map {map_id}"));
+    let street_name =
+        map_string_street_name(string_archive, map_id).unwrap_or_else(|| map_name.clone());
     let panel = minimap::render(
         &data,
         &ui_assets,
         LogicalSize::LEGACY_1024X768,
         &map_name,
+        &street_name,
         presentation,
         &markers,
         font,
@@ -1417,23 +1594,37 @@ fn build_monster_book_detail_scene(
     let mut sprites = gameplay_backdrop(map_archive, character_archive, font)?;
     let mut icon_cache = HashMap::new();
     let mut animation_state = monster_book::State::default();
-    animation_state.select_card(2_380_000, 100_100, mob_archive);
-    for _ in 0..detail_animation_mode {
-        animation_state.cycle_detail_animation();
+    let detail = detail_animation_mode != usize::MAX;
+    if detail {
+        animation_state.select_card(2_380_000, 100_100, mob_archive);
+        for _ in 0..detail_animation_mode {
+            animation_state.cycle_detail_animation();
+        }
     }
+    let cards = item_archive
+        .root()
+        .resolve("Consume/0238.img")
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "missing monster cards".to_owned())?
+        .children()
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .filter_map(|node| node.name().ok()?.parse::<i32>().ok().map(|id| (id, 1)))
+        .take(75)
+        .collect::<Vec<_>>();
     let panel = monster_book::render(
         ui_archive,
         item_archive,
         character_archive,
         mob_archive,
         string_archive,
-        &[(2_380_000, 1)],
+        &cards,
         &HashMap::new(),
         2_380_000,
-        0,
+        if detail { 0 } else { 1 },
         None,
-        Some(2_380_000),
-        Some(animation_state.current_detail_animation()),
+        detail.then_some(2_380_000),
+        detail.then(|| animation_state.current_detail_animation()),
         false,
         "",
         None,
@@ -1458,7 +1649,8 @@ fn build_monster_book_detail_scene(
         texture_height: panel.height,
         pixels: Arc::from(panel.pixels),
     });
-    if let Some(frame) = animation_state.refresh_detail_animation_sprite(mob_archive)?
+    if detail
+        && let Some(frame) = animation_state.refresh_detail_animation_sprite(mob_archive)?
         && let Some(draw) = animation_state.current_detail_animation_draw()
     {
         let mut pixels = frame.pixels.to_vec();
@@ -1522,7 +1714,144 @@ fn gameplay_backdrop_for_map(
     Ok(map_scene.sprites)
 }
 
+pub(super) fn fixture_named_id(
+    archive: &NxArchive,
+    path: &str,
+    wanted: &str,
+    fallback: i32,
+) -> i32 {
+    archive
+        .root()
+        .resolve(path)
+        .ok()
+        .flatten()
+        .and_then(|node| {
+            node.children().ok()?.into_iter().find_map(|node| {
+                let name = node.child("name").ok().flatten()?.value().ok()?;
+                if matches!(name, NodeValue::String(ref name) if name == wanted) {
+                    node.name().ok()?.parse::<i32>().ok()
+                } else {
+                    None
+                }
+            })
+        })
+        .unwrap_or(fallback)
+}
+
+pub(super) fn preview_inventory() -> openstory_protocol::InventorySnapshot {
+    use openstory_protocol::{InventoryItem, InventorySnapshot, InventoryType};
+    let mut inventory = InventorySnapshot {
+        meso: 1_765_592,
+        slot_maxima: [48; 5],
+        ..Default::default()
+    };
+    let sets: [(InventoryType, &[i32]); 5] = [
+        (
+            InventoryType::Equip,
+            &[
+                1002000, 1002001, 1002002, 1002003, 1002004, 1002005, 1040002, 1060002, 1072001,
+                1082000, 1302000, 1332000,
+            ],
+        ),
+        (
+            InventoryType::Use,
+            &[
+                2000000, 2000001, 2000002, 2000003, 2000006, 2020000, 2020001, 2030000, 2040000,
+                2060000, 2061000, 2070000,
+            ],
+        ),
+        (
+            InventoryType::Setup,
+            &[3010000, 3010001, 3010002, 3010003, 3010004, 3010005],
+        ),
+        (
+            InventoryType::Etc,
+            &[
+                4000000, 4000001, 4000002, 4000003, 4000004, 4000005, 4000006, 4000007, 4000008,
+                4000009, 4000010, 4000011, 4000012, 4000013, 4000014, 4000015, 4000016, 4000017,
+                4000018, 4000019, 4000020, 4000021, 4000022, 4000023,
+            ],
+        ),
+        (
+            InventoryType::Cash,
+            &[
+                5000000, 5000001, 5010000, 5020000, 5030000, 5040000, 5050000, 5060000,
+            ],
+        ),
+    ];
+    for (inventory_type, ids) in sets {
+        for (index, item_id) in ids.iter().copied().enumerate() {
+            inventory.items.push(InventoryItem {
+                inventory_type,
+                slot: index as u16 + 1,
+                item_id,
+                count: if inventory_type == InventoryType::Equip {
+                    1
+                } else {
+                    [8, 1, 10, 5, 2, 1][index % 6]
+                },
+                ..Default::default()
+            });
+        }
+    }
+    inventory
+}
+
+fn build_inventory_tabs_scene(
+    map: &NxArchive,
+    ui: &NxArchive,
+    characters: &NxArchive,
+    items: &NxArchive,
+    strings: &NxArchive,
+    font: &fontdue::Font,
+) -> Result<LoginSceneAssets, String> {
+    let mut scene = build_inventory_panel_scene(
+        "panel-item-inventory",
+        map,
+        ui,
+        characters,
+        items,
+        strings,
+        font,
+    )?;
+    scene.sprites.pop();
+    let inventory = preview_inventory();
+    for (index, tab) in inventory_tabs().into_iter().enumerate() {
+        let pixels = render_inventory_panel(
+            font,
+            &inventory,
+            tab,
+            0,
+            None,
+            None,
+            None,
+            ui,
+            items,
+            characters,
+            strings,
+            &mut HashMap::new(),
+            &mut HashMap::new(),
+        );
+        scene.sprites.push(DecodedSprite {
+            texture_key: format!("inventory-tab:{index}"),
+            rect: SpriteRect {
+                x: index as f32 * 180.0,
+                y: 20.0,
+                width: INVENTORY_PANEL_WIDTH as f32,
+                height: INVENTORY_PANEL_HEIGHT as f32,
+                blend_mode: BlendMode::Alpha,
+            },
+            depth_order: 0,
+            texture_width: INVENTORY_PANEL_WIDTH,
+            texture_height: INVENTORY_PANEL_HEIGHT,
+            pixels: Arc::from(pixels),
+        });
+    }
+    Ok(scene)
+}
+
 fn build_inventory_panel_scene(
+    variant: &str,
     map_archive: &NxArchive,
     legacy_ui_archive: &NxArchive,
     character_archive: &NxArchive,
@@ -1530,28 +1859,27 @@ fn build_inventory_panel_scene(
     string_archive: &NxArchive,
     font: &fontdue::Font,
 ) -> Result<LoginSceneAssets, String> {
-    let inventory = openstory_protocol::InventorySnapshot {
-        meso: 1_765_592,
-        slot_maxima: [24; 5],
-        equipped_slot_maximum: 59,
-        items: (4_000_000..=4_000_010)
-            .enumerate()
-            .map(|(index, item_id)| openstory_protocol::InventoryItem {
-                inventory_type: openstory_protocol::InventoryType::Etc,
-                slot: index as u16 + 1,
-                item_id,
-                count: [8, 1, 10, 5, 2, 1, 1, 1, 1, 1, 1][index],
-                ..Default::default()
-            })
-            .collect(),
-    };
+    let mut inventory = preview_inventory();
+    if variant.ends_with("-empty") {
+        inventory.items.clear();
+    }
+    if variant.ends_with("-large-values") {
+        inventory.meso = i64::MAX;
+        for item in &mut inventory.items {
+            item.count = u16::MAX;
+        }
+    }
+    let scroll = if variant.ends_with("-scroll") { 3 } else { 0 };
+    let drag = variant
+        .ends_with("-drag")
+        .then_some((openstory_protocol::InventoryType::Etc, 1));
     let pixels = super::render_inventory_panel(
         font,
         &inventory,
         openstory_protocol::InventoryType::Etc,
-        0,
+        scroll,
         None,
-        None,
+        drag,
         None,
         legacy_ui_archive,
         item_archive,
@@ -1585,6 +1913,161 @@ fn build_inventory_panel_scene(
     })
 }
 
+fn build_trade_panel_scene(
+    map_archive: &NxArchive,
+    ui_archive: &NxArchive,
+    character_archive: &NxArchive,
+    font: &fontdue::Font,
+) -> Result<LoginSceneAssets, String> {
+    let mut pixels = vec![0; 720 * 600 * 4];
+    super::composite_nx_ui_bitmap(&mut pixels, 720, 600, ui_archive,
+        "UIWindow.img/TradingRoom/backgrnd", 78, 20)?;
+    let mut sprites = gameplay_backdrop(map_archive, character_archive, font)?;
+    sprites.push(DecodedSprite { texture_key: "nx-window:live-trade".to_owned(),
+        rect: SpriteRect { x: 152.0, y: 84.0, width: 720.0, height: 600.0, blend_mode: BlendMode::Alpha },
+        depth_order: 0, texture_width: 720, texture_height: 600, pixels: Arc::from(pixels) });
+    Ok(LoginSceneAssets { sprites, actions: Vec::new(), map_scene: None,
+        animated_art: Vec::new(), login_buttons: Vec::new(), save_id_indicator_draws: None })
+}
+
+fn build_npc_store_panel_scene(
+    variant: &str,
+    map_archive: &NxArchive,
+    ui_archive: &NxArchive,
+    npc_archive: &NxArchive,
+    character_archive: &NxArchive,
+    item_archive: &NxArchive,
+    string_archive: &NxArchive,
+    font: &fontdue::Font,
+) -> Result<LoginSceneAssets, String> {
+    let shop = openstory_protocol::NpcShop {
+        npc_id: fixture_named_id(string_archive, "Npc.img", "Mr. Wang", 1022005),
+        currency_item_id: 0,
+        items: (0..12)
+            .map(|index| openstory_protocol::NpcShopItem {
+                item_id: 2_000_000 + index,
+                price: 50 * (index + 1),
+                pitch: 0,
+                time: 0,
+                charge_price: 0,
+                buyable: 100,
+                rechargeable: false,
+                slot: index as i16,
+            })
+            .collect(),
+    };
+    let (pixels, rect) = super::render_npc_shop_panel(
+        font,
+        &shop,
+        if variant == "panel-npc-store-sell" { super::NpcShopMode::Sell } else { super::NpcShopMode::Buy },
+        0,
+        0,
+        1,
+        Some(&preview_inventory()),
+        None,
+        (variant == "panel-npc-store-confirmation").then_some(super::NpcShopConfirmation { mode: super::NpcShopMode::Buy, slot: 0, item_id: 2_000_000, quantity: 1, recharge: false }),
+        ui_archive,
+        npc_archive,
+        item_archive,
+        string_archive,
+        character_archive,
+        &mut HashMap::new(),
+        &mut HashMap::new(),
+    );
+    let mut sprites = gameplay_backdrop(map_archive, character_archive, font)?;
+    sprites.push(DecodedSprite {
+        texture_key: "nx-window:live-npc-store".to_owned(),
+        rect,
+        depth_order: 0,
+        texture_width: 620,
+        texture_height: 520,
+        pixels: Arc::from(pixels),
+    });
+    Ok(LoginSceneAssets {
+        sprites,
+        actions: Vec::new(),
+        map_scene: None,
+        animated_art: Vec::new(),
+        login_buttons: Vec::new(),
+        save_id_indicator_draws: None,
+    })
+}
+
+fn build_pet_equipment_scene(
+    name: &str,
+    map_archive: &NxArchive,
+    ui_archive: &NxArchive,
+    character_archive: &NxArchive,
+    item_archive: &NxArchive,
+    string_archive: &NxArchive,
+    font: &fontdue::Font,
+) -> Result<LoginSceneAssets, String> {
+    let mut inventory = openstory_protocol::InventorySnapshot::default();
+    if name != "panel-pet-equipment-empty" {
+        inventory.items = vec![
+                openstory_protocol::InventoryItem {
+                    inventory_type: openstory_protocol::InventoryType::Cash,
+                    slot: 1,
+                    item_id: 5_000_000,
+                    pet: Some(openstory_protocol::PetInventoryData {
+                        name: "Kitty".to_owned(), level: 12, fullness: 85, ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+                openstory_protocol::InventoryItem {
+                    inventory_type: openstory_protocol::InventoryType::Equip,
+                    slot: 4,
+                    item_id: 1_812_000,
+                    ..Default::default()
+                },
+            ];
+    }
+    if name == "panel-pet-equipment-scroll" {
+        for slot in 5..=11 {
+            inventory.items.push(openstory_protocol::InventoryItem {
+                inventory_type: openstory_protocol::InventoryType::Equip,
+                slot,
+                item_id: 1_812_000,
+                ..Default::default()
+            });
+        }
+    }
+    let pixels = super::render_pet_equipment_panel(
+        font,
+        &inventory,
+        ui_archive,
+        item_archive,
+        character_archive,
+        string_archive,
+        &mut HashMap::new(),
+        &mut HashMap::new(),
+        if name == "panel-pet-equipment-scroll" { 3 } else { 0 },
+    );
+    let mut sprites = gameplay_backdrop(map_archive, character_archive, font)?;
+    sprites.push(DecodedSprite {
+        texture_key: "rendered-window:pet-equipment".to_owned(),
+        rect: SpriteRect {
+            x: 618.0,
+            y: 128.0,
+            width: 390.0,
+            height: 480.0,
+            blend_mode: BlendMode::Alpha,
+        },
+        depth_order: 0,
+        texture_width: 390,
+        texture_height: 480,
+        pixels: Arc::from(pixels),
+    });
+    Ok(LoginSceneAssets {
+        sprites,
+        actions: Vec::new(),
+        map_scene: None,
+        animated_art: Vec::new(),
+        login_buttons: Vec::new(),
+        save_id_indicator_draws: None,
+    })
+}
+
 fn build_storage_panel_scene(
     map_archive: &NxArchive,
     ui_archive: &NxArchive,
@@ -1595,14 +2078,14 @@ fn build_storage_panel_scene(
     font: &fontdue::Font,
 ) -> Result<LoginSceneAssets, String> {
     let storage = openstory_protocol::StorageSnapshot {
-        npc_id: 1052001,
+        npc_id: fixture_named_id(string_archive, "Npc.img", "Mr. Wang", 1022005),
         slot_capacity: 24,
         meso: 96_000,
         items: (0..22)
             .map(|index| openstory_protocol::InventoryItem {
-                inventory_type: openstory_protocol::InventoryType::Etc,
+                inventory_type: openstory_protocol::InventoryType::Equip,
                 slot: index + 1,
-                item_id: 4_000_000 + i32::from(index % 11),
+                item_id: 1_002_000 + i32::from(index % 20),
                 count: if index % 4 == 0 { 100 } else { 1 },
                 ..Default::default()
             })
@@ -1611,7 +2094,7 @@ fn build_storage_panel_scene(
     let pixels = super::render_storage_reference_panel(
         font,
         &storage,
-        openstory_protocol::InventoryType::Etc,
+        openstory_protocol::InventoryType::Equip,
         0,
         "",
         false,
@@ -1657,10 +2140,16 @@ fn build_item_tooltip_scene(
     font: &fontdue::Font,
 ) -> Result<LoginSceneAssets, String> {
     let item = openstory_protocol::InventoryItem {
-        inventory_type: openstory_protocol::InventoryType::Use,
+        inventory_type: openstory_protocol::InventoryType::Equip,
         slot: 1,
-        item_id: 2_000_000,
-        count: 25,
+        item_id: fixture_named_id(string_archive, "Eqp.img/Eqp/Coat", "Grey T-Shirt", 1040010),
+        count: 1,
+        equip: Some({
+            let mut data = openstory_protocol::EquipInventoryData::default();
+            data.upgrade_slots = 7;
+            data.stats[8] = 3;
+            data
+        }),
         ..Default::default()
     };
     let pixels = super::render_inventory_tooltip(
@@ -1745,29 +2234,64 @@ fn build_quest_log_panel_scene(
     quest_archive: &NxArchive,
     string_archive: &NxArchive,
     character_archive: &NxArchive,
+    npcs: &NxArchive,
     font: &fontdue::Font,
 ) -> Result<LoginSceneAssets, String> {
-    let detail_preview = name == "native-quest-log-detail";
-    let log = if detail_preview {
-        openstory_protocol::QuestLog {
-            started: vec![openstory_protocol::QuestEntry {
-                id: 1_000,
-                data: String::new(),
-            }],
-            completed: Vec::new(),
+    let detail_preview = name == "panel-quests-detail";
+    let desired = [
+        "The Right Path",
+        "Stomping the Castle",
+        "The Brewing Storm",
+        "The Mark of Heroism",
+        "Bounty Hunter",
+        "Bounty Hunting",
+        "Paving the Way",
+        "Temple of Time",
+        "World Tour",
+    ];
+    let root = quest_archive
+        .root()
+        .resolve("QuestInfo.img")
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "missing quest catalogue".to_owned())?;
+    let mut ids = Vec::new();
+    for node in root.children().map_err(|e| e.to_string())? {
+        let Some(id) = node.name().ok().and_then(|name| name.parse::<i16>().ok()) else {
+            continue;
+        };
+        if let Some(title) = quest_info_text(quest_archive, id, "name")
+            && desired.iter().any(|name| title.contains(name))
+        {
+            ids.push(id);
         }
-    } else {
-        openstory_protocol::QuestLog::default()
+        if ids.len() >= 20 {
+            break;
+        }
+    }
+    if ids.is_empty() {
+        ids.extend([1000, 1001, 1002]);
+    }
+    let log = openstory_protocol::QuestLog {
+        started: ids
+            .iter()
+            .copied()
+            .map(|id| openstory_protocol::QuestEntry {
+                id,
+                data: String::new(),
+            })
+            .collect(),
+        completed: ids
+            .iter()
+            .copied()
+            .map(|id| openstory_protocol::CompletedQuest { id, timestamp: 0 })
+            .collect(),
     };
     let tab = if detail_preview {
-        super::QuestLogTab::Available
-    } else {
         super::QuestLogTab::Active
+    } else {
+        super::QuestLogTab::Completed
     };
-    let available = detail_preview
-        .then_some((1_000, 20))
-        .into_iter()
-        .collect::<Vec<_>>();
+    let available = Vec::new();
     let pixels = super::render_quest_log_panel(
         font,
         &log,
@@ -1783,16 +2307,13 @@ fn build_quest_log_panel_scene(
         None,
         None,
         legacy_ui_archive,
+        npcs,
     );
     let canvas_width = super::QUEST_LOG_PANEL_WIDTH as usize;
-    let (panel_width, panel_height) = if detail_preview {
-        (
-            super::QUEST_LOG_PANEL_WIDTH as usize,
-            super::QUEST_LOG_PANEL_HEIGHT as usize,
-        )
-    } else {
-        (245, 396)
-    };
+    let (panel_width, panel_height) = (
+        QUEST_LOG_PANEL_WIDTH as usize,
+        QUEST_LOG_PANEL_HEIGHT as usize,
+    );
     let mut visible_pixels = Vec::with_capacity(panel_width * panel_height * 4);
     for row in 0..panel_height {
         let source = row * canvas_width * 4;
@@ -1833,7 +2354,7 @@ fn build_native_window_scene(
     skill_archive: &NxArchive,
     font: &fontdue::Font,
 ) -> Result<LoginSceneAssets, String> {
-    let mut sprites = if name == "native-cash-shop" {
+    let mut sprites = if name == "page-cash-shop" {
         Vec::new()
     } else {
         gameplay_backdrop(map_archive, character_archive, font)?
@@ -1843,34 +2364,37 @@ fn build_native_window_scene(
     // approximations generated by the Rust panel renderer. Related layers
     // share the same anchor; their NX origins provide the authored offsets.
     let layers: &[(&str, f32, f32)] = match name {
-        "native-keybindings" => &[],
-        "native-quickslots" | "native-skill-macros" => &[],
-        "native-items" => &[("UIWindow.img/Item/backgrnd", 300.0, 160.0)],
-        "native-equipment" => &[],
-        "native-skills" => &[
+        "panel-keyboard-settings"
+        | "panel-keyboard-settings-empty"
+        | "panel-keyboard-settings-capture"
+        | "panel-keyboard-settings-scroll"
+        | "panel-keyboard-settings-quickslots" => &[],
+        "hud-quickslot" | "panel-skill-macros" => &[],
+        "panel-item-inventory" => &[("UIWindow.img/Item/backgrnd", 300.0, 160.0)],
+        "panel-equipment-inventory" => &[],
+        "panel-skill-inventory" => &[
             // Compose the same scaled v83 Skill window used by the live panel below.
         ],
-        "native-pet-equipment" => &[("UIWindow.img/Equip/pet", 184.0, 20.0)],
-        "native-npc-store" => &[
+        "panel-npc-store" => &[
             ("UIWindow2.img/Shop2/backgrnd", 400.0, 20.0),
             ("UIWindow2.img/Shop2/backgrnd2", 400.0, 20.0),
             ("UIWindow2.img/Shop2/backgrnd3", 400.0, 20.0),
         ],
-        "native-cash-shop" => &[("CashShop.img/Base/backgrnd", 0.0, 0.0)],
-        "native-monster-book" => &[("UIWindow2.img/MonsterBook/backgrnd", 276.5, 20.0)],
-        "native-status" | "native-status-detail" => &[
+        "page-cash-shop" => &[("CashShop.img/Base/backgrnd", 0.0, 0.0)],
+        "panel-monster-book" => &[("UIWindow2.img/MonsterBook/backgrnd", 276.5, 20.0)],
+        "panel-stats" | "panel-stats-detail" => &[
             // Render the live v83 status sheets below so preview and gameplay
             // share the same NX art and layout.
         ],
-        "native-quest-log" => &[("UIWindow.img/Quest/backgrnd3", 280.0, 20.0)],
+        "panel-quests" => &[("UIWindow.img/Quest/backgrnd3", 280.0, 20.0)],
         // The v83 UI archive has StatusBar.img, not the newer StatusBar2
         // chat-bar tree. Preview the live Rust fallback panel below.
-        "native-chat" | "native-whisper" => &[],
-        "native-party" | "native-buddy" => &[],
+        "hud-chat" | "panel-whisper" => &[],
+        "panel-party" | "panel-buddy" => &[],
         // The C++ v83 client uses the UserList tree. Newer GuildUI.img art is
         // absent from the installed v83 UI.nx archive.
-        "native-guild" | "native-alliance" => &[],
-        "native-audio-settings" => &[
+        "panel-guild" | "panel-alliance" => &[],
+        "panel-audio-settings" => &[
             ("UIWindow2.img/OptionMenu/backgrnd", 370.0, 105.0),
             ("UIWindow2.img/OptionMenu/backgrnd2", 370.0, 105.0),
             ("UIWindow2.img/OptionMenu/backgrnd3", 370.0, 105.0),
@@ -1880,12 +2404,12 @@ fn build_native_window_scene(
 
     for (path, anchor_x, anchor_y) in layers {
         let first_sprite = sprites.len();
-        let archive = if matches!(name, "native-items" | "native-quest-log") {
+        let archive = if matches!(name, "panel-item-inventory" | "panel-quests") {
             legacy_ui_archive
         } else {
             ui_archive
         };
-        let sprite = if name == "native-keybindings" {
+        let sprite = if name == "panel-keyboard-settings" {
             append_optional_sprite_at_top_left(
                 &mut sprites,
                 archive,
@@ -1904,7 +2428,7 @@ fn build_native_window_scene(
 
     // Compose the live Rust panels into previews so v83 assets and dimensions
     // are audited through the same renderers used in game.
-    if name == "native-guild" {
+    if name == "panel-guild" {
         let pixels = render_guild_panel(
             font,
             ui_archive,
@@ -1930,7 +2454,7 @@ fn build_native_window_scene(
             texture_height: GUILD_PANEL_HEIGHT,
             pixels: Arc::from(pixels),
         });
-    } else if name == "native-alliance" {
+    } else if name == "panel-alliance" {
         let pixels = render_alliance_panel(font, ui_archive, None, None, None);
         sprites.push(DecodedSprite {
             texture_key: "nx-window:rendered-v83-alliance".to_owned(),
@@ -1946,7 +2470,7 @@ fn build_native_window_scene(
             texture_height: ALLIANCE_PANEL_HEIGHT,
             pixels: Arc::from(pixels),
         });
-    } else if name == "native-party" {
+    } else if name == "panel-party" {
         let party = openstory_protocol::PartySnapshot {
             party_id: 83,
             leader_id: 1,
@@ -1995,7 +2519,7 @@ fn build_native_window_scene(
             texture_height: PARTY_PANEL_HEIGHT,
             pixels: Arc::from(pixels),
         });
-    } else if name == "native-buddy" {
+    } else if name == "panel-buddy" {
         let buddies = [
             openstory_protocol::BuddyEntry {
                 character_id: 2,
@@ -2035,7 +2559,7 @@ fn build_native_window_scene(
             texture_height: BUDDY_PANEL_HEIGHT,
             pixels: Arc::from(pixels),
         });
-    } else if matches!(name, "native-status" | "native-status-detail") {
+    } else if matches!(name, "panel-stats" | "panel-stats-detail") {
         let pixels = render_status_panel(font, ui_archive, &preview_character(), false, false);
         sprites.push(DecodedSprite {
             texture_key: "rendered-window:status-panel".to_owned(),
@@ -2051,11 +2575,11 @@ fn build_native_window_scene(
             texture_height: STATUS_PANEL_HEIGHT,
             pixels: Arc::from(pixels),
         });
-        if name == "native-status-detail" {
+        if matches!(name, "panel-stats" | "panel-stats-detail") {
             let character = preview_character();
             let inventory = preview_equipped_inventory();
             let skills = HashMap::new();
-            let active_buffs = HashMap::new();
+            let active_buffs = CharacterBuffs::default();
             let forced_stats = ForcedEquipmentStats::default();
             let pixels = render_status_detail_panel(
                 font,
@@ -2084,35 +2608,18 @@ fn build_native_window_scene(
                 pixels: Arc::from(pixels),
             });
         }
-    } else if name == "native-chat" {
-        let lines = VecDeque::from([
-            ChatLine {
-                text: "System: Welcome to the field.".to_owned(),
-                color: [255, 220, 120],
-            },
-            ChatLine {
-                text: "Maya: Ready to explore?".to_owned(),
-                color: [235, 235, 235],
-            },
-            ChatLine {
-                text: "Party: Meet at the town portal.".to_owned(),
-                color: [160, 210, 255],
-            },
-        ]);
-        let pixels = render_chat_panel(
-            ui_archive,
-            font,
-            &lines,
-            "See you there!",
-            true,
-            ChatTarget::Party,
-            None,
-        );
+    } else if name == "hud-chat" {
+        let lines = (0..9).map(|index| ChatLine {
+            text: if index % 3 == 0 { "The fairy's Gifts is now level 2 - 1WATK" } else { "The scroll lights up, and then its mysterious power has been transferred to the item." }.to_owned(),
+            color: if index % 3 == 0 { [80, 200, 255] } else { [245, 170, 95] },
+        }).collect::<VecDeque<_>>();
+        let pixels =
+            render_chat_panel(ui_archive, font, &lines, "", true, ChatTarget::Public, None);
         sprites.push(DecodedSprite {
             texture_key: "rendered-window:chat-panel".to_owned(),
             rect: SpriteRect {
-                x: 12.0,
-                y: 506.0,
+                x: CHAT_X,
+                y: CHAT_Y,
                 width: CHAT_WIDTH as f32,
                 height: CHAT_HEIGHT as f32,
                 blend_mode: BlendMode::Alpha,
@@ -2122,7 +2629,7 @@ fn build_native_window_scene(
             texture_height: CHAT_HEIGHT,
             pixels: Arc::from(pixels),
         });
-    } else if name == "native-whisper" {
+    } else if name == "panel-whisper" {
         let conversation = WhisperConversation {
             target: "Maya".to_owned(),
             lines: VecDeque::from([
@@ -2154,38 +2661,11 @@ fn build_native_window_scene(
         });
     }
 
-    if name == "native-quickslots" {
+    if name == "hud-quickslot" {
         let keys = DEFAULT_QUICKSLOT_KEYS;
-        let mut bindings = default_keymap_bindings();
-        for (slot, binding) in [
-            openstory_protocol::KeyBinding {
-                kind: 2,
-                action: 2_000_000,
-            },
-            openstory_protocol::KeyBinding {
-                kind: 1,
-                action: 1_001_004,
-            },
-            openstory_protocol::KeyBinding { kind: 8, action: 0 },
-            openstory_protocol::KeyBinding {
-                kind: 4,
-                action: 52,
-            },
-            openstory_protocol::KeyBinding {
-                kind: 3,
-                action: 5_010_000,
-            },
-            openstory_protocol::KeyBinding::default(),
-            openstory_protocol::KeyBinding::default(),
-            openstory_protocol::KeyBinding::default(),
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            bindings[usize::from(keys[slot])] = binding;
-        }
+        let bindings = keyboard_settings::defaults();
         let mut icon_cache = HashMap::new();
-        let icons: [Option<(u32, u32, Arc<[u8]>)>; 8] = std::array::from_fn(|slot| {
+        let icons = std::array::from_fn(|slot| {
             let binding = bindings
                 .get(usize::from(keys[slot]))
                 .copied()
@@ -2205,10 +2685,15 @@ fn build_native_window_scene(
                     character_archive,
                     &mut icon_cache,
                 ),
-                4 | 5 => decode_nx_icon(
-                    ui_archive,
-                    &format!("UIWindow.img/KeyConfig/icon/{}", binding.action),
-                ),
+                4 | 5 => {
+                    let path = format!("UIWindow.img/KeyConfig/icon/{}", binding.action);
+                    decode_nx_icon(ui_archive, &path).or_else(|| {
+                        decode_nx_icon(
+                            ui_archive,
+                            &format!("UIWindow2.img/KeyConfig/icon/{}", binding.action),
+                        )
+                    })
+                }
                 8 => decode_nx_icon(
                     ui_archive,
                     &format!("UIWindow.img/SkillMacro/Macroicon/{}/icon", binding.action),
@@ -2238,16 +2723,22 @@ fn build_native_window_scene(
         });
     }
 
-    if name == "native-keybindings" {
+    if name.starts_with("panel-keyboard-settings") {
+        let fixture = keyboard_preview_fixture(name);
         let pixels = render_key_config_panel(
             font,
             ui_archive,
-            &default_keymap_bindings(),
+            skill_archive,
+            item_archive,
+            character_archive,
+            &fixture.bindings,
             &DEFAULT_QUICKSLOT_KEYS,
-            None,
-            None,
-            0,
-            &static_key_config_actions(),
+            fixture.capture,
+            fixture.quickslot_capture,
+            fixture.first_row,
+            &fixture.actions,
+            &mut HashMap::new(),
+            &HashMap::from([(2_000_006, 245), (2_000_002, 251)]),
         );
         sprites.push(DecodedSprite {
             texture_key: "key-config-preview".to_owned(),
@@ -2265,7 +2756,7 @@ fn build_native_window_scene(
         });
     }
 
-    if name == "native-skills" {
+    if name == "panel-skill-inventory" {
         let mut entries = preview_skill_entries();
         for (index, (entry, (id, skill_name))) in entries
             .iter_mut()
@@ -2312,7 +2803,7 @@ fn build_native_window_scene(
         });
     }
 
-    if name == "native-skill-macros" {
+    if name == "panel-skill-macros" {
         let skills = vec![
             (1_001_004, "Power Strike".to_owned()),
             (1_001_005, "Slash Blast".to_owned()),
@@ -2346,7 +2837,7 @@ fn build_native_window_scene(
         editor.open(&macros);
         editor.selected_macro = 1;
         editor.selected_slot = 2;
-        let pixels = skill_macros::render(font, ui_archive, &editor, &skills);
+        let pixels = skill_macros::render(font, ui_archive, skill_archive, &editor, &skills);
         sprites.push(DecodedSprite {
             texture_key: "skill-macros-preview".to_owned(),
             rect: SpriteRect {
@@ -2373,7 +2864,7 @@ fn build_native_window_scene(
     })
 }
 
-fn preview_character() -> openstory_protocol::CharacterInfo {
+pub(super) fn preview_character() -> openstory_protocol::CharacterInfo {
     openstory_protocol::CharacterInfo {
         id: 1,
         stats: openstory_protocol::CharacterStats {
@@ -2631,25 +3122,33 @@ fn geometry_report(name: &str, scene: &LoginSceneAssets, width: u32, height: u32
     );
     let native_window_preview = matches!(
         name,
-        "native-keybindings"
-            | "native-skill-macros"
-            | "native-items"
-            | "native-equipment"
-            | "native-skills"
-            | "native-pet-equipment"
-            | "native-npc-store"
-            | "native-cash-shop"
-            | "native-monster-book"
-            | "native-status"
-            | "native-status-detail"
-            | "native-quest-log"
-            | "native-quest-log-detail"
-            | "native-chat"
-            | "native-party"
-            | "native-buddy"
-            | "native-guild"
-            | "native-alliance"
-            | "native-audio-settings"
+        "panel-keyboard-settings"
+            | "panel-keyboard-settings-empty"
+            | "panel-keyboard-settings-capture"
+            | "panel-keyboard-settings-scroll"
+            | "panel-keyboard-settings-quickslots"
+            | "panel-skill-macros"
+            | "panel-item-inventory"
+            | "panel-equipment-inventory"
+            | "panel-skill-inventory"
+            | "panel-pet-equipment"
+            | "panel-pet-equipment-empty"
+            | "panel-pet-equipment-scroll"
+            | "panel-npc-store"
+            | "panel-npc-store-sell"
+            | "panel-npc-store-confirmation"
+            | "page-cash-shop"
+            | "panel-monster-book"
+            | "panel-stats"
+            | "panel-stats-detail"
+            | "panel-quests"
+            | "panel-quests-detail"
+            | "hud-chat"
+            | "panel-party"
+            | "panel-buddy"
+            | "panel-guild"
+            | "panel-alliance"
+            | "panel-audio-settings"
     );
     if native_window_preview {
         let nx_sprite_count = scene
@@ -2810,43 +3309,7 @@ fn preview_path(output_dir: &Path, screen: &str, width: u32, height: u32) -> Pat
 }
 
 fn preview_stem(screen: &str) -> String {
-    let kind = preview_kind(screen);
-    let screen = screen.strip_prefix("native-").unwrap_or(screen);
-    format!("{kind}-{screen}")
-}
-
-fn preview_kind(screen: &str) -> &'static str {
-    match screen {
-        "login"
-        | "login-active"
-        | "world-select"
-        | "character-select-empty"
-        | "character-select-populated"
-        | "character-create-class"
-        | "character-create-explorer"
-        | "character-create-error"
-        | "native-first-map"
-        | "native-second-map"
-        | "native-world-map"
-        | "native-world-map-link"
-        | "native-world-map-marker"
-        | "native-world-map-search"
-        | "native-world-map-result"
-        | "native-cash-shop"
-        | "native-cash-shop-locker"
-        | "native-cash-shop-coupon"
-        | "native-cash-shop-confirmation" => "page",
-        "native-status-bar"
-        | "native-clock"
-        | "native-minimap-collapsed"
-        | "native-minimap-normal"
-        | "native-minimap-expanded"
-        | "native-chat"
-        | "native-quickslots"
-        | "native-avatar-megaphone"
-        | "native-item-megaphone" => "hud",
-        _ => "panel",
-    }
+    screen.to_owned()
 }
 
 fn write_png(path: &Path, width: u32, height: u32, bgra: &[u8]) -> io::Result<()> {
@@ -2873,3 +3336,11 @@ fn write_png(path: &Path, width: u32, height: u32, bgra: &[u8]) -> io::Result<()
         .write_image_data(&rgba)
         .map_err(|error| io::Error::other(error.to_string()))
 }
+
+#[cfg(test)]
+#[path = "combat_preview_tests.rs"]
+mod combat_preview_tests;
+
+#[cfg(test)]
+#[path = "portal_preview_tests.rs"]
+mod portal_preview_tests;

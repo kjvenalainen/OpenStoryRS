@@ -244,12 +244,15 @@ impl ClientApp {
             show_status_detail: false,
             show_key_config: false,
             key_config_capture: None,
+            key_config_draft: None,
+            key_config_quickslot_draft: None,
             quickslot_key_capture: None,
             key_config_scroll_row: 0,
             key_config_actions: Vec::new(),
             key_config_actions_dirty: true,
             server_keymap: None,
             quickslot_keys: saved_quickslot_keys.unwrap_or(DEFAULT_QUICKSLOT_KEYS),
+            quickslot_pointer_binding: None,
             quickslot_keys_customized,
             show_quickslots: false,
             quickslot_texture: None,
@@ -290,7 +293,7 @@ impl ClientApp {
             skill_book_scroll_row: 0,
             skills: HashMap::new(),
             skill_book_entries: Vec::new(),
-            active_buffs: HashMap::new(),
+            active_buffs: CharacterBuffs::default(),
             pending_skill_hit_sounds: Vec::new(),
             skill_cooldowns: HashMap::new(),
             forced_equipment_stats: ForcedEquipmentStats::default(),
@@ -349,12 +352,22 @@ impl ClientApp {
             pending_storage_restores: Vec::new(),
             cash_shop: None,
             cash_products,
+            mts_open: false,
+            mts_open_snapshot: None,
+            mts_balances: None,
+            mts_last_event: None,
+            bot_inventory_snapshot: None,
+            bot_inventory_last_event: None,
+            session_energy: None,
+            gm_account: false,
+            gm_hidden: false,
             map_hud_texture: None,
             buff_list_texture: None,
             buff_list_refreshed_at: None,
             status_bar_draw_indices: Vec::new(),
             status_bar_gauges: [None; 3],
             status_bar_number_font: None,
+            status_bar_level_font: None,
             status_bar_layout: StatusBarLayout::V83,
             boss_hp_gauge_texture: None,
             boss_hp_gauge_remaining: Duration::ZERO,
@@ -407,9 +420,11 @@ impl ClientApp {
             show_login_fields: true,
             map_scene: None,
             last_npc_talk_at: None,
+            pending_npc_talk: None,
             last_local_skill_cast: None,
             pending_zombify_heal_feedback_until: None,
             gameplay_input: GameplayInput::default(),
+            key_config_pointer_start: None,
             simulation_clock: FixedStepClock::default(),
             client_started_at: Instant::now(),
             last_simulation_update: Instant::now(),
@@ -1241,8 +1256,7 @@ impl ClientApp {
             return;
         }
         let now = Instant::now();
-        self.active_buffs
-            .retain(|_, buff| buff.expires_at.is_none_or(|expires_at| expires_at > now));
+        self.active_buffs.expire(now);
         if character_has_buff(
             &self.active_buffs,
             openstory_protocol::BuffMaskGroup::Second,
@@ -1329,12 +1343,6 @@ impl ClientApp {
             }
         });
         let target_count = skill.map_or(1, |skill| usize::from(skill.mob_count));
-        let attack_range = skill
-            .and_then(|skill| skill.attack_range)
-            .unwrap_or_else(|| match (skill.is_some(), attack_stats.attack_type) {
-                (false, openstory_protocol::AttackType::Close) => [-300, 0, -150, 150],
-                _ => [-400, -5, -50, 50],
-            });
         let horizontal_range_multiplier =
             skill.map_or(1.0, |skill| skill.horizontal_range_multiplier);
         let skill_level = skill.map_or(0, |skill| skill.level.clamp(0, 255) as u8);
@@ -1420,43 +1428,48 @@ impl ClientApp {
             return;
         };
         let attack_index = scene.attack_count;
-        let Some(stance) =
-            skill_stance.or_else(|| regular_attack_stance(attack_stats, attack_index))
-        else {
+        let Some(stance) = skill_stance.or_else(|| {
+            regular_attack_stance(
+                attack_stats.attack_class,
+                attack_stats.weapon_type,
+                attack_stats.attack_type == openstory_protocol::AttackType::Ranged,
+                attack_index,
+            )
+        }) else {
             return;
         };
-        let skill_hit_delays = if skill_id > 0 {
-            attack_hit_delays(
-                &self.character_archive,
-                &self.skill_archive,
-                &character.look,
-                skill_id,
-                skill_level,
-                stance,
-                attack_stats.speed,
-                usize::from(hit_count.clamp(1, 15)),
-            )
-        } else {
-            Vec::new()
-        };
+        let attack_range = skill
+            .and_then(|skill| skill.attack_range)
+            .or_else(|| {
+                (skill.is_none()
+                    && attack_stats.attack_type == openstory_protocol::AttackType::Close)
+                    .then(|| {
+                        normal_weapon_attack_range(&self.character_archive, &character.look, stance)
+                    })
+                    .flatten()
+            })
+            .unwrap_or([-400, -5, -50, 50]);
+        let skill_hit_delays = attack_hit_delays(
+            &self.character_archive,
+            &self.skill_archive,
+            &character.look,
+            skill_id,
+            skill_level,
+            stance,
+            attack_stats.speed,
+            usize::from(hit_count.clamp(1, 15)),
+        );
         let target_positions =
             scene.nearest_attack_targets(target_count, attack_range, horizontal_range_multiplier);
         if skill_id > 0 {
             let sound_start = Instant::now();
-            for (object_id, _, (target_x, target_y)) in &target_positions {
+            for (_, _, (target_x, target_y)) in &target_positions {
                 for hit_index in 0..hit_count.clamp(1, 15) {
                     let position = (rounded_i16(*target_x), rounded_i16(*target_y));
                     let delay = skill_hit_delays
                         .get(usize::from(hit_index))
                         .copied()
                         .unwrap_or_default();
-                    scene.schedule_mob_attack_impact(
-                        *object_id,
-                        Arc::clone(&skill_hit_effects),
-                        !scene.facing_right,
-                        None,
-                        delay,
-                    );
                     if delay.is_zero() {
                         self.audio
                             .play_skill_hit(&self.sound_archive, skill_id, position);
@@ -1488,16 +1501,31 @@ impl ClientApp {
                 .get(&object_id)
                 .map(|reactor| (reactor.x, reactor.y))
         });
+        // The server broadcasts attacks to other players, so local damage must
+        // be presented from the same rolls used in the outgoing packet.
+        let mut impacts = Vec::new();
         let targets = target_positions
             .into_iter()
-            .map(
-                |(object_id, mob, _)| openstory_protocol::AttackDamageTarget {
+            .map(|(object_id, mob, _)| {
+                let mut stack_offset = 0.0;
+                let damage_lines = (0..hit_count.clamp(1, 15))
+                    .map(|hit_index| {
+                        let (damage, critical) = basic_attack_damage(scene, attack_stats, mob);
+                        impacts.push((
+                            openstory_protocol::MobDamage { object_id, damage },
+                            critical,
+                            stack_offset,
+                            skill_hit_delays[usize::from(hit_index)],
+                        ));
+                        stack_offset += if critical { 36.0 } else { 30.0 };
+                        damage
+                    })
+                    .collect();
+                openstory_protocol::AttackDamageTarget {
                     object_id,
-                    damage_lines: (0..hit_count.clamp(1, 15))
-                        .map(|_| basic_attack_damage(scene, attack_stats, mob))
-                        .collect(),
-                },
-            )
+                    damage_lines,
+                }
+            })
             .collect();
         let packet = match openstory_protocol::build_player_attack_packet(
             &openstory_protocol::PlayerAttackPacket {
@@ -1518,6 +1546,15 @@ impl ClientApp {
                 return;
             }
         };
+        for (damage, critical, stack_offset, delay) in impacts {
+            scene.schedule_mob_attack_impact(
+                damage.object_id,
+                Arc::clone(&skill_hit_effects),
+                !scene.facing_right,
+                Some((damage, critical, stack_offset)),
+                delay,
+            );
+        }
         if let Some(frames) = projectile_frames {
             if attack_stats.attack_type == openstory_protocol::AttackType::Ranged || skill_id > 0 {
                 if projectile_targets.is_empty() {
@@ -1580,10 +1617,25 @@ impl ClientApp {
     }
 
     pub(super) fn toggle_key_config(&mut self) {
-        self.show_key_config = !self.show_key_config;
+        if self.show_key_config {
+            self.close_key_config(false);
+            return;
+        }
+        self.show_key_config = true;
+        self.gameplay_input = GameplayInput::default();
+        self.quickslot_pointer_binding = None;
+        self.key_config_pointer_start = None;
+        self.chat_open = false;
+        self.whisper_input_focused = false;
         self.key_config_capture = None;
         self.quickslot_key_capture = None;
         if self.show_key_config {
+            self.key_config_draft = Some(
+                self.server_keymap
+                    .clone()
+                    .unwrap_or_else(default_keymap_bindings),
+            );
+            self.key_config_quickslot_draft = Some(self.quickslot_keys);
             self.key_config_scroll_row = 0;
             self.key_config_actions_dirty = true;
             self.show_inventory = false;
@@ -1820,7 +1872,9 @@ impl ClientApp {
 
         let small_x = match self.status_bar_layout {
             StatusBarLayout::Modern => 838.0,
-            StatusBarLayout::V83 => V83_STATUS_BAR_WIDTH - 2.0 - (6.0 * 28.0 + 5.0 * 2.0),
+            StatusBarLayout::V83 => {
+                V83_STATUS_BAR_WIDTH - V83_STATUS_BAR_EDGE_PAD - (6.0 * 28.0 + 5.0 * 2.0)
+            }
         };
         let small_y = STATUS_BAR_TOP + 6.0;
         if (small_y..small_y + 20.0).contains(&cursor.y) {
@@ -1920,28 +1974,7 @@ impl ClientApp {
         if !self.show_quickslots {
             return None;
         }
-        const PANEL_X: f32 = 865.0;
-        const PANEL_Y: f32 = 615.0;
-        const CELL_X: f32 = 7.0;
-        const CELL_Y: f32 = 8.0;
-        const CELL_WIDTH: f32 = 32.0;
-        const CELL_HEIGHT: f32 = 30.0;
-        const COLUMN_STEP: f32 = 35.0;
-        const ROW_STEP: f32 = 34.0;
-        (0..8).find(|slot| {
-            let column = (*slot % 4) as f32;
-            let row = (*slot / 4) as f32;
-            rect_contains(
-                SpriteRect {
-                    x: PANEL_X + CELL_X + column * COLUMN_STEP,
-                    y: PANEL_Y + CELL_Y + row * ROW_STEP,
-                    width: CELL_WIDTH,
-                    height: CELL_HEIGHT,
-                    blend_mode: BlendMode::Alpha,
-                },
-                cursor,
-            )
-        })
+        ui_foundation::QUICKSLOT_GRID.hit(cursor.x - 865.0, cursor.y - 615.0)
     }
 
     pub(super) fn click_quickslot(&mut self, cursor: Point) -> bool {
@@ -1949,16 +1982,33 @@ impl ClientApp {
             return false;
         };
         let key = self.quickslot_keys[slot];
+        let fallback = default_keymap_bindings();
         if let Some(binding) = self
             .server_keymap
-            .as_ref()
-            .and_then(|bindings| bindings.get(usize::from(key)))
+            .as_deref()
+            .unwrap_or(&fallback)
+            .get(usize::from(key))
             .copied()
             && binding.kind != 0
         {
             self.apply_keymap_binding(ElementState::Pressed, false, binding);
+            if binding.kind == 5 && matches!(binding.action, 51 | 200..=203) {
+                self.quickslot_pointer_binding = Some(binding);
+            }
         }
         true
+    }
+
+    pub(super) fn finish_quickslot_pointer(&mut self) {
+        if let Some(binding) = self.quickslot_pointer_binding.take()
+            && !self
+                .gameplay_input
+                .held_bindings
+                .values()
+                .any(|held| *held == binding)
+        {
+            self.apply_keymap_binding(ElementState::Released, false, binding);
+        }
     }
 
     pub(super) fn quickslot_icon_pixels(
@@ -2065,7 +2115,9 @@ impl ClientApp {
             self.key_config_actions = build_key_config_actions(
                 self.inventory.as_ref(),
                 &self.skills,
-                self.server_keymap.as_deref(),
+                self.key_config_draft
+                    .as_deref()
+                    .or(self.server_keymap.as_deref()),
                 &self.skill_macros,
                 &self.string_archive,
                 &mut self.item_name_cache,
@@ -2077,27 +2129,40 @@ impl ClientApp {
             });
             self.key_config_actions_dirty = false;
         }
-        self.key_config_scroll_row = self.key_config_scroll_row.min(
-            self.key_config_actions
-                .len()
-                .saturating_sub(KEY_CONFIG_VISIBLE_ROWS),
-        );
-        let fallback;
-        let bindings = if let Some(bindings) = self.server_keymap.as_ref() {
-            bindings.as_slice()
-        } else {
-            fallback = default_keymap_bindings();
-            fallback.as_slice()
-        };
+        let fallback = default_keymap_bindings();
+        let bindings = self
+            .key_config_draft
+            .as_deref()
+            .or(self.server_keymap.as_deref())
+            .unwrap_or(&fallback);
+        self.key_config_scroll_row = self
+            .key_config_scroll_row
+            .min(keyboard_settings::scroll_max(
+                &self.key_config_actions,
+                bindings,
+            ));
+        let mut counts = HashMap::new();
+        if let Some(inventory) = self.inventory.as_ref() {
+            for item in &inventory.items {
+                *counts.entry(item.item_id).or_insert(0_u32) += u32::from(item.count);
+            }
+        }
         let pixels = render_key_config_panel(
             &self.font,
             &self.ui_archive,
+            &self.skill_archive,
+            &self.item_archive,
+            &self.character_archive,
             bindings,
-            &self.quickslot_keys,
+            self.key_config_quickslot_draft
+                .as_ref()
+                .unwrap_or(&self.quickslot_keys),
             self.key_config_capture,
             self.quickslot_key_capture,
             self.key_config_scroll_row,
             &self.key_config_actions,
+            &mut self.inventory_icon_cache,
+            &counts,
         );
         let Some(renderer) = self.renderer.as_ref() else {
             return;
@@ -2140,6 +2205,7 @@ impl ClientApp {
         let pixels = skill_macros::render(
             &self.font,
             &self.ui_archive,
+            &self.skill_archive,
             &self.skill_macro_editor,
             &skills,
         );
@@ -2200,7 +2266,8 @@ impl ClientApp {
             Some(skill_macros::Action::ToggleShout) => {
                 self.skill_macro_editor.toggle_shout();
             }
-            Some(skill_macros::Action::SelectSlot(slot)) => {
+            Some(skill_macros::Action::SelectSlot(row, slot)) => {
+                self.skill_macro_editor.select_macro(row);
                 self.skill_macro_editor.select_slot(slot);
             }
             Some(skill_macros::Action::ClearSkill(slot)) => {
@@ -2299,6 +2366,28 @@ impl ClientApp {
         true
     }
 
+    pub(super) fn capture_key_config_tray_action(&mut self, offset: usize) {
+        let fallback = default_keymap_bindings();
+        let bindings = self
+            .key_config_draft
+            .as_deref()
+            .or(self.server_keymap.as_deref())
+            .unwrap_or(&fallback);
+        let mut entries = keyboard_settings::tray_entries(&self.key_config_actions, bindings);
+        entries.sort_by_key(|(_, cell)| *cell);
+        let index = entries
+            .into_iter()
+            .filter(|(_, cell)| {
+                *cell >= self.key_config_scroll_row * 18
+                    && *cell < (self.key_config_scroll_row + 2) * 18
+            })
+            .nth(offset)
+            .map(|(index, _)| index);
+        if let Some(index) = index {
+            self.begin_key_config_capture(index);
+        }
+    }
+
     pub(super) fn begin_key_config_capture(&mut self, row: usize) {
         if row < self.key_config_actions.len() {
             self.quickslot_key_capture = None;
@@ -2315,101 +2404,165 @@ impl ClientApp {
         }
     }
 
-    pub(super) fn click_key_config(&mut self, cursor: Point) {
-        let panel = SpriteRect {
-            x: KEY_CONFIG_PANEL_X,
-            y: KEY_CONFIG_PANEL_Y,
-            width: KEY_CONFIG_PANEL_WIDTH as f32,
-            height: KEY_CONFIG_PANEL_HEIGHT as f32,
-            blend_mode: BlendMode::Alpha,
-        };
-        if !rect_contains(panel, cursor) {
-            return;
-        }
-        let local_x = cursor.x - panel.x;
-        let local_y = cursor.y - panel.y;
-        if local_x >= panel.width - 42.0 && local_y < 42.0 {
-            self.show_key_config = false;
-            self.key_config_capture = None;
-            self.quickslot_key_capture = None;
-        } else if let Some(slot) = quickslot_key_slot_at(local_x, local_y) {
-            self.begin_quickslot_key_capture(slot);
-        } else {
-            let fallback;
-            let bindings = if let Some(bindings) = self.server_keymap.as_deref() {
-                bindings
-            } else {
-                fallback = default_keymap_bindings();
-                fallback.as_slice()
-            };
-
-            // Clicking a bound key selects its action. The next physical key
-            // press assigns that action to the new key.
-            let bound_action = bindings
-                .iter()
-                .take(90)
-                .enumerate()
-                .find(|(key, binding)| {
-                    binding.kind != 0
-                        && keycap_position(*key as u8).is_some_and(|(x, y)| {
-                            (x as f32..(x + 30) as f32).contains(&local_x)
-                                && (y as f32..(y + 29) as f32).contains(&local_y)
-                        })
-                })
-                .and_then(|(_, binding)| {
-                    self.key_config_actions.iter().position(|action| {
-                        action.kind == binding.kind && action.action == binding.action
-                    })
-                });
-
-            if let Some(row) = bound_action {
-                self.begin_key_config_capture(row);
-            } else if let Some(row) = self.key_config_actions.iter().position(|action| {
-                unbound_action_cell(action.kind, action.action).is_some_and(|(column, grid_row)| {
-                    let x = 5 + column * 34;
-                    let y = 267 + grid_row * 34;
-                    (x as f32..(x + 34) as f32).contains(&local_x)
-                        && (y as f32..(y + 34) as f32).contains(&local_y)
-                })
-            }) {
-                self.begin_key_config_capture(row);
+    pub(super) fn close_key_config(&mut self, apply: bool) {
+        if apply {
+            if let Some(draft) = self.key_config_draft.take() {
+                let previous = self
+                    .server_keymap
+                    .clone()
+                    .unwrap_or_else(default_keymap_bindings);
+                let updates = keyboard_settings::changes(&previous, &draft);
+                self.server_keymap = Some(draft);
+                self.send_key_config_updates(&updates);
+            }
+            if let Some(keys) = self.key_config_quickslot_draft.take()
+                && keys != self.quickslot_keys
+            {
+                self.quickslot_keys = keys;
+                self.quickslot_keys_customized = true;
+                if let Err(error) = save_quickslot_keys(keys) {
+                    eprintln!("OpenStoryRS: could not save quick-slot keys: {error}");
+                }
             }
         }
-    }
-
-    pub(super) fn assign_quickslot_key_capture(&mut self, key: u8) {
-        let Some(slot) = self.quickslot_key_capture.take() else {
-            return;
-        };
-        if key == 0 || key >= openstory_protocol::KEYMAP_ENTRY_COUNT as u8 {
-            self.refresh_key_config_texture();
-            return;
-        }
-        let previous = self.quickslot_keys[slot];
-        for (other_slot, other_key) in self.quickslot_keys.iter_mut().enumerate() {
-            if other_slot != slot && *other_key == key {
-                *other_key = previous;
-            }
-        }
-        self.quickslot_keys[slot] = key;
-        self.quickslot_keys_customized = true;
-        match save_quickslot_keys(self.quickslot_keys) {
-            Ok(path) => eprintln!("OpenStoryRS: saved quick-slot keys to {}", path.display()),
-            Err(error) => eprintln!("OpenStoryRS: could not save quick-slot keys: {error}"),
-        }
-        self.refresh_key_config_texture();
+        self.key_config_draft = None;
+        self.key_config_quickslot_draft = None;
+        self.key_config_capture = None;
+        self.quickslot_key_capture = None;
+        self.show_key_config = false;
+        self.key_config_pointer_start = None;
+        self.gameplay_input = GameplayInput::default();
         self.refresh_quickslots_texture();
     }
 
+    pub(super) fn click_key_config(&mut self, cursor: Point) {
+        let (x, y) = (cursor.x - KEY_CONFIG_PANEL_X, cursor.y - KEY_CONFIG_PANEL_Y);
+        if self.quickslot_key_capture.is_some() && keyboard_settings::QUICKSLOT_POPUP.contains(x, y)
+        {
+            if let Some(slot) = keyboard_settings::quickslot_at(x, y) {
+                self.begin_quickslot_key_capture(slot);
+            }
+            self.refresh_key_config_texture();
+            return;
+        }
+        if let Some(button) = keyboard_settings::button_at(x, y) {
+            match button {
+                keyboard_settings::Button::Ok => self.close_key_config(true),
+                keyboard_settings::Button::Cancel | keyboard_settings::Button::Close => {
+                    self.close_key_config(false)
+                }
+                keyboard_settings::Button::Quickslots => {
+                    if self.quickslot_key_capture.is_some() {
+                        self.quickslot_key_capture = None;
+                    } else {
+                        self.begin_quickslot_key_capture(0);
+                    }
+                }
+                keyboard_settings::Button::Default => {
+                    self.key_config_quickslot_draft = Some(DEFAULT_QUICKSLOT_KEYS);
+                    self.key_config_draft = Some(keyboard_settings::defaults());
+                    self.key_config_actions_dirty = true;
+                    self.key_config_scroll_row = 0;
+                    self.key_config_capture = None;
+                    self.quickslot_key_capture = None;
+                }
+                keyboard_settings::Button::Clear => {
+                    self.key_config_draft = Some(vec![
+                        openstory_protocol::KeyBinding::default();
+                        openstory_protocol::KEYMAP_ENTRY_COUNT
+                    ]);
+                    self.key_config_actions_dirty = true;
+                    self.key_config_scroll_row = 0;
+                    self.key_config_capture = None;
+                    self.quickslot_key_capture = None;
+                }
+            }
+        } else if self.quickslot_key_capture.is_some() {
+            if let Some(slot) = keyboard_settings::quickslot_at(x, y) {
+                self.begin_quickslot_key_capture(slot);
+            } else if let Some(key) = keyboard_settings::key_at(x, y) {
+                self.assign_quickslot_key_capture(key);
+            }
+        } else if let Some(key) = keyboard_settings::key_at(x, y)
+            && self.key_config_capture.is_some()
+        {
+            self.assign_key_config_capture(key);
+        } else {
+            let fallback = default_keymap_bindings();
+            let bindings = self
+                .key_config_draft
+                .as_deref()
+                .or(self.server_keymap.as_deref())
+                .unwrap_or(&fallback);
+            let action = keyboard_settings::key_at(x, y)
+                .and_then(|key| bindings.get(key as usize))
+                .filter(|binding| binding.kind != 0)
+                .and_then(|binding| {
+                    self.key_config_actions.iter().position(|action| {
+                        action.kind == binding.kind && action.action == binding.action
+                    })
+                })
+                .or_else(|| {
+                    keyboard_settings::tray_action_at(
+                        x,
+                        y,
+                        self.key_config_scroll_row,
+                        &self.key_config_actions,
+                        bindings,
+                    )
+                });
+            if let Some(index) = action {
+                self.begin_key_config_capture(index);
+            }
+        }
+        self.key_config_pointer_start = self.key_config_capture.map(|_| cursor);
+        self.refresh_key_config_texture();
+    }
+
+    pub(super) fn finish_key_config_pointer(&mut self, cursor: Option<Point>) {
+        let Some(start) = self.key_config_pointer_start.take() else {
+            return;
+        };
+        let Some(cursor) = cursor else {
+            return;
+        };
+        if (cursor.x - start.x).abs() < 4.0 && (cursor.y - start.y).abs() < 4.0 {
+            return;
+        }
+        let (x, y) = (cursor.x - KEY_CONFIG_PANEL_X, cursor.y - KEY_CONFIG_PANEL_Y);
+        if let Some(key) = keyboard_settings::key_at(x, y) {
+            self.assign_key_config_capture(key);
+        } else if keyboard_settings::TRAY.hit(x, y).is_some()
+            && let Some(row) = self.key_config_capture.take()
+        {
+            self.clear_key_config_binding(row);
+        }
+        self.refresh_key_config_texture();
+    }
+
+    pub(super) fn assign_quickslot_key_capture(&mut self, key: u8) {
+        let Some(slot) = self.quickslot_key_capture else {
+            return;
+        };
+        let keys = self
+            .key_config_quickslot_draft
+            .get_or_insert(self.quickslot_keys);
+        keyboard_settings::assign_quickslot(keys, slot, key);
+        self.refresh_key_config_texture();
+    }
+
     pub(super) fn scroll_key_config(&mut self, direction: isize) {
+        let fallback = default_keymap_bindings();
+        let bindings = self
+            .key_config_draft
+            .as_deref()
+            .or(self.server_keymap.as_deref())
+            .unwrap_or(&fallback);
+        let maximum = keyboard_settings::scroll_max(&self.key_config_actions, bindings);
         self.key_config_scroll_row = self
             .key_config_scroll_row
             .saturating_add_signed(direction)
-            .min(
-                self.key_config_actions
-                    .len()
-                    .saturating_sub(KEY_CONFIG_VISIBLE_ROWS),
-            );
+            .min(maximum);
         self.refresh_key_config_texture();
     }
 
@@ -2456,23 +2609,17 @@ impl ClientApp {
         }
 
         let mut bindings = self
-            .server_keymap
+            .key_config_draft
             .clone()
+            .or_else(|| self.server_keymap.clone())
             .unwrap_or_else(default_keymap_bindings);
-        let mut updates = Vec::with_capacity(2);
-        for (index, binding) in bindings.iter_mut().enumerate() {
-            if binding.kind == kind && binding.action == action && index != usize::from(key) {
-                *binding = openstory_protocol::KeyBinding::default();
-                updates.push((index as u8, *binding));
-            }
-        }
-        let binding = openstory_protocol::KeyBinding { kind, action };
-        bindings[usize::from(key)] = binding;
-        updates.push((key, binding));
-        self.server_keymap = Some(bindings);
-        self.send_key_config_updates(&updates);
+        keyboard_settings::assign(
+            &mut bindings,
+            key,
+            openstory_protocol::KeyBinding { kind, action },
+        );
+        self.key_config_draft = Some(bindings);
         self.refresh_key_config_texture();
-        self.refresh_quickslots_texture();
     }
 
     pub(super) fn clear_key_config_binding(&mut self, row: usize) {
@@ -2481,21 +2628,18 @@ impl ClientApp {
         };
         let (kind, action) = (action_entry.kind, action_entry.action);
         let mut bindings = self
-            .server_keymap
+            .key_config_draft
             .clone()
+            .or_else(|| self.server_keymap.clone())
             .unwrap_or_else(default_keymap_bindings);
-        let mut updates = Vec::new();
-        for (index, binding) in bindings.iter_mut().enumerate() {
+        for binding in &mut bindings {
             if binding.kind == kind && binding.action == action {
                 *binding = openstory_protocol::KeyBinding::default();
-                updates.push((index as u8, *binding));
             }
         }
-        self.server_keymap = Some(bindings);
+        self.key_config_draft = Some(bindings);
         self.key_config_actions_dirty = true;
-        self.send_key_config_updates(&updates);
         self.refresh_key_config_texture();
-        self.refresh_quickslots_texture();
     }
 
     pub(super) fn use_keybound_skill(&mut self, skill_id: i32) {
@@ -2607,6 +2751,7 @@ impl ClientApp {
                 .iter()
                 .find(|item| {
                     item.item_id == item_id
+                        && item.count > 0
                         && matches!(
                             item.inventory_type,
                             openstory_protocol::InventoryType::Use
@@ -2711,14 +2856,8 @@ impl ClientApp {
                 }
             }
             4 if pressed && !repeat => match binding.action {
-                0 | 1 => {
-                    let tab = if binding.action == 0 {
-                        openstory_protocol::InventoryType::Equip
-                    } else {
-                        openstory_protocol::InventoryType::Use
-                    };
-                    self.open_inventory_tab(tab);
-                }
+                0 => self.toggle_equipment_inventory(),
+                1 => self.open_inventory_tab(self.inventory_tab),
                 2 => self.open_status_window(),
                 3 => {
                     self.show_skill_book = !self.show_skill_book;
@@ -2739,7 +2878,8 @@ impl ClientApp {
                         self.open_world_map();
                     }
                 }
-                6 | 10 => {
+                6 => self.open_messenger(),
+                10 => {
                     self.chat_target = ChatTarget::Public;
                     self.chat_open = true;
                     self.refresh_chat_texture();
@@ -2815,6 +2955,27 @@ impl ClientApp {
                 // of opening the unrelated party-search window.
                 27 => {}
                 28 => self.open_settings(),
+                32 => self.toggle_event_list(),
+                43 => self.open_guild_bbs(),
+                44 => {
+                    if self.show_alliance_panel {
+                        self.show_alliance_panel = false;
+                    } else {
+                        self.open_alliance_panel();
+                    }
+                }
+                45 => {
+                    self.show_pet_equipment = !self.show_pet_equipment;
+                    if self.show_pet_equipment {
+                        self.pet_equipment_scroll_row = 0;
+                        self.show_inventory = false;
+                        self.inventory_hover_slot = None;
+                        self.show_skill_book = false;
+                        self.inventory_drag_source = None;
+                        self.pending_scroll_slot = None;
+                        self.refresh_pet_equipment_texture();
+                    }
+                }
                 _ => {}
             },
             5 => match binding.action {
@@ -2835,12 +2996,36 @@ impl ClientApp {
                         self.channel_connected = false;
                     }
                 }
-                51 => self.gameplay_input.sit = pressed,
+                51 if !pressed || !repeat => {
+                    if pressed
+                        && !repeat
+                        && self
+                            .map_scene
+                            .as_ref()
+                            .is_some_and(MapSceneRuntime::is_locally_seated)
+                    {
+                        self.gameplay_input.sit = false;
+                        self.stand_from_local_seat();
+                    } else {
+                        self.gameplay_input.sit = pressed;
+                    }
+                }
                 52 if pressed && !repeat => self.try_local_basic_attack(),
-                53 if pressed && !repeat => self.gameplay_input.jump_buffer = 12,
+                53 if pressed && !repeat => {
+                    self.stand_from_local_seat();
+                    self.gameplay_input.jump_buffer = 12;
+                }
                 54 if pressed && !repeat => self.request_nearest_npc_talk(),
-                200 => self.gameplay_input.left = pressed,
-                201 => self.gameplay_input.right = pressed,
+                200 | 201 => {
+                    if pressed {
+                        self.stand_from_local_seat();
+                    }
+                    if binding.action == 200 {
+                        self.gameplay_input.left = pressed;
+                    } else {
+                        self.gameplay_input.right = pressed;
+                    }
+                }
                 202 => self.gameplay_input.up = pressed,
                 203 => self.gameplay_input.down = pressed,
                 _ => {}
@@ -2849,6 +3034,9 @@ impl ClientApp {
                 self.send_face_expression(binding.action.saturating_sub(99));
             }
             _ => {}
+        }
+        if pressed && !repeat && binding.kind == 4 && self.chat_open {
+            self.gameplay_input = GameplayInput::default();
         }
         true
     }
@@ -2883,31 +3071,19 @@ impl ClientApp {
             }
         } else {
             match key {
-                PhysicalKey::Code(KeyCode::Escape) => self.show_key_config = false,
-                PhysicalKey::Code(KeyCode::Digit1) => {
-                    self.begin_key_config_capture(self.key_config_scroll_row)
+                PhysicalKey::Code(KeyCode::Escape) => self.close_key_config(false),
+                PhysicalKey::Code(KeyCode::Enter | KeyCode::NumpadEnter) => {
+                    self.close_key_config(true)
                 }
-                PhysicalKey::Code(KeyCode::Digit2) => {
-                    self.begin_key_config_capture(self.key_config_scroll_row + 1)
-                }
-                PhysicalKey::Code(KeyCode::Digit3) => {
-                    self.begin_key_config_capture(self.key_config_scroll_row + 2)
-                }
-                PhysicalKey::Code(KeyCode::Digit4) => {
-                    self.begin_key_config_capture(self.key_config_scroll_row + 3)
-                }
-                PhysicalKey::Code(KeyCode::Digit5) => {
-                    self.begin_key_config_capture(self.key_config_scroll_row + 4)
-                }
-                PhysicalKey::Code(KeyCode::Digit6) => {
-                    self.begin_key_config_capture(self.key_config_scroll_row + 5)
-                }
-                PhysicalKey::Code(KeyCode::Digit7) => {
-                    self.begin_key_config_capture(self.key_config_scroll_row + 6)
-                }
-                PhysicalKey::Code(KeyCode::Digit8) => {
-                    self.begin_key_config_capture(self.key_config_scroll_row + 7)
-                }
+                PhysicalKey::Code(KeyCode::F12) => self.begin_quickslot_key_capture(0),
+                PhysicalKey::Code(KeyCode::Digit1) => self.capture_key_config_tray_action(0),
+                PhysicalKey::Code(KeyCode::Digit2) => self.capture_key_config_tray_action(1),
+                PhysicalKey::Code(KeyCode::Digit3) => self.capture_key_config_tray_action(2),
+                PhysicalKey::Code(KeyCode::Digit4) => self.capture_key_config_tray_action(3),
+                PhysicalKey::Code(KeyCode::Digit5) => self.capture_key_config_tray_action(4),
+                PhysicalKey::Code(KeyCode::Digit6) => self.capture_key_config_tray_action(5),
+                PhysicalKey::Code(KeyCode::Digit7) => self.capture_key_config_tray_action(6),
+                PhysicalKey::Code(KeyCode::Digit8) => self.capture_key_config_tray_action(7),
                 PhysicalKey::Code(KeyCode::ArrowUp) => self.scroll_key_config(-1),
                 PhysicalKey::Code(KeyCode::ArrowDown) => self.scroll_key_config(1),
                 PhysicalKey::Code(KeyCode::PageUp) => {
@@ -2921,6 +3097,15 @@ impl ClientApp {
         }
         self.refresh_key_config_texture();
         true
+    }
+
+    pub(super) fn is_menu_binding(&self, key: PhysicalKey, action: i32) -> bool {
+        gameplay_key_binding(self.server_keymap.as_deref(), key)
+            .is_some_and(|binding| binding.kind == 4 && binding.action == action)
+    }
+
+    pub(super) fn release_gameplay_key(&mut self, key: PhysicalKey) {
+        self.gameplay_input.release_key(key);
     }
 
     pub(super) fn set_gameplay_key(
@@ -2956,6 +3141,10 @@ impl ClientApp {
             return true;
         }
         if self.show_status {
+            if state == ElementState::Pressed && !repeat && self.is_menu_binding(key, 2) {
+                self.show_status = false;
+                return true;
+            }
             if state == ElementState::Pressed && !repeat {
                 match key {
                     PhysicalKey::Code(KeyCode::Escape) => {
@@ -2976,6 +3165,9 @@ impl ClientApp {
             return true;
         }
         let pressed = state == ElementState::Pressed;
+        if !pressed {
+            return true;
+        }
         if self.handle_messenger_key(key, state, repeat) {
             return true;
         }
@@ -3013,7 +3205,11 @@ impl ClientApp {
             return false;
         }
         if self.monster_book.open {
-            if pressed && !repeat && matches!(key, PhysicalKey::Code(KeyCode::Escape)) {
+            if pressed
+                && !repeat
+                && (matches!(key, PhysicalKey::Code(KeyCode::Escape))
+                    || self.is_menu_binding(key, 22))
+            {
                 self.monster_book.open = false;
                 self.monster_book.texture = None;
                 self.monster_book.clear_selected_card();
@@ -3037,69 +3233,10 @@ impl ClientApp {
             self.escape_world_map();
             return true;
         }
-        if matches!(key, PhysicalKey::Code(KeyCode::KeyE)) {
-            if pressed && !repeat {
-                self.toggle_equipment_inventory();
-            }
-            return true;
-        }
-        if let Some(bindings) = self.server_keymap.as_ref() {
-            if !matches!(key, PhysicalKey::Code(KeyCode::Escape))
-                && let Some(maple_key) = maple_key_from_physical(key)
-                && let Some(binding) = bindings.get(usize::from(maple_key)).copied()
-                && binding.kind != 0
-                && self.apply_keymap_binding(state, repeat, binding)
-            {
-                return true;
-            }
-            // Escape belongs to the shared UI/modal handler below. Returning from
-            // this server-keymap branch used to bypass that handler and leave the
-            // quit dialog waiting on an unrelated redraw.
-            if !matches!(key, PhysicalKey::Code(KeyCode::Escape)) {
-                match key {
-                    PhysicalKey::Code(KeyCode::ArrowLeft | KeyCode::KeyA) => {
-                        self.gameplay_input.left = pressed;
-                    }
-                    PhysicalKey::Code(KeyCode::ArrowRight | KeyCode::KeyD) => {
-                        self.gameplay_input.right = pressed;
-                    }
-                    PhysicalKey::Code(KeyCode::ArrowUp | KeyCode::KeyW) => {
-                        self.gameplay_input.up = pressed;
-                    }
-                    PhysicalKey::Code(KeyCode::ArrowDown | KeyCode::KeyS) => {
-                        self.gameplay_input.down = pressed;
-                    }
-                    _ => {}
-                }
-                return true;
-            }
-        }
-        if pressed
-            && !repeat
-            && self
-                .map_scene
-                .as_ref()
-                .is_some_and(MapSceneRuntime::is_locally_seated)
-            && matches!(
-                key,
-                PhysicalKey::Code(
-                    KeyCode::ArrowLeft
-                        | KeyCode::ArrowRight
-                        | KeyCode::KeyA
-                        | KeyCode::KeyD
-                        | KeyCode::AltLeft
-                        | KeyCode::AltRight
-                        | KeyCode::ControlLeft
-                        | KeyCode::ControlRight
-                )
-            )
-        {
-            self.stand_from_local_seat();
-        }
-        if self.show_quest_log {
+        if self.show_quest_log && !self.is_menu_binding(key, 8) {
             if pressed && !repeat {
                 match key {
-                    PhysicalKey::Code(KeyCode::Escape | KeyCode::KeyJ) => {
+                    PhysicalKey::Code(KeyCode::Escape) => {
                         self.show_quest_log = false;
                         self.quest_forfeit_confirmation = None;
                     }
@@ -3173,7 +3310,7 @@ impl ClientApp {
             return true;
         }
         if self.show_pet_equipment {
-            if matches!(key, PhysicalKey::Code(KeyCode::KeyP | KeyCode::Escape))
+            if (matches!(key, PhysicalKey::Code(KeyCode::Escape)) || self.is_menu_binding(key, 45))
                 && pressed
                 && !repeat
             {
@@ -3190,21 +3327,34 @@ impl ClientApp {
             }
             return true;
         }
-        if pressed && !repeat {
-            let expression = match key {
-                PhysicalKey::Code(KeyCode::F1) => Some(1),
-                PhysicalKey::Code(KeyCode::F2) => Some(2),
-                PhysicalKey::Code(KeyCode::F3) => Some(3),
-                PhysicalKey::Code(KeyCode::F4) => Some(4),
-                PhysicalKey::Code(KeyCode::F5) => Some(5),
-                PhysicalKey::Code(KeyCode::F6) => Some(6),
-                PhysicalKey::Code(KeyCode::F7) => Some(7),
+        if !matches!(key, PhysicalKey::Code(KeyCode::Escape))
+            && let Some(binding) = gameplay_key_binding(self.server_keymap.as_deref(), key)
+            && binding.kind != 0
+        {
+            if pressed && binding.kind == 5 && matches!(binding.action, 51 | 200..=203) {
+                self.gameplay_input.held_bindings.insert(key, binding);
+            }
+            return self.apply_keymap_binding(state, repeat, binding);
+        }
+        if !matches!(
+            key,
+            PhysicalKey::Code(KeyCode::Escape | KeyCode::Enter | KeyCode::NumpadEnter)
+        ) {
+            let action = match key {
+                PhysicalKey::Code(KeyCode::ArrowLeft) => Some(200),
+                PhysicalKey::Code(KeyCode::ArrowRight) => Some(201),
+                PhysicalKey::Code(KeyCode::ArrowUp) => Some(202),
+                PhysicalKey::Code(KeyCode::ArrowDown) => Some(203),
                 _ => None,
             };
-            if let Some(expression) = expression {
-                self.send_face_expression(expression);
-                return true;
+            if let Some(action) = action {
+                let binding = openstory_protocol::KeyBinding { kind: 5, action };
+                if pressed {
+                    self.gameplay_input.held_bindings.insert(key, binding);
+                }
+                self.apply_keymap_binding(state, repeat, binding);
             }
+            return true;
         }
         if pressed && !repeat && matches!(key, PhysicalKey::Code(KeyCode::Escape)) {
             if self.show_skill_book {
@@ -3219,6 +3369,10 @@ impl ClientApp {
             } else if self.show_guild_panel {
                 self.show_guild_panel = false;
                 self.guild_panel_mode = GuildPanelMode::Overview;
+            } else if self.show_party_panel {
+                self.show_party_panel = false;
+            } else if self.show_buddy_panel {
+                self.show_buddy_panel = false;
             } else if self.show_equipment_inventory {
                 self.show_equipment_inventory = false;
             } else if self.show_inventory {
@@ -3234,199 +3388,7 @@ impl ClientApp {
             }
             return true;
         }
-        match key {
-            PhysicalKey::Code(KeyCode::KeyI) => {
-                if pressed && !repeat {
-                    self.show_equipment_inventory = false;
-                    self.show_inventory = !self.show_inventory;
-                    if self.show_inventory {
-                        self.show_skill_book = false;
-                        self.inventory_scroll_row = 0;
-                        self.inventory_hover_slot = None;
-                        self.update_inventory_hover();
-                        self.refresh_inventory_texture();
-                    } else {
-                        self.inventory_drag_source = None;
-                        self.inventory_hover_slot = None;
-                        self.pending_scroll_slot = None;
-                    }
-                }
-            }
-            PhysicalKey::Code(KeyCode::KeyP) => {
-                if pressed && !repeat {
-                    self.show_pet_equipment = true;
-                    self.pet_equipment_scroll_row = 0;
-                    self.show_inventory = false;
-                    self.inventory_hover_slot = None;
-                    self.show_skill_book = false;
-                    self.inventory_drag_source = None;
-                    self.pending_scroll_slot = None;
-                    self.refresh_pet_equipment_texture();
-                }
-            }
-            PhysicalKey::Code(KeyCode::KeyX) => {
-                if pressed
-                    && !repeat
-                    && self
-                        .map_scene
-                        .as_ref()
-                        .is_some_and(|scene| scene.local_chair.is_some())
-                {
-                    self.gameplay_input.sit = false;
-                    self.stand_from_local_seat();
-                } else {
-                    self.gameplay_input.sit = pressed;
-                }
-            }
-            PhysicalKey::Code(KeyCode::KeyC) => {
-                if pressed && !repeat {
-                    self.open_status_window();
-                }
-            }
-            PhysicalKey::Code(KeyCode::Backquote) => {
-                if pressed && !repeat {
-                    self.open_cash_shop();
-                }
-            }
-            PhysicalKey::Code(KeyCode::KeyK) => {
-                if pressed && !repeat {
-                    self.show_skill_book = !self.show_skill_book;
-                    if self.show_skill_book {
-                        self.show_inventory = false;
-                        self.inventory_hover_slot = None;
-                        self.pending_scroll_slot = None;
-                        self.skill_book_tab = 0;
-                        self.skill_book_scroll_row = 0;
-                        self.refresh_skill_book_entries();
-                        self.refresh_skill_book_texture();
-                    }
-                }
-            }
-            PhysicalKey::Code(KeyCode::KeyJ) => {
-                if pressed && !repeat {
-                    self.show_quest_log = true;
-                    self.show_inventory = false;
-                    self.inventory_hover_slot = None;
-                    self.show_pet_equipment = false;
-                    self.show_skill_book = false;
-                    self.inventory_drag_source = None;
-                    self.pending_scroll_slot = None;
-                    self.quest_log_tab = QuestLogTab::Active;
-                    self.quest_log_scroll = 0;
-                    self.quest_log_selected = 0;
-                    self.quest_reward_selected = 0;
-                    self.quest_forfeit_confirmation = None;
-                    self.refresh_quest_log_texture();
-                }
-            }
-            PhysicalKey::Code(KeyCode::KeyO) => {
-                if pressed && !repeat {
-                    self.show_party_panel = !self.show_party_panel;
-                    if self.show_party_panel {
-                        self.show_buddy_panel = false;
-                        self.show_guild_panel = false;
-                        self.show_alliance_panel = false;
-                    }
-                    self.refresh_party_texture();
-                }
-            }
-            PhysicalKey::Code(KeyCode::KeyB) => {
-                if pressed && !repeat {
-                    self.show_buddy_panel = !self.show_buddy_panel;
-                    if self.show_buddy_panel {
-                        self.show_party_panel = false;
-                        self.show_guild_panel = false;
-                        self.show_alliance_panel = false;
-                    }
-                    self.refresh_buddy_texture();
-                }
-            }
-            PhysicalKey::Code(KeyCode::KeyG) => {
-                if pressed && !repeat {
-                    self.show_guild_panel = !self.show_guild_panel;
-                    if !self.show_guild_panel {
-                        self.guild_panel_mode = GuildPanelMode::Overview;
-                    }
-                    if self.show_guild_panel {
-                        self.show_party_panel = false;
-                        self.show_buddy_panel = false;
-                        self.show_alliance_panel = false;
-                    }
-                    self.refresh_guild_texture();
-                }
-            }
-            PhysicalKey::Code(KeyCode::KeyU) => {
-                if pressed && !repeat {
-                    if self.show_alliance_panel {
-                        self.show_alliance_panel = false;
-                    } else {
-                        self.open_alliance_panel();
-                    }
-                }
-            }
-            PhysicalKey::Code(KeyCode::KeyV) => {
-                if pressed && !repeat {
-                    self.open_guild_bbs();
-                }
-            }
-            PhysicalKey::Code(KeyCode::Backslash) => {
-                if pressed && !repeat {
-                    self.toggle_key_config();
-                }
-            }
-            PhysicalKey::Code(KeyCode::ArrowLeft | KeyCode::KeyA) => {
-                self.gameplay_input.left = pressed;
-            }
-            PhysicalKey::Code(KeyCode::ArrowRight | KeyCode::KeyD) => {
-                self.gameplay_input.right = pressed;
-            }
-            PhysicalKey::Code(KeyCode::ArrowUp | KeyCode::KeyW) => {
-                self.gameplay_input.up = pressed;
-            }
-            PhysicalKey::Code(KeyCode::ArrowDown | KeyCode::KeyS) => {
-                self.gameplay_input.down = pressed;
-            }
-            PhysicalKey::Code(KeyCode::Space) => {
-                if pressed && !repeat {
-                    self.request_nearest_npc_talk();
-                }
-            }
-            PhysicalKey::Code(KeyCode::AltLeft | KeyCode::AltRight) => {
-                if pressed && !repeat {
-                    self.gameplay_input.jump_buffer = 12;
-                }
-            }
-            PhysicalKey::Code(KeyCode::ControlLeft | KeyCode::ControlRight) => {
-                if pressed && !repeat {
-                    self.try_local_basic_attack();
-                }
-            }
-            PhysicalKey::Code(KeyCode::KeyZ) => {
-                if pressed && !repeat {
-                    let pickup = self.map_scene.as_ref().and_then(|scene| {
-                        scene.nearest_drop().map(|object_id| {
-                            (
-                                object_id,
-                                rounded_i16(scene.player.x),
-                                rounded_i16(scene.player.y),
-                            )
-                        })
-                    });
-                    if let Some((object_id, x, y)) = pickup {
-                        if let Some(session) = self.session.as_ref() {
-                            if let Err(error) = session
-                                .send_packet(openstory_protocol::pickup_item(object_id, x, y))
-                            {
-                                eprintln!("OpenStory: could not request item pickup: {error}");
-                                self.channel_connected = false;
-                            }
-                        }
-                    }
-                }
-            }
-            _ => return false,
-        }
-        true
+        false
     }
 
     pub(super) fn replace_scene(&mut self, scene: LoginSceneAssets) -> Result<(), String> {
@@ -3445,6 +3407,9 @@ impl ClientApp {
         let (textures, mut draws, texture_indices) = upload_scene_sprites(renderer, sprites)?;
         let mut map_scene = map_scene.map(|scene| MapSceneRuntime::new(scene, &mut draws));
         if let Some(scene) = map_scene.as_mut() {
+            scene.energy = self.session_energy;
+            scene.gm_account = self.gm_account;
+            scene.gm_hidden = self.gm_hidden;
             scene
                 .mark_npcs_scriptable(&self.scriptable_npc_ids.iter().copied().collect::<Vec<_>>());
         }
@@ -3455,6 +3420,7 @@ impl ClientApp {
         self.item_aura_frames_cache.clear();
         self.face_expression_cache.clear();
         self.npc_dialogue = None;
+        self.pending_npc_talk = None;
         self.rps_game = None;
         self.inventory_drag_source = None;
         self.inventory_hover_slot = None;

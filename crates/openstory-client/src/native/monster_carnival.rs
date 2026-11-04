@@ -4,7 +4,7 @@ use fontdue::Font;
 use openstory_assets::{NodeValue, NxArchive, NxNode};
 
 pub const PANEL_WIDTH: u32 = 162;
-pub const PANEL_HEIGHT: u32 = 190;
+pub const PANEL_HEIGHT: u32 = 107;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct HitRect {
@@ -69,7 +69,7 @@ struct Sprite {
     origin_y: f32,
 }
 
-fn render_base(archive: &NxArchive) -> Result<Panel, String> {
+fn render_base(archive: &NxArchive, side_view: bool) -> Result<Panel, String> {
     let root = archive.root();
     let carnival = resolve(&root, "UIWindow.img/MonsterCarnival")?;
     let background = sprite(&resolve(&carnival, "backgrnd")?)?;
@@ -78,20 +78,20 @@ fn render_base(archive: &NxArchive) -> Result<Panel, String> {
     let height = PANEL_HEIGHT as usize;
     let mut pixels = vec![0; width * height * 4];
 
-    // Preserve the original sprite order: backgrnd, then backgrnd2.
     blit(&mut pixels, width, height, &background, 0.0, 0.0);
-    blit(&mut pixels, width, height, &background2, 0.0, 0.0);
-
-    for (index, y) in [40.0, 70.0, 100.0, 130.0].into_iter().enumerate() {
-        let icon = sprite(&resolve(&carnival, &format!("icon{index}"))?)?;
-        blit(&mut pixels, width, height, &icon, 20.0, y);
+    if side_view {
+        blit(&mut pixels, width, height, &background2, 0.0, 1.0);
+        for (index, y) in [23.0, 42.0, 61.0, 80.0].into_iter().enumerate() {
+            let icon = sprite(&resolve(&carnival, &format!("icon{index}"))?)?;
+            blit(&mut pixels, width, height, &icon, 10.0, y);
+        }
     }
 
     let close = HitRect {
         x: 143.0,
         y: 6.0,
-        width: 15.0,
-        height: 15.0,
+        width: 12.0,
+        height: 12.0,
     };
     let side_button = sprite(&resolve(&carnival, "BtSide/normal/0")?)?;
     let side = HitRect {
@@ -101,7 +101,8 @@ fn render_base(archive: &NxArchive) -> Result<Panel, String> {
         height: side_button.height as f32,
     };
     blit(&mut pixels, width, height, &side_button, side.x, side.y);
-    draw_close_button(&mut pixels, width, height, close);
+    let close_image = sprite(&resolve(&root, "Basic.img/BtClose/normal/0")?)?;
+    blit(&mut pixels, width, height, &close_image, close.x, close.y);
 
     Ok(Panel {
         width: PANEL_WIDTH,
@@ -113,76 +114,36 @@ fn render_base(archive: &NxArchive) -> Result<Panel, String> {
 }
 
 pub fn render_state(archive: &NxArchive, font: &Font, state: &State) -> Result<Panel, String> {
-    let mut panel = render_base(archive)?;
+    let mut panel = render_base(archive, state.side_view)?;
     let width = panel.width as usize;
     let height = panel.height as usize;
     let pixels = &mut panel.pixels;
 
-    let team_label = match state.team {
-        Some(0) => "Team: Maple Red",
-        Some(_) => "Team: Maple Blue",
-        None => "Team: ?",
-    };
-    let team_header = HitRect {
-        x: 4.0,
-        y: 6.0,
-        width: 116.0,
-        height: 18.0,
-    };
-    fill_rect(pixels, width, height, team_header, [238, 245, 251, 255]);
-    draw_text(
-        pixels,
-        width,
-        height,
-        font,
-        team_label,
-        8.0,
-        19.0,
-        [55, 50, 64],
-    );
-    draw_centered_text(
-        pixels,
-        width,
-        height,
-        font,
-        &format!("CP: {} / {}", state.my_cp, state.my_total_cp),
-        width as f32 / 4.0,
-        174.0,
-        [75, 135, 255],
-    );
-    draw_centered_text(
-        pixels,
-        width,
-        height,
-        font,
-        &format!("CP: {} / {}", state.enemy_cp, state.enemy_total_cp),
-        3.0 * width as f32 / 4.0,
-        174.0,
-        [255, 85, 85],
-    );
-    for (index, y) in [49.0, 79.0, 109.0, 139.0].into_iter().enumerate() {
-        draw_text(
-            pixels,
-            width,
-            height,
-            font,
-            &format!("x {}", state.summon_counts[index]),
-            47.0,
-            y,
-            [255, 255, 255],
-        );
-    }
     if state.side_view {
-        draw_centered_text(
-            pixels,
-            width,
-            height,
-            font,
-            "Side",
-            136.0,
-            115.0,
-            [255, 255, 255],
-        );
+        for (index, y) in [24.0, 43.0, 62.0, 81.0].into_iter().enumerate() {
+            draw_text(
+                pixels,
+                width,
+                height,
+                font,
+                &format!("x {}", state.summon_counts[index]),
+                33.0,
+                y,
+                10.0,
+                [45, 45, 45],
+            );
+        }
+    } else {
+        for (value, y) in [
+            (format!("{}", state.my_cp), 31.0),
+            (format!("{} / {}", state.my_cp, state.my_total_cp), 53.0),
+            (
+                format!("{} / {}", state.enemy_cp, state.enemy_total_cp),
+                75.0,
+            ),
+        ] {
+            draw_centered_text(pixels, width, height, font, &value, 124.0, y, [40, 40, 40]);
+        }
     }
     Ok(panel)
 }
@@ -244,39 +205,6 @@ fn blit(canvas: &mut [u8], width: usize, height: usize, image: &Sprite, x: f32, 
     }
 }
 
-fn draw_close_button(canvas: &mut [u8], width: usize, height: usize, rect: HitRect) {
-    fill_rect(canvas, width, height, rect, [49, 32, 36, 255]);
-    for offset in 0..7_i32 {
-        let x = rect.x.round() as i32 + 4 + offset;
-        let y = rect.y.round() as i32 + 4 + offset;
-        set_pixel(canvas, width, height, x, y, [225, 225, 225, 255]);
-        set_pixel(
-            canvas,
-            width,
-            height,
-            rect.x.round() as i32 + 10 - offset,
-            y,
-            [225, 225, 225, 255],
-        );
-    }
-}
-
-fn fill_rect(canvas: &mut [u8], width: usize, height: usize, rect: HitRect, color: [u8; 4]) {
-    for y in rect.y as i32..(rect.y + rect.height) as i32 {
-        for x in rect.x as i32..(rect.x + rect.width) as i32 {
-            set_pixel(canvas, width, height, x, y, color);
-        }
-    }
-}
-
-fn set_pixel(canvas: &mut [u8], width: usize, height: usize, x: i32, y: i32, color: [u8; 4]) {
-    if !(0..width as i32).contains(&x) || !(0..height as i32).contains(&y) {
-        return;
-    }
-    let offset = (y as usize * width + x as usize) * 4;
-    canvas[offset..offset + 4].copy_from_slice(&[color[2], color[1], color[0], color[3]]);
-}
-
 fn draw_centered_text(
     canvas: &mut [u8],
     width: usize,
@@ -287,10 +215,12 @@ fn draw_centered_text(
     baseline_y: f32,
     color: [u8; 3],
 ) {
-    let text_width = text
-        .chars()
-        .map(|character| font.metrics(character, 14.0).advance_width)
-        .sum::<f32>();
+    let mut size = 10.0;
+    let mut text_width = super::ui_foundation::measure_text(font, text, size);
+    while text_width > 52.0 && size > 6.0 {
+        size -= 1.0;
+        text_width = super::ui_foundation::measure_text(font, text, size);
+    }
     draw_text(
         canvas,
         width,
@@ -299,6 +229,7 @@ fn draw_centered_text(
         text,
         center_x - text_width / 2.0,
         baseline_y,
+        size,
         color,
     );
 }
@@ -311,13 +242,14 @@ fn draw_text(
     text: &str,
     x: f32,
     baseline_y: f32,
+    size: f32,
     color: [u8; 3],
 ) {
     let mut cursor_x = x;
     for character in text.chars() {
-        let (metrics, coverage) = font.rasterize(character, 14.0);
+        let (metrics, coverage) = font.rasterize(character, size);
         let left = cursor_x.round() as i32 + metrics.xmin;
-        let top = (baseline_y + 14.0).round() as i32 - metrics.height as i32 - metrics.ymin;
+        let top = (baseline_y + size).round() as i32 - metrics.height as i32 - metrics.ymin;
         for row in 0..metrics.height {
             for column in 0..metrics.width {
                 let target_x = left + column as i32;

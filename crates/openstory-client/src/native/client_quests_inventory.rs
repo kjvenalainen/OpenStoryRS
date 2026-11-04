@@ -73,6 +73,7 @@ impl ClientApp {
                 Some(character) => character,
                 None => return,
             },
+            self.inventory.as_ref(),
         ) {
             self.refresh_quest_log_texture();
             return;
@@ -104,7 +105,12 @@ impl ClientApp {
         else {
             return;
         };
-        if !quest_is_completable(quest, &self.quest_archive, self.inventory.as_ref()) {
+        if !quest_is_completable(
+            quest,
+            &self.quest_archive,
+            self.inventory.as_ref(),
+            &self.quest_log,
+        ) {
             self.refresh_quest_log_texture();
             return;
         }
@@ -115,9 +121,35 @@ impl ClientApp {
             .ok()
             .flatten()
             .and_then(|node| quest_node_integer(&node, "npc"));
+        let npc_id = npc_id.or_else(|| {
+            self.quest_archive
+                .root()
+                .resolve(&format!("Check.img/{quest_id}/0"))
+                .ok()
+                .flatten()
+                .and_then(|node| quest_node_integer(&node, "npc"))
+        });
         let Some(npc_id) = npc_id.filter(|id| *id > 0) else {
             return;
         };
+        if self
+            .quest_archive
+            .root()
+            .resolve(&format!("Say.img/{quest_id}/1"))
+            .ok()
+            .flatten()
+            .is_some_and(|node| quest_property_truthy(&node, "ask"))
+        {
+            self.open_npc_quest_conversation(
+                npc_id,
+                NpcQuestChoice {
+                    quest_id,
+                    side: 1,
+                    ready: true,
+                },
+            );
+            return;
+        }
         let reward_choices = self
             .active_character
             .as_ref()
@@ -257,8 +289,7 @@ impl ClientApp {
             }
             return true;
         }
-        if (50.0..254.0).contains(&y) && (8.0..238.0).contains(&x) {
-            let row = ((y - 54.0).max(0.0) / 25.0).floor() as usize;
+        if let Some(row) = ui_foundation::QUEST_GRID.hit(x, y) {
             let index = self.quest_log_scroll.saturating_add(row);
             if index
                 < quest_ids_for_tab(&self.quest_log, &self.available_quests, self.quest_log_tab)
@@ -354,7 +385,7 @@ impl ClientApp {
             }
             return true;
         }
-        if local_y >= SKILL_BOOK_PANEL_HEIGHT as f32 - 29.0 && (122.0..170.0).contains(&local_x) {
+        if ui_foundation::SKILL_MACRO_BUTTON.contains(local_x, local_y) {
             self.open_skill_macro_editor();
             return true;
         }
@@ -917,7 +948,7 @@ impl ClientApp {
         }
         let local_x = cursor.x - EQUIPMENT_INVENTORY_PANEL_X;
         let local_y = cursor.y - EQUIPMENT_INVENTORY_PANEL_Y;
-        if (139.0..171.0).contains(&local_x) && (5.0..20.0).contains(&local_y) {
+        if (156.0..168.0).contains(&local_x) && (6.0..18.0).contains(&local_y) {
             self.show_equipment_inventory = false;
         }
         true

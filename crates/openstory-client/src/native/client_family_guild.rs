@@ -309,18 +309,18 @@ impl ClientApp {
         if (242.0..270.0).contains(&x) && (4.0..32.0).contains(&y) {
             self.show_family_panel = false;
             self.show_family_tree = false;
-        } else if (12.0..72.0).contains(&x) && (390.0..428.0).contains(&y) {
+        } else if (10.0..65.0).contains(&x) && (397.0..415.0).contains(&y) {
             self.open_family_tree();
-        } else if (76.0..126.0).contains(&x) && (390.0..428.0).contains(&y) {
+        } else if (69.0..126.0).contains(&x) && (397.0..415.0).contains(&y) {
             self.use_family_ability();
-        } else if (130.0..188.0).contains(&x) && (390.0..428.0).contains(&y) {
+        } else if (128.0..197.0).contains(&x) && (397.0..415.0).contains(&y) {
             self.family_ui.input = Some(FamilyInput {
                 kind: FamilyInputKind::InviteJunior,
                 text: String::new(),
                 key_text_for_ime_dedup: None,
             });
             self.family_ui.notice = None;
-        } else if (192.0..260.0).contains(&x) && (390.0..428.0).contains(&y) {
+        } else if (201.0..269.0).contains(&x) && (390.0..422.0).contains(&y) {
             self.family_ui.confirm_leave = true;
         } else if (236.0..266.0).contains(&x) && (300.0..332.0).contains(&y) {
             self.family_ui.selected_ability = (self.family_ui.selected_ability + 1) % 5;
@@ -445,19 +445,20 @@ impl ClientApp {
         let y = cursor.y - 191.0;
         if (542.0..576.0).contains(&x) && (4.0..36.0).contains(&y) {
             self.show_family_tree = false;
-        } else if (12.0..566.0).contains(&x)
-            && (44.0..365.0).contains(&y)
-            && let Some(chart) = self.family_ui.chart.as_ref()
+        } else if let Some(chart) = self.family_ui.chart.as_ref()
+            && let Some((index, _, _)) =
+                family_tree_slots(chart).into_iter().find(|(_, left, top)| {
+                    (x >= *left as f32 && x < *left as f32 + 134.0)
+                        && (y >= *top as f32 && y < *top as f32 + 36.0)
+                })
+            && let Some(entry) = chart.entries.get(index).cloned()
         {
-            let row = ((y - 44.0) / 30.0) as usize;
-            if let Some(entry) = chart.entries.get(row).cloned() {
-                self.family_ui.selected_member = Some(entry.character_id);
-                if let Ok(packet) = openstory_protocol::family_pedigree_request_packet(&entry.name)
-                    && let Some(session) = self.session.as_ref()
-                    && let Err(error) = session.send_packet(packet)
-                {
-                    self.family_ui.notice = Some(format!("Could not view {}: {error}", entry.name));
-                }
+            self.family_ui.selected_member = Some(entry.character_id);
+            if let Ok(packet) = openstory_protocol::family_pedigree_request_packet(&entry.name)
+                && let Some(session) = self.session.as_ref()
+                && let Err(error) = session.send_packet(packet)
+            {
+                self.family_ui.notice = Some(format!("Could not view {}: {error}", entry.name));
             }
         }
         if self.show_family_tree {

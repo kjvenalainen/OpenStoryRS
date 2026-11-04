@@ -1334,6 +1334,8 @@ pub struct NpcDialogue {
     pub speaker: i8,
     pub text: String,
     pub number_bounds: Option<(i32, i32, i32)>,
+    /// Previous/next buttons on a normal v83 dialogue page.
+    pub navigation: Option<(bool, bool)>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1760,6 +1762,28 @@ pub struct SummonSkillUpdate {
     pub owner_id: i32,
     pub skill_id: i32,
     pub stance: u8,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SummonAttackTarget {
+    pub object_id: i32,
+    pub damage: i32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SummonAttack {
+    pub owner_id: i32,
+    pub summon_object_id: i32,
+    pub character_level: u8,
+    pub direction: u8,
+    pub targets: Vec<SummonAttackTarget>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SummonDamage {
+    pub owner_id: i32,
+    pub object_id: i32,
+    pub damage: i32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2650,6 +2674,51 @@ pub fn parse_summon_skill(bytes: &[u8]) -> Result<SummonSkillUpdate, PacketError
     })
 }
 
+/// Parses the summon attack notification. The legacy client reads each target
+/// and damage tuple but deliberately leaves damage presentation to mob HP
+/// updates, so callers should treat this as a validated no-op event.
+pub fn parse_summon_attack(bytes: &[u8]) -> Result<SummonAttack, PacketError> {
+    let mut packet = PacketReader::new(bytes);
+    expect_opcode(&mut packet, OPCODE_SUMMON_ATTACK)?;
+    let owner_id = packet.read_i32()?;
+    let summon_object_id = packet.read_i32()?;
+    let character_level = packet.read_u8()?;
+    let direction = packet.read_u8()?;
+    let target_count = packet.read_i8()?;
+    if !(0..=15).contains(&target_count) {
+        return Err(PacketError::InvalidSummonAttackTargetCount(target_count));
+    }
+    let mut targets = Vec::with_capacity(target_count as usize);
+    for _ in 0..target_count {
+        let object_id = packet.read_i32()?;
+        packet.skip(1)?; // legacy hit marker
+        let damage = packet.read_i32()?;
+        targets.push(SummonAttackTarget { object_id, damage });
+    }
+    Ok(SummonAttack {
+        owner_id,
+        summon_object_id,
+        character_level,
+        direction,
+        targets,
+    })
+}
+
+/// Parses summon damage. The original client's `Summon::apply_damage` is an
+/// intentional visual no-op, but the complete fixed-size packet is validated.
+pub fn parse_summon_damage(bytes: &[u8]) -> Result<SummonDamage, PacketError> {
+    let mut packet = PacketReader::new(bytes);
+    expect_opcode(&mut packet, OPCODE_DAMAGE_SUMMON)?;
+    let owner_id = packet.read_i32()?;
+    let object_id = packet.read_i32()?;
+    packet.skip(1)?; // legacy damage marker
+    Ok(SummonDamage {
+        owner_id,
+        object_id,
+        damage: packet.read_i32()?,
+    })
+}
+
 pub fn parse_dragon_spawn(bytes: &[u8]) -> Result<MapDragonSpawn, PacketError> {
     let mut packet = PacketReader::new(bytes);
     expect_opcode(&mut packet, OPCODE_SPAWN_DRAGON)?;
@@ -2818,8 +2887,13 @@ pub fn parse_npc_dialogue(bytes: &[u8]) -> Result<NpcDialogue, PacketError> {
     let message_type = packet.read_i8()?;
     let speaker = packet.read_i8()?;
     let text = packet.read_string()?;
-    let number_bounds = if message_type == 3 && packet.remaining() >= 12 {
+    let number_bounds = if message_type == 3 {
         Some((packet.read_i32()?, packet.read_i32()?, packet.read_i32()?))
+    } else {
+        None
+    };
+    let navigation = if message_type == 0 {
+        Some((packet.read_u8()? != 0, packet.read_u8()? != 0))
     } else {
         None
     };
@@ -2829,6 +2903,7 @@ pub fn parse_npc_dialogue(bytes: &[u8]) -> Result<NpcDialogue, PacketError> {
         speaker,
         text,
         number_bounds,
+        navigation,
     })
 }
 
@@ -4272,4 +4347,117 @@ pub fn parse_movements(
         movements.push(fragment);
     }
     Ok(movements)
+}
+
+#[cfg(test)]
+mod summon_packet_tests {
+    use super::*;
+
+    #[test]
+    fn parses_summon_attack_target_tuples_as_a_validated_noop() {
+        let mut packet = PacketWriter::new(OPCODE_SUMMON_ATTACK);
+        packet.write_i32(17);
+        packet.write_i32(29);
+        packet.write_u8(80);
+        packet.write_u8(1);
+        packet.write_i8(1);
+        packet.write_i32(31);
+        packet.write_u8(6);
+        packet.write_i32(456);
+
+        assert_eq!(
+            parse_summon_attack(&packet.into_bytes()).unwrap(),
+            SummonAttack {
+                owner_id: 17,
+                summon_object_id: 29,
+                character_level: 80,
+                direction: 1,
+                targets: vec![SummonAttackTarget {
+                    object_id: 31,
+                    damage: 456,
+                }],
+            }
+        );
+    }
+
+    #[test]
+    fn parses_summon_damage_and_rejects_truncated_or_invalid_packets() {
+        let mut packet = PacketWriter::new(OPCODE_DAMAGE_SUMMON);
+        packet.write_i32(17);
+        packet.write_i32(29);
+        packet.write_u8(12);
+        packet.write_i32(456);
+        assert_eq!(
+            parse_summon_damage(&packet.into_bytes()).unwrap(),
+            SummonDamage {
+                owner_id: 17,
+                object_id: 29,
+                damage: 456,
+            }
+        );
+
+        let mut truncated = PacketWriter::new(OPCODE_SUMMON_ATTACK);
+        truncated.write_i32(17);
+        truncated.write_i32(29);
+        truncated.write_u8(80);
+        truncated.write_u8(1);
+        truncated.write_i8(1);
+        assert!(matches!(
+            parse_summon_attack(&truncated.into_bytes()),
+            Err(PacketError::Truncated { .. })
+        ));
+
+        let mut invalid_count = PacketWriter::new(OPCODE_SUMMON_ATTACK);
+        invalid_count.write_i32(17);
+        invalid_count.write_i32(29);
+        invalid_count.write_u8(80);
+        invalid_count.write_u8(1);
+        invalid_count.write_i8(16);
+        assert_eq!(
+            parse_summon_attack(&invalid_count.into_bytes()),
+            Err(PacketError::InvalidSummonAttackTargetCount(16))
+        );
+        assert!(matches!(
+            parse_summon_damage(&[0xb3, 0, 1]),
+            Err(PacketError::Truncated { .. })
+        ));
+    }
+}
+
+#[cfg(test)]
+mod npc_dialogue_packet_tests {
+    use super::*;
+
+    fn normal_page(previous: u8, next: u8) -> Vec<u8> {
+        let mut packet = PacketWriter::new(OPCODE_NPC_DIALOGUE);
+        packet.write_u8(4);
+        packet.write_i32(22000);
+        packet.write_i8(0);
+        packet.write_i8(0);
+        packet.write_string("Off to Victoria Island!").unwrap();
+        packet.write_u8(previous);
+        packet.write_u8(next);
+        packet.into_bytes()
+    }
+
+    #[test]
+    fn npc_dialogue_retains_server_previous_next_buttons() {
+        for (previous, next) in [(0, 0), (0, 1), (1, 0), (1, 1)] {
+            let page = parse_npc_dialogue(&normal_page(previous, next)).unwrap();
+            assert_eq!(page.npc_id, 22000);
+            assert_eq!(page.navigation, Some((previous != 0, next != 0)));
+            assert_eq!(page.message_type, 0);
+        }
+    }
+
+    #[test]
+    fn npc_dialogue_rejects_every_truncated_normal_page() {
+        let packet = normal_page(1, 1);
+        for length in 0..packet.len() {
+            assert!(
+                parse_npc_dialogue(&packet[..length]).is_err(),
+                "length {length}"
+            );
+        }
+    }
 }

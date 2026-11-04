@@ -4,12 +4,12 @@ use super::{NxArchive, composite_nx_ui_bitmap, draw_dialogue_text};
 use openstory_protocol::{MAX_SKILL_MACRO_NAME_CHARS, SKILL_MACRO_COUNT, SkillMacro};
 
 pub(super) const PANEL_X: f32 = 408.0;
-pub(super) const PANEL_Y: f32 = 239.0;
+pub(super) const PANEL_Y: f32 = 195.0;
 pub(super) const PANEL_WIDTH: u32 = 207;
-pub(super) const PANEL_HEIGHT: u32 = 289;
+pub(super) const PANEL_HEIGHT: u32 = 375;
 
 pub(super) const VISIBLE_SKILLS: usize = 3;
-const SKILL_ROW_TOP: f32 = 188.0;
+const SKILL_ROW_TOP: f32 = 294.0;
 const SKILL_ROW_HEIGHT: f32 = 19.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -19,7 +19,7 @@ pub(super) enum Action {
     SelectMacro(usize),
     FocusName,
     ToggleShout,
-    SelectSlot(usize),
+    SelectSlot(usize, usize),
     ClearSkill(usize),
     AssignSkill(i32),
 }
@@ -153,25 +153,29 @@ pub(super) fn hit_test(
     if local_y < 24.0 && local_x >= PANEL_WIDTH as f32 - 32.0 {
         return Some(Action::Close);
     }
-    if (27.0..54.0).contains(&local_y) && (6.0..201.0).contains(&local_x) {
-        let index = ((local_x - 6.0) / 65.0).floor() as usize;
-        return (index < SKILL_MACRO_COUNT).then_some(Action::SelectMacro(index));
+    for row in 0..SKILL_MACRO_COUNT {
+        let top = 46.0 + row as f32 * 44.0;
+        if (top..top + 32.0).contains(&local_y) {
+            for slot in 0..3 {
+                let left = 14.0 + slot as f32 * 36.0;
+                if (left..left + 32.0).contains(&local_x) {
+                    if row == state.selected_macro && local_x >= left + 24.0 && local_y < top + 9.0
+                    {
+                        return Some(Action::ClearSkill(slot));
+                    }
+                    return Some(Action::SelectSlot(row, slot));
+                }
+            }
+            if (138.0..170.0).contains(&local_x) {
+                return Some(Action::SelectMacro(row));
+            }
+        }
     }
-    if (56.0..80.0).contains(&local_y) && (42.0..201.0).contains(&local_x) {
+    if (60.0..180.0).contains(&local_x) && (200.0..220.0).contains(&local_y) {
         return Some(Action::FocusName);
     }
-    if (81.0..103.0).contains(&local_y) && (6.0..201.0).contains(&local_x) {
+    if (144.0..170.0).contains(&local_x) && (228.0..246.0).contains(&local_y) {
         return Some(Action::ToggleShout);
-    }
-    if (107.0..182.0).contains(&local_y) && (6.0..201.0).contains(&local_x) {
-        let slot = ((local_y - 107.0) / 25.0).floor() as usize;
-        if slot < 3 {
-            return Some(if local_x >= 170.0 {
-                Action::ClearSkill(slot)
-            } else {
-                Action::SelectSlot(slot)
-            });
-        }
     }
     if (SKILL_ROW_TOP..SKILL_ROW_TOP + VISIBLE_SKILLS as f32 * SKILL_ROW_HEIGHT).contains(&local_y)
         && (6.0..201.0).contains(&local_x)
@@ -181,7 +185,7 @@ pub(super) fn hit_test(
             .get(state.skill_scroll.saturating_add(row))
             .map(|(id, _)| Action::AssignSkill(*id));
     }
-    if (258.0..286.0).contains(&local_y) {
+    if (350.0..375.0).contains(&local_y) {
         if (108.0..201.0).contains(&local_x) {
             return Some(Action::Save);
         }
@@ -201,20 +205,87 @@ pub(super) fn skill_list_contains(local_x: f32, local_y: f32) -> bool {
 pub(super) fn render(
     font: &fontdue::Font,
     ui_archive: &NxArchive,
+    skill_archive: &NxArchive,
     state: &State,
     skills: &[(i32, String)],
 ) -> Vec<u8> {
     let width = PANEL_WIDTH as usize;
     let height = PANEL_HEIGHT as usize;
     let mut pixels = vec![0; width * height * 4];
-    let _ = composite_nx_ui_bitmap(
+    let native = composite_nx_ui_bitmap(
         &mut pixels,
         width,
         height,
         ui_archive,
-        "UIWindow.img/SkillMacro/backgrnd",
+        "UIWindow2.img/Skill/macro/backgrnd",
+        1,
         0,
+    )
+    .is_ok();
+    if native {
+        for layer in ["backgrnd2", "backgrnd3"] {
+            let _ = composite_nx_ui_bitmap(
+                &mut pixels,
+                width,
+                height,
+                ui_archive,
+                &format!("UIWindow2.img/Skill/macro/{layer}"),
+                0,
+                0,
+            );
+        }
+    } else {
+        let _ = composite_nx_ui_bitmap(
+            &mut pixels,
+            width,
+            height,
+            ui_archive,
+            "UIWindow.img/SkillMacro/backgrnd",
+            0,
+            0,
+        );
+        for row in 0..SKILL_MACRO_COUNT {
+            let _ = composite_nx_ui_bitmap(
+                &mut pixels,
+                width,
+                height,
+                ui_archive,
+                "UIWindow.img/SkillMacro/macroslot2",
+                12,
+                40 + row as i32 * 44,
+            );
+        }
+        let _ = composite_nx_ui_bitmap(
+            &mut pixels,
+            width,
+            height,
+            ui_archive,
+            "UIWindow.img/SkillMacro/macroname",
+            14,
+            185,
+        );
+    }
+    // The original panel edits three macro rows. The additional list below it
+    // retains click-to-assign for clients without skill-icon dragging.
+    super::fill_dialogue_rect(
+        &mut pixels,
+        width,
+        height,
         0,
+        289,
+        width,
+        height - 289,
+        [242, 242, 237, 255],
+    );
+    super::fill_dialogue_rect(
+        &mut pixels,
+        width,
+        height,
+        0,
+        289,
+        width,
+        1,
+        [100, 118, 133, 255],
     );
     let _ = composite_nx_ui_bitmap(
         &mut pixels,
@@ -225,31 +296,87 @@ pub(super) fn render(
         width as i32 - 32,
         6,
     );
-
-    // The NX background already supplies the macro tabs and their frames.
-    // Overlay only the selected tab's number instead of scaling a slot texture
-    // across the baked tab artwork.
-    for index in 0..SKILL_MACRO_COUNT {
-        let x = 6 + index * 65;
-        draw_dialogue_text(
-            font,
+    let _ = composite_nx_ui_bitmap(
+        &mut pixels,
+        width,
+        height,
+        ui_archive,
+        "UIWindow2.img/Skill/macro/select",
+        13,
+        40 + state.selected_macro as i32 * 44,
+    );
+    for row in 0..SKILL_MACRO_COUNT {
+        let _ = composite_nx_ui_bitmap(
             &mut pixels,
             width,
             height,
-            &format!("{}", index + 1),
-            x as i32 + 26,
-            33,
-            11.0,
-            14,
-            15,
-            if index == state.selected_macro {
-                [172, 89, 36]
-            } else {
-                [72, 50, 31]
-            },
+            ui_archive,
+            &format!("UIWindow.img/SkillMacro/Macroicon/{row}/icon"),
+            138,
+            72 + row as i32 * 44,
         );
+        for slot in 0..3 {
+            let x = 14 + slot as i32 * 36;
+            let y = 46 + row as i32 * 44;
+            let skill_id = state.drafts.get(row).map_or(0, |entry| entry.skills[slot]);
+            if skill_id > 0
+                && composite_nx_ui_bitmap(
+                    &mut pixels,
+                    width,
+                    height,
+                    skill_archive,
+                    &format!("{:03}.img/skill/{skill_id}/icon", skill_id / 10_000),
+                    x + 1,
+                    y + 30,
+                )
+                .is_err()
+            {
+                draw_dialogue_text(
+                    font,
+                    &mut pixels,
+                    width,
+                    height,
+                    "?",
+                    x + 10,
+                    y + 8,
+                    12.0,
+                    14,
+                    16,
+                    [80, 60, 40],
+                );
+            }
+            if row == state.selected_macro && slot == state.selected_slot {
+                for (dx, dy, w, h) in [(0, 0, 32, 1), (0, 31, 32, 1), (0, 0, 1, 32), (31, 0, 1, 32)]
+                {
+                    super::fill_dialogue_rect(
+                        &mut pixels,
+                        width,
+                        height,
+                        (x + dx) as usize,
+                        (y + dy) as usize,
+                        w,
+                        h,
+                        [55, 110, 180, 255],
+                    );
+                }
+            }
+            if row == state.selected_macro && skill_id > 0 {
+                draw_dialogue_text(
+                    font,
+                    &mut pixels,
+                    width,
+                    height,
+                    "×",
+                    x + 24,
+                    y,
+                    9.0,
+                    8,
+                    10,
+                    [130, 30, 30],
+                );
+            }
+        }
     }
-
     let current = state.drafts.get(state.selected_macro);
     let name = current.map_or("", |entry| entry.name.as_str());
     draw_dialogue_text(
@@ -262,136 +389,119 @@ pub(super) fn render(
         } else {
             name.to_owned()
         },
-        47,
-        62,
+        60,
+        200,
         10.0,
-        148,
-        14,
+        120,
+        20,
         [56, 42, 31],
     );
-
     let _ = composite_nx_ui_bitmap(
         &mut pixels,
         width,
         height,
         ui_archive,
-        if current.is_some_and(|entry| entry.shout) {
-            "Basic.img/CheckBox/1"
-        } else {
-            "Basic.img/CheckBox/0"
-        },
-        8,
-        83,
+        &format!(
+            "UIWindow.img/SkillMacro/Macroicon/{}/icon",
+            state.selected_macro
+        ),
+        15,
+        221,
     );
-    draw_dialogue_text(
-        font,
-        &mut pixels,
-        width,
-        height,
-        "Shout in chat",
-        27,
-        85,
-        8.0,
-        112,
-        12,
-        [70, 48, 33],
-    );
-
-    for slot in 0..3 {
-        let y = 108 + slot * 25;
-        let selected = slot == state.selected_slot;
-        let skill_id = current.map_or(0, |entry| entry.skills[slot]);
-        let skill_name = skills.iter().find(|(id, _)| *id == skill_id).map_or_else(
-            || {
-                if skill_id == 0 {
-                    "Empty".to_owned()
-                } else {
-                    format!("#{skill_id}")
-                }
-            },
-            |(_, name)| name.clone(),
-        );
-        draw_dialogue_text(
-            font,
-            &mut pixels,
-            width,
-            height,
-            &format!("{}. {}", slot + 1, skill_name),
-            11,
-            y as i32 + 5,
-            9.0,
-            151,
-            13,
-            if selected { [40, 63, 95] } else { [61, 46, 34] },
-        );
+    if current.is_some_and(|entry| entry.shout) {
+        if native {
+            let _ = composite_nx_ui_bitmap(
+                &mut pixels,
+                width,
+                height,
+                ui_archive,
+                "UIWindow2.img/Skill/macro/check",
+                0,
+                0,
+            );
+        }
+    }
+    if !native {
         let _ = composite_nx_ui_bitmap(
             &mut pixels,
             width,
             height,
             ui_archive,
-            "Basic.img/BtClose/normal/0",
-            182,
-            y as i32 + 5,
+            if current.is_some_and(|entry| entry.shout) {
+                "Basic.img/CheckBox/1"
+            } else {
+                "Basic.img/CheckBox/0"
+            },
+            144,
+            230,
         );
     }
-
-    for (row, (skill_id, skill_name)) in skills
+    for (row, (_, name)) in skills
         .iter()
         .skip(state.skill_scroll)
         .take(VISIBLE_SKILLS)
         .enumerate()
     {
-        let y = SKILL_ROW_TOP as usize + row * SKILL_ROW_HEIGHT as usize;
         draw_dialogue_text(
             font,
             &mut pixels,
             width,
             height,
-            &format!("{}  {}", skill_id, skill_name),
+            name,
             9,
-            y as i32,
+            SKILL_ROW_TOP as i32 + row as i32 * SKILL_ROW_HEIGHT as i32,
             9.0,
             188,
-            14,
+            16,
             [70, 48, 33],
         );
     }
-    let visible_start = if skills.is_empty() {
-        0
-    } else {
-        state.skill_scroll + 1
-    };
-    let visible_end = (state.skill_scroll + VISIBLE_SKILLS).min(skills.len());
-    draw_dialogue_text(
-        font,
-        &mut pixels,
-        width,
-        height,
-        &format!("{visible_start}–{visible_end}/{}", skills.len()),
-        9,
-        246,
-        8.0,
-        65,
-        12,
-        [88, 68, 50],
-    );
-    let _ = composite_nx_ui_bitmap(
-        &mut pixels,
-        width,
-        height,
-        ui_archive,
-        "Basic.img/BtCancel/normal/0",
-        6,
-        259,
-    );
-    let _ = composite_nx_ui_bitmap(
-        &mut pixels,
-        width,
-        height,
-        ui_archive,
-        "Basic.img/BtOK/normal/0",
-        108,
-        259,
-    );
+    for (path, x) in [
+        ("Basic.img/BtCancel/normal/0", 6),
+        ("Basic.img/BtOK/normal/0", 108),
+    ] {
+        let _ = composite_nx_ui_bitmap(&mut pixels, width, height, ui_archive, path, x, 351);
+    }
     pixels
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn grid_and_skill_list_hit_the_drawn_cells() {
+        let mut state = State::default();
+        state.open(&[]);
+        let skills = vec![(1001004, "Power Strike".to_owned())];
+        assert_eq!(
+            hit_test(15.0, 47.0, &state, &skills),
+            Some(Action::SelectSlot(0, 0))
+        );
+        assert_eq!(
+            hit_test(51.0, 91.0, &state, &skills),
+            Some(Action::SelectSlot(1, 1))
+        );
+        assert_eq!(
+            hit_test(140.0, 47.0, &state, &skills),
+            Some(Action::SelectMacro(0))
+        );
+        assert_eq!(
+            hit_test(39.0, 47.0, &state, &skills),
+            Some(Action::ClearSkill(0))
+        );
+        assert_eq!(
+            hit_test(65.0, 205.0, &state, &skills),
+            Some(Action::FocusName)
+        );
+        assert_eq!(
+            hit_test(150.0, 235.0, &state, &skills),
+            Some(Action::ToggleShout)
+        );
+        assert_eq!(
+            hit_test(10.0, 295.0, &state, &skills),
+            Some(Action::AssignSkill(1001004))
+        );
+        assert_eq!(hit_test(110.0, 355.0, &state, &skills), Some(Action::Save));
+    }
 }

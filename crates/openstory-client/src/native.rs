@@ -4,6 +4,7 @@ mod cash_shop_ui;
 mod channel_switch;
 mod hardware_info;
 mod item_megaphone;
+mod keyboard_settings;
 mod messenger;
 mod minimap;
 mod monster_book;
@@ -11,6 +12,7 @@ mod monster_carnival;
 mod party_search;
 mod settings;
 mod skill_macros;
+mod ui_catalog;
 mod ui_clock;
 mod ui_foundation;
 mod ui_preview;
@@ -19,6 +21,11 @@ mod world_map;
 
 use super::session;
 
+use openstory_core::buffs::{BuffGroup, BuffKey, CharacterBuffs};
+use openstory_core::combat::{
+    SkillUseBlockReason, SkillUseRules, evaluate_skill_use, fallback_weapon_attack_class,
+    regular_attack_stance, weapon_damage_multiplier,
+};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -32,6 +39,14 @@ use settings::{
     SocialSettings, apply_mouse_speed, load_quickslot_keys, save as save_settings,
     save_quickslot_keys,
 };
+
+fn character_buff_key(group: openstory_protocol::BuffMaskGroup, flag: u64) -> BuffKey {
+    let group = match group {
+        openstory_protocol::BuffMaskGroup::First => BuffGroup::First,
+        openstory_protocol::BuffMaskGroup::Second => BuffGroup::Second,
+    };
+    BuffKey { group, flag }
+}
 
 include!("native/config.rs");
 include!("native/run.rs");
@@ -52,6 +67,7 @@ mod client_login;
 mod client_map_entities;
 mod client_monster_carnival;
 mod client_network;
+mod client_npc_interaction;
 mod client_packets;
 mod client_quests_inventory;
 mod client_selection;

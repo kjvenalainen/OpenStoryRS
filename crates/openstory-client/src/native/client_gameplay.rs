@@ -67,6 +67,7 @@ impl ClientApp {
         self.death_respawn_pending = false;
         self.gameplay_input = GameplayInput::default();
         self.npc_dialogue = None;
+        self.pending_npc_talk = None;
         self.npc_shop = None;
         self.inventory_drag_source = None;
         self.inventory_drop_prompt = None;
@@ -129,7 +130,11 @@ impl ClientApp {
             self.death_notice_texture = None;
             return;
         }
-        let pixels = render_death_notice(&self.font, self.death_respawn_pending);
+        let pixels = render_death_notice(
+            &self.font,
+            &self.legacy_ui_archive,
+            self.death_respawn_pending,
+        );
         let Some(renderer) = self.renderer.as_ref() else {
             return;
         };
@@ -145,10 +150,24 @@ impl ClientApp {
         }
     }
 
+    pub(super) fn clear_death_state(&mut self) {
+        self.death_notice = false;
+        self.death_respawn_pending = false;
+        self.death_notice_texture = None;
+        if let Some(scene) = self.map_scene.as_mut() {
+            scene.local_death_art = None;
+        }
+        if let Some(window) = self.window.as_ref() {
+            window.request_redraw();
+        }
+    }
+
     pub(super) fn request_death_respawn(&mut self) {
         if !self.death_notice || self.death_respawn_pending || !self.channel_connected {
             return;
         }
+        // The legacy server only enters its dead-player respawn path when the
+        // target map is not -1; target 0 asks it to use this map's return map.
         let Ok(packet) = openstory_protocol::change_map_packet(true, 0, "", false) else {
             eprintln!("OpenStoryRS: could not encode nearest-town respawn request");
             return;
@@ -183,17 +202,12 @@ impl ClientApp {
             .collect::<HashSet<_>>();
         let now = Instant::now();
         for entry in update.entries {
-            let expires_at = (entry.duration_ms > 0)
-                .then(|| now + Duration::from_millis(entry.duration_ms as u64));
-            self.active_buffs.insert(
-                entry.key,
-                ActiveCharacterBuff {
-                    value: entry.value,
-                    skill_id: entry.skill_id,
-                    duration_ms: entry.duration_ms,
-                    applied_at: now,
-                    expires_at,
-                },
+            let _ = self.active_buffs.apply(
+                character_buff_key(entry.key.group, entry.key.flag),
+                entry.value,
+                entry.skill_id,
+                entry.duration_ms,
+                now,
             );
         }
         for (skill_type, skill_level) in disease_effects {
@@ -238,13 +252,8 @@ impl ClientApp {
         update: openstory_protocol::CharacterBuffCancel,
     ) {
         let mount_cancelled = update.first_mask & STATUS_MONSTER_RIDING != 0;
-        self.active_buffs.retain(|key, _| {
-            let mask = match key.group {
-                openstory_protocol::BuffMaskGroup::First => update.first_mask,
-                openstory_protocol::BuffMaskGroup::Second => update.second_mask,
-            };
-            mask & key.flag == 0
-        });
+        self.active_buffs
+            .cancel_masks(update.first_mask, update.second_mask);
         if mount_cancelled
             && let Some(look) = self
                 .active_character
@@ -262,25 +271,19 @@ impl ClientApp {
         flag: u64,
     ) -> i16 {
         self.active_buffs
-            .get(&openstory_protocol::BuffStatKey { group, flag })
-            .filter(|buff| {
-                buff.expires_at
-                    .is_none_or(|expires_at| expires_at > Instant::now())
-            })
-            .map_or(0, |buff| buff.value)
+            .value(&character_buff_key(group, flag), Instant::now())
     }
 
     pub(super) fn expire_character_buffs(&mut self, now: Instant) {
         let initial_count = self.active_buffs.len();
         let was_riding = self
             .active_buffs
-            .get(&openstory_protocol::BuffStatKey {
-                group: openstory_protocol::BuffMaskGroup::First,
-                flag: STATUS_MONSTER_RIDING,
-            })
+            .get(&character_buff_key(
+                openstory_protocol::BuffMaskGroup::First,
+                STATUS_MONSTER_RIDING,
+            ))
             .is_some_and(|buff| buff.value > 0);
-        self.active_buffs
-            .retain(|_, buff| buff.expires_at.is_none_or(|expires_at| expires_at > now));
+        self.active_buffs.expire(now);
         if self.active_buffs.len() != initial_count {
             self.refresh_map_hud();
         }
@@ -291,12 +294,10 @@ impl ClientApp {
             self.refresh_buff_list_texture(now);
         }
         if was_riding
-            && !self
-                .active_buffs
-                .contains_key(&openstory_protocol::BuffStatKey {
-                    group: openstory_protocol::BuffMaskGroup::First,
-                    flag: STATUS_MONSTER_RIDING,
-                })
+            && !self.active_buffs.contains_key(&character_buff_key(
+                openstory_protocol::BuffMaskGroup::First,
+                STATUS_MONSTER_RIDING,
+            ))
             && let Some(look) = self
                 .active_character
                 .as_ref()
@@ -385,13 +386,11 @@ impl ClientApp {
         let pixels = render_map_hud(
             &self.font,
             self.status_bar_number_font.as_ref(),
+            self.status_bar_level_font.as_ref(),
             self.status_bar_layout,
             &stats,
             &self.active_buffs,
             collapsed_chat_line,
-            self.status_bar_layout == StatusBarLayout::V83
-                && self.active_buffs.is_empty()
-                && is_v83_reference_status(&stats),
             None,
         );
         let Some(renderer) = self.renderer.as_ref() else {
@@ -476,6 +475,7 @@ impl ClientApp {
         self.status_bar_draw_indices.clear();
         self.status_bar_gauges = [None; 3];
         self.status_bar_number_font = None;
+        self.status_bar_level_font = None;
         let (sprites, gauge_sprite_indices, layout) =
             match build_status_bar_sprites(&self.legacy_ui_archive) {
                 Ok(assets) => assets,
@@ -498,6 +498,14 @@ impl ClientApp {
             Err(error) => {
                 eprintln!("OpenStoryRS: native status-bar number font is unavailable: {error}");
                 self.status_bar_number_font = None;
+            }
+        }
+        if layout == StatusBarLayout::V83 {
+            match load_v83_status_bar_level_font(&self.legacy_ui_archive) {
+                Ok(font) => self.status_bar_level_font = Some(font),
+                Err(error) => {
+                    eprintln!("OpenStoryRS: native level digits are unavailable: {error}")
+                }
             }
         }
         let uploaded = match self.upload_dynamic_sprites(sprites) {
@@ -604,11 +612,14 @@ impl ClientApp {
         let presentation = scene.minimap_presentation;
         let map_name = map_string_name(&self.string_archive, map_id)
             .unwrap_or_else(|| format!("Map {map_id}"));
+        let street_name = map_string_street_name(&self.string_archive, map_id)
+            .unwrap_or_else(|| map_name.clone());
         let panel = match minimap::render(
             data,
             ui_assets,
             LogicalSize::LEGACY_1024X768,
             &map_name,
+            &street_name,
             presentation,
             &markers,
             &self.font,

@@ -1,220 +1,119 @@
 fn render_character_info_panel(
     font: &fontdue::Font,
     ui: &CharacterInfoUi,
+    ui_archive: &NxArchive,
     string_archive: &NxArchive,
     name_cache: &mut HashMap<i32, Option<String>>,
 ) -> Vec<u8> {
     const WIDTH: usize = CHARACTER_INFO_PANEL_WIDTH as usize;
     const HEIGHT: usize = CHARACTER_INFO_PANEL_HEIGHT as usize;
     let mut pixels = vec![0_u8; WIDTH * HEIGHT * 4];
+    let _ = composite_nx_ui_bitmap_scaled_to(
+        &mut pixels,
+        WIDTH,
+        HEIGHT,
+        ui_archive,
+        "UIWindow.img/UserInfo/backgrnd2",
+        0,
+        0,
+        WIDTH,
+        HEIGHT,
+    );
+    // Keep the legacy character card visible above the supplemental details.
+    // The latter occupy a plain area so long server-provided text stays legible.
     fill_dialogue_rect(
         &mut pixels,
         WIDTH,
         HEIGHT,
-        0,
-        0,
-        WIDTH,
-        HEIGHT,
-        [22, 25, 31, 252],
+        5,
+        216,
+        WIDTH - 10,
+        261,
+        [241, 242, 240, 255],
     );
-    fill_dialogue_rect(
+    let _ = composite_nx_ui_bitmap(
         &mut pixels,
         WIDTH,
         HEIGHT,
-        0,
-        0,
-        WIDTH,
-        48,
-        [75, 64, 91, 255],
+        ui_archive,
+        "Basic.img/BtClose/normal/0",
+        368,
+        8,
     );
-    for (x, y, width, height) in [
-        (0, 0, WIDTH, 2),
-        (0, HEIGHT - 2, WIDTH, 2),
-        (0, 0, 2, HEIGHT),
-        (WIDTH - 2, 0, 2, HEIGHT),
-    ] {
-        fill_dialogue_rect(
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            x,
-            y,
-            width,
-            height,
-            [184, 163, 217, 255],
-        );
-    }
     draw_dialogue_text(
         font,
         &mut pixels,
         WIDTH,
         HEIGHT,
         &ui.name,
-        18,
-        12,
-        18.0,
-        312,
-        24,
-        [245, 233, 255],
+        157,
+        38,
+        12.0,
+        210,
+        17,
+        [255, 255, 255],
     );
-    fill_dialogue_rect(
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        356,
-        8,
-        28,
-        28,
-        [63, 43, 52, 255],
-    );
-    draw_dialogue_text(
-        font,
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        "X",
-        366,
-        11,
-        14.0,
-        16,
-        18,
-        [255, 221, 222],
-    );
-
     let info = &ui.info;
-    let job = character_job_name(info.job);
-    let rows = [
-        format!("Level {}  ·  {job}", info.level),
-        format!(
-            "Fame {}  ·  {}",
-            info.fame,
-            if info.married { "Married" } else { "Single" }
-        ),
-        format!(
-            "Guild: {}",
-            if info.guild.is_empty() {
-                "-"
-            } else {
-                &info.guild
-            }
-        ),
-        format!(
-            "Alliance: {}",
-            if info.alliance.is_empty() {
-                "-"
-            } else {
-                &info.alliance
-            }
-        ),
-    ];
-    for (index, row) in rows.iter().enumerate() {
+    for (index, value) in [
+        info.level.to_string(),
+        character_job_name(info.job),
+        info.fame.to_string(),
+        if info.guild.is_empty() {
+            "-".to_owned()
+        } else {
+            info.guild.clone()
+        },
+        if info.alliance.is_empty() {
+            "-".to_owned()
+        } else {
+            info.alliance.clone()
+        },
+    ]
+    .iter()
+    .enumerate()
+    {
         draw_dialogue_text(
             font,
             &mut pixels,
             WIDTH,
             HEIGHT,
-            row,
-            20,
-            64 + index as i32 * 24,
-            11.0,
-            348,
-            18,
-            [229, 225, 216],
-        );
-    }
-
-    draw_dialogue_text(
-        font,
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        "PETS",
-        20,
-        166,
-        10.0,
-        120,
-        16,
-        [210, 188, 237],
-    );
-    if info.pets.is_empty() {
-        draw_dialogue_text(
-            font,
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            "No active pets",
-            22,
-            186,
+            value,
+            222,
+            95 + index as i32 * 22,
             10.0,
-            344,
-            16,
-            [185, 183, 175],
+            152,
+            17,
+            [49, 45, 42],
         );
-    } else {
-        for (index, pet) in info.pets.iter().enumerate() {
-            let item = item_name(pet.item_id, string_archive, name_cache);
-            draw_dialogue_text(
-                font,
-                &mut pixels,
-                WIDTH,
-                HEIGHT,
-                &format!(
-                    "{}  Lv {}  ·  closeness {}  ·  fullness {}",
-                    if pet.name.is_empty() {
-                        item.as_str()
-                    } else {
-                        pet.name.as_str()
-                    },
-                    pet.level,
-                    pet.closeness,
-                    pet.fullness
-                ),
-                22,
-                186 + index as i32 * 20,
-                9.0,
-                344,
-                15,
-                [224, 221, 211],
-            );
-        }
     }
-
-    let mount_y = 250;
+    let pet_text = if info.pets.is_empty() {
+        "No active pets".to_owned()
+    } else {
+        info.pets
+            .iter()
+            .take(3)
+            .map(|pet| {
+                let name = if pet.name.is_empty() {
+                    item_name(pet.item_id, string_archive, name_cache)
+                } else {
+                    pet.name.clone()
+                };
+                format!(
+                    "{name} Lv {} ({}/{})",
+                    pet.level, pet.closeness, pet.fullness
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(" · ")
+    };
     let mount_text = info.mount.map_or_else(
         || "Mount: none".to_owned(),
         |mount| {
             format!(
-                "Mount  Lv {}  ·  EXP {}  ·  tiredness {}",
+                "Mount: Lv {} · EXP {} · tiredness {}",
                 mount.level, mount.experience, mount.tiredness
             )
         },
-    );
-    draw_dialogue_text(
-        font,
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        &mount_text,
-        20,
-        mount_y,
-        10.0,
-        348,
-        16,
-        [229, 225, 216],
-    );
-
-    draw_dialogue_text(
-        font,
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        "WISHLIST",
-        20,
-        280,
-        10.0,
-        120,
-        16,
-        [210, 188, 237],
     );
     let wishlist = if info.wishlist.is_empty() {
         "No wish-list items".to_owned()
@@ -222,43 +121,54 @@ fn render_character_info_panel(
         info.wishlist
             .iter()
             .take(4)
-            .map(|item_id| item_name(*item_id, string_archive, name_cache))
+            .map(|id| item_name(*id, string_archive, name_cache))
             .collect::<Vec<_>>()
-            .join("  ·  ")
+            .join(" · ")
     };
-    draw_dialogue_text(
-        font,
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        &wishlist,
-        22,
-        300,
-        9.0,
-        344,
-        36,
-        [224, 221, 211],
-    );
-
-    draw_dialogue_text(
-        font,
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        &format!(
-            "Monster Book  Lv {}  ·  {} cards ({}/{})",
-            info.monster_book.level,
-            info.monster_book.total_cards,
-            info.monster_book.normal_cards,
-            info.monster_book.special_cards
+    let details = [
+        ("PETS", pet_text),
+        ("MOUNT", mount_text),
+        ("WISHLIST", wishlist),
+        (
+            "MONSTER BOOK",
+            format!(
+                "Lv {} · {} cards ({}/{})",
+                info.monster_book.level,
+                info.monster_book.total_cards,
+                info.monster_book.normal_cards,
+                info.monster_book.special_cards
+            ),
         ),
-        20,
-        356,
-        9.0,
-        348,
-        16,
-        [229, 225, 216],
-    );
+    ];
+    for (index, (label, value)) in details.iter().enumerate() {
+        let y = 226 + index as i32 * 40;
+        draw_dialogue_text(
+            font,
+            &mut pixels,
+            WIDTH,
+            HEIGHT,
+            label,
+            20,
+            y,
+            9.0,
+            150,
+            14,
+            [125, 56, 86],
+        );
+        draw_dialogue_text(
+            font,
+            &mut pixels,
+            WIDTH,
+            HEIGHT,
+            value,
+            20,
+            y + 14,
+            10.0,
+            350,
+            23,
+            [49, 45, 42],
+        );
+    }
     if let Some(medal) = info.medal.as_ref() {
         let medal_name = item_name(medal.item_id, string_archive, name_cache);
         draw_dialogue_text(
@@ -266,61 +176,71 @@ fn render_character_info_panel(
             &mut pixels,
             WIDTH,
             HEIGHT,
-            &format!("Medal: {medal_name}  ·  {} quests", medal.quest_ids.len()),
+            &format!("Medal: {medal_name} · {} quests", medal.quest_ids.len()),
             20,
-            380,
+            389,
             9.0,
-            348,
-            16,
-            [229, 225, 216],
+            350,
+            13,
+            [49, 45, 42],
         );
     }
-    for (x, label, color) in [
-        (20, "PARTY", [56, 78, 62, 255]),
-        (118, "TRADE", [67, 61, 86, 255]),
-        (216, "GUILD", [83, 67, 52, 255]),
+    draw_dialogue_text(
+        font,
+        &mut pixels,
+        WIDTH,
+        HEIGHT,
+        if info.married { "Married" } else { "Single" },
+        157,
+        58,
+        9.0,
+        180,
+        14,
+        [255, 255, 255],
+    );
+    for (x, path) in [
+        (20, "UIWindow.img/UserInfo/BtParty/normal/0"),
+        (118, "UIWindow.img/UserInfo/BtTrade/normal/0"),
     ] {
-        fill_dialogue_rect(&mut pixels, WIDTH, HEIGHT, x, 402, 92, 30, color);
-        draw_dialogue_text(
-            font,
+        let _ = composite_nx_ui_bitmap_scaled_to(
             &mut pixels,
             WIDTH,
             HEIGHT,
-            label,
-            x as i32 + 20,
-            410,
-            10.0,
-            54,
-            16,
-            [245, 239, 223],
+            ui_archive,
+            path,
+            x,
+            402,
+            92,
+            30,
         );
     }
-    let fame_actions = if ui.fame_pending {
-        [
-            (20, "WAITING…", [72, 65, 55, 255]),
-            (118, "WAITING…", [72, 65, 55, 255]),
-        ]
-    } else {
-        [
-            (20, "RAISE FAME", [56, 78, 62, 255]),
-            (118, "LOWER FAME", [83, 67, 52, 255]),
-        ]
-    };
-    for (x, label, color) in fame_actions {
-        fill_dialogue_rect(&mut pixels, WIDTH, HEIGHT, x, 440, 92, 30, color);
-        draw_dialogue_text(
-            font,
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            label,
-            x as i32 + 9,
-            449,
-            9.0,
-            74,
-            15,
-            [245, 239, 223],
-        );
+    draw_guild_button(
+        font,
+        &mut pixels,
+        WIDTH,
+        HEIGHT,
+        (216, 402, 92, 30),
+        "GUILD",
+    );
+    for (x, label) in [
+        (
+            20,
+            if ui.fame_pending {
+                "WAITING…"
+            } else {
+                "RAISE FAME"
+            },
+        ),
+        (
+            118,
+            if ui.fame_pending {
+                "WAITING…"
+            } else {
+                "LOWER FAME"
+            },
+        ),
+    ] {
+        draw_guild_button(font, &mut pixels, WIDTH, HEIGHT, (x, 440, 92, 30), label);
     }
     draw_dialogue_text(
         font,
@@ -333,21 +253,9 @@ fn render_character_info_panel(
         8.0,
         160,
         15,
-        [185, 183, 175],
+        [90, 84, 78],
     );
-    draw_dialogue_text(
-        font,
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        "Esc closes · click X to dismiss",
-        20,
-        478,
-        8.0,
-        348,
-        12,
-        [185, 183, 175],
-    );
+
     pixels
 }
 

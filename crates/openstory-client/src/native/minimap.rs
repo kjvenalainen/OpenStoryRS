@@ -20,6 +20,8 @@ const MAX_DYNAMIC_MARKERS: usize = 1024;
 const MAX_CUSTOM_MARKER_SIDE: u32 = 512;
 const MAX_PORTALS: usize = 512;
 const MAX_MAP_LABEL_CHARS: usize = 80;
+const MAP_LABEL_SIZE: f32 = 13.0;
+const MAP_LABEL_OUTLINE: [u8; 3] = [20, 24, 32];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(super) enum MarkerKind {
@@ -148,6 +150,7 @@ struct MapFrameArt {
 /// BGRA buffers whenever moving actors force the panel to refresh.
 pub(super) struct UiAssets {
     collapsed: CollapsedFrameArt,
+    title: SpriteImage,
     normal: MapFrameArt,
     expanded: MapFrameArt,
     min_normal: SpriteImage,
@@ -185,6 +188,7 @@ impl UiAssets {
             "BtMap/normal/0",
         )?;
         Ok(Self {
+            title: load_ui_image(archive, &minimap_ui, minimap_path, "title", "title")?,
             collapsed,
             normal,
             expanded,
@@ -329,6 +333,7 @@ pub(super) fn render(
     ui_assets: &UiAssets,
     viewport: LogicalSize,
     map_name: &str,
+    street_name: &str,
     presentation: Presentation,
     markers: &[Marker<'_>],
     font: &Font,
@@ -356,7 +361,13 @@ pub(super) fn render(
     }
 
     let label: String = map_name.chars().take(MAX_MAP_LABEL_CHARS).collect();
-    let name_width = measure_text(font, &label, 12.0);
+    let street_label: String = street_name.chars().take(MAX_MAP_LABEL_CHARS).collect();
+    let label_font = super::ui_foundation::bold_font().unwrap_or(font);
+    let name_width = measure_text(label_font, &label, MAP_LABEL_SIZE).max(measure_text(
+        label_font,
+        &street_label,
+        MAP_LABEL_SIZE,
+    ));
     let (button_min, button_max, min_action, max_action) = match presentation {
         Presentation::Collapsed => (
             &ui_assets.min_disabled,
@@ -384,21 +395,22 @@ pub(super) fn render(
     let mut hit_regions = Vec::new();
     let (panel_width, panel_height, pixels) = match presentation {
         Presentation::Collapsed => {
-            let width = (11.0
-                + name_width
-                + button_min.width as f32
-                + 1.0
-                + button_max.width as f32
-                + 1.0
-                + button_map.width as f32
-                + 7.0)
-                .max(178.0)
-                .min(viewport.width - x)
-                .max(1.0);
+            let width = 149.0_f32.min(viewport.width - x).max(1.0);
             let mut canvas = Canvas::new(width as u32, 20)?;
             draw_collapsed_frame(&mut canvas, &ui_assets.collapsed, width);
-            canvas.draw_text(font, &label, 7.0, 0.0, 12.0, [255, 255, 255], width - 80.0);
-            let mut button_x = (7.0 + name_width + 4.0).max(7.0);
+            canvas.draw_image(
+                &ui_assets.title,
+                9.0,
+                8.0,
+                ui_assets.title.width as f32,
+                ui_assets.title.height as f32,
+                false,
+            );
+            let mut button_x = width
+                - button_min.width as f32
+                - button_max.width as f32
+                - button_map.width as f32
+                - 9.0;
             let _ = draw_button(&mut canvas, button_min, button_x, 4.0, x, y, None);
             button_x += button_min.width as f32 + 1.0;
             if let Some(hit) = draw_button(&mut canvas, button_max, button_x, 4.0, x, y, max_action)
@@ -421,7 +433,7 @@ pub(super) fn render(
         }
         Presentation::Normal | Presentation::Expanded => {
             let expanded = presentation == Presentation::Expanded;
-            let canvas_y = if expanded { 60.0 } else { 20.0 };
+            let canvas_y = if expanded { 60.0 } else { 29.0 };
             let map_height = data.canvas.height as f32;
             let map_width = data.canvas.width as f32;
             let available_width = (viewport.width - x - 16.0).max(64.0);
@@ -442,10 +454,16 @@ pub(super) fn render(
                 .max(178.0)
                 .min(viewport.width - x)
                 .max(1.0);
-            let height = (zoomed_height + canvas_y + 7.0)
+            let height = (zoomed_height + canvas_y + 14.0)
                 .min(viewport.height - y)
                 .max(1.0);
             let mut canvas = Canvas::new(width as u32, height as u32)?;
+            for row in canvas_y as usize..height as usize - 14 {
+                for column in 6..width as usize - 6 {
+                    let index = (row * width as usize + column) * 4;
+                    canvas.pixels[index..index + 4].copy_from_slice(&[75, 65, 65, 255]);
+                }
+            }
             draw_map_frame(
                 &mut canvas,
                 if expanded {
@@ -461,7 +479,7 @@ pub(super) fn render(
                 canvas.draw_image(
                     map_mark,
                     7.0,
-                    17.0,
+                    21.0,
                     map_mark.width as f32,
                     map_mark.height as f32,
                     false,
@@ -483,7 +501,9 @@ pub(super) fn render(
                 canvas.draw_image(
                     &data.portal_icon,
                     (width - zoomed_width) * 0.5 + map_x - data.portal_icon.width as f32 * 0.5,
-                    canvas_y + map_y,
+                    // World positions anchor at the feet/base, as they do for
+                    // actor markers and the full-size portal animation.
+                    canvas_y + map_y - data.portal_icon.height as f32,
                     data.portal_icon.width as f32,
                     data.portal_icon.height as f32,
                     false,
@@ -529,16 +549,35 @@ pub(super) fn render(
                 }
             }
             if expanded {
-                canvas.draw_text(
-                    font,
+                canvas.draw_text_outlined(
+                    label_font,
                     &label,
                     48.0,
-                    12.0,
-                    12.0,
+                    27.0,
+                    MAP_LABEL_SIZE,
                     [255, 255, 255],
+                    MAP_LABEL_OUTLINE,
+                    width - 130.0,
+                );
+                canvas.draw_text_outlined(
+                    label_font,
+                    &street_label,
+                    48.0,
+                    41.0,
+                    MAP_LABEL_SIZE,
+                    [255, 255, 255],
+                    MAP_LABEL_OUTLINE,
                     width - 130.0,
                 );
             }
+            canvas.draw_image(
+                &ui_assets.title,
+                9.0,
+                8.0,
+                ui_assets.title.width as f32,
+                ui_assets.title.height as f32,
+                false,
+            );
             let collapse_x = width
                 - button_min.width as f32
                 - button_max.width as f32
@@ -702,85 +741,70 @@ fn draw_map_frame(
     map_height: f32,
     canvas_y: f32,
 ) {
-    let edge_west = &frame.west;
-    let edge_east = &frame.east;
-    let top = &frame.north;
-    let top_left = &frame.northwest;
-    let top_right = &frame.northeast;
-    let bottom = &frame.south;
-    let bottom_left = &frame.southwest;
-    let bottom_right = &frame.southeast;
-    // Match the authored v83 layout: the left and right 64px title/control
-    // zones are outside the center stretch. The vertical sides sit at the
-    // middle-right offset, while the upper/lower right corners sit at ur_x.
-    let center_stretch = (width - 128.0).max(0.0);
-    let upper_right_x = 64.0 + center_stretch;
-    let middle_right_x = upper_right_x + 55.0;
-    let vertical_offset = canvas_y - 20.0;
-    let (middle_stretch, down_y_offset) = if map_height <= 20.0 {
-        (5.0, 22.0)
-    } else {
-        (map_height - 17.0, map_height)
-    };
-    let bottom_y = vertical_offset + down_y_offset;
-    // The v83 c-sprite is a pale opaque fill and obscures the map scene behind
-    // this transparent frame. Keep the minimap artwork itself and let the
-    // active map show through the unused space around its canvas.
+    let left = frame.northwest.width as f32;
+    let right = frame.northeast.width as f32;
+    let inner_width = (width - left - right).max(0.0);
+    // These are six-pixel v83 corners, not the 64-pixel title zones used by
+    // later archives. Tile the one-pixel edges at their native thickness.
     canvas.draw_image(
-        edge_west,
-        0.0,
-        17.0 + vertical_offset,
-        edge_west.width as f32,
-        middle_stretch,
-        false,
-    );
-    canvas.draw_image(
-        edge_east,
-        middle_right_x,
-        17.0 + vertical_offset,
-        edge_east.width as f32,
-        middle_stretch,
-        false,
-    );
-    canvas.draw_image(top, 64.0, 0.0, center_stretch, top.height as f32, false);
-    canvas.draw_image(
-        top_left,
+        &frame.northwest,
         0.0,
         0.0,
-        top_left.width as f32,
-        top_left.height as f32,
+        left,
+        frame.northwest.height as f32,
         false,
     );
-    canvas.draw_image(
-        top_right,
-        upper_right_x,
+    canvas.tile_image(
+        &frame.north,
+        left,
         0.0,
-        top_right.width as f32,
-        top_right.height as f32,
-        false,
+        inner_width,
+        frame.north.height as f32,
     );
     canvas.draw_image(
-        bottom,
-        64.0,
-        bottom_y + 18.0,
-        center_stretch,
-        bottom.height as f32,
+        &frame.northeast,
+        width - right,
+        0.0,
+        right,
+        frame.northeast.height as f32,
         false,
     );
+    canvas.tile_image(
+        &frame.west,
+        0.0,
+        frame.northwest.height as f32,
+        frame.west.width as f32,
+        (canvas_y + map_height - frame.northwest.height as f32).max(0.0),
+    );
+    canvas.tile_image(
+        &frame.east,
+        width - frame.east.width as f32,
+        frame.northeast.height as f32,
+        frame.east.width as f32,
+        (canvas_y + map_height - frame.northeast.height as f32).max(0.0),
+    );
+    let bottom_y = canvas_y + map_height;
     canvas.draw_image(
-        bottom_left,
+        &frame.southwest,
         0.0,
         bottom_y,
-        bottom_left.width as f32,
-        bottom_left.height as f32,
+        frame.southwest.width as f32,
+        frame.southwest.height as f32,
         false,
     );
-    canvas.draw_image(
-        bottom_right,
-        upper_right_x,
+    canvas.tile_image(
+        &frame.south,
+        frame.southwest.width as f32,
         bottom_y,
-        bottom_right.width as f32,
-        bottom_right.height as f32,
+        width - frame.southwest.width as f32 - frame.southeast.width as f32,
+        frame.south.height as f32,
+    );
+    canvas.draw_image(
+        &frame.southeast,
+        width - frame.southeast.width as f32,
+        bottom_y,
+        frame.southeast.width as f32,
+        frame.southeast.height as f32,
         false,
     );
 }
@@ -1106,6 +1130,41 @@ impl Canvas {
             }
             previous = Some(character);
         }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn draw_text_outlined(
+        &mut self,
+        font: &Font,
+        text: &str,
+        x: f32,
+        y: f32,
+        size: f32,
+        color: [u8; 3],
+        outline: [u8; 3],
+        max_width: f32,
+    ) {
+        for (offset_x, offset_y) in [
+            (-1.0, -1.0),
+            (0.0, -1.0),
+            (1.0, -1.0),
+            (-1.0, 0.0),
+            (1.0, 0.0),
+            (-1.0, 1.0),
+            (0.0, 1.0),
+            (1.0, 1.0),
+        ] {
+            self.draw_text(
+                font,
+                text,
+                x + offset_x,
+                y + offset_y,
+                size,
+                outline,
+                max_width,
+            );
+        }
+        self.draw_text(font, text, x, y, size, color, max_width);
     }
 }
 

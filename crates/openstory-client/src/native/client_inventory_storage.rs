@@ -657,6 +657,7 @@ impl ClientApp {
         let pixels = render_character_info_panel(
             &self.font,
             info,
+            &self.ui_archive,
             &self.string_archive,
             &mut self.item_name_cache,
         );
@@ -1307,17 +1308,16 @@ impl ClientApp {
         if let Some(storage) = self.storage.as_mut() {
             storage.meso_focused = false;
         }
-        if (132.0..200.0).contains(&local_x) && (7.0..26.0).contains(&local_y) {
+        if (132.0..202.0).contains(&local_x) && (7.0..26.0).contains(&local_y) {
             self.close_storage();
             return;
         }
-        if (132.0..200.0).contains(&local_x) && (29.0..48.0).contains(&local_y) {
+        if (132.0..202.0).contains(&local_x) && (29.0..48.0).contains(&local_y) {
             let target = self.storage.as_ref().and_then(|storage| {
                 storage
                     .state
                     .items
                     .iter()
-                    .filter(|item| item.inventory_type == storage.tab)
                     .nth(storage.storage_scroll)
                     .cloned()
             });
@@ -1326,7 +1326,7 @@ impl ClientApp {
             }
             return;
         }
-        if (132.0..200.0).contains(&local_x) && (51.0..70.0).contains(&local_y) {
+        if (132.0..202.0).contains(&local_x) && (51.0..70.0).contains(&local_y) {
             if let Some(storage) = self.storage.as_mut() {
                 storage.notice = Some("Organize items in your inventory first.".to_owned());
             }
@@ -1334,16 +1334,13 @@ impl ClientApp {
             return;
         }
         if (5.0..185.0).contains(&local_x) && (112.0..328.0).contains(&local_y) {
-            let col = ((local_x - 5.0) / 36.0).floor() as usize;
-            let row = ((local_y - 112.0) / 36.0).floor() as usize;
-            if col < 5 && row < 6 {
+            if let Some(index) = ui_foundation::STORAGE_GRID.hit(local_x, local_y) {
                 let target = self.storage.as_ref().and_then(|storage| {
                     storage
                         .state
                         .items
                         .iter()
-                        .filter(|item| item.inventory_type == storage.tab)
-                        .nth(storage.storage_scroll + row * 5 + col)
+                        .nth(storage.storage_scroll + index)
                         .cloned()
                 });
                 if let Some(item) = target {
@@ -1407,12 +1404,7 @@ impl ClientApp {
             return;
         }
         let step = if amount > 0.0 { -1_isize } else { 1 };
-        let count = storage
-            .state
-            .items
-            .iter()
-            .filter(|item| item.inventory_type == storage.tab)
-            .count();
+        let count = storage.state.items.iter().count();
         storage.storage_scroll = storage
             .storage_scroll
             .saturating_add_signed(step)

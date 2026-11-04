@@ -856,96 +856,8 @@ impl ClientApp {
         }
     }
 
-    pub(super) fn request_npc_talk(&mut self, object_id: i32) {
-        let now = Instant::now();
-        if self
-            .last_npc_talk_at
-            .is_some_and(|last| now.duration_since(last) < Duration::from_millis(600))
-        {
-            return;
-        }
-        let Some(session) = self.session.as_ref() else {
-            return;
-        };
-        // Some quest NPCs have a server-side quest conversation but no regular
-        // NPC script. Start that authored conversation when clicking the NPC;
-        // otherwise fall back to the normal TalkToNPC request.
-        let npc_id = self
-            .map_scene
-            .as_ref()
-            .and_then(|scene| scene.npcs.get(&object_id).map(|npc| npc.npc_id));
-        let scripted_quest_start = npc_id.and_then(|npc_id| {
-            available_quest_entries(
-                &self.quest_log,
-                &self.quest_archive,
-                &self.quest_start_npc_index,
-                self.active_character.as_ref(),
-            )
-            .into_iter()
-            .find(|(quest_id, quest_npc_id)| {
-                *quest_npc_id == npc_id
-                    && quest_requires_script(&self.quest_archive, *quest_id, 0, "startscript")
-            })
-        });
-        let scripted_quest_end = scripted_quest_start
-            .is_none()
-            .then(|| {
-                let npc_id = npc_id?;
-                let inventory = self.inventory.as_ref();
-                self.quest_log
-                    .started
-                    .iter()
-                    .find(|quest| {
-                        let check_path = format!("Check.img/{}/1", quest.id);
-                        let end_npc_id = self
-                            .quest_archive
-                            .root()
-                            .resolve(&check_path)
-                            .ok()
-                            .flatten()
-                            .and_then(|node| quest_node_integer(&node, "npc"));
-                        end_npc_id == Some(npc_id)
-                            && quest_requires_script(&self.quest_archive, quest.id, 1, "endscript")
-                            && quest_is_completable(quest, &self.quest_archive, inventory)
-                    })
-                    .map(|quest| (quest.id, npc_id))
-            })
-            .flatten();
-        let packet = if let Some((quest_id, npc_id)) = scripted_quest_start {
-            openstory_protocol::start_quest_packet(quest_id, npc_id, true)
-        } else if let Some((quest_id, npc_id)) = scripted_quest_end {
-            openstory_protocol::complete_quest_packet(quest_id, npc_id, None, true)
-        } else {
-            openstory_protocol::talk_to_npc(object_id)
-        };
-        match session.send_packet(packet) {
-            Ok(()) => self.last_npc_talk_at = Some(now),
-            Err(error) => {
-                eprintln!("OpenStory: could not request NPC dialogue: {error}");
-                self.channel_connected = false;
-            }
-        }
-    }
-
-    pub(super) fn request_nearest_npc_talk(&mut self) {
-        let object_id = self.map_scene.as_ref().and_then(|scene| {
-            scene
-                .npcs
-                .iter()
-                .filter_map(|(object_id, npc)| {
-                    let dx = (npc.x - scene.player.x).abs();
-                    let dy = (npc.y - scene.player.y).abs();
-                    (dx <= 100.0 && dy <= 60.0).then_some((*object_id, dx * dx + dy * dy))
-                })
-                .min_by(|left, right| left.1.total_cmp(&right.1))
-                .map(|(object_id, _)| object_id)
-        });
-        if let Some(object_id) = object_id {
-            self.request_npc_talk(object_id);
-        }
-    }
-
     pub(super) fn show_npc_dialogue(&mut self, dialogue: openstory_protocol::NpcDialogue) {
+        self.pending_npc_talk = None;
         self.gameplay_input = GameplayInput::default();
         self.npc_dialogue_scroll_dragging = false;
         self.npc_shop = None;
@@ -986,12 +898,14 @@ impl ClientApp {
             dialogue.npc_id,
             dialogue.speaker,
             dialogue.message_type,
+            dialogue.navigation,
             visible_text,
             0,
             &inline_icons,
             &selections,
             0,
             0,
+            None,
             &input,
         );
         let Some(renderer) = self.renderer.as_ref() else {
@@ -1010,6 +924,8 @@ impl ClientApp {
                 };
                 self.npc_dialogue = Some(NpcDialogueUi {
                     state: dialogue,
+                    local_quest: None,
+                    local_menu: Vec::new(),
                     text: formatted_text,
                     visible_text_chars,
                     reveal_elapsed: Duration::ZERO,
@@ -1019,6 +935,7 @@ impl ClientApp {
                     selections,
                     selected_selection: 0,
                     first_visible_selection: 0,
+                    hovered_selection: None,
                     input,
                     texture,
                     panel,
@@ -1030,6 +947,7 @@ impl ClientApp {
     }
 
     pub(super) fn show_npc_shop(&mut self, state: openstory_protocol::NpcShop) {
+        self.pending_npc_talk = None;
         self.gameplay_input = GameplayInput::default();
         self.npc_dialogue = None;
         self.show_inventory = false;
@@ -1047,6 +965,8 @@ impl ClientApp {
             inventory.as_ref(),
             None,
             None,
+            &self.legacy_ui_archive,
+            &self.npc_archive,
             &self.item_archive,
             &self.string_archive,
             &self.character_archive,
@@ -1603,11 +1523,7 @@ impl ClientApp {
         cursor: Point,
     ) -> Option<cash_shop_ui::HitAction> {
         self.cash_shop.as_ref()?;
-        self.cash_shop_hit_regions
-            .iter()
-            .rev()
-            .find(|region| region.bounds.contains(cursor.x, cursor.y))
-            .map(|region| region.action)
+        cash_shop_ui::hit_test(&self.cash_shop_hit_regions, cursor.x, cursor.y)
     }
 
     pub(super) fn cash_shop_max_page(&mut self) -> usize {
@@ -1637,7 +1553,7 @@ impl ClientApp {
                     .len()
             }),
         };
-        let max_first_visible = item_count.saturating_sub(9);
+        let max_first_visible = item_count.saturating_sub(5);
         shop.first_visible = shop.first_visible.min(max_first_visible);
         if item_count == 0 {
             shop.selected = 0;
@@ -1645,7 +1561,7 @@ impl ClientApp {
         } else {
             shop.selected = shop.selected.min(item_count - 1);
             if shop.selected < shop.first_visible
-                || shop.selected >= shop.first_visible.saturating_add(9)
+                || shop.selected >= shop.first_visible.saturating_add(5)
             {
                 shop.selected = shop.first_visible;
             }
@@ -1691,6 +1607,8 @@ impl ClientApp {
             inventory.as_ref(),
             notice.as_deref(),
             confirmation,
+            &self.legacy_ui_archive,
+            &self.npc_archive,
             &self.item_archive,
             &self.string_archive,
             &self.character_archive,
@@ -2050,53 +1968,64 @@ impl ClientApp {
             .as_ref()
             .is_some_and(|shop| shop.confirmation.is_some())
         {
-            if (280.0..316.0).contains(&y) && (150.0..280.0).contains(&x) {
+            if (286.0..310.0).contains(&y) && (224.0..289.0).contains(&x) {
                 self.resolve_npc_shop_confirmation(true);
-            } else if (280.0..316.0).contains(&y) && (340.0..470.0).contains(&x) {
+            } else if (286.0..310.0).contains(&y) && (330.0..395.0).contains(&x) {
                 self.resolve_npc_shop_confirmation(false);
             }
             return;
         }
-        if (584.0..610.0).contains(&x) && (9.0..35.0).contains(&y) {
-            self.close_npc_shop();
-            return;
-        }
-        if (9.0..35.0).contains(&y) && (420.0..482.0).contains(&x) {
-            if let Some(shop) = self.npc_shop.as_mut() {
-                shop.mode = NpcShopMode::Buy;
-                shop.selected = 0;
-                shop.first_visible = 0;
-                shop.quantity = 1;
-                shop.notice = None;
+        if (382.0..400.0).contains(&y) {
+            if (455.0..535.0).contains(&x) {
+                self.close_npc_shop();
+            } else if (83.0..163.0).contains(&x) {
+                if self
+                    .npc_shop
+                    .as_ref()
+                    .is_some_and(|shop| shop.mode == NpcShopMode::Buy)
+                {
+                    self.buy_selected_npc_shop_item();
+                }
+            } else if (313.0..393.0).contains(&x) {
+                if self
+                    .npc_shop
+                    .as_ref()
+                    .is_some_and(|shop| shop.mode == NpcShopMode::Sell)
+                {
+                    self.buy_selected_npc_shop_item();
+                }
             }
-            self.refresh_npc_shop();
             return;
         }
-        if (9.0..35.0).contains(&y) && (490.0..550.0).contains(&x) {
-            if let Some(shop) = self.npc_shop.as_mut() {
-                shop.mode = NpcShopMode::Sell;
-                shop.selected = 0;
-                shop.first_visible = 0;
-                shop.quantity = 1;
-                shop.notice = None;
-            }
-            self.refresh_npc_shop();
-            return;
-        }
-        if (66.0..426.0).contains(&y) && (12.0..608.0).contains(&x) {
-            let row = ((y - 66.0) / 40.0) as usize;
+        let column_mode = if (83.0..283.0).contains(&x) {
+            Some(NpcShopMode::Buy)
+        } else if (313.0..513.0).contains(&x) {
+            Some(NpcShopMode::Sell)
+        } else {
+            None
+        };
+        if let Some(column_mode) = column_mode.filter(|_| (161.0..361.0).contains(&y)) {
+            let row = ((y - 161.0) / 40.0) as usize;
             let Some(shop) = self.npc_shop.as_mut() else {
                 return;
             };
-            let index = shop.first_visible.saturating_add(row);
-            let item_count = match shop.mode {
+            let index = if shop.mode == column_mode {
+                shop.first_visible + row
+            } else {
+                row
+            };
+            let count = match column_mode {
                 NpcShopMode::Buy => shop.state.items.len(),
                 NpcShopMode::Sell => self.inventory.as_ref().map_or(0, |inventory| {
                     npc_shop_sellable_items(inventory, &self.item_archive, &self.character_archive)
                         .len()
                 }),
             };
-            if index < item_count {
+            if index < count {
+                if shop.mode != column_mode {
+                    shop.first_visible = 0;
+                }
+                shop.mode = column_mode;
                 shop.selected = index;
                 shop.quantity = 1;
                 shop.notice = None;
@@ -2104,15 +2033,15 @@ impl ClientApp {
             }
             return;
         }
-        if !(450.0..494.0).contains(&y) {
+        if !(412.0..437.0).contains(&y) {
             return;
         }
-        if (270.0..306.0).contains(&x) {
+        if (193.0..225.0).contains(&x) {
             if let Some(shop) = self.npc_shop.as_mut() {
                 shop.quantity = shop.quantity.saturating_sub(1).max(1);
             }
             self.refresh_npc_shop();
-        } else if (310.0..346.0).contains(&x) {
+        } else if (230.0..262.0).contains(&x) {
             if let Some(shop) = self.npc_shop.as_mut() {
                 let maximum = match shop.mode {
                     NpcShopMode::Buy => shop.state.items.get(shop.selected).map(|item| {
@@ -2137,18 +2066,13 @@ impl ClientApp {
                 }
             }
             self.refresh_npc_shop();
-        } else if (354.0..434.0).contains(&x) {
-            if self
+        } else if (280.0..310.0).contains(&x)
+            && self
                 .npc_shop
                 .as_ref()
                 .is_some_and(|shop| shop.mode == NpcShopMode::Buy)
-            {
-                self.recharge_selected_npc_shop_item();
-            }
-        } else if (442.0..520.0).contains(&x) {
-            self.buy_selected_npc_shop_item();
-        } else if (528.0..608.0).contains(&x) {
-            self.close_npc_shop();
+        {
+            self.recharge_selected_npc_shop_item();
         }
     }
 
@@ -2165,14 +2089,14 @@ impl ClientApp {
                         .len()
                 }),
             };
-            let maximum = item_count.saturating_sub(9);
+            let maximum = item_count.saturating_sub(5);
             shop.first_visible = if amount > 0.0 {
                 shop.first_visible.saturating_sub(1)
             } else {
                 shop.first_visible.saturating_add(1).min(maximum)
             };
             if shop.selected < shop.first_visible
-                || shop.selected >= shop.first_visible.saturating_add(9)
+                || shop.selected >= shop.first_visible.saturating_add(5)
             {
                 shop.selected = shop.first_visible.min(item_count.saturating_sub(1));
                 shop.quantity = 1;
@@ -2191,6 +2115,7 @@ impl ClientApp {
         let selections = ui.selections.clone();
         let selected_selection = ui.selected_selection;
         let first_visible_selection = ui.first_visible_selection;
+        let hovered_selection = ui.hovered_selection;
         let input = ui.input.clone();
         let text_scroll = ui.text_scroll;
         let text = if state.message_type == 4 {
@@ -2206,12 +2131,14 @@ impl ClientApp {
             state.npc_id,
             state.speaker,
             state.message_type,
+            state.navigation,
             &text,
             text_scroll,
             &inline_icons,
             &selections,
             selected_selection,
             first_visible_selection,
+            hovered_selection,
             &input,
         );
         let Some(renderer) = self.renderer.as_ref() else {
@@ -2236,6 +2163,50 @@ impl ClientApp {
     }
 
     pub(super) fn send_npc_dialogue_action(&mut self, action: NpcDialogueAction) {
+        if self.handle_local_npc_menu(action) {
+            return;
+        }
+        if self
+            .npc_dialogue
+            .as_ref()
+            .is_some_and(|ui| ui.local_quest.is_some())
+        {
+            let Some(mut ui) = self.npc_dialogue.take() else {
+                return;
+            };
+            let Some(mut conversation) = ui.local_quest.take() else {
+                return;
+            };
+            self.npc_dialogue_scroll_dragging = false;
+            let step = match action {
+                NpcDialogueAction::More(response) => conversation.respond(response),
+                NpcDialogueAction::Select(selection) => conversation.select(selection),
+                _ => {
+                    ui.local_quest = Some(conversation);
+                    self.npc_dialogue = Some(ui);
+                    return;
+                }
+            };
+            let (close, packet) = match step {
+                LocalQuestStep::Show(packet) => (false, packet),
+                LocalQuestStep::Close(packet) => (true, packet),
+            };
+            if let Some(packet) = packet {
+                let Some(session) = self.session.as_ref() else {
+                    return;
+                };
+                if let Err(error) = session.send_packet(packet) {
+                    eprintln!("OpenStory: could not submit quest action: {error}");
+                    self.channel_connected = false;
+                    return;
+                }
+            }
+            if close {
+                return;
+            }
+            self.show_local_quest_conversation(ui.state.npc_id, conversation);
+            return;
+        }
         let Some(ui) = self.npc_dialogue.as_ref() else {
             return;
         };
@@ -2249,24 +2220,13 @@ impl ClientApp {
             }
             NpcDialogueAction::SubmitText => openstory_protocol::npc_talk_text(&ui.input),
             NpcDialogueAction::SubmitNumber => {
-                let mut value = ui
-                    .input
-                    .parse::<i32>()
-                    .unwrap_or_else(|_| ui.state.number_bounds.map_or(0, |bounds| bounds.0));
-                if let Some((_, minimum, maximum)) = ui.state.number_bounds {
-                    if minimum <= maximum {
-                        value = value.clamp(minimum, maximum);
-                    }
-                }
+                let value = npc_dialogue_number(&ui.input, ui.state.number_bounds);
                 Ok(openstory_protocol::npc_talk_number(value))
             }
             NpcDialogueAction::AdjustNumber(delta) => {
-                let mut value = ui.input.parse::<i32>().unwrap_or(0).saturating_add(delta);
-                if let Some((_, minimum, maximum)) = ui.state.number_bounds {
-                    if minimum <= maximum {
-                        value = value.clamp(minimum, maximum);
-                    }
-                }
+                let value =
+                    npc_dialogue_number(&ui.input, ui.state.number_bounds).saturating_add(delta);
+                let value = npc_dialogue_number(&value.to_string(), ui.state.number_bounds);
                 if let Some(ui) = self.npc_dialogue.as_mut() {
                     ui.input = value.to_string();
                 }
@@ -2308,19 +2268,52 @@ impl ClientApp {
         }
     }
 
+    pub(super) fn update_npc_dialogue_hover(&mut self, cursor: Point) -> bool {
+        let Some(dialogue) = self.npc_dialogue.as_mut() else {
+            return false;
+        };
+        let hovered_selection =
+            dialogue
+                .buttons
+                .iter()
+                .enumerate()
+                .find_map(|(button_index, button)| {
+                    if !rect_contains(button.rect, cursor) {
+                        return None;
+                    }
+                    let NpcDialogueAction::Select(_) = button.action else {
+                        return None;
+                    };
+                    let visible_row = dialogue.buttons[..button_index]
+                        .iter()
+                        .filter(|button| matches!(button.action, NpcDialogueAction::Select(_)))
+                        .count();
+                    let selection = dialogue.first_visible_selection.saturating_add(visible_row);
+                    (selection < dialogue.selections.len()).then_some(selection)
+                });
+        if dialogue.hovered_selection == hovered_selection {
+            return false;
+        }
+        dialogue.hovered_selection = hovered_selection;
+        self.rebuild_npc_dialogue();
+        true
+    }
+
     pub(super) fn set_npc_dialogue_scroll_from_cursor(&mut self, cursor: Point) -> bool {
         let scroll_to = self.npc_dialogue.as_ref().and_then(|dialogue| {
             if dialogue.text_max_scroll == 0
-                || !(dialogue.panel.x + 578.0..dialogue.panel.x + 592.0).contains(&cursor.x)
-                || !(dialogue.panel.y + 50.0
+                || !(dialogue.panel.x + NpcDialogueLayout::SCROLL_X as f32
+                    ..dialogue.panel.x + NpcDialogueLayout::SCROLL_X as f32 + 12.0)
+                    .contains(&cursor.x)
+                || !(dialogue.panel.y + NpcDialogueLayout::TEXT_Y as f32
                     ..dialogue.panel.y
-                        + 50.0
+                        + NpcDialogueLayout::TEXT_Y as f32
                         + npc_dialogue_text_view_height(dialogue.state.message_type) as f32)
                     .contains(&cursor.y)
             {
                 return None;
             }
-            let fraction = ((cursor.y - (dialogue.panel.y + 50.0))
+            let fraction = ((cursor.y - (dialogue.panel.y + NpcDialogueLayout::TEXT_Y as f32))
                 / npc_dialogue_text_view_height(dialogue.state.message_type) as f32)
                 .clamp(0.0, 1.0);
             Some((fraction * dialogue.text_max_scroll as f32).round() as usize)
@@ -2339,7 +2332,7 @@ impl ClientApp {
         let Some(dialogue) = self.npc_dialogue.as_mut() else {
             return;
         };
-        if dialogue.state.message_type == 4 || dialogue.text_max_scroll == 0 {
+        if dialogue.text_max_scroll == 0 {
             return;
         }
         let delta = direction
@@ -2404,11 +2397,7 @@ impl ClientApp {
         let response = self
             .npc_dialogue
             .as_ref()
-            .map(|ui| match ui.state.message_type {
-                0 | 1 | 5 | 6 => -1,
-                2 | 3 | 4 | 12 => 0,
-                _ => 0,
-            });
+            .map(|ui| npc_dialogue_cancel_response(ui.state.message_type));
         if let Some(response) = response {
             self.send_npc_dialogue_action(NpcDialogueAction::More(response));
         }

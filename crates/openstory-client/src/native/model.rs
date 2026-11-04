@@ -7,6 +7,7 @@ struct GameplayInput {
     sit: bool,
     jump_buffer: u8,
     jump_down_ticks: u8,
+    held_bindings: HashMap<PhysicalKey, openstory_protocol::KeyBinding>,
 }
 
 struct ScrollingNoticeState {
@@ -170,6 +171,13 @@ impl OptionControl {
         }
     }
 
+    fn track_width(self) -> usize {
+        match self {
+            Self::Music | Self::SoundEffects => 100,
+            _ => 130,
+        }
+    }
+
     fn is_toggle(self) -> bool {
         self == Self::ScreenShake || self.track_y().is_none()
     }
@@ -208,15 +216,6 @@ struct KeyConfigAction {
     kind: u8,
     action: i32,
     assignable: bool,
-}
-
-#[derive(Clone, Copy)]
-struct ActiveCharacterBuff {
-    value: i16,
-    skill_id: i32,
-    duration_ms: i32,
-    applied_at: Instant,
-    expires_at: Option<Instant>,
 }
 
 #[derive(Clone, Copy)]
@@ -853,6 +852,9 @@ fn mob_frames_runtime(
 struct MapSceneRuntime {
     map_id: i32,
     underwater: bool,
+    energy: Option<i32>,
+    gm_account: bool,
+    gm_hidden: bool,
     camera_offset: (f32, f32),
     camera_bounds: Option<MapCameraBounds>,
     minimap: Option<minimap::MiniMapData>,
@@ -1043,7 +1045,7 @@ struct PendingMobAttackImpact {
     remaining: Duration,
     hit_effects: Arc<Vec<SkillHitEffectAnimation>>,
     hit_effect_flip: bool,
-    damage: Option<(openstory_protocol::MobDamage, bool, f32)>,
+    damage: Option<MobDamageNumber>,
 }
 
 struct MapProjectileRuntime {
@@ -2086,6 +2088,7 @@ const UI_GLYPH_CACHE_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 struct UiGlyphKey {
+    font_hash: usize,
     character: char,
     size_bits: u32,
 }
@@ -2106,14 +2109,14 @@ struct UiGlyphCache {
 static UI_GLYPH_CACHE: LazyLock<Mutex<UiGlyphCache>> =
     LazyLock::new(|| Mutex::new(UiGlyphCache::default()));
 
-/// The client currently loads a single UI font. Reuse glyph coverage across the
-/// many software-rendered panels, with fixed-size keys and bounded retained memory.
+/// Cache regular and bold faces independently with bounded retained memory.
 fn rasterize_ui_glyph(
     font: &fontdue::Font,
     character: char,
     size: f32,
 ) -> (fontdue::Metrics, Arc<[u8]>) {
     let key = UiGlyphKey {
+        font_hash: font.file_hash(),
         character,
         size_bits: size.to_bits(),
     };
@@ -2165,6 +2168,8 @@ fn rasterize_ui_glyph(
 
 struct NpcDialogueUi {
     state: openstory_protocol::NpcDialogue,
+    local_quest: Option<LocalQuestConversation>,
+    local_menu: Vec<NpcMenuAction>,
     text: String,
     visible_text_chars: usize,
     reveal_elapsed: Duration,
@@ -2174,10 +2179,108 @@ struct NpcDialogueUi {
     selections: Vec<(i32, String)>,
     selected_selection: usize,
     first_visible_selection: usize,
+    hovered_selection: Option<usize>,
     input: String,
     texture: GpuTexture,
     panel: SpriteRect,
     buttons: Vec<NpcDialogueButton>,
+}
+
+struct LocalQuestConversation {
+    pages: Vec<String>,
+    page: usize,
+    request: Option<Vec<u8>>,
+    accepted_pages: Vec<String>,
+    questions: HashMap<usize, LocalQuestQuestion>,
+    feedback: Option<String>,
+}
+
+struct LocalQuestQuestion {
+    answer: i32,
+    incorrect: HashMap<i32, String>,
+}
+
+#[derive(Clone, Copy)]
+struct NpcQuestChoice {
+    quest_id: i16,
+    side: u8,
+    ready: bool,
+}
+
+#[derive(Clone, Copy)]
+enum NpcMenuAction {
+    Quest(NpcQuestChoice),
+    Talk(i32),
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum LocalQuestStep {
+    Close(Option<Vec<u8>>),
+    Show(Option<Vec<u8>>),
+}
+
+impl LocalQuestConversation {
+    fn message_type(&self) -> i8 {
+        if self.feedback.is_some() {
+            return 0;
+        }
+        if self.questions.contains_key(&self.page) {
+            return 4;
+        }
+        if self.page + 1 < self.pages.len() {
+            if self.page == 0 { 5 } else { 6 }
+        } else if self.request.is_some() {
+            12
+        } else {
+            0
+        }
+    }
+
+    fn respond(&mut self, response: i8) -> LocalQuestStep {
+        self.advance(response, false)
+    }
+
+    fn advance(&mut self, response: i8, answered: bool) -> LocalQuestStep {
+        if response < 0 || (response == 0 && self.message_type() != 6) {
+            return LocalQuestStep::Close(None);
+        }
+        if self.feedback.take().is_some() || (!answered && self.questions.contains_key(&self.page))
+        {
+            return LocalQuestStep::Show(None);
+        }
+        if response == 0 {
+            self.page = self.page.saturating_sub(1);
+        } else if self.page + 1 < self.pages.len() {
+            self.page += 1;
+        } else {
+            let request = self.request.take();
+            if self.accepted_pages.is_empty() {
+                return LocalQuestStep::Close(request);
+            }
+            self.pages = std::mem::take(&mut self.accepted_pages);
+            self.questions.clear();
+            self.page = 0;
+            return LocalQuestStep::Show(request);
+        }
+        LocalQuestStep::Show(None)
+    }
+
+    fn select(&mut self, selection: i32) -> LocalQuestStep {
+        let Some(question) = self.questions.get(&self.page) else {
+            return LocalQuestStep::Show(None);
+        };
+        if selection != question.answer {
+            self.feedback = Some(
+                question
+                    .incorrect
+                    .get(&selection)
+                    .cloned()
+                    .unwrap_or_else(|| "Please try that question again.".to_owned()),
+            );
+            return LocalQuestStep::Show(None);
+        }
+        self.advance(1, true)
+    }
 }
 
 struct NpcShopUi {
@@ -2927,6 +3030,31 @@ struct BasicAttackStats {
 }
 
 impl MapMobRuntime {
+    fn current_bounds(&self) -> Option<(f64, f64, f64, f64)> {
+        let frame = self
+            .animations
+            .get(&self.motion)
+            .and_then(|frames| frames.get(self.frame_index))?;
+        frame.sprites.iter().fold(
+            None,
+            |bounds: Option<(f64, f64, f64, f64)>, (_, rect)| {
+                let left = self.x + f64::from(rect.x - 512.0);
+                let top = self.y + f64::from(rect.y - GAMEPLAY_CAMERA_CENTER_Y);
+                let right = left + f64::from(rect.width);
+                let bottom = top + f64::from(rect.height);
+                Some(match bounds {
+                    Some((min_x, min_y, max_x, max_y)) => (
+                        min_x.min(left),
+                        min_y.min(top),
+                        max_x.max(right),
+                        max_y.max(bottom),
+                    ),
+                    None => (left, top, right, bottom),
+                })
+            },
+        )
+    }
+
     fn is_frozen(&self) -> bool {
         self.statuses
             .contains(&(openstory_protocol::MobStatusMaskGroup::Second, 0x100))
@@ -3258,6 +3386,9 @@ impl MapSceneRuntime {
         let runtime = Self {
             map_id: scene.map_id,
             underwater: scene.underwater,
+            energy: None,
+            gm_account: false,
+            gm_hidden: false,
             camera_offset: scene.camera_offset,
             camera_bounds: scene.camera_bounds,
             minimap: scene.minimap,
@@ -3509,7 +3640,12 @@ impl MapSceneRuntime {
             // usable warp portal later in the map's portal list.
             let Some(portal) = self.portals.iter().find(|portal| {
                 portal.target_map_id < 999_999_999
-                    && portal_bounds_contains(portal, self.player.x, self.player.y)
+                    && portal_activation_contains(
+                        portal,
+                        self.player.x,
+                        self.player.y,
+                        &self.regular_portal_frames,
+                    )
             }) else {
                 continue;
             };
@@ -4447,12 +4583,13 @@ impl MapSceneRuntime {
             .iter()
             .filter(|(_, mob)| !mob.dying)
             .filter_map(|(object_id, mob)| {
+                let (mob_left, mob_top, mob_right, mob_bottom) = mob.current_bounds()?;
                 let dx = mob.x - self.player.x;
                 let dy = mob.y - self.player.y;
-                (mob.x >= range_left
-                    && mob.x <= range_right
-                    && mob.y >= range_top
-                    && mob.y <= range_bottom)
+                (range_left <= mob_right
+                    && range_right >= mob_left
+                    && range_top <= mob_bottom
+                    && range_bottom >= mob_top)
                     .then_some((*object_id, mob.traits, (mob.x, mob.y), dx * dx + dy * dy))
             })
             .collect::<Vec<_>>();
@@ -4484,29 +4621,7 @@ impl MapSceneRuntime {
             .iter()
             .filter(|(_, mob)| !mob.dying && mob.traits.body_attack)
             .filter_map(|(object_id, mob)| {
-                let frame = mob
-                    .animations
-                    .get(&mob.motion)
-                    .and_then(|frames| frames.get(mob.frame_index))?;
-                let bounds = frame.sprites.iter().fold(
-                    None,
-                    |bounds: Option<(f64, f64, f64, f64)>, (_, rect)| {
-                        let left = mob.x + f64::from(rect.x - 512.0);
-                        let top = mob.y + f64::from(rect.y - GAMEPLAY_CAMERA_CENTER_Y);
-                        let right = left + f64::from(rect.width);
-                        let bottom = top + f64::from(rect.height);
-                        Some(match bounds {
-                            Some((min_x, min_y, max_x, max_y)) => (
-                                min_x.min(left),
-                                min_y.min(top),
-                                max_x.max(right),
-                                max_y.max(bottom),
-                            ),
-                            None => (left, top, right, bottom),
-                        })
-                    },
-                )?;
-                let (mob_left, mob_top, mob_right, mob_bottom) = bounds;
+                let (mob_left, mob_top, mob_right, mob_bottom) = mob.current_bounds()?;
                 let overlaps = player_left < mob_right
                     && player_right > mob_left
                     && player_top < mob_bottom
@@ -5091,6 +5206,11 @@ impl MapSceneRuntime {
         damage: Option<(openstory_protocol::MobDamage, bool, f32)>,
         delay: Duration,
     ) {
+        // Capture the head position before a server death/removal can discard
+        // the mob. A delayed killing hit must still display its damage.
+        let damage = damage.and_then(|(damage, critical, stack_offset)| {
+            self.mob_damage_number(damage, critical, stack_offset)
+        });
         if hit_effects.is_empty() && damage.is_none() {
             return;
         }
@@ -5116,11 +5236,11 @@ impl MapSceneRuntime {
         object_id: i32,
         hit_effects: &[SkillHitEffectAnimation],
         hit_effect_flip: bool,
-        damage: Option<(openstory_protocol::MobDamage, bool, f32)>,
+        damage: Option<MobDamageNumber>,
     ) {
         self.show_mob_hit_effects(object_id, hit_effects, hit_effect_flip);
-        if let Some((damage, critical, stack_offset)) = damage {
-            self.show_mob_damage_line(damage, critical, stack_offset);
+        if let Some(number) = damage {
+            self.push_mob_damage_number(number);
         }
     }
 
@@ -5139,7 +5259,7 @@ impl MapSceneRuntime {
                     remaining: impact.remaining,
                     hit_effects: Arc::clone(&impact.hit_effects),
                     hit_effect_flip: impact.hit_effect_flip,
-                    damage: impact.damage,
+                    damage: impact.damage.take(),
                 });
                 false
             } else {
@@ -5404,15 +5524,33 @@ impl MapSceneRuntime {
         critical: bool,
         stack_offset: f32,
     ) {
+        if let Some(number) = self.mob_damage_number(damage, critical, stack_offset) {
+            self.push_mob_damage_number(number);
+        }
+    }
+
+    fn push_mob_damage_number(&mut self, number: MobDamageNumber) {
+        if self.damage_numbers.len() == 64 {
+            self.damage_numbers.remove(0);
+        }
+        self.damage_numbers.push(number);
+    }
+
+    fn mob_damage_number(
+        &self,
+        damage: openstory_protocol::MobDamage,
+        critical: bool,
+        stack_offset: f32,
+    ) -> Option<MobDamageNumber> {
         let Some(mob) = self.mobs.get(&damage.object_id) else {
-            return;
+            return None;
         };
         let Some(frame) = mob
             .animations
             .get(&mob.motion)
             .and_then(|frames| frames.get(mob.frame_index))
         else {
-            return;
+            return None;
         };
         let Some((top, left, right)) =
             frame
@@ -5429,14 +5567,11 @@ impl MapSceneRuntime {
                     })
                 })
         else {
-            return;
+            return None;
         };
         let world_x = mob.x + f64::from((left + right) * 0.5 - 512.0);
         let world_y = mob.y + f64::from(top - GAMEPLAY_CAMERA_CENTER_Y - 4.0 - stack_offset);
-        if self.damage_numbers.len() == 64 {
-            self.damage_numbers.remove(0);
-        }
-        self.damage_numbers.push(MobDamageNumber {
+        Some(MobDamageNumber {
             world_x,
             world_y,
             digits: if damage.damage <= 0 {
@@ -5456,7 +5591,7 @@ impl MapSceneRuntime {
             lifetime: Duration::from_millis(1500),
             rise_speed: 31.25,
             elapsed: Duration::ZERO,
-        });
+        })
     }
 
     fn show_remote_player_damage(&mut self, damage: openstory_protocol::RemotePlayerDamage) {
@@ -5837,6 +5972,31 @@ fn portal_bounds_contains(portal: &MapPortalRuntime, x: f64, y: f64) -> bool {
     (-25.0..=25.0).contains(&(x - portal.x)) && (-100.0..=25.0).contains(&(y - portal.y))
 }
 
+fn portal_activation_contains(
+    portal: &MapPortalRuntime,
+    x: f64,
+    y: f64,
+    regular_frames: &[PortalFrameRuntime],
+) -> bool {
+    if portal_bounds_contains(portal, x, y) {
+        return true;
+    }
+    if portal.portal_type != 2 || !(-100.0..=25.0).contains(&(y - portal.y)) {
+        return false;
+    }
+    // Animation rectangles are authored around the same logical anchor used
+    // by portal drawing. Include the visible glow, whose 87 px width extends
+    // beyond the legacy 50 px hitbox. Use all frames to keep entry stable while
+    // animating, but retain the vertical bounds so another platform cannot warp.
+    let dx = x - portal.x;
+    regular_frames.iter().any(|frame| {
+        frame.sprites.iter().any(|(_, rect)| {
+            let left = f64::from(rect.x - 512.0);
+            (left..=left + f64::from(rect.width)).contains(&dx)
+        })
+    })
+}
+
 fn nearby_map_seat(seats: &[(i16, i16)], player: &PhysicsBody) -> Option<(i16, i16)> {
     let player_x = rounded_i16(player.x);
     let player_y = rounded_i16(player.y);
@@ -5893,5 +6053,62 @@ fn player_movement(
         foothold: player.foothold_id,
         stance: base_stance + u8::from(!facing_right),
         duration: 1,
+    }
+}
+
+#[cfg(test)]
+mod npc_quest_conversation_tests {
+    use super::*;
+
+    fn offer() -> LocalQuestConversation {
+        LocalQuestConversation {
+            pages: vec![
+                "Introduction".into(),
+                "Instructions".into(),
+                "Accept?".into(),
+            ],
+            page: 0,
+            request: Some(openstory_protocol::start_quest_packet(1035, 2004, false)),
+            accepted_pages: vec!["Hunt the Jr. Sentinel.".into()],
+            questions: HashMap::new(),
+            feedback: None,
+        }
+    }
+
+    #[test]
+    fn npc_quest_pages_do_not_send_actions_until_confirmation() {
+        let mut conversation = offer();
+        assert_eq!(conversation.message_type(), 5);
+        assert_eq!(conversation.respond(1), LocalQuestStep::Show(None));
+        assert_eq!(conversation.message_type(), 6);
+        assert_eq!(conversation.respond(0), LocalQuestStep::Show(None));
+        assert_eq!(conversation.page, 0);
+        assert_eq!(conversation.respond(1), LocalQuestStep::Show(None));
+        assert_eq!(conversation.respond(1), LocalQuestStep::Show(None));
+        assert_eq!(conversation.message_type(), 12);
+        assert_eq!(
+            conversation.respond(1),
+            LocalQuestStep::Show(Some(openstory_protocol::start_quest_packet(
+                1035, 2004, false
+            )))
+        );
+        assert_eq!(conversation.pages, ["Hunt the Jr. Sentinel."]);
+        assert_eq!(conversation.message_type(), 0);
+        assert_eq!(conversation.respond(1), LocalQuestStep::Close(None));
+    }
+
+    #[test]
+    fn npc_quest_cancel_and_decline_do_not_send_actions() {
+        let mut conversation = offer();
+        assert_eq!(conversation.respond(-1), LocalQuestStep::Close(None));
+        conversation.page = 2;
+        assert_eq!(conversation.respond(0), LocalQuestStep::Close(None));
+        conversation.accepted_pages.clear();
+        assert_eq!(
+            conversation.respond(1),
+            LocalQuestStep::Close(Some(openstory_protocol::start_quest_packet(
+                1035, 2004, false
+            )))
+        );
     }
 }

@@ -42,6 +42,43 @@ fn quest_requires_script(archive: &NxArchive, quest_id: i16, side: u8, field: &s
         .unwrap_or(false)
 }
 
+fn quest_dialogue_pages(archive: &NxArchive, path: &str) -> Vec<String> {
+    let Some(node) = archive.root().resolve(path).ok().flatten() else {
+        return Vec::new();
+    };
+    let mut pages = node
+        .children()
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|node| {
+            let index = node.name().ok()?.parse::<usize>().ok()?;
+            match node.value().ok()? {
+                NodeValue::String(text) if !text.trim().is_empty() => Some((index, text)),
+                _ => None,
+            }
+        })
+        .collect::<Vec<_>>();
+    pages.sort_by_key(|(index, _)| *index);
+    pages.into_iter().map(|(_, text)| text).collect()
+}
+
+fn quest_start_items_met(
+    archive: &NxArchive,
+    quest_id: i16,
+    inventory: Option<&openstory_protocol::InventorySnapshot>,
+) -> bool {
+    quest_requirement_pairs(archive, quest_id, 0, "item")
+        .into_iter()
+        .all(|(item_id, required)| {
+            let have = inventory.map_or(0, |inventory| inventory.item_count(item_id));
+            if required == 0 {
+                have == 0
+            } else {
+                have >= required
+            }
+        })
+}
+
 #[derive(Clone, Debug)]
 struct QuestRewardChoice {
     selection: i16,
@@ -239,13 +276,15 @@ fn quest_is_completable(
     quest: &openstory_protocol::QuestEntry,
     archive: &NxArchive,
     inventory: Option<&openstory_protocol::InventorySnapshot>,
+    log: &openstory_protocol::QuestLog,
 ) -> bool {
     let Ok(Some(end_check)) = archive.root().resolve(&format!("Check.img/{}/1", quest.id)) else {
         return false;
     };
-    let mut has_objective = false;
+    if !quest_prerequisites_met(&end_check, log) {
+        return false;
+    }
     for (item_id, required) in quest_requirement_pairs(archive, quest.id, 1, "item") {
-        has_objective = true;
         let Some(inventory) = inventory else {
             return false;
         };
@@ -261,19 +300,17 @@ fn quest_is_completable(
         if required == 0 {
             continue;
         }
-        has_objective = true;
         if quest_progress_counter(&quest.data, mob_index) < required {
             return false;
         }
     }
     let required_meso = quest_node_integer(&end_check, "money").unwrap_or(0);
     if required_meso > 0 {
-        has_objective = true;
         if inventory.map_or(0, |snapshot| snapshot.meso) < i64::from(required_meso) {
             return false;
         }
     }
-    has_objective
+    true
 }
 
 fn quest_job_requirements_met(start_check: &openstory_assets::NxNode, player_job: u16) -> bool {
@@ -318,7 +355,11 @@ fn quest_prerequisites_met(
             match state {
                 1 => log.started.iter().any(|quest| i32::from(quest.id) == id),
                 2 => log.completed.iter().any(|quest| i32::from(quest.id) == id),
-                _ => true,
+                0 => {
+                    !log.started.iter().any(|quest| i32::from(quest.id) == id)
+                        && !log.completed.iter().any(|quest| i32::from(quest.id) == id)
+                }
+                _ => false,
             }
         })
 }
@@ -329,6 +370,7 @@ fn quest_is_available_for_player(
     log: &openstory_protocol::QuestLog,
     quest_archive: &NxArchive,
     character: &openstory_protocol::CharacterInfo,
+    inventory: Option<&openstory_protocol::InventorySnapshot>,
 ) -> bool {
     if quest_id <= 0
         || log.started.iter().any(|quest| quest.id == quest_id)
@@ -368,6 +410,14 @@ fn quest_is_available_for_player(
     {
         return false;
     }
+    if start
+        .child("fieldEnter")
+        .ok()
+        .flatten()
+        .is_some_and(|field| quest_node_integer(&field, "0") != Some(character.stats.map_id))
+    {
+        return false;
+    }
     let level = i32::from(character.stats.level);
     let level_min = quest_node_integer(&start, "lvmin").unwrap_or(0);
     let level_max = quest_node_integer(&start, "lvmax").unwrap_or(0);
@@ -375,7 +425,8 @@ fn quest_is_available_for_player(
         || (level_max > 0 && level > level_max)
         || string_property(&start, "end").is_some_and(|date| !date.is_empty())
         || !quest_job_requirements_met(&start, character.stats.job)
-        || !quest_prerequisites_met(&start, log))
+        || !quest_prerequisites_met(&start, log)
+        || !quest_start_items_met(quest_archive, quest_id, inventory))
 }
 
 fn available_quest_entries(
@@ -383,6 +434,7 @@ fn available_quest_entries(
     quest_archive: &NxArchive,
     start_npc_index: &HashMap<i32, Vec<i16>>,
     character: Option<&openstory_protocol::CharacterInfo>,
+    inventory: Option<&openstory_protocol::InventorySnapshot>,
 ) -> Vec<(i16, i32)> {
     let Some(character) = character else {
         return Vec::new();
@@ -391,8 +443,15 @@ fn available_quest_entries(
         .iter()
         .flat_map(|(&npc_id, quest_ids)| {
             quest_ids.iter().copied().filter_map(move |quest_id| {
-                quest_is_available_for_player(quest_id, npc_id, log, quest_archive, character)
-                    .then_some((quest_id, npc_id))
+                quest_is_available_for_player(
+                    quest_id,
+                    npc_id,
+                    log,
+                    quest_archive,
+                    character,
+                    inventory,
+                )
+                .then_some((quest_id, npc_id))
             })
         })
         .collect::<Vec<_>>();
@@ -424,12 +483,13 @@ fn npc_quest_marks(
         let end_npc = end
             .as_ref()
             .and_then(|node| quest_node_integer(node, "npc"))
-            .unwrap_or(0);
+            .unwrap_or(start_npc);
         for npc_id in [start_npc, end_npc] {
             if npc_id <= 0 || !npc_ids.contains(&npc_id) || marks.contains_key(&npc_id) {
                 continue;
             }
-            let mark = if npc_id == end_npc && quest_is_completable(quest, quest_archive, inventory)
+            let mark = if npc_id == end_npc
+                && quest_is_completable(quest, quest_archive, inventory, log)
             {
                 NpcQuestMark::Complete
             } else {
@@ -439,8 +499,13 @@ fn npc_quest_marks(
         }
     }
 
-    for (_, npc_id) in available_quest_entries(log, quest_archive, start_npc_index, Some(character))
-    {
+    for (_, npc_id) in available_quest_entries(
+        log,
+        quest_archive,
+        start_npc_index,
+        Some(character),
+        inventory,
+    ) {
         if npc_ids.contains(&npc_id) {
             marks.entry(npc_id).or_insert(NpcQuestMark::Available);
         }
@@ -561,6 +626,7 @@ fn render_quest_log_panel(
     character: Option<&openstory_protocol::CharacterInfo>,
     confirmation: Option<i16>,
     ui_archive: &NxArchive,
+    npc_archive: &NxArchive,
 ) -> Vec<u8> {
     const WIDTH: usize = QUEST_LOG_PANEL_WIDTH as usize;
     const HEIGHT: usize = QUEST_LOG_PANEL_HEIGHT as usize;
@@ -641,7 +707,7 @@ fn render_quest_log_panel(
             let Some(id) = ids.get(index).copied() else {
                 break;
             };
-            let y = 54 + visible * 25;
+            let y = ui_foundation::QUEST_GRID.cell(visible).y as usize;
             if index == selected {
                 let _ = composite_nx_ui_bitmap(
                     &mut pixels,
@@ -664,7 +730,8 @@ fn render_quest_log_panel(
                 );
             }
             let name =
-                quest_info_text(archive, id, "name").unwrap_or_else(|| format!("Quest #{id}"));
+                quest_info_text(archive, id, "name").unwrap_or_else(|| "Unknown quest".to_owned());
+            let name = ui_foundation::ellipsize(font, &name, 11.0, (LIST_WIDTH - 42) as f32);
             draw_dialogue_text(
                 font,
                 &mut pixels,
@@ -675,7 +742,7 @@ fn render_quest_log_panel(
                 y as i32 + 1,
                 11.0,
                 LIST_WIDTH - 42,
-                23,
+                18,
                 if index == selected {
                     [35, 104, 163]
                 } else {
@@ -691,7 +758,7 @@ fn render_quest_log_panel(
         HEIGHT,
         &format!("{} quest(s)", ids.len()),
         14,
-        270,
+        378,
         9.0,
         170,
         14,
@@ -701,7 +768,19 @@ fn render_quest_log_panel(
     if let Some(id) = selected_quest {
         let text_x = DETAIL_X as i32 + 18;
         let text_width = QUEST_LOG_DETAIL_WIDTH as usize - 36;
-        let name = quest_info_text(archive, id, "name").unwrap_or_else(|| format!("Quest #{id}"));
+        fill_dialogue_rect(
+            &mut pixels,
+            WIDTH,
+            HEIGHT,
+            DETAIL_X + 9,
+            25,
+            227,
+            65,
+            [157, 111, 57, 255],
+        );
+        let name =
+            quest_info_text(archive, id, "name").unwrap_or_else(|| "Unknown quest".to_owned());
+        let name = ui_foundation::ellipsize(font, &name, 11.0, 150.0);
         draw_dialogue_text(
             font,
             &mut pixels,
@@ -709,41 +788,62 @@ fn render_quest_log_panel(
             HEIGHT,
             &name,
             text_x,
-            27,
+            30,
             11.0,
-            text_width,
-            24,
-            [37, 57, 72],
+            150,
+            26,
+            [255, 255, 255],
         );
+        let state = match tab {
+            QuestLogTab::Available => "Available",
+            QuestLogTab::Active => "In progress",
+            QuestLogTab::Completed => "Completed",
+        };
         draw_dialogue_text(
             font,
             &mut pixels,
             WIDTH,
             HEIGHT,
-            &format!(
-                "Quest ID: {id}  ·  {}",
-                match tab {
-                    QuestLogTab::Available => "Available",
-                    QuestLogTab::Active => "In progress",
-                    QuestLogTab::Completed => "Completed",
-                }
-            ),
+            state,
             text_x,
-            48,
-            9.0,
-            text_width,
-            14,
-            [89, 83, 71],
+            57,
+            10.0,
+            150,
+            15,
+            [255, 255, 255],
         );
+        if let Some(npc_id) = archive
+            .root()
+            .resolve(&format!("Check.img/{id}/0"))
+            .ok()
+            .flatten()
+            .and_then(|node| quest_node_integer(&node, "npc"))
+        {
+            let path = format!("{npc_id:07}.img/stand/0");
+            if let Ok(Some(npc)) = npc_archive.root().resolve(&path) {
+                let mut portrait = vec![0; 60 * 60 * 4];
+                let _ = composite_nx_node_bitmap(&mut portrait, 60, 60, &npc, 30, 59);
+                composite_bgra_pixels(
+                    &mut pixels,
+                    WIDTH,
+                    HEIGHT,
+                    &portrait,
+                    60,
+                    60,
+                    (DETAIL_X + 173) as i32,
+                    28,
+                );
+            }
+        }
         if let Some(summary) = quest_info_text(archive, id, "0") {
             draw_dialogue_text(
                 font,
                 &mut pixels,
                 WIDTH,
                 HEIGHT,
-                &summary,
+                &clean_npc_markup(&summary),
                 text_x,
-                68,
+                103,
                 11.0,
                 text_width,
                 34,
@@ -756,12 +856,12 @@ fn render_quest_log_panel(
                 &mut pixels,
                 WIDTH,
                 HEIGHT,
-                &description,
+                &clean_npc_markup(&description),
                 text_x,
-                103,
+                139,
                 10.0,
                 text_width,
-                48,
+                32,
                 [73, 69, 61],
             );
         }
@@ -776,7 +876,7 @@ fn render_quest_log_panel(
                 "Objectives"
             },
             text_x,
-            155,
+            177,
             10.0,
             text_width,
             15,
@@ -803,7 +903,7 @@ fn render_quest_log_panel(
                     "No tracked objectives."
                 },
                 text_x,
-                175,
+                197,
                 10.0,
                 text_width,
                 16,
@@ -825,7 +925,7 @@ fn render_quest_log_panel(
                     HEIGHT,
                     &format!("{prefix}{objective}"),
                     text_x,
-                    174 + index as i32 * 18,
+                    196 + index as i32 * 18,
                     9.0,
                     text_width,
                     17,
@@ -876,7 +976,7 @@ fn render_quest_log_panel(
                 .started
                 .iter()
                 .find(|quest| quest.id == id)
-                .is_some_and(|quest| quest_is_completable(quest, archive, inventory));
+                .is_some_and(|quest| quest_is_completable(quest, archive, inventory, log));
             if can_complete {
                 let _ = composite_nx_ui_bitmap(
                     &mut pixels,
@@ -1059,9 +1159,8 @@ fn render_status_panel(
     }
     let ability_points = stats.ability_points.to_string();
     let emphasis_style = ui_foundation::UiTextRole::Emphasis.style();
-    let ability_points_width = dialogue_text_width(font, &ability_points, emphasis_style.size)
-        .ceil() as i32
-        + 1;
+    let ability_points_width =
+        dialogue_text_width(font, &ability_points, emphasis_style.size).ceil() as i32 + 1;
     ui_foundation::draw_text_role(
         font,
         &mut pixels,
@@ -1141,7 +1240,7 @@ fn render_status_detail_panel(
     item_archive: &NxArchive,
     skill_archive: &NxArchive,
     skills: &HashMap<i32, openstory_protocol::SkillEntry>,
-    active_buffs: &HashMap<openstory_protocol::BuffStatKey, ActiveCharacterBuff>,
+    active_buffs: &CharacterBuffs,
     forced_stats: &ForcedEquipmentStats,
 ) -> Vec<u8> {
     const WIDTH: usize = STATUS_DETAIL_WIDTH as usize;
@@ -1234,14 +1333,14 @@ fn render_status_detail_panel(
     pixels
 }
 
-const KEY_CONFIG_ACTIONS: [(&str, u8, i32, bool); 41] = [
+const KEY_CONFIG_ACTIONS: [(&str, u8, i32, bool); 45] = [
     ("Equipment", 4, 0, true),
     ("Items", 4, 1, true),
     ("Stats", 4, 2, true),
     ("Skills", 4, 3, true),
     ("Friends", 4, 4, true),
     ("World map", 4, 5, true),
-    ("Public chat", 4, 6, true),
+    ("Messenger", 4, 6, true),
     ("Mini map", 4, 7, true),
     ("Quest log", 4, 8, true),
     ("Key bindings", 4, 9, true),
@@ -1264,7 +1363,11 @@ const KEY_CONFIG_ACTIONS: [(&str, u8, i32, bool); 41] = [
     ("Family", 4, 26, true),
     ("Boss party (unsupported)", 4, 27, false),
     ("Settings", 4, 28, true),
+    ("Events", 4, 32, true),
     ("Family (extended)", 4, 42, true),
+    ("Guild BBS", 4, 43, true),
+    ("Alliance", 4, 44, true),
+    ("Pet equipment", 4, 45, true),
     ("Pick up", 5, 50, true),
     ("Sit", 5, 51, true),
     ("Attack", 5, 52, true),
@@ -1464,9 +1567,41 @@ fn legacy_menu_action_label(action: i32) -> Option<&'static str> {
 }
 
 fn default_keymap_bindings() -> Vec<openstory_protocol::KeyBinding> {
-    let mut bindings = vec![openstory_protocol::KeyBinding::default(); 90];
-    for (key, action) in [(29, 52), (56, 53), (45, 50), (46, 51), (57, 54)] {
-        bindings[key] = openstory_protocol::KeyBinding { kind: 5, action };
+    keyboard_settings::defaults()
+}
+
+#[cfg(test)]
+mod npc_quest_asset_tests {
+    use super::*;
+
+    #[test]
+    #[ignore = "requires the existing local NX data directory"]
+    fn npc_quest_tutorial_assets_offer_current_quests_and_reminders() {
+        let directory = AssetDirectory::resolve_and_validate(None).unwrap();
+        let quests = NxArchive::open(directory.root().join("Quest.nx")).unwrap();
+        // The old GM-clothes tutorials must not mask the normal starter quests.
+        assert!(!quest_start_items_met(&quests, 1000, None));
+        assert!(!quest_start_items_met(&quests, 1018, None));
+        assert!(quest_start_items_met(&quests, 1031, None));
+        assert!(quest_start_items_met(&quests, 1035, None));
+        let intro = quest_dialogue_pages(&quests, "Say.img/1031/0");
+        assert!(!intro.is_empty());
+        let todd = quest_dialogue_pages(&quests, "Say.img/1035/0");
+        assert_eq!(todd.len(), 2);
+        assert!(todd[0].contains("Todd"));
+        assert!(todd[1].contains("Ctrl"));
+        assert!(!quest_dialogue_pages(&quests, "Say.img/1035/0/yes").is_empty());
+        assert!(!quest_dialogue_pages(&quests, "Say.img/1035/1/stop/mob").is_empty());
+        assert!(quest_dialogue_pages(&quests, "Say.img/missing/0").is_empty());
+        let quest = openstory_protocol::QuestEntry {
+            id: 1031,
+            data: String::new(),
+        };
+        assert!(quest_is_completable(
+            &quest,
+            &quests,
+            None,
+            &openstory_protocol::QuestLog::default()
+        ));
     }
-    bindings
 }

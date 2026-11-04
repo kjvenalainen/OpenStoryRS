@@ -73,214 +73,37 @@ fn render_combo_counter(font: &fontdue::Font, count: i32) -> Vec<u8> {
     pixels
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_key_config_panel(
     font: &fontdue::Font,
-    ui_archive: &NxArchive,
+    ui: &NxArchive,
+    skills: &NxArchive,
+    items: &NxArchive,
+    characters: &NxArchive,
     bindings: &[openstory_protocol::KeyBinding],
     quickslot_keys: &[u8; 8],
     capture: Option<usize>,
     quickslot_capture: Option<usize>,
-    _first_row: usize,
+    first_row: usize,
     actions: &[KeyConfigAction],
+    icon_cache: &mut HashMap<i32, Option<(u32, u32, Arc<[u8]>)>>,
+    counts: &HashMap<i32, u32>,
 ) -> Vec<u8> {
-    let width = KEY_CONFIG_PANEL_WIDTH as usize;
-    let height = KEY_CONFIG_PANEL_HEIGHT as usize;
-    let mut pixels = vec![0_u8; width * height * 4];
-    let _ = composite_nx_ui_bitmap(
-        &mut pixels,
-        width,
-        height,
-        ui_archive,
-        "UIWindow.img/KeyConfig/backgrnd",
-        (width / 2) as i32,
-        (height / 2) as i32,
-    );
-    let _ = composite_nx_ui_bitmap(
-        &mut pixels,
-        width,
-        height,
-        ui_archive,
-        "UIWindow.img/KeyConfig/BtClose/normal/0",
-        width as i32 - 34,
-        4,
-    );
-
-    if let Some(slot) = quickslot_capture {
-        let _ = composite_nx_ui_bitmap(
-            &mut pixels,
-            width,
-            height,
-            ui_archive,
-            "UIWindow.img/KeyConfig/quickslotConfig/backgrnd",
-            0,
-            0,
-        );
-        let hint = format!("Press a key for Quick Slot {}", slot + 1);
-        draw_dialogue_text(
-            font,
-            &mut pixels,
-            width,
-            height,
-            &hint,
-            194,
-            3,
-            11.0,
-            390,
-            18,
-            [255, 224, 146],
-        );
-    } else if let Some(index) = capture
-        && let Some(action) = actions.get(index)
-    {
-        draw_dialogue_text(
-            font,
-            &mut pixels,
-            width,
-            height,
-            &format!("Press a key for {}", action.label),
-            194,
-            3,
-            11.0,
-            390,
-            18,
-            [255, 224, 146],
-        );
-    }
-
-    for action in actions {
-        let bound_key = bindings
-            .iter()
-            .take(90)
-            .position(|binding| binding.kind == action.kind && binding.action == action.action)
-            .map(|key| key as u8);
-        let icon_path = format!("UIWindow.img/KeyConfig/icon/{}", action.action);
-        if let Some(key) = bound_key {
-            if let Some((x, y)) = keycap_position(key) {
-                if matches!(action.kind, 4..=6) {
-                    let _ = composite_nx_ui_bitmap(
-                        &mut pixels,
-                        width,
-                        height,
-                        ui_archive,
-                        &icon_path,
-                        x,
-                        y,
-                    );
-                } else {
-                    let caption = match action.kind {
-                        1 => "SK",
-                        2 => "IT",
-                        3 => "CS",
-                        8 => "MC",
-                        _ => "?",
-                    };
-                    draw_dialogue_text(
-                        font,
-                        &mut pixels,
-                        width,
-                        height,
-                        caption,
-                        x + 7,
-                        y + 10,
-                        10.0,
-                        20,
-                        12,
-                        [44, 55, 65],
-                    );
-                }
-            }
-        } else if let Some((column, row)) = unbound_action_cell(action.kind, action.action) {
-            let x = 5 + column * 34;
-            let y = 267 + row * 34;
-            let _ = composite_nx_ui_bitmap(
-                &mut pixels,
-                width,
-                height,
-                ui_archive,
-                &icon_path,
-                x + 1,
-                y + 1,
-            );
-        }
-    }
-
-    // The stock lower grid is for unbound actions, so keep quick-slot labels
-    // out of it during normal viewing. Show the dedicated v83 key glyphs
-    // while the user is editing a quick-slot assignment.
-    if quickslot_capture.is_some() {
-        for (slot, key) in quickslot_keys.iter().copied().enumerate() {
-            let x = 12 + (slot % 4) * 151;
-            let y = 288 + (slot / 4) * 31;
-            let _ = composite_nx_ui_bitmap(
-                &mut pixels,
-                width,
-                height,
-                ui_archive,
-                &format!("UIWindow.img/KeyConfig/quickslotConfig/key/{key}"),
-                x as i32 + 4,
-                y as i32 + 5,
-            );
-            draw_dialogue_text(
-                font,
-                &mut pixels,
-                width,
-                height,
-                &format!("{}: {}", slot + 1, quickslot_short_key_label(key)),
-                x as i32 + 24,
-                y as i32 + 5,
-                10.0,
-                112,
-                14,
-                if quickslot_capture == Some(slot) {
-                    [142, 76, 31]
-                } else {
-                    [47, 59, 68]
-                },
-            );
-        }
-    }
-    pixels
-}
-
-pub(super) fn keycap_position(key: u8) -> Option<(i32, i32)> {
-    let point = match key {
-        84 => (11, 28), // Escape
-        59..=62 => (79 + (i32::from(key) - 59) * 34, 28),
-        63..=66 => (223 + (i32::from(key) - 63) * 34, 28),
-        67..=70 => (367 + (i32::from(key) - 67) * 34, 28),
-        88 => (511, 28), // Scroll Lock
-        2 => (351, 65),  // 0
-        3..=11 => (45 + (i32::from(key) - 3) * 34, 65),
-        12 => (385, 65),
-        13 => (419, 65),
-        41 => (11, 65), // Grave
-        16..=25 => (61 + (i32::from(key) - 16) * 34, 99),
-        26 => (401, 99),
-        27 => (435, 99),
-        43 => (469, 99),
-        30..=38 => (78 + (i32::from(key) - 30) * 34, 132),
-        39 => (384, 132),
-        40 => (418, 132),
-        42 => (36, 165),
-        45..=51 => (95 + (i32::from(key) - 45) * 34, 165),
-        52 => (333, 165),
-        53 => (367, 165),
-        86 => (407, 165), // Right Shift
-        29 => (19, 198),
-        56 => (120, 198),
-        57 => (231, 198),
-        87 => (362, 198),
-        85 => (453, 198),
-        82 => (511, 65), // Insert
-        71 => (545, 65), // Home
-        73 => (579, 65), // Page Up
-        83 => (511, 99), // Delete
-        79 => (545, 99), // End
-        81 => (579, 99), // Page Down
-        _ => return None,
-    };
-    // Keep the action overlay aligned with the top-left of the NX keycap.
-    Some((point.0 + 4, point.1))
+    keyboard_settings::render(
+        font,
+        ui,
+        skills,
+        items,
+        characters,
+        bindings,
+        quickslot_keys,
+        capture,
+        quickslot_capture,
+        first_row,
+        actions,
+        icon_cache,
+        counts,
+    )
 }
 
 pub(super) fn unbound_action_cell(kind: u8, action: i32) -> Option<(i32, i32)> {
@@ -401,15 +224,16 @@ fn maple_key_from_physical(key: PhysicalKey) -> Option<u8> {
         KeyCode::Backquote => 41,
         KeyCode::ShiftLeft => 42,
         KeyCode::Backslash => 43,
-        KeyCode::KeyZ => 45,
-        KeyCode::KeyX => 46,
-        KeyCode::KeyC => 47,
-        KeyCode::KeyV => 48,
-        KeyCode::KeyB => 49,
-        KeyCode::KeyN => 50,
-        KeyCode::KeyM => 51,
-        KeyCode::Comma => 52,
-        KeyCode::Period => 53,
+        KeyCode::KeyZ => 44,
+        KeyCode::KeyX => 45,
+        KeyCode::KeyC => 46,
+        KeyCode::KeyV => 47,
+        KeyCode::KeyB => 48,
+        KeyCode::KeyN => 49,
+        KeyCode::KeyM => 50,
+        KeyCode::Comma => 51,
+        KeyCode::Period => 52,
+        KeyCode::Slash => 53,
         KeyCode::AltLeft | KeyCode::SuperLeft => 56,
         KeyCode::Space => 57,
         KeyCode::F1 => 59,
@@ -439,21 +263,6 @@ fn maple_key_from_physical(key: PhysicalKey) -> Option<u8> {
     })
 }
 
-fn quickslot_key_slot_at(local_x: f32, local_y: f32) -> Option<usize> {
-    let row = if (288.0..314.0).contains(&local_y) {
-        0
-    } else if (319.0..345.0).contains(&local_y) {
-        1
-    } else {
-        return None;
-    };
-    if !(12.0..616.0).contains(&local_x) {
-        return None;
-    }
-    let column = ((local_x - 12.0) / 151.0).floor() as usize;
-    (column < 4).then_some(row * 4 + column)
-}
-
 fn maple_key_label(key: u8) -> String {
     match key {
         2..=11 => char::from(b'0' + (key - 2)).to_string(),
@@ -471,9 +280,10 @@ fn maple_key_label(key: u8) -> String {
         41 => "`".to_owned(),
         42 => "L Shift".to_owned(),
         43 => "\\".to_owned(),
-        45..=51 => ["Z", "X", "C", "V", "B", "N", "M"][usize::from(key - 45)].to_owned(),
-        52 => ",".to_owned(),
-        53 => ".".to_owned(),
+        44..=50 => ["Z", "X", "C", "V", "B", "N", "M"][usize::from(key - 44)].to_owned(),
+        51 => ",".to_owned(),
+        52 => ".".to_owned(),
+        53 => "/".to_owned(),
         56 => "Alt / Cmd".to_owned(),
         57 => "Space".to_owned(),
         59..=70 => format!("F{}", key - 58),
@@ -526,11 +336,7 @@ fn render_skill_book_panel(
 ) -> Vec<u8> {
     const WIDTH: usize = SKILL_BOOK_PANEL_WIDTH as usize;
     const HEIGHT: usize = SKILL_BOOK_PANEL_HEIGHT as usize;
-    const ROW_HEIGHT: usize = 40;
-    const ROWS: usize = SKILL_BOOK_VISIBLE_ROWS;
     let mut pixels = vec![0_u8; WIDTH * HEIGHT * 4];
-    // Keep the frame at its authored pixel size; extend its right and bottom
-    // border to the 177x292 reference crop without scaling the artwork.
     let _ = composite_nx_ui_bitmap(
         &mut pixels,
         WIDTH,
@@ -540,138 +346,54 @@ fn render_skill_book_panel(
         0,
         0,
     );
-    for y in 0..289 {
-        let source = (y * WIDTH + 174) * 4;
-        for x in 175..WIDTH {
-            let destination = (y * WIDTH + x) * 4;
-            pixels.copy_within(source..source + 4, destination);
-        }
-    }
-    for y in 289..HEIGHT {
-        let source = (288 * WIDTH) * 4;
-        let destination = y * WIDTH * 4;
-        pixels.copy_within(source..source + 175 * 4, destination);
-        for x in 175..WIDTH {
-            let edge = (y * WIDTH + 174) * 4;
-            let destination = (y * WIDTH + x) * 4;
-            pixels.copy_within(edge..edge + 4, destination);
-        }
-    }
     let _ = composite_nx_ui_bitmap(
         &mut pixels,
         WIDTH,
         HEIGHT,
         ui_archive,
         "Basic.img/BtClose/normal/0",
-        WIDTH as i32 - 19,
+        156,
         6,
     );
-    fill_dialogue_rect(
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        8,
-        4,
-        WIDTH - 32,
-        17,
-        [255, 255, 255, 255],
-    );
-    draw_dialogue_text(
-        font,
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        "SKILL INVENTORY",
-        8,
-        6,
-        9.0,
-        WIDTH - 36,
-        12,
-        [27, 30, 35],
-    );
-    fill_dialogue_rect(
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        4,
-        46,
-        WIDTH - 8,
-        HEIGHT - 80,
-        [248, 246, 243, 255],
-    );
-    fill_dialogue_rect(
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        5,
-        HEIGHT - 32,
-        WIDTH - 10,
-        28,
-        [225, 217, 201, 255],
-    );
-
-    for tab in 0..usize::from(visible_tabs.min(5)) {
-        let left = 5 + tab * 32;
-        let active = tab == usize::from(selected_tab);
-        fill_dialogue_rect(
+    for tab in 0..visible_tabs.min(5) {
+        let active = tab == selected_tab;
+        let left = 5 + usize::from(tab) * 32;
+        let frame = if active { "Tab1" } else { "Tab0" };
+        let frame_path = format!("UIWindow.img/Item/New/{frame}/{tab}");
+        let _ = composite_nx_ui_bitmap(
             &mut pixels,
             WIDTH,
             HEIGHT,
-            left,
-            24,
-            29,
-            19,
-            if active {
-                [125, 75, 221, 255]
-            } else {
-                [216, 211, 205, 255]
-            },
+            ui_archive,
+            &frame_path,
+            left as i32,
+            25,
+        );
+        let path = format!(
+            "UIWindow.img/Skill/Tab/{}/{tab}",
+            if active { "enabled" } else { "disabled" }
         );
         let _ = composite_nx_ui_bitmap(
             &mut pixels,
             WIDTH,
             HEIGHT,
             ui_archive,
-            &format!(
-                "UIWindow.img/Skill/Tab/{}/{tab}",
-                if active { "enabled" } else { "disabled" }
-            ),
-            (left + 8) as i32,
-            27,
+            &path,
+            left as i32 + 8,
+            28,
         );
     }
-    fill_dialogue_rect(
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        4,
-        44,
-        WIDTH - 8,
-        2,
-        [77, 0, 168, 255],
-    );
-
-    fill_dialogue_rect(
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        6,
-        57,
-        WIDTH - 12,
-        33,
-        [47, 116, 179, 255],
-    );
-    fill_dialogue_rect(
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        9,
-        60,
-        WIDTH - 18,
-        27,
-        [234, 221, 198, 255],
-    );
     if let Some((icon_width, icon_height, icon)) = book_icon {
+        fill_dialogue_rect(
+            &mut pixels,
+            WIDTH,
+            HEIGHT,
+            9,
+            59,
+            28,
+            27,
+            [220, 220, 220, 255],
+        );
         composite_inventory_icon(
             &mut pixels,
             WIDTH,
@@ -679,75 +401,82 @@ fn render_skill_book_panel(
             &icon,
             icon_width as usize,
             icon_height as usize,
-            12,
+            10,
             59,
             27,
         );
     }
-    let end = entries.len().min(scroll_row.saturating_add(ROWS));
+    let title = ui_foundation::ellipsize(font, book_title, 11.0, 111.0);
+    draw_dialogue_text(
+        font,
+        &mut pixels,
+        WIDTH,
+        HEIGHT,
+        &title,
+        48,
+        66,
+        11.0,
+        111,
+        15,
+        [255, 255, 255],
+    );
+    let first = scroll_row.min(entries.len().saturating_sub(SKILL_BOOK_VISIBLE_ROWS));
     for (row, skill) in entries
-        .get(scroll_row..end)
-        .unwrap_or_default()
         .iter()
+        .skip(first)
+        .take(SKILL_BOOK_VISIBLE_ROWS)
         .enumerate()
     {
-        let y = 100 + row * ROW_HEIGHT;
-        let mastered = skill.level >= skill.max_level;
-        let row_art = if skill.max_level == 0 {
-            "UIWindow.img/Skill/skill0"
-        } else {
-            "UIWindow.img/Skill/skill1"
-        };
-        let _ =
-            composite_nx_ui_bitmap(&mut pixels, WIDTH, HEIGHT, ui_archive, row_art, 6, y as i32);
-        let icon_path = format!("{:03}.img/skill/{}/icon", skill.id / 10_000, skill.id);
-        if let Some((icon_width, icon_height, icon)) = decode_nx_icon(skill_archive, &icon_path) {
-            let icon = if skill.max_level == 0 {
-                let mut disabled = icon.to_vec();
-                for pixel in disabled.chunks_exact_mut(4) {
-                    let gray = ((u16::from(pixel[0]) * 29
-                        + u16::from(pixel[1]) * 150
-                        + u16::from(pixel[2]) * 77)
-                        / 256) as u8;
-                    pixel[..3].fill(gray);
-                }
-                Arc::<[u8]>::from(disabled)
+        let y = 100 + row * 40;
+        let _ = composite_nx_ui_bitmap(
+            &mut pixels,
+            WIDTH,
+            HEIGHT,
+            ui_archive,
+            if skill.max_level == 0 {
+                "UIWindow.img/Skill/skill0"
             } else {
-                icon
-            };
+                "UIWindow.img/Skill/skill1"
+            },
+            6,
+            y as i32,
+        );
+        let path = format!(
+            "{:03}.img/skill/{}/{}",
+            skill.id / 10_000,
+            skill.id,
+            if skill.max_level == 0 {
+                "iconDisabled"
+            } else {
+                "icon"
+            }
+        );
+        if let Some((w, h, icon)) = decode_nx_icon(skill_archive, &path) {
             composite_inventory_icon(
                 &mut pixels,
                 WIDTH,
                 HEIGHT,
                 &icon,
-                icon_width as usize,
-                icon_height as usize,
+                w as usize,
+                h as usize,
                 11,
                 y + 3,
                 30,
             );
         }
-        let level_cap = if skill.master_level > 0 {
-            skill.max_level.min(skill.master_level)
-        } else {
-            skill.max_level
-        };
+        let name = ui_foundation::ellipsize(font, &skill.name, 11.0, 99.0);
         draw_dialogue_text(
             font,
             &mut pixels,
             WIDTH,
             HEIGHT,
-            &ui_foundation::ellipsize(font, &skill.name, 11.0, 104.0),
+            &name,
             47,
-            y as i32 + 3,
+            y as i32 + 2,
             11.0,
-            WIDTH - 85,
+            99,
             14,
-            if skill.level > 0 {
-                [42, 40, 38]
-            } else {
-                [42, 40, 38]
-            },
+            [40, 40, 40],
         );
         draw_dialogue_text(
             font,
@@ -757,74 +486,32 @@ fn render_skill_book_panel(
             &skill.level.to_string(),
             47,
             y as i32 + 20,
-            9.0,
-            WIDTH - 77,
-            13,
+            11.0,
+            72,
+            14,
             [20, 20, 20],
         );
-        let state = if skill.level < level_cap && !mastered && skill_points > 0 {
+        let cap = if skill.master_level > 0 {
+            skill.max_level.min(skill.master_level)
+        } else {
+            skill.max_level
+        };
+        let state = if skill.level < cap && skill_points > 0 {
             "normal"
         } else {
             "disabled"
         };
+        let path = format!("UIWindow.img/Skill/BtSpUp/{state}/0");
         let _ = composite_nx_ui_bitmap(
             &mut pixels,
             WIDTH,
             HEIGHT,
             ui_archive,
-            &format!("UIWindow.img/Skill/BtSpUp/{state}/0"),
-            (WIDTH - 47) as i32,
-            (y + 21) as i32,
+            &path,
+            130,
+            y as i32 + 21,
         );
-        if row + 1 < ROWS {
-            let _ = composite_nx_ui_bitmap(
-                &mut pixels,
-                WIDTH,
-                HEIGHT,
-                ui_archive,
-                "UIWindow.img/Skill/line",
-                8,
-                y as i32 + 37,
-            );
-        }
     }
-    fill_dialogue_rect(
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        WIDTH - 19,
-        92,
-        10,
-        153,
-        [208, 216, 220, 255],
-    );
-    let _ = composite_nx_ui_bitmap(
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        ui_archive,
-        "Basic.img/VScr5/enabled/thumb0",
-        WIDTH as i32 - 20,
-        116,
-    );
-    let _ = composite_nx_ui_bitmap(
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        ui_archive,
-        "Basic.img/VScr5/enabled/prev0",
-        WIDTH as i32 - 25,
-        99,
-    );
-    let _ = composite_nx_ui_bitmap(
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        ui_archive,
-        "Basic.img/VScr5/enabled/next0",
-        WIDTH as i32 - 25,
-        241,
-    );
     if entries.is_empty() {
         draw_dialogue_text(
             font,
@@ -832,208 +519,50 @@ fn render_skill_book_panel(
             WIDTH,
             HEIGHT,
             "No skills for this job.",
-            17,
-            101,
-            10.0,
-            WIDTH - 24,
-            18,
-            [91, 71, 52],
+            12,
+            104,
+            11.0,
+            132,
+            16,
+            [60, 60, 60],
         );
     }
-    fill_dialogue_rect(
+    let fraction = ui_foundation::scroll_fraction(first, entries.len(), SKILL_BOOK_VISIBLE_ROWS);
+    ui_foundation::draw_scrollbar(
         &mut pixels,
         WIDTH,
         HEIGHT,
-        82,
-        HEIGHT - 24,
-        33,
-        18,
-        [113, 132, 143, 255],
+        ui_archive,
+        152,
+        99,
+        155,
+        fraction,
     );
-    fill_dialogue_rect(
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        84,
-        HEIGHT - 22,
-        29,
-        14,
-        [246, 247, 247, 255],
-    );
+    let value = skill_points.to_string();
+    let value_width = dialogue_text_width(font, &value, 11.0).ceil() as i32;
     draw_dialogue_text(
         font,
         &mut pixels,
         WIDTH,
         HEIGHT,
-        "SKILL POINT",
-        5,
-        (HEIGHT - 25) as i32,
+        &value,
+        108 - value_width,
+        263,
         11.0,
-        70,
-        15,
-        [0, 0, 0],
+        28,
+        16,
+        [30, 30, 30],
     );
-    draw_dialogue_text(
-        font,
+    let macro_button = ui_foundation::SKILL_MACRO_BUTTON;
+    let _ = composite_nx_ui_bitmap(
         &mut pixels,
         WIDTH,
         HEIGHT,
-        &skill_points.to_string(),
-        94,
-        (HEIGHT - 24) as i32,
-        10.0,
-        20,
-        15,
-        [50, 45, 38],
+        ui_archive,
+        "Basic.img/BtMacro/normal/0",
+        macro_button.x as i32,
+        macro_button.y as i32,
     );
-    fill_dialogue_rect(
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        122,
-        HEIGHT - 24,
-        48,
-        20,
-        [48, 0, 125, 255],
-    );
-    fill_dialogue_rect(
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        123,
-        HEIGHT - 23,
-        46,
-        18,
-        [110, 70, 229, 255],
-    );
-    fill_dialogue_rect(
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        124,
-        HEIGHT - 23,
-        44,
-        1,
-        [180, 120, 245, 255],
-    );
-    ui_foundation::draw_text_role(
-        font,
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        "MACRO",
-        130,
-        (HEIGHT - 19) as i32,
-        ui_foundation::UiTextRole::Small,
-        35,
-        12,
-        Some([255, 255, 255]),
-    );
-    for (row, left, arrow_width) in [
-        (0, 164, 2),
-        (1, 164, 3),
-        (2, 164, 4),
-        (3, 164, 3),
-        (4, 164, 2),
-    ] {
-        fill_dialogue_rect(
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            left,
-            HEIGHT - 21 + row,
-            arrow_width,
-            1,
-            [235, 235, 235, 255],
-        );
-    }
-    composite_skill_reference_frame(
-        &mut pixels,
-        selected_tab == 2 && visible_tabs == 3,
-        scroll_row == 0,
-    );
-    draw_dialogue_text(
-        font,
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        book_title,
-        49,
-        67,
-        9.5,
-        WIDTH - 62,
-        15,
-        [246, 246, 246],
-    );
-    pixels
-}
-
-fn composite_skill_reference_frame(pixels: &mut [u8], reference_tabs: bool, reference_thumb: bool) {
-    static FRAME: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
-    static FRAME_TABS_LIVE: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
-    static FRAME_SCROLL_LIVE: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
-    static FRAME_TABS_SCROLL_LIVE: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
-
-    let (cache, encoded): (&std::sync::OnceLock<Vec<u8>>, &[u8]) =
-        match (reference_tabs, reference_thumb) {
-            (true, true) => (
-                &FRAME,
-                include_bytes!("../../assets/ui/skill-book-frame.png"),
-            ),
-            (false, true) => (
-                &FRAME_TABS_LIVE,
-                include_bytes!("../../assets/ui/skill-book-frame-tabs-live.png"),
-            ),
-            (true, false) => (
-                &FRAME_SCROLL_LIVE,
-                include_bytes!("../../assets/ui/skill-book-frame-scroll-live.png"),
-            ),
-            (false, false) => (
-                &FRAME_TABS_SCROLL_LIVE,
-                include_bytes!("../../assets/ui/skill-book-frame-tabs-scroll-live.png"),
-            ),
-        };
-    let frame = cache.get_or_init(|| decode_skill_reference_frame(encoded));
-    if frame.len() != pixels.len() {
-        return;
-    }
-    for (destination, source) in pixels.chunks_exact_mut(4).zip(frame.chunks_exact(4)) {
-        let alpha = u32::from(source[3]);
-        if alpha == 0 {
-            continue;
-        }
-        let inverse = 255 - alpha;
-        for channel in 0..3 {
-            destination[channel] = ((u32::from(source[channel]) * alpha
-                + u32::from(destination[channel]) * inverse)
-                / 255) as u8;
-        }
-        destination[3] = (alpha + u32::from(destination[3]) * inverse / 255) as u8;
-    }
-}
-
-fn decode_skill_reference_frame(encoded: &[u8]) -> Vec<u8> {
-    let decoder = png::Decoder::new(std::io::Cursor::new(encoded));
-    let mut decoder = decoder;
-    decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
-    let Ok(mut reader) = decoder.read_info() else {
-        return Vec::new();
-    };
-    let mut decoded = vec![0; reader.output_buffer_size()];
-    let Ok(info) = reader.next_frame(&mut decoded) else {
-        return Vec::new();
-    };
-    if info.width != 177
-        || info.height != 292
-        || info.color_type != png::ColorType::Rgba
-        || info.bit_depth != png::BitDepth::Eight
-    {
-        return Vec::new();
-    }
-    let mut pixels = decoded[..info.buffer_size()].to_vec();
-    for pixel in pixels.chunks_exact_mut(4) {
-        pixel.swap(0, 2);
-    }
     pixels
 }
 
@@ -1093,7 +622,7 @@ fn render_options_panel(
     ] {
         let y = slider.track_y().expect("sliders have a track position");
         const TRACK_LEFT: usize = 104;
-        const TRACK_WIDTH: usize = 152;
+        let track_width = slider.track_width();
         let _ = composite_nx_ui_bitmap_scaled_to(
             &mut pixels,
             WIDTH,
@@ -1102,10 +631,10 @@ fn render_options_panel(
             "Basic.img/Slider/mid",
             TRACK_LEFT,
             y.saturating_sub(3),
-            TRACK_WIDTH,
+            track_width,
             6,
         );
-        let filled_width = usize::from(value) * TRACK_WIDTH / 100;
+        let filled_width = usize::from(value) * track_width / 100;
         if filled_width > 0 {
             let _ = composite_nx_ui_bitmap_scaled_to(
                 &mut pixels,
@@ -1125,16 +654,14 @@ fn render_options_panel(
         } else {
             "thumbNormal"
         };
-        let _ = composite_nx_ui_bitmap_scaled_to(
+        let _ = composite_nx_ui_bitmap(
             &mut pixels,
             WIDTH,
             HEIGHT,
             ui_archive,
             &format!("Basic.img/Slider/{thumb_state}"),
-            thumb_x.saturating_sub(5),
-            y.saturating_sub(7),
-            16,
-            13,
+            thumb_x.saturating_sub(11) as i32,
+            y.saturating_sub(7) as i32,
         );
     }
 
@@ -1157,7 +684,7 @@ fn render_options_panel(
             WIDTH,
             HEIGHT,
             ui_archive,
-            264,
+            278,
             y.saturating_sub(9),
             selected == control,
             muted,
@@ -1283,34 +810,11 @@ fn render_options_panel(
         );
     }
 
-    for (x, label, path) in [
-        (204, "OK", "Basic.img/BtOK/normal/0"),
-        (253, "Cancel", "Basic.img/BtCancel/normal/0"),
+    for (x, path) in [
+        (204, "Basic.img/BtOK2/normal/0"),
+        (251, "Basic.img/BtCancel2/normal/0"),
     ] {
-        let _ = composite_nx_ui_bitmap_scaled_to(
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            ui_archive,
-            path,
-            x,
-            339,
-            if label == "OK" { 45 } else { 44 },
-            22,
-        );
-        draw_dialogue_text(
-            font,
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            label,
-            x as i32 + 6,
-            344,
-            9.0,
-            38,
-            13,
-            [48, 48, 48],
-        );
+        let _ = composite_nx_ui_bitmap(&mut pixels, WIDTH, HEIGHT, ui_archive, path, x, 341);
     }
     if let Some(notice) = notice {
         draw_dialogue_text(
@@ -1328,4 +832,235 @@ fn render_options_panel(
         );
     }
     pixels
+}
+
+// Absent server data uses exactly the defaults shown by Keyboard Settings.
+// An explicit empty server slot stays empty; it must not revive a hard-coded shortcut.
+fn gameplay_key_binding(
+    bindings: Option<&[openstory_protocol::KeyBinding]>,
+    key: PhysicalKey,
+) -> Option<openstory_protocol::KeyBinding> {
+    let key = usize::from(maple_key_from_physical(key)?);
+    Some(match bindings {
+        Some(bindings) => bindings.get(key).copied().unwrap_or_default(),
+        None => keyboard_settings::defaults()
+            .get(key)
+            .copied()
+            .unwrap_or_default(),
+    })
+}
+
+// Releases run before modal/text input routing. Retain the action from key-down
+// so changing a keymap while a key is held cannot leave its old action active.
+impl GameplayInput {
+    fn release_key(&mut self, key: PhysicalKey) {
+        if let Some(binding) = self.held_bindings.remove(&key)
+            && !self.held_bindings.values().any(|other| *other == binding)
+        {
+            match binding.action {
+                51 => self.sit = false,
+                200 => self.left = false,
+                201 => self.right = false,
+                202 => self.up = false,
+                203 => self.down = false,
+                _ => {}
+            }
+        }
+        match key {
+            PhysicalKey::Code(KeyCode::ArrowLeft) => {
+                self.left = self
+                    .held_bindings
+                    .values()
+                    .any(|binding| binding.action == 200)
+            }
+            PhysicalKey::Code(KeyCode::ArrowRight) => {
+                self.right = self
+                    .held_bindings
+                    .values()
+                    .any(|binding| binding.action == 201)
+            }
+            PhysicalKey::Code(KeyCode::ArrowUp) => {
+                self.up = self
+                    .held_bindings
+                    .values()
+                    .any(|binding| binding.action == 202)
+            }
+            PhysicalKey::Code(KeyCode::ArrowDown) => {
+                self.down = self
+                    .held_bindings
+                    .values()
+                    .any(|binding| binding.action == 203)
+            }
+            _ => {}
+        }
+    }
+}
+
+#[cfg(test)]
+mod keyboard_input_tests {
+    use super::*;
+
+    #[test]
+    fn releasing_one_of_two_bound_keys_keeps_the_action_until_both_release() {
+        let mut input = GameplayInput::default();
+        input.sit = true;
+        let first = PhysicalKey::Code(KeyCode::KeyE);
+        let second = PhysicalKey::Code(KeyCode::KeyR);
+        let binding = openstory_protocol::KeyBinding {
+            kind: 5,
+            action: 51,
+        };
+        input.held_bindings.insert(first, binding);
+        input.held_bindings.insert(second, binding);
+        input.release_key(first);
+        assert!(input.sit);
+        input.release_key(second);
+        assert!(!input.sit);
+        assert!(input.held_bindings.is_empty());
+    }
+
+    #[test]
+    fn modal_release_uses_key_down_action_and_input_reset_discards_held_keys() {
+        let mut input = GameplayInput::default();
+        let key = PhysicalKey::Code(KeyCode::KeyE);
+        input.left = true;
+        input.held_bindings.insert(
+            key,
+            openstory_protocol::KeyBinding {
+                kind: 5,
+                action: 200,
+            },
+        );
+        // The release needs neither the current keymap nor the current UI focus.
+        input.release_key(key);
+        assert!(!input.left);
+        input.held_bindings.insert(
+            key,
+            openstory_protocol::KeyBinding {
+                kind: 5,
+                action: 51,
+            },
+        );
+        input = GameplayInput::default();
+        assert!(input.held_bindings.is_empty());
+        input.release_key(key);
+        assert!(!input.sit);
+    }
+
+    #[test]
+    fn fixed_arrows_release_behind_modal_windows_without_cancelling_other_keys() {
+        let mut input = GameplayInput::default();
+        input.left = true;
+        let other = PhysicalKey::Code(KeyCode::KeyE);
+        input.held_bindings.insert(
+            other,
+            openstory_protocol::KeyBinding {
+                kind: 5,
+                action: 200,
+            },
+        );
+        input.release_key(PhysicalKey::Code(KeyCode::ArrowLeft));
+        assert!(input.left);
+        input.release_key(other);
+        assert!(!input.left);
+    }
+
+    #[test]
+    fn bottom_row_matches_v83_scan_codes_and_z_defaults_to_pickup() {
+        for (index, (physical, label)) in [
+            (KeyCode::KeyZ, "Z"),
+            (KeyCode::KeyX, "X"),
+            (KeyCode::KeyC, "C"),
+            (KeyCode::KeyV, "V"),
+            (KeyCode::KeyB, "B"),
+            (KeyCode::KeyN, "N"),
+            (KeyCode::KeyM, "M"),
+            (KeyCode::Comma, ","),
+            (KeyCode::Period, "."),
+            (KeyCode::Slash, "/"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let wire = 44 + index as u8;
+            assert_eq!(
+                maple_key_from_physical(PhysicalKey::Code(physical)),
+                Some(wire)
+            );
+            assert_eq!(maple_key_label(wire), label);
+            let rect = keyboard_settings::key_rect(wire).unwrap();
+            assert_eq!(rect.x, 98.0 + index as f32 * 34.0);
+            assert_eq!(
+                keyboard_settings::key_at(rect.x + 16.0, rect.y + 16.0),
+                Some(wire)
+            );
+        }
+        let pickup = openstory_protocol::KeyBinding {
+            kind: 5,
+            action: 50,
+        };
+        assert_eq!(
+            gameplay_key_binding(None, PhysicalKey::Code(KeyCode::KeyZ)),
+            Some(pickup)
+        );
+        let mut server_map = vec![openstory_protocol::KeyBinding::default(); 90];
+        server_map[44] = pickup;
+        assert_eq!(
+            gameplay_key_binding(Some(&server_map), PhysicalKey::Code(KeyCode::KeyZ)),
+            Some(pickup)
+        );
+    }
+
+    #[test]
+    fn server_bindings_override_defaults_and_cleared_keys_stay_unbound() {
+        let key = PhysicalKey::Code(KeyCode::KeyE);
+        assert_eq!(
+            gameplay_key_binding(None, key),
+            Some(openstory_protocol::KeyBinding { kind: 4, action: 0 })
+        );
+        let mut bindings = keyboard_settings::defaults();
+        bindings[18] = openstory_protocol::KeyBinding {
+            kind: 1,
+            action: 2101001,
+        };
+        assert_eq!(
+            gameplay_key_binding(Some(&bindings), key),
+            Some(bindings[18])
+        );
+        bindings[18] = openstory_protocol::KeyBinding::default();
+        assert_eq!(
+            gameplay_key_binding(Some(&bindings), key),
+            Some(openstory_protocol::KeyBinding::default())
+        );
+        assert_eq!(
+            gameplay_key_binding(Some(&[]), key),
+            Some(openstory_protocol::KeyBinding::default())
+        );
+    }
+
+    #[test]
+    fn physical_keys_match_keyboard_targets_including_independent_modifiers() {
+        for (physical, wire) in [
+            (KeyCode::KeyE, 18),
+            (KeyCode::ControlLeft, 29),
+            (KeyCode::ControlRight, 85),
+            (KeyCode::ShiftLeft, 42),
+            (KeyCode::ShiftRight, 86),
+            (KeyCode::AltLeft, 56),
+            (KeyCode::AltRight, 87),
+            (KeyCode::F12, 70),
+            (KeyCode::Digit0, 2),
+            (KeyCode::Digit1, 3),
+        ] {
+            assert_eq!(
+                maple_key_from_physical(PhysicalKey::Code(physical)),
+                Some(wire)
+            );
+            let rect = keyboard_settings::key_rect(wire).unwrap();
+            assert_eq!(
+                keyboard_settings::key_at(rect.x + 1.0, rect.y + 1.0),
+                Some(wire)
+            );
+        }
+    }
 }

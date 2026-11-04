@@ -8,24 +8,11 @@ fn append_mob_damage_draws<'a>(
     let draw_count = scene.damage_numbers.len().min(*effect_budget);
     *effect_budget -= draw_count;
     for number in scene.damage_numbers.iter().take(draw_count) {
-        let age = number.elapsed.as_secs_f32();
-        let lifetime = number.lifetime.as_secs_f32().max(f32::EPSILON);
-        let opacity = (1.0 - age / lifetime).clamp(0.0, 1.0);
-        let rise = age * number.rise_speed;
-        let anchor_x = scene.camera_offset.0 + number.world_x as f32;
-        let anchor_y = scene.camera_offset.1 + number.world_y as f32 - rise;
-
-        if number.miss {
-            if number.critical {
-                continue;
-            }
-            let Some(glyph) = glyphs.get(80) else {
-                continue;
-            };
+        for_each_damage_glyph(number, scene.camera_offset, glyphs, |glyph, x, y, opacity| {
             draws.push(SpriteDraw {
                 texture,
-                x: anchor_x - glyph.origin_x,
-                y: anchor_y - glyph.width / 2.0 - glyph.origin_y,
+                x,
+                y,
                 width: glyph.width,
                 height: glyph.height,
                 uv: glyph.uv,
@@ -34,60 +21,83 @@ fn append_mob_damage_draws<'a>(
                 flip_x: false,
                 opacity,
             });
-            continue;
+        });
+    }
+}
+
+fn for_each_damage_glyph(
+    number: &MobDamageNumber,
+    camera_offset: (f32, f32),
+    glyphs: &[DamageGlyph],
+    mut emit: impl FnMut(&DamageGlyph, f32, f32, f32),
+) {
+    let age = number.elapsed.as_secs_f32();
+    let lifetime = number.lifetime.as_secs_f32().max(f32::EPSILON);
+    let opacity = (1.0 - age / lifetime).clamp(0.0, 1.0);
+    let rise = age * number.rise_speed;
+    let anchor_x = camera_offset.0 + number.world_x as f32;
+    let anchor_y = camera_offset.1 + number.world_y as f32 - rise;
+
+    if number.miss {
+        if number.critical {
+            return;
         }
-        if number.digits.is_empty() {
-            continue;
-        }
-        let leading_digit = usize::from(number.digits[0]);
-        let leading_glyph = damage_glyph_index(
-            leading_digit,
+        let Some(glyph) = glyphs.get(80) else {
+            return;
+        };
+        emit(
+            glyph,
+            anchor_x - glyph.origin_x,
+            anchor_y - glyph.width / 2.0 - glyph.origin_y,
+            opacity,
+        );
+        return;
+    }
+    if number.digits.is_empty() {
+        return;
+    }
+    let leading_digit = usize::from(number.digits[0]);
+    let leading_glyph = damage_glyph_index(
+        leading_digit,
+        number.critical,
+        true,
+        number.heal,
+        number.player_damage,
+    );
+    if glyphs.get(leading_glyph).is_none() {
+        return;
+    }
+    let total_advance = (0..number.digits.len())
+        .map(|index| damage_digit_advance(&number.digits, index, number.critical))
+        .sum::<i16>();
+    let anchor_y = anchor_y - f32::from(total_advance / 2);
+    let mut cursor_x = 0.0;
+    for (index, digit) in number.digits.iter().copied().enumerate() {
+        let glyph_index = damage_glyph_index(
+            usize::from(digit),
             number.critical,
-            true,
+            index == 0,
             number.heal,
             number.player_damage,
         );
-        if glyphs.get(leading_glyph).is_none() {
-            continue;
-        }
-        let total_advance = (0..number.digits.len())
-            .map(|index| damage_digit_advance(&number.digits, index, number.critical))
-            .sum::<i16>();
-        let anchor_y = anchor_y - f32::from(total_advance / 2);
-        let mut cursor_x = 0.0;
-        for (index, digit) in number.digits.iter().copied().enumerate() {
-            let glyph_index = damage_glyph_index(
-                usize::from(digit),
-                number.critical,
-                index == 0,
-                number.heal,
-                number.player_damage,
-            );
-            let Some(glyph) = glyphs.get(glyph_index) else {
-                cursor_x += f32::from(damage_digit_advance(&number.digits, index, number.critical));
-                continue;
-            };
-            let vertical_shift = if index > 0 && index % 2 == 1 {
-                2.0
-            } else if index > 0 {
-                -2.0
-            } else {
-                0.0
-            };
-            draws.push(SpriteDraw {
-                texture,
-                x: anchor_x + cursor_x - glyph.origin_x,
-                y: anchor_y + vertical_shift - glyph.origin_y,
-                width: glyph.width,
-                height: glyph.height,
-                uv: glyph.uv,
-                tint: [1.0, 1.0, 1.0],
-                blend_mode: BlendMode::Alpha,
-                flip_x: false,
-                opacity,
-            });
+        let Some(glyph) = glyphs.get(glyph_index) else {
             cursor_x += f32::from(damage_digit_advance(&number.digits, index, number.critical));
-        }
+            continue;
+        };
+        let vertical_shift = if index > 0 && index % 2 == 1 {
+            2.0
+        } else if index > 0 {
+            -2.0
+        } else {
+            0.0
+        };
+        emit(
+            glyph,
+            anchor_x + cursor_x - glyph.origin_x,
+            anchor_y + vertical_shift - glyph.origin_y,
+            opacity,
+        );
+        cursor_x += f32::from(damage_digit_advance(&number.digits, index, number.critical));
     }
 }
 

@@ -313,3 +313,109 @@ fn snap_small_speed(acceleration: f64, speed: &mut f64) {
         *speed = 0.0;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{PhysicsBody, PhysicsEngine, PhysicsFlags};
+    use crate::foothold::{Foothold, FootholdTree};
+
+    fn floor(id: u16, previous: u16, next: u16, x1: i16, y1: i16, x2: i16, y2: i16) -> Foothold {
+        Foothold {
+            id,
+            previous,
+            next,
+            layer: 1,
+            x1,
+            y1,
+            x2,
+            y2,
+        }
+    }
+
+    #[test]
+    fn normal_mode_applies_legacy_gravity_per_tick() {
+        let tree = FootholdTree::new(vec![floor(1, 0, 0, 0, 100, 100, 100)]).unwrap();
+        let mut body = PhysicsBody::new(50.0, 20.0);
+        body.foothold_id = 1;
+
+        PhysicsEngine.move_body(&tree, &mut body);
+
+        assert!((body.vertical_speed - 0.14).abs() < f64::EPSILON);
+        assert!((body.y - 20.14).abs() < 1e-9);
+        assert!(!body.on_ground);
+    }
+
+    #[test]
+    fn linked_slope_transition_keeps_body_on_the_new_ground() {
+        let tree = FootholdTree::new(vec![
+            floor(1, 0, 2, 0, 0, 10, 10),
+            floor(2, 1, 0, 10, 10, 20, 20),
+        ])
+        .unwrap();
+        let mut body = PhysicsBody::new(11.0, 10.0);
+        body.foothold_id = 1;
+        body.on_ground = true;
+        body.horizontal_speed = 5.0;
+
+        PhysicsEngine.move_body(&tree, &mut body);
+
+        assert_eq!(body.foothold_id, 2);
+        assert_eq!(body.y, 11.0);
+        assert!(body.on_ground);
+    }
+
+    #[test]
+    fn wall_collision_clamps_horizontal_motion_to_the_foothold_edge() {
+        let tree = FootholdTree::new(vec![
+            floor(1, 0, 2, 0, 100, 60, 100),
+            floor(2, 1, 0, 60, 20, 60, 100),
+        ])
+        .unwrap();
+        let mut body = PhysicsBody::new(50.0, 100.0);
+        body.foothold_id = 1;
+        body.on_ground = true;
+        body.horizontal_speed = 20.0;
+
+        PhysicsEngine.move_body(&tree, &mut body);
+
+        assert_eq!(body.x, 60.0);
+        assert_eq!(body.horizontal_speed, 0.0);
+    }
+
+    #[test]
+    fn jump_down_requires_a_lower_floor_within_600_pixels() {
+        let tree = FootholdTree::new(vec![
+            floor(1, 0, 0, 0, 100, 100, 100),
+            floor(2, 0, 0, 0, 300, 100, 300),
+        ])
+        .unwrap();
+        let mut body = PhysicsBody::new(50.0, 100.0);
+        body.foothold_id = 1;
+        body.on_ground = true;
+        body.flags.check_below = true;
+
+        PhysicsEngine.move_body(&tree, &mut body);
+
+        assert!(body.jump_down_enabled);
+        assert_eq!(body.ground_below, 101.0);
+        assert!(!body.flags.check_below);
+
+        let distant_tree = FootholdTree::new(vec![
+            floor(1, 0, 0, 0, 100, 100, 100),
+            floor(2, 0, 0, 0, 701, 100, 701),
+        ])
+        .unwrap();
+        let mut distant_body = PhysicsBody::new(50.0, 100.0);
+        distant_body.foothold_id = 1;
+        distant_body.on_ground = true;
+        distant_body.flags = PhysicsFlags {
+            check_below: true,
+            ..Default::default()
+        };
+
+        PhysicsEngine.move_body(&distant_tree, &mut distant_body);
+
+        assert!(!distant_body.jump_down_enabled);
+        assert_eq!(distant_body.ground_below, 0.0);
+    }
+}

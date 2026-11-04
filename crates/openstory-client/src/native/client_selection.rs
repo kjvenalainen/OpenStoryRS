@@ -696,6 +696,13 @@ impl ClientApp {
         self.refresh_status_texture();
         if hp_changed_to_zero {
             self.enter_death_state();
+        } else if self.death_notice
+            && self
+                .active_character
+                .as_ref()
+                .is_some_and(|character| character.stats.hp > 0)
+        {
+            self.clear_death_state();
         }
     }
 

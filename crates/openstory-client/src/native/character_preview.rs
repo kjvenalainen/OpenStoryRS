@@ -46,6 +46,13 @@ fn append_character_animations(
             let (delay_ms, face_sprite, face_offset) = append_character_avatar(
                 sprites, archive, look, stance, frame_id, anchor_x, anchor_y, cache,
             )?;
+            if sprites.len() > first_sprite
+                && let AvatarMotion::Attack(stance_id) = motion
+            {
+                append_character_afterimage_frame(
+                    sprites, archive, look, stance_id, frame_id, anchor_x, anchor_y, cache,
+                )?;
+            }
             if sprites.len() > first_sprite {
                 frames.push(AvatarFrameAsset {
                     motion,
@@ -58,6 +65,66 @@ fn append_character_animations(
         }
     }
     Ok(frames)
+}
+
+fn append_character_afterimage_frame(
+    sprites: &mut Vec<DecodedSprite>,
+    archive: &NxArchive,
+    look: &openstory_protocol::CharacterLook,
+    stance: u8,
+    body_frame: u8,
+    anchor_x: f32,
+    anchor_y: f32,
+    cache: &mut MapArtCache,
+) -> Result<(), String> {
+    let Some(stance_name) = attack_stance_name(stance) else {
+        return Ok(());
+    };
+    for (afterimage_path, afterimage) in weapon_afterimage_candidates(archive, look, stance_name) {
+        let numeric_frames = numeric_children(&afterimage)?;
+        let Some((first_body_frame, animation)) = numeric_frames
+            .into_iter()
+            .filter_map(|node| {
+                let frame = node.name().ok()?.parse::<u8>().ok()?;
+                Some((frame, node))
+            })
+            .last()
+        else {
+            continue;
+        };
+        if body_frame < first_body_frame {
+            return Ok(());
+        }
+
+        let animation_frames = numeric_children(&animation)?;
+        let animation_frame = if animation_frames.is_empty() {
+            animation
+        } else {
+            let frame_index = usize::from(body_frame - first_body_frame);
+            let Some(frame) = animation_frames.get(frame_index) else {
+                return Ok(());
+            };
+            frame.clone()
+        };
+        let first_sprite = sprites.len();
+        append_map_art_sprite(
+            sprites,
+            &animation_frame,
+            &format!("character:afterimage:{afterimage_path}/{body_frame}"),
+            // Nudge the trail toward the swing direction so it clears the
+            // torso; avatar rendering mirrors this offset when facing right.
+            anchor_x - 12.0,
+            anchor_y,
+            255,
+            false,
+            cache,
+        )?;
+        set_sprite_depth(sprites, first_sprite, 50);
+        if sprites.len() > first_sprite {
+            return Ok(());
+        }
+    }
+    Ok(())
 }
 
 fn append_character_preview(

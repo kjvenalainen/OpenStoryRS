@@ -640,10 +640,12 @@ and sends the matching selection index.
   the native client sends changed snapshots at physics ticks. Bounded `CHANGE_STATS`
   packets update local character values, including variable Evan SP tables and the
   composite pet mask. The bottom HUD uses the stock v83 `StatusBar.img` background,
-  gauge tracks/fills, toolbar buttons, and notice art; its live HP, MP, and EXP fills
-  follow the v83 experience table. A transparent overlay draws the name and level/job
-  in the stock two-row layout and uses `StatusBar.img/number` glyphs for right-aligned
-  HP/MP/EXP readouts. Positive HP deltas show legacy blue `NoBlue` healing digits, and
+  stretched across the 1024-wide canvas with toolbar controls aligned to the right edge,
+  plus native gauge frames, shaded fills, metallic tracks, dark-panel chrome, and notice art;
+  its live HP, MP, and EXP fills follow the v83 experience table. A transparent overlay draws
+  the left-aligned name and job and uses `Basic.img/LevelNo` tiles in a widened panel for up
+  to three level digits; the character details and gauges shift right with the panel.
+  Positive HP deltas show legacy blue `NoBlue` healing digits, and
   local and remote player damage uses the violet `NoViolet` glyphs from
   `Effect.nx/BasicEff.img`. When Zombify is active, a successful Heal cast followed by
   the server-reported HP loss displays violet backlash damage without granting contact
@@ -679,9 +681,13 @@ and sends the matching selection index.
   `DAMAGE_PLAYER` feedback also flashes the actor during the same invincibility window.
   Authoritative HP changes to zero now stop local movement and attacks, play the tombstone
   sound, animate the falling/landed tomb and hovering ghost with the character's head and
-  hair, and show a modal nearest-town respawn notice; OK, Enter, Escape, or Space sends the
-  legacy dead-character map-change request. Position correction for the local player
-  remains unavailable because this server relays `MOVE_PLAYER` only to other clients.
+  hair, and show a modal nearest-town respawn notice; OK, Enter, or Space sends the legacy
+  dead-character map-change request, while Escape opens quit confirmation. Field loads now
+  send the v83 map-transition completion packet, and a positive HP update clears the revive
+  notice and local tomb art.
+  Respawn destinations continue to follow each server map's `returnMap` setting. Position
+  correction for the local player remains unavailable because this server relays `MOVE_PLAYER`
+  only to other clients.
   Initial `SET_FIELD` now parses the skill cooldown list and bounded active/completed quest
   sections, then preserves Teleport Rock destinations and reads the Monster Book cover and
   collected cards in the legacy minigame/ring/rock order. The v83 `ADD_COOLDOWN` packet sets
@@ -949,3 +955,23 @@ and sends the matching selection index.
 - `RPS_GAME` now opens the server-driven Rock-Paper-Scissors panel from the v83
   `UIWindow.img/RpsGame` assets. Start, hand selection, retry/continue, exit and Escape controls
   follow the reference packet flow, and results update the displayed hands and win count.
+- Backend parity pass (2026-10-28): `BACKEND_PARITY.md` now inventories all 241 registered
+  incoming handlers and the outgoing packet families. The incoming inventory has 0 missing
+  paths: 235 are implemented but live-unverified, 3 preserve original no-ops, and 3 custom
+  bot inventory/Monster Life/Battle opcodes depend on a server contract. Added bounded Duey/Fredrick, memo,
+  police, GM, relog, and session-value response handling; MTS and bot inventory packet variants;
+  and bounded parsing for summon packets whose original behavior is a no-op. Exact-byte request
+  builders now cover pet chat/commands, gender selection, map transfer, Monster Book cover,
+  explicit report variants, supported admin map commands, and Cosmic's wedding registry gift-add
+  and gift-claim operations. `PLAYER_UPDATE` remains undispatched because Cosmic uses client
+  opcode 223 for party-search updates. The C++ client has no wedding packet caller; Rust has no UI
+  caller for the server-reviewed wedding builders. Combat weapon rules, skill-use restrictions,
+  focused physics coverage, and timed character buff storage/lifecycle now live in or exercise
+  `openstory-core`.
+  `cargo fmt --all -- --check`, `cargo check --workspace`, `cargo test --workspace` (38 tests),
+  and `cargo build --workspace` pass. The `native-first-map` preview was rendered under
+  `target/ui-previews` and inspected at the 1024x768 logical resolution. A native launch reached
+  Cosmic at `127.0.0.1:8484`, completed the Maple handshake, and received the server ping. No test
+  account credentials are configured, so login-to-field, channel-transfer, and transaction flows
+  remain unverified. Full legacy parity and field-by-field audits for multipurpose handlers remain
+  open; the NPC token-for-mesos purchase also remains disabled pending a corrected server contract.

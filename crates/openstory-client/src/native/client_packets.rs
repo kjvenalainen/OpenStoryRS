@@ -28,6 +28,21 @@ impl ClientApp {
             return;
         }
         match opcode {
+            openstory_protocol::OPCODE_RELOG_RESPONSE
+            | openstory_protocol::OPCODE_MEMO_RESULT
+            | openstory_protocol::OPCODE_SET_GENDER
+            | openstory_protocol::OPCODE_SESSION_VALUE
+            | openstory_protocol::OPCODE_DATA_CRC_CHECK_FAILED
+            | openstory_protocol::OPCODE_ADMIN_RESULT
+            | openstory_protocol::OPCODE_GMEVENT_INSTRUCTIONS
+            | openstory_protocol::OPCODE_FREDRICK_MESSAGE
+            | openstory_protocol::OPCODE_FREDRICK
+            | openstory_protocol::OPCODE_PARCEL => {
+                match openstory_protocol::parse_misc_server_packet(packet) {
+                    Ok(event) => self.apply_misc_server_event(event),
+                    Err(error) => eprintln!("OpenStoryRS: invalid legacy server packet: {error}"),
+                }
+            }
             openstory_protocol::OPCODE_RPS_GAME => {
                 match openstory_protocol::parse_rps_game(packet) {
                     Ok(event) => self.apply_rps_game_event(event),
@@ -867,6 +882,30 @@ impl ClientApp {
                 }
             }
             openstory_protocol::OPCODE_SET_CASH_SHOP => self.handle_cash_shop_packet(packet),
+            openstory_protocol::OPCODE_SET_MTS => {
+                match openstory_protocol::parse_mts_open(packet) {
+                    Ok(snapshot) => self.apply_mts_open_snapshot(snapshot),
+                    Err(error) => eprintln!("OpenStoryRS: invalid SET_ITC packet: {error}"),
+                }
+            }
+            openstory_protocol::OPCODE_MTS_CASH => {
+                match openstory_protocol::parse_mts_cash(packet) {
+                    Ok(balances) => self.mts_balances = Some(balances),
+                    Err(error) => eprintln!("OpenStoryRS: invalid MTS balance packet: {error}"),
+                }
+            }
+            openstory_protocol::OPCODE_MTS_OPERATION => {
+                match openstory_protocol::parse_mts_operation(packet) {
+                    Ok(event) => self.apply_mts_event(event),
+                    Err(error) => eprintln!("OpenStoryRS: invalid MTS operation packet: {error}"),
+                }
+            }
+            openstory_protocol::OPCODE_BOT_INVENTORY => {
+                match openstory_protocol::parse_bot_inventory(packet) {
+                    Ok(event) => self.apply_bot_inventory_event(event),
+                    Err(error) => eprintln!("OpenStoryRS: invalid bot inventory packet: {error}"),
+                }
+            }
             openstory_protocol::OPCODE_CASH_SHOP_OPERATION => {
                 self.handle_cash_shop_operation(packet)
             }
@@ -2477,7 +2516,22 @@ impl ClientApp {
                     Err(error) => eprintln!("OpenStoryRS: invalid dragon removal: {error}"),
                 }
             }
-            openstory_protocol::OPCODE_SUMMON_ATTACK | openstory_protocol::OPCODE_DAMAGE_SUMMON => {
+            openstory_protocol::OPCODE_SUMMON_ATTACK => {
+                match openstory_protocol::parse_summon_attack(packet) {
+                    // The original handler parses these targets but deliberately
+                    // leaves their damage presentation to mob HP updates.
+                    Ok(_attack) => {}
+                    Err(error) => eprintln!("OpenStoryRS: invalid summon attack: {error}"),
+                }
+            }
+            openstory_protocol::OPCODE_DAMAGE_SUMMON => {
+                match openstory_protocol::parse_summon_damage(packet) {
+                    // The original Summon::apply_damage implementation is a
+                    // visual no-op; retain that behavior after validating the
+                    // complete packet.
+                    Ok(_damage) => {}
+                    Err(error) => eprintln!("OpenStoryRS: invalid summon damage: {error}"),
+                }
             }
             _ => eprintln!(
                 "OpenStory: received packet opcode {opcode} ({} bytes)",
@@ -2524,6 +2578,7 @@ impl ClientApp {
                     speaker: 0,
                     text: message.clone(),
                     number_bounds: None,
+                    navigation: None,
                 });
                 self.push_chat_line(message, [255, 222, 112]);
             }
@@ -2589,6 +2644,261 @@ impl ClientApp {
                 "The scroll lights up but the item remains as if nothing happened."
             };
             self.push_chat_line(message.to_owned(), [255, 105, 105]);
+        }
+    }
+
+    fn apply_mts_event(&mut self, event: openstory_protocol::MtsEvent) {
+        let notice = match &event {
+            openstory_protocol::MtsEvent::SellConfirmed => {
+                Some("[MTS] Item listed for sale.".to_owned())
+            }
+            openstory_protocol::MtsEvent::TransferConfirmed { .. } => {
+                Some("[MTS] Item transfer completed.".to_owned())
+            }
+            openstory_protocol::MtsEvent::BuyConfirmed => {
+                Some("[MTS] Purchase completed.".to_owned())
+            }
+            openstory_protocol::MtsEvent::BuyFailed => Some("[MTS] Purchase failed.".to_owned()),
+            _ => None,
+        };
+        self.mts_last_event = Some(event);
+        if let Some(notice) = notice {
+            let color = if notice.ends_with("failed.") {
+                [255, 105, 105]
+            } else {
+                [255, 222, 112]
+            };
+            self.push_chat_line(notice, color);
+        }
+    }
+
+    fn apply_mts_open_snapshot(&mut self, snapshot: openstory_protocol::MtsOpenSnapshot) {
+        if self
+            .active_character
+            .as_ref()
+            .is_none_or(|character| character.id != snapshot.character_id)
+        {
+            eprintln!(
+                "OpenStoryRS: ignored SET_ITC snapshot for inactive character {}",
+                snapshot.character_id
+            );
+            return;
+        }
+
+        let mut stats = snapshot.stats.clone();
+        stats.meso = i32::try_from(snapshot.inventory.meso).ok();
+        if let Some(character) = self.active_character.as_mut() {
+            character.stats = stats.clone();
+        }
+        if let Some(list) = self.character_list.as_mut()
+            && let Some(character) = list
+                .characters
+                .iter_mut()
+                .find(|character| character.id == snapshot.character_id)
+        {
+            character.stats = stats.clone();
+        }
+
+        self.mts_open = true;
+        self.mts_open_snapshot = Some(snapshot.clone());
+        self.mts_last_event = None;
+        self.buddy_capacity = snapshot.buddy_capacity;
+        self.inventory = Some(snapshot.inventory.clone());
+        self.teleport_rock_locations = snapshot.teleport_rock.clone();
+        self.skills = snapshot
+            .skills
+            .iter()
+            .copied()
+            .map(|skill| (skill.id, skill))
+            .collect();
+        self.skill_cooldowns.clear();
+        for cooldown in &snapshot.cooldowns {
+            self.apply_skill_cooldown(cooldown.skill_id, cooldown.duration_seconds);
+        }
+        self.quest_log = snapshot.quest_log.clone();
+        self.quest_log_tab = QuestLogTab::Active;
+        self.quest_log_selected = 0;
+        self.quest_log_scroll = 0;
+        self.quest_reward_selected = 0;
+        self.quest_forfeit_confirmation = None;
+        self.monster_book.card_updates.clear();
+        self.monster_book
+            .set_cover(snapshot.monster_book.cover_item_id);
+        self.monster_book.clear_selected_card();
+        for (card_id, level) in &snapshot.monster_book.cards {
+            self.monster_book.add_card(*card_id, *level);
+        }
+        self.monster_book.texture = None;
+        if self.monster_book.open {
+            self.refresh_monster_book_texture();
+        }
+        self.skill_book_entries.clear();
+        self.key_config_actions_dirty = true;
+        self.inventory_texture = None;
+        self.skill_book_texture = None;
+        self.status_texture = None;
+        self.status_detail_texture = None;
+        self.status_auto_confirmation = false;
+        self.status_waiting_for_stats = false;
+        self.sync_equipped_look();
+        self.refresh_inventory_texture();
+        self.refresh_pet_equipment_texture();
+        self.refresh_skill_book_entries();
+        self.refresh_skill_book_texture();
+        self.refresh_map_hud();
+        self.refresh_npc_quest_marks();
+        self.refresh_status_texture();
+        self.push_chat_line(
+            "[MTS] Maple Trading System opened; character data refreshed.".to_owned(),
+            [255, 222, 112],
+        );
+    }
+
+    fn apply_bot_inventory_event(&mut self, event: openstory_protocol::BotInventoryEvent) {
+        let notice = match &event {
+            openstory_protocol::BotInventoryEvent::Snapshot(snapshot) => {
+                self.bot_inventory_snapshot = Some(snapshot.clone());
+                Some((
+                    format!(
+                        "[Bot Inventory] Snapshot received for bot {}.",
+                        snapshot.bot_index
+                    ),
+                    [255, 222, 112],
+                ))
+            }
+            openstory_protocol::BotInventoryEvent::Rejected(response) => Some((
+                format!("[Bot Inventory] Server rejected the request ({response})."),
+                [255, 105, 105],
+            )),
+        };
+        self.bot_inventory_last_event = Some(event);
+        if let Some((notice, color)) = notice {
+            self.push_chat_line(notice, color);
+        }
+    }
+
+    fn apply_misc_server_event(&mut self, event: openstory_protocol::MiscServerEvent) {
+        use openstory_protocol::{MemoResult, MiscServerEvent as Event, ParcelEvent};
+
+        match event {
+            Event::RelogResponse { success: true } => {
+                self.login_server_connected = false;
+                self.channel_connected = false;
+                self.server_ui_disabled = false;
+                self.pending_login_packet = None;
+                self.session = Some(session::connect(self.server_address.clone()));
+                self.active_character = None;
+                self.taming_mount_stats = None;
+                self.inventory = None;
+                self.current_field = None;
+                self.session_energy = None;
+                self.gm_account = false;
+                self.gm_hidden = false;
+                self.mts_open = false;
+                self.mts_open_snapshot = None;
+                self.mts_balances = None;
+                self.show_status_menu = false;
+                self.channel_switch_open = false;
+                eprintln!("OpenStory: reconnecting to the login server after relog response");
+            }
+            Event::RelogResponse { success: false } | Event::GenderSet(_) => {}
+            Event::MemoResult(MemoResult::Sent) => {
+                self.push_chat_line("[Memo] Your note was sent.".to_owned(), [255, 255, 0])
+            }
+            Event::MemoResult(MemoResult::Failed { error: 2 }) => self.push_chat_line(
+                "[Memo] That character does not exist.".to_owned(),
+                [255, 80, 80],
+            ),
+            Event::MemoResult(MemoResult::Failed { error }) => self.push_chat_line(
+                format!("[Memo] Your note could not be sent (error {error})."),
+                [255, 80, 80],
+            ),
+            Event::MemoResult(MemoResult::Other(_)) => {}
+            Event::SessionValue { label, value } if label == "energy" => {
+                if let Ok(energy) = value.parse::<i32>() {
+                    self.session_energy = Some(energy);
+                    if let Some(scene) = self.map_scene.as_mut() {
+                        scene.energy = Some(energy);
+                    }
+                }
+            }
+            Event::SessionValue { label, value } => {
+                self.push_chat_line(format!("[{label}] {value}"), [255, 255, 0]);
+            }
+            Event::PoliceNotice(mut message) => {
+                if message.is_empty() {
+                    message = "You have been disconnected by the server police.".to_owned();
+                }
+                self.push_chat_line(format!("[Police] {message}"), [255, 80, 80]);
+                self.show_status_message(message, [255, 80, 80]);
+            }
+            Event::AdminResult { command, mode } => {
+                self.gm_account = true;
+                if command == Some(0x10)
+                    && let Some(mode) = mode
+                {
+                    self.gm_hidden = mode == 1;
+                    if let Some(scene) = self.map_scene.as_mut() {
+                        scene.gm_hidden = self.gm_hidden;
+                    }
+                }
+            }
+            Event::GmEventInstructions => self.push_chat_line(
+                "[Event] A GM event is starting - follow the instructions.".to_owned(),
+                [255, 255, 0],
+            ),
+            Event::FredrickMessage(operation) => self.push_chat_line(
+                format!("[Fredrick] Message (op={operation})"),
+                [255, 255, 0],
+            ),
+            Event::Fredrick(operation) => self.push_chat_line(
+                format!("[Fredrick] Response (op={operation})"),
+                [255, 255, 0],
+            ),
+            Event::Parcel(ParcelEvent::PackagesAvailable { count }) => self.push_chat_line(
+                format!("[Duey] You have {count} package(s)."),
+                [255, 255, 0],
+            ),
+            Event::Parcel(ParcelEvent::ActionEnabled) => {}
+            Event::Parcel(ParcelEvent::InsufficientMesos) => {
+                self.show_status_message("Not enough mesos for delivery.".to_owned(), [255, 80, 80])
+            }
+            Event::Parcel(ParcelEvent::InvalidRequest) => {
+                self.show_status_message("Incorrect delivery request.".to_owned(), [255, 80, 80])
+            }
+            Event::Parcel(ParcelEvent::RecipientNotFound) => {
+                self.show_status_message("That character does not exist.".to_owned(), [255, 80, 80])
+            }
+            Event::Parcel(ParcelEvent::CannotSendToSelf) => {
+                self.show_status_message("Cannot send to yourself.".to_owned(), [255, 80, 80])
+            }
+            Event::Parcel(ParcelEvent::RecipientStorageFull) => {
+                self.show_status_message("Receiver's storage is full.".to_owned(), [255, 80, 80])
+            }
+            Event::Parcel(ParcelEvent::InsufficientInventorySpace) => {
+                self.show_status_message("Not enough inventory space.".to_owned(), [255, 80, 80])
+            }
+            Event::Parcel(ParcelEvent::Sent) => {
+                self.show_status_message("Package sent successfully!".to_owned(), [255, 255, 255])
+            }
+            Event::Parcel(ParcelEvent::Received) => {
+                self.show_status_message("Package received!".to_owned(), [255, 255, 255]);
+            }
+            Event::Parcel(ParcelEvent::ReceivedFrom { sender, .. }) => self.push_chat_line(
+                format!("[Duey] Package received from {sender}!"),
+                [255, 255, 0],
+            ),
+            Event::Parcel(ParcelEvent::ArrivalNotification { quick: true }) => self.push_chat_line(
+                "[Duey] Quick delivery package has arrived!".to_owned(),
+                [255, 255, 0],
+            ),
+            Event::Parcel(ParcelEvent::ArrivalNotification { quick: false }) => {
+                self.push_chat_line(
+                    "[Duey] You have a package waiting!".to_owned(),
+                    [255, 255, 0],
+                );
+            }
+            Event::Parcel(ParcelEvent::Other(_)) => {}
         }
     }
 }

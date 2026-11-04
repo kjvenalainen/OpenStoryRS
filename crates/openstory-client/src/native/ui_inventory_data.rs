@@ -20,45 +20,28 @@ fn inventory_slot_max(
         openstory_protocol::InventoryType::Cash => u16::from(inventory.slot_maxima[4]),
         // Includes the sparse v83 bonus slots (medal, belt, pocket, pendant,
         // shoulder, android, and newer gear); INVENTORY_GROW can update it.
-        openstory_protocol::InventoryType::Equipped => {
-            u16::from(inventory.equipped_slot_maximum)
-        }
+        openstory_protocol::InventoryType::Equipped => u16::from(inventory.equipped_slot_maximum),
     }
 }
 
 fn inventory_tab_at(cursor: Point) -> Option<openstory_protocol::InventoryType> {
-    let local_x = cursor.x - INVENTORY_PANEL_X;
-    let local_y = cursor.y - INVENTORY_PANEL_Y;
-    if !(27.0..43.0).contains(&local_y) || !(10.0..165.0).contains(&local_x) {
-        return None;
-    }
-    let index = ((local_x - 10.0) / 31.0).floor() as usize;
-    let tab_left = 10.0 + index as f32 * 31.0;
-    if index >= inventory_tabs().len() || local_x - tab_left >= 31.0 {
-        return None;
-    }
-    inventory_tabs().get(index).copied()
+    inventory_tabs()
+        .into_iter()
+        .enumerate()
+        .find_map(|(index, tab)| {
+            ui_foundation::inventory_tab(index)
+                .contains(cursor.x - INVENTORY_PANEL_X, cursor.y - INVENTORY_PANEL_Y)
+                .then_some(tab)
+        })
 }
 
 fn inventory_slot_at(cursor: Point, scroll_row: u16) -> Option<u16> {
-    let local_x = cursor.x - INVENTORY_PANEL_X - INVENTORY_SLOT_X as f32;
-    let local_y = cursor.y - INVENTORY_PANEL_Y - INVENTORY_SLOT_Y as f32;
-    if local_x < 0.0 || local_y < 0.0 {
-        return None;
-    }
-    let column = (local_x / INVENTORY_SLOT_STEP_X as f32).floor() as u16;
-    let row = (local_y / INVENTORY_SLOT_STEP_Y as f32).floor() as u16;
-    if column >= INVENTORY_SLOT_COLUMNS as u16
-        || row >= INVENTORY_SLOT_ROWS as u16
-        || local_x % INVENTORY_SLOT_STEP_X as f32 >= 34.0
-        || local_y % INVENTORY_SLOT_STEP_Y as f32 >= 33.0
-    {
-        return None;
-    }
+    let index = ui_foundation::INVENTORY_GRID
+        .hit(cursor.x - INVENTORY_PANEL_X, cursor.y - INVENTORY_PANEL_Y)?;
     Some(
         scroll_row
             .saturating_mul(INVENTORY_SLOT_COLUMNS as u16)
-            .saturating_add(row * INVENTORY_SLOT_COLUMNS as u16 + column + 1),
+            .saturating_add(index as u16 + 1),
     )
 }
 
@@ -626,45 +609,6 @@ fn composite_inventory_icon(
                 break;
             }
             let source_x = target_x * source_width / target_size;
-            let source_index = (source_y * source_width + source_x) * 4;
-            let destination_index = (destination_y * canvas_width + destination_x) * 4;
-            let alpha = u16::from(source[source_index + 3]);
-            let inverse = 255 - alpha;
-            for channel in 0..3 {
-                canvas[destination_index + channel] = ((u16::from(source[source_index + channel])
-                    * alpha
-                    + u16::from(canvas[destination_index + channel]) * inverse)
-                    / 255) as u8;
-            }
-            let destination_alpha = u16::from(canvas[destination_index + 3]);
-            canvas[destination_index + 3] = (alpha + destination_alpha * inverse / 255) as u8;
-        }
-    }
-}
-
-fn composite_inventory_icon_native(
-    canvas: &mut [u8],
-    canvas_width: usize,
-    canvas_height: usize,
-    source: &[u8],
-    source_width: usize,
-    source_height: usize,
-    x: usize,
-    y: usize,
-) {
-    if source_width == 0 || source_height == 0 {
-        return;
-    }
-    for source_y in 0..source_height {
-        let destination_y = y + source_y;
-        if destination_y >= canvas_height {
-            break;
-        }
-        for source_x in 0..source_width {
-            let destination_x = x + source_x;
-            if destination_x >= canvas_width {
-                break;
-            }
             let source_index = (source_y * source_width + source_x) * 4;
             let destination_index = (destination_y * canvas_width + destination_x) * 4;
             let alpha = u16::from(source[source_index + 3]);

@@ -54,6 +54,7 @@ impl ClientApp {
                 self.chat_input.clear();
                 self.refresh_chat_texture();
                 self.npc_dialogue = None;
+                self.pending_npc_talk = None;
                 self.npc_shop = None;
                 self.character_info = None;
                 self.character_info_texture = None;
@@ -69,6 +70,15 @@ impl ClientApp {
                     .is_some_and(|character| character.stats.hp == 0)
                 {
                     self.enter_death_state();
+                }
+                // The v83 server keeps map-changing actions locked until the
+                // client confirms that it has finished loading the field.
+                if let Some(session) = self.session.as_ref()
+                    && let Err(error) =
+                        session.send_packet(openstory_protocol::player_map_transfer_packet())
+                {
+                    eprintln!("OpenStoryRS: could not complete map {map_id} transition: {error}");
+                    self.channel_connected = false;
                 }
                 eprintln!("OpenStory: loaded map {map_id} at portal {portal}");
             }

@@ -192,6 +192,12 @@ impl ApplicationHandler for ClientApp {
                 {
                     window.request_redraw();
                 }
+                if let Some(cursor) = self.cursor
+                    && self.update_npc_dialogue_hover(self.dialog_window_input_cursor(cursor))
+                    && let Some(window) = self.window.as_ref()
+                {
+                    window.request_redraw();
+                }
                 if let Some(cursor) = self.cursor {
                     self.update_messenger_drag(cursor);
                     if self.update_world_map_hover(cursor)
@@ -206,7 +212,7 @@ impl ApplicationHandler for ClientApp {
                 {
                     let cursor = self.dialog_window_input_cursor(cursor);
                     let scroll_cursor = Point {
-                        x: panel.x + 584.0,
+                        x: panel.x + NpcDialogueLayout::SCROLL_X as f32 + 6.0,
                         y: cursor.y,
                     };
                     if self.set_npc_dialogue_scroll_from_cursor(scroll_cursor)
@@ -240,6 +246,16 @@ impl ApplicationHandler for ClientApp {
                 button: MouseButton::Left,
                 ..
             } => {
+                self.finish_quickslot_pointer();
+                if self.show_key_config {
+                    self.finish_key_config_pointer(
+                        self.cursor
+                            .map(|cursor| self.dialog_window_input_cursor(cursor)),
+                    );
+                    if let Some(window) = self.window.as_ref() {
+                        window.request_redraw();
+                    }
+                }
                 if self.server_notice_popup.is_some() {
                     return;
                 }
@@ -292,6 +308,34 @@ impl ApplicationHandler for ClientApp {
                     }
                     return;
                 }
+                if self.quit_confirmation {
+                    let accept = self.quit_confirmation_buttons[0]
+                        .is_some_and(|bounds| rect_contains(bounds, cursor));
+                    let cancel = self.quit_confirmation_buttons[1]
+                        .is_some_and(|bounds| rect_contains(bounds, cursor));
+                    self.quit_confirmation = false;
+                    if accept {
+                        self.quit_requested = true;
+                        event_loop.exit();
+                    } else if !cancel {
+                        // Clicking outside the compact modal dismisses it, matching Escape.
+                    }
+                    if let Some(window) = self.window.as_ref() {
+                        window.request_redraw();
+                    }
+                    return;
+                }
+                // The death notice is a full-screen modal. Handle it before
+                // draggable windows and server UI locks can consume the click.
+                if self.death_notice {
+                    if ui_foundation::REVIVE_BUTTON.contains(cursor.x, cursor.y) {
+                        self.request_death_respawn();
+                    }
+                    if let Some(window) = self.window.as_ref() {
+                        window.request_redraw();
+                    }
+                    return;
+                }
                 if self.begin_dialog_window_drag(cursor) {
                     return;
                 }
@@ -305,7 +349,7 @@ impl ApplicationHandler for ClientApp {
                 }
                 if self.wedding_panel_open {
                     let close = SpriteRect {
-                        x: (1024.0 - WEDDING_PANEL_WIDTH as f32) * 0.5 + 88.0,
+                        x: (1024.0 - WEDDING_INVITATION_WIDTH as f32) * 0.5 + 88.0,
                         y: (768.0 - WEDDING_PANEL_HEIGHT as f32) * 0.5 + 220.0,
                         width: 57.0,
                         height: 23.0,
@@ -358,23 +402,6 @@ impl ApplicationHandler for ClientApp {
                     }
                     return;
                 }
-                if self.quit_confirmation {
-                    let accept = self.quit_confirmation_buttons[0]
-                        .is_some_and(|bounds| rect_contains(bounds, cursor));
-                    let cancel = self.quit_confirmation_buttons[1]
-                        .is_some_and(|bounds| rect_contains(bounds, cursor));
-                    self.quit_confirmation = false;
-                    if accept {
-                        self.quit_requested = true;
-                        event_loop.exit();
-                    } else if !cancel {
-                        // Clicking outside the compact modal dismisses it, matching Escape.
-                    }
-                    if let Some(window) = self.window.as_ref() {
-                        window.request_redraw();
-                    }
-                    return;
-                }
                 if self.click_character_selection(cursor) {
                     return;
                 }
@@ -415,15 +442,6 @@ impl ApplicationHandler for ClientApp {
                 }
                 self.messenger_chat_focused = false;
                 if self.click_minimap(cursor) {
-                    if let Some(window) = self.window.as_ref() {
-                        window.request_redraw();
-                    }
-                    return;
-                }
-                if self.death_notice {
-                    if (491.0..533.0).contains(&cursor.x) && (425.0..442.0).contains(&cursor.y) {
-                        self.request_death_respawn();
-                    }
                     if let Some(window) = self.window.as_ref() {
                         window.request_redraw();
                     }
@@ -784,11 +802,12 @@ impl ApplicationHandler for ClientApp {
                     if cursor.is_some_and(|cursor| {
                         rect_contains(
                             SpriteRect {
-                                x: KEY_CONFIG_PANEL_X + 14.0,
-                                y: KEY_CONFIG_PANEL_Y + KEY_CONFIG_ROW_TOP as f32,
-                                width: KEY_CONFIG_PANEL_WIDTH as f32 - 28.0,
-                                height: KEY_CONFIG_VISIBLE_ROWS as f32
-                                    * KEY_CONFIG_ROW_HEIGHT as f32,
+                                x: KEY_CONFIG_PANEL_X + keyboard_settings::TRAY.x,
+                                y: KEY_CONFIG_PANEL_Y + keyboard_settings::TRAY.y,
+                                width: keyboard_settings::TRAY.columns as f32
+                                    * keyboard_settings::TRAY.step_x,
+                                height: keyboard_settings::TRAY.rows as f32
+                                    * keyboard_settings::TRAY.step_y,
                                 blend_mode: BlendMode::Alpha,
                             },
                             cursor,
@@ -972,9 +991,16 @@ impl ApplicationHandler for ClientApp {
                 let scroll_npc_choices = self.npc_dialogue.as_ref().is_some_and(|dialogue| {
                     dialogue.state.message_type == 4
                         && dialogue.selections.len() > 5
-                        && self
-                            .cursor
-                            .is_some_and(|cursor| rect_contains(dialogue.panel, cursor))
+                        && self.cursor.is_some_and(|cursor| {
+                            rect_contains(dialogue.panel, cursor)
+                                && dialogue
+                                    .buttons
+                                    .iter()
+                                    .find(|button| {
+                                        matches!(button.action, NpcDialogueAction::Select(_))
+                                    })
+                                    .is_some_and(|button| cursor.y >= button.rect.y)
+                        })
                 });
                 if scroll_npc_choices {
                     self.move_npc_dialogue_selection(if amount > 0.0 { -1 } else { 1 });
@@ -982,8 +1008,7 @@ impl ApplicationHandler for ClientApp {
                         window.request_redraw();
                     }
                 } else if self.npc_dialogue.as_ref().is_some_and(|dialogue| {
-                    dialogue.state.message_type != 4
-                        && dialogue.text_max_scroll > 0
+                    dialogue.text_max_scroll > 0
                         && self
                             .cursor
                             .is_some_and(|cursor| rect_contains(dialogue.panel, cursor))
@@ -1142,9 +1167,7 @@ impl ApplicationHandler for ClientApp {
                     }
                 }
             }
-            WindowEvent::KeyboardInput {
-                event: mut event, ..
-            } => {
+            WindowEvent::KeyboardInput { mut event, .. } => {
                 // Some macOS input paths report named keys while leaving
                 // physical_key unidentified. Normalize keys used by modal and
                 // gameplay controls before routing the event.
@@ -1158,6 +1181,9 @@ impl ApplicationHandler for ClientApp {
                         _ => event.physical_key,
                     };
                 }
+                if event.state == ElementState::Released {
+                    self.release_gameplay_key(event.physical_key);
+                }
                 if self.server_notice_popup.is_some() {
                     if event.state == ElementState::Pressed && !event.repeat {
                         match event.physical_key {
@@ -1169,6 +1195,36 @@ impl ApplicationHandler for ClientApp {
                             }
                             _ => {}
                         }
+                    }
+                    if let Some(window) = self.window.as_ref() {
+                        window.request_redraw();
+                    }
+                    return;
+                }
+                if self.death_notice {
+                    if self.quit_confirmation {
+                        self.set_gameplay_key(event.physical_key, event.state, event.repeat);
+                        if self.quit_requested {
+                            event_loop.exit();
+                        }
+                    } else if event.state == ElementState::Pressed && !event.repeat {
+                        match event.physical_key {
+                            PhysicalKey::Code(KeyCode::Escape) => self.open_quit_confirmation(),
+                            PhysicalKey::Code(
+                                KeyCode::Enter | KeyCode::NumpadEnter | KeyCode::Space,
+                            ) => self.request_death_respawn(),
+                            _ => {}
+                        }
+                    }
+                    if let Some(window) = self.window.as_ref() {
+                        window.request_redraw();
+                    }
+                    return;
+                }
+                // Keyboard Settings owns capture ahead of chat and other text inputs.
+                if self.show_key_config {
+                    if event.state == ElementState::Pressed {
+                        self.handle_key_config_key(event.physical_key, event.repeat);
                     }
                     if let Some(window) = self.window.as_ref() {
                         window.request_redraw();
@@ -1224,6 +1280,7 @@ impl ApplicationHandler for ClientApp {
                 if event.state == ElementState::Pressed
                     && !event.repeat
                     && event.physical_key != PhysicalKey::Code(KeyCode::Escape)
+                    && !self.is_menu_binding(event.physical_key, 14)
                 {
                     self.show_status_menu = false;
                 }
@@ -1315,23 +1372,6 @@ impl ApplicationHandler for ClientApp {
                     }
                     return;
                 }
-                if self.death_notice {
-                    if event.state == ElementState::Pressed && !event.repeat {
-                        match event.physical_key {
-                            PhysicalKey::Code(
-                                KeyCode::Enter
-                                | KeyCode::NumpadEnter
-                                | KeyCode::Escape
-                                | KeyCode::Space,
-                            ) => self.request_death_respawn(),
-                            _ => {}
-                        }
-                    }
-                    if let Some(window) = self.window.as_ref() {
-                        window.request_redraw();
-                    }
-                    return;
-                }
                 if self.character_info.is_some() {
                     if event.state == ElementState::Pressed
                         && !event.repeat
@@ -1378,7 +1418,9 @@ impl ApplicationHandler for ClientApp {
                             matches!(event.physical_key, PhysicalKey::Code(KeyCode::Space))
                                 || matches!(&event.logical_key, Key::Named(NamedKey::Space))
                                 || event.text.as_deref() == Some(" ");
-                        if is_space && !event.repeat {
+                        let advance = is_space
+                            || (message_type != 2 && self.is_npc_chat_key(event.physical_key));
+                        if advance && !event.repeat {
                             // Let Space skip the prompt's typewriter reveal even
                             // for text-entry dialogs. Once the prompt is visible,
                             // Space remains available as an ordinary input character.
@@ -1414,7 +1456,7 @@ impl ApplicationHandler for ClientApp {
                                     self.move_npc_dialogue_selection(direction);
                                 }
                                 PhysicalKey::Code(KeyCode::PageUp | KeyCode::PageDown)
-                                    if message_type != 4 && !event.repeat =>
+                                    if !event.repeat =>
                                 {
                                     let direction = match event.physical_key {
                                         PhysicalKey::Code(KeyCode::PageUp) => -1,
@@ -2317,6 +2359,9 @@ impl ApplicationHandler for ClientApp {
                 }
             }
             WindowEvent::Ime(Ime::Commit(text)) => {
+                if self.show_key_config {
+                    return;
+                }
                 if self.family_ui.input.is_some() {
                     let duplicate = self
                         .family_ui
@@ -2556,14 +2601,11 @@ impl ApplicationHandler for ClientApp {
                     self.refresh_character_creation_scene();
                 } else if let Some(dialogue) = self.npc_dialogue.as_mut() {
                     if matches!(dialogue.state.message_type, 2 | 3) {
-                        for character in text.chars() {
-                            if dialogue.state.message_type == 2
-                                || character.is_ascii_digit()
-                                || (character == '-' && dialogue.input.is_empty())
-                            {
-                                dialogue.input.push(character);
-                            }
-                        }
+                        append_npc_dialogue_input(
+                            &mut dialogue.input,
+                            dialogue.state.message_type,
+                            &text,
+                        );
                         self.rebuild_npc_dialogue();
                     }
                 } else if self.whisper_input_focused {
@@ -2631,6 +2673,8 @@ impl ApplicationHandler for ClientApp {
             }
             WindowEvent::Focused(false) => {
                 self.gameplay_input = GameplayInput::default();
+                self.key_config_pointer_start = None;
+                self.quickslot_pointer_binding = None;
                 if self.inventory_drag_source.take().is_some() {
                     self.refresh_inventory_texture();
                     if let Some(window) = self.window.as_ref() {
@@ -3125,8 +3169,8 @@ impl ApplicationHandler for ClientApp {
                 {
                     draws.push(SpriteDraw {
                         texture,
-                        x: 12.0,
-                        y: 506.0,
+                        x: CHAT_X,
+                        y: CHAT_Y,
                         width: CHAT_WIDTH as f32,
                         height: CHAT_HEIGHT as f32,
                         uv: [0.0, 0.0, 1.0, 1.0],
@@ -4035,7 +4079,7 @@ impl ApplicationHandler for ClientApp {
                 {
                     draws.push(SpriteDraw {
                         texture,
-                        x: (1024.0 - WEDDING_PANEL_WIDTH as f32) * 0.5,
+                        x: (1024.0 - WEDDING_INVITATION_WIDTH as f32) * 0.5,
                         y: (768.0 - WEDDING_PANEL_HEIGHT as f32) * 0.5,
                         width: WEDDING_PANEL_WIDTH as f32,
                         height: WEDDING_PANEL_HEIGHT as f32,
@@ -4209,6 +4253,7 @@ impl ApplicationHandler for ClientApp {
         self.advance_avatar_megaphone(elapsed, now);
         self.advance_maple_tv_animations(elapsed);
         self.advance_npc_dialogue_text(elapsed);
+        self.expire_pending_npc_talk(now);
         self.advance_login_animations(elapsed);
         if self.monster_book.open
             && !self.monster_book.search_open

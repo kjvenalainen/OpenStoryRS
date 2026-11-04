@@ -6,6 +6,8 @@
 
 pub(super) const LOGICAL_WIDTH: f32 = 1024.0;
 pub(super) const LOGICAL_HEIGHT: f32 = 768.0;
+pub(super) const SKILL_MACRO_BUTTON: UiRect = UiRect::new(122.0, 265.0, 48.0, 18.0);
+pub(super) const REVIVE_BUTTON: UiRect = UiRect::new(482.0, 425.0, 66.0, 27.0);
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(super) struct UiRect {
@@ -43,6 +45,97 @@ impl UiRect {
             width,
             height,
         )
+    }
+
+    pub fn contains(self, x: f32, y: f32) -> bool {
+        x >= self.x && y >= self.y && x < self.x + self.width && y < self.y + self.height
+    }
+}
+
+/// A grid describes both painted cells and pointer targets. Gaps between cells
+/// deliberately do not select an item.
+#[derive(Clone, Copy)]
+pub(super) struct UiGrid {
+    pub x: f32,
+    pub y: f32,
+    pub columns: usize,
+    pub rows: usize,
+    pub step_x: f32,
+    pub step_y: f32,
+    pub cell_width: f32,
+    pub cell_height: f32,
+}
+
+impl UiGrid {
+    pub fn cell(self, index: usize) -> UiRect {
+        UiRect::new(
+            self.x + (index % self.columns) as f32 * self.step_x,
+            self.y + (index / self.columns) as f32 * self.step_y,
+            self.cell_width,
+            self.cell_height,
+        )
+    }
+
+    pub fn hit(self, x: f32, y: f32) -> Option<usize> {
+        (0..self.columns * self.rows).find(|index| self.cell(*index).contains(x, y))
+    }
+}
+
+pub(super) const INVENTORY_GRID: UiGrid = UiGrid {
+    x: super::INVENTORY_SLOT_X as f32,
+    y: super::INVENTORY_SLOT_Y as f32,
+    columns: super::INVENTORY_SLOT_COLUMNS,
+    rows: super::INVENTORY_SLOT_ROWS,
+    step_x: super::INVENTORY_SLOT_STEP_X as f32,
+    step_y: super::INVENTORY_SLOT_STEP_Y as f32,
+    cell_width: 34.0,
+    cell_height: 33.0,
+};
+
+pub(super) const QUEST_GRID: UiGrid = UiGrid {
+    x: 8.0,
+    y: 54.0,
+    columns: 1,
+    rows: super::QUEST_LOG_VISIBLE_ROWS,
+    step_x: 230.0,
+    step_y: 20.0,
+    cell_width: 230.0,
+    cell_height: 20.0,
+};
+
+pub(super) const STORAGE_GRID: UiGrid = UiGrid {
+    x: 5.0,
+    y: 112.0,
+    columns: 5,
+    rows: 6,
+    step_x: 36.0,
+    step_y: 36.0,
+    cell_width: 34.0,
+    cell_height: 34.0,
+};
+
+pub(super) const QUICKSLOT_GRID: UiGrid = UiGrid {
+    x: 7.0,
+    y: 8.0,
+    columns: 4,
+    rows: 2,
+    step_x: 35.0,
+    step_y: 34.0,
+    cell_width: 32.0,
+    cell_height: 30.0,
+};
+
+pub(super) fn inventory_tab(index: usize) -> UiRect {
+    UiRect::new(5.0 + index as f32 * 31.0, 25.0, 31.0, 17.0)
+}
+
+/// Scroll offsets are clamped before either rendering or hit testing uses them.
+pub(super) fn scroll_fraction(offset: usize, total: usize, visible: usize) -> f32 {
+    let maximum = total.saturating_sub(visible);
+    if maximum == 0 {
+        0.0
+    } else {
+        offset.min(maximum) as f32 / maximum as f32
     }
 }
 
@@ -92,8 +185,8 @@ impl UiTextRole {
                 color: [34, 34, 34],
             },
             Self::Body => UiTextStyle {
-                size: 14.0,
-                line_height: 18.0,
+                size: 13.0,
+                line_height: 17.0,
                 weight: UiTextWeight::Regular,
                 color: [32, 32, 32],
             },
@@ -123,6 +216,9 @@ pub(super) fn measure_text(font: &fontdue::Font, text: &str, size: f32) -> f32 {
     let mut width = 0.0;
     let mut previous = None;
     for character in text.chars() {
+        if (0xf0000..=0xf0006).contains(&(character as u32)) {
+            continue;
+        }
         if let Some(previous) = previous {
             width += font
                 .horizontal_kern(previous, character, size)
@@ -168,22 +264,151 @@ pub(super) fn draw_text_role(
     let max_height = max_height.min(style.line_height.ceil() as usize);
     let x = snap(x as f32) as i32;
     let y = snap(y as f32) as i32;
+    let face = if style.weight == UiTextWeight::Bold {
+        bold_font().unwrap_or(font)
+    } else {
+        font
+    };
+    let text = ellipsize(face, text, style.size, max_width as f32);
     super::draw_dialogue_text(
-        font, pixels, width, height, text, x, y, style.size, max_width, max_height, color,
+        face, pixels, width, height, &text, x, y, style.size, max_width, max_height, color,
     );
-    if style.weight == UiTextWeight::Bold {
-        super::draw_dialogue_text(
-            font,
-            pixels,
-            width,
-            height,
-            text,
-            x + 1,
-            y,
-            style.size,
-            max_width.saturating_sub(1),
-            max_height,
-            color,
+}
+
+pub(super) fn bold_font() -> Option<&'static fontdue::Font> {
+    static FONT: std::sync::OnceLock<Option<fontdue::Font>> = std::sync::OnceLock::new();
+    FONT.get_or_init(|| {
+        let configured = std::env::var_os("OPENSTORY_BOLD_FONT_PATH");
+        // A custom regular face must not silently switch families for headings.
+        if configured.is_none() && std::env::var_os("OPENSTORY_FONT_PATH").is_some() {
+            return None;
+        }
+        let paths = configured.map(std::path::PathBuf::from).into_iter().chain([
+            "/System/Library/Fonts/Supplemental/Arial Bold.ttf".into(),
+            "C:/Windows/Fonts/arialbd.ttf".into(),
+            "/usr/share/fonts/truetype/msttcorefonts/Arial_Bold.ttf".into(),
+        ]);
+        paths
+            .filter_map(|path| std::fs::read(path).ok())
+            .find_map(|bytes| {
+                fontdue::Font::from_bytes(bytes, fontdue::FontSettings::default()).ok()
+            })
+    })
+    .as_ref()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn inventory_gaps_and_edges_do_not_select_neighboring_slots() {
+        let grid = INVENTORY_GRID;
+        assert_eq!(grid.hit(grid.x, grid.y), Some(0));
+        assert_eq!(grid.hit(grid.x + 34.0, grid.y), None);
+        assert_eq!(grid.hit(grid.x, grid.y + 33.0), None);
+        let last = grid.cell(23);
+        assert_eq!(grid.hit(last.x + 33.0, last.y + 32.0), Some(23));
+        assert_eq!(grid.hit(f32::NAN, 0.0), None);
+    }
+
+    #[test]
+    fn glyphs_and_wrapped_text_stay_inside_the_requested_clip() {
+        let font = fontdue::Font::from_bytes(
+            include_bytes!("../../assets/fonts/Roboto-Regular.ttf").as_slice(),
+            fontdue::FontSettings::default(),
+        )
+        .unwrap();
+        let mut pixels = vec![0; 64 * 48 * 4];
+        super::super::draw_dialogue_text(
+            &font,
+            &mut pixels,
+            64,
+            48,
+            "WWWWWWWWWW WWWWWWWWW",
+            12,
+            9,
+            14.0,
+            20,
+            17,
+            [255, 255, 255],
+        );
+        assert!(pixels.chunks_exact(4).any(|pixel| pixel[3] != 0));
+        for y in 0..48 {
+            for x in 0..64 {
+                if !(12..32).contains(&x) || !(9..26).contains(&y) {
+                    assert_eq!(pixels[(y * 64 + x) * 4 + 3], 0, "pixel escaped at {x},{y}");
+                }
+            }
+        }
+        // Negative origins must clip safely without unsigned coordinate wraps.
+        super::super::draw_dialogue_text(
+            &font,
+            &mut pixels,
+            64,
+            48,
+            "negative origin",
+            -12,
+            -3,
+            14.0,
+            20,
+            17,
+            [255, 255, 255],
         );
     }
+
+    #[test]
+    fn scroll_thumb_is_finite_for_empty_short_and_overscrolled_lists() {
+        assert_eq!(scroll_fraction(10, 0, 6), 0.0);
+        assert_eq!(scroll_fraction(10, 4, 6), 0.0);
+        assert_eq!(scroll_fraction(3, 12, 6), 0.5);
+        assert_eq!(scroll_fraction(usize::MAX, 12, 6), 1.0);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn draw_scrollbar(
+    pixels: &mut [u8],
+    width: usize,
+    height: usize,
+    ui: &openstory_assets::NxArchive,
+    x: i32,
+    y: i32,
+    track_height: usize,
+    fraction: f32,
+) {
+    if !(51..=2048).contains(&track_height) {
+        return;
+    }
+    let mut track = vec![0; 15 * track_height * 4];
+    for row in (0..track_height).step_by(13) {
+        let _ = super::composite_nx_ui_bitmap(
+            &mut track,
+            15,
+            track_height,
+            ui,
+            "Basic.img/VScr5/enabled/base",
+            0,
+            row as i32,
+        );
+    }
+    for (part, top) in [
+        ("prev0", 0),
+        ("next0", track_height - 13),
+        (
+            "thumb0",
+            13 + ((track_height - 51) as f32 * fraction.clamp(0.0, 1.0)).round() as usize,
+        ),
+    ] {
+        let _ = super::composite_nx_ui_bitmap(
+            &mut track,
+            15,
+            track_height,
+            ui,
+            &format!("Basic.img/VScr5/enabled/{part}"),
+            0,
+            top as i32,
+        );
+    }
+    super::composite_bgra_pixels(pixels, width, height, &track, 15, track_height, x, y);
 }
