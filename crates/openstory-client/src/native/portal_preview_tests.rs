@@ -1,6 +1,37 @@
 use super::*;
 
 #[test]
+fn scripted_portals_reach_the_server_and_exits_take_priority() {
+    let portal = |portal_type, name: &str, target_map_id| MapPortalRuntime {
+        portal_type,
+        name: name.into(),
+        target_name: String::new(),
+        target_map_id,
+        x: 0.0,
+        y: 0.0,
+        touched: false,
+    };
+    let portals = [portal(7, "script", 999_999_999), portal(2, "exit", 100)];
+    assert_eq!(
+        select_portal(&portals, 0.0, 0.0, true, &[]).unwrap().name,
+        "exit"
+    );
+    assert_eq!(
+        select_portal(&portals[..1], 0.0, 0.0, true, &[])
+            .unwrap()
+            .name,
+        "script"
+    );
+    assert!(select_portal(&portals[..1], 0.0, 0.0, false, &[]).is_none());
+    let touch = [portal(9, "touch", 999_999_999)];
+    assert_eq!(
+        select_portal(&touch, 0.0, 0.0, false, &[]).unwrap().name,
+        "touch"
+    );
+    assert!(select_portal(&touch, 100.0, 0.0, true, &[]).is_none());
+}
+
+#[test]
 #[ignore = "requires OPENSTORY_DATA_DIR; writes target/ui-previews portal screenshots"]
 fn mushroom_town_portal_coordinates_and_warp() {
     check_portal(10_000, (1077.0, 480.0), 485.0, 20_000);
@@ -83,6 +114,7 @@ fn check_portal(map_id: i32, anchor: (f64, f64), floor_y: f64, destination: i32)
             &map_name,
             &map_name,
             minimap::Presentation::Normal,
+            None,
             &[minimap::Marker {
                 kind: minimap::MarkerKind::Player,
                 x: scene.player.x as f32,

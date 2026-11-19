@@ -3,6 +3,9 @@ use super::*;
 pub(super) const UNIMPLEMENTED_NPC_TEXT: &str = "Nothing to say...";
 
 impl ClientApp {
+    const NPC_CHAT_HORIZONTAL_RANGE: f64 = 200.0;
+    const NPC_CHAT_VERTICAL_RANGE: f64 = 100.0;
+
     pub(super) fn request_npc_talk(&mut self, object_id: i32) {
         let now = Instant::now();
         if self
@@ -31,7 +34,6 @@ impl ClientApp {
         );
         if choices.is_empty() {
             self.send_npc_talk_request(object_id);
-            self.show_unimplemented_npc_dialogue(npc_id);
             return;
         }
         let (text, actions) = npc_quest_menu(&self.quest_archive, object_id, choices);
@@ -258,9 +260,15 @@ impl ClientApp {
                 .filter_map(|(id, npc)| {
                     let dx = (npc.x - scene.player.x).abs();
                     let dy = (npc.y - scene.player.y).abs();
-                    (dx <= 100.0 && dy <= 60.0).then_some((*id, dx * dx + dy * dy))
+                    (dx <= Self::NPC_CHAT_HORIZONTAL_RANGE
+                        && dy <= Self::NPC_CHAT_VERTICAL_RANGE)
+                    .then_some((*id, dx * dx + dy * dy))
                 })
-                .min_by(|left, right| left.1.total_cmp(&right.1))
+                .min_by(|left, right| {
+                    left.1
+                        .total_cmp(&right.1)
+                        .then_with(|| left.0.cmp(&right.0))
+                })
                 .map(|(id, _)| id)
         });
         if let Some(object_id) = object_id {

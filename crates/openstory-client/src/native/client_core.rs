@@ -59,6 +59,23 @@ impl ClientApp {
         let social_settings = SocialSettings::load();
         let saved_quickslot_keys = load_quickslot_keys();
         let quickslot_keys_customized = saved_quickslot_keys.is_some();
+        let mut dialog_window_offsets = HashMap::new();
+        if let Some((x, y)) = settings::load_skill_book_position() {
+            let position = ui_foundation::UiRect::new(
+                x,
+                y,
+                SKILL_BOOK_PANEL_WIDTH as f32,
+                SKILL_BOOK_PANEL_HEIGHT as f32,
+            )
+            .clamped_to_canvas();
+            dialog_window_offsets.insert(
+                DialogWindow::SkillBook,
+                (
+                    position.x - SKILL_BOOK_PANEL_X,
+                    position.y - SKILL_BOOK_PANEL_Y,
+                ),
+            );
+        }
         let mut audio = audio::AudioEngine::new();
         audio.set_music_volume(settings.effective_music_volume());
         audio.set_sound_volume(settings.effective_effects_volume());
@@ -117,9 +134,10 @@ impl ClientApp {
             last_face_expression_at: None,
             teleport_effect_frames: None,
             login_actions: actions,
+            last_login_double_click: None,
             cursor: None,
             cursor_physical: None,
-            dialog_window_offsets: HashMap::new(),
+            dialog_window_offsets,
             dialog_window_drag: None,
             field_textures: Vec::with_capacity(2),
             account_text,
@@ -141,7 +159,9 @@ impl ClientApp {
             status_detail_texture: None,
             key_config_texture: None,
             skill_macro_texture: None,
+            skill_macro_drag_texture: None,
             inventory_texture: None,
+            inventory_drag_texture: None,
             equipment_inventory_texture: None,
             inventory_tooltip_texture: None,
             storage_texture: None,
@@ -156,6 +176,9 @@ impl ClientApp {
             owl_texture: None,
             skill_book_texture: None,
             quest_log_texture: None,
+            quest_helper_texture: None,
+            quest_helper_texture_size: None,
+            quest_helper_dismissed: false,
             monster_book: monster_book::State::default(),
             monster_book_animation_texture: None,
             world_map: world_map::State::default(),
@@ -221,6 +244,7 @@ impl ClientApp {
             pending_guild_invite: None,
             pending_guild_creation_invite: None,
             alliance_info: None,
+            alliance_scroll: 0,
             show_alliance_panel: false,
             pending_alliance_invite: None,
             guild_bbs: None,
@@ -295,6 +319,7 @@ impl ClientApp {
             skill_book_entries: Vec::new(),
             active_buffs: CharacterBuffs::default(),
             pending_skill_hit_sounds: Vec::new(),
+            pending_mob_hit_sounds: Vec::new(),
             skill_cooldowns: HashMap::new(),
             forced_equipment_stats: ForcedEquipmentStats::default(),
             inventory_tab: openstory_protocol::InventoryType::Equip,
@@ -727,7 +752,7 @@ impl ClientApp {
                     break;
                 };
                 if let Err(error) = session.send_packet(packet) {
-                    eprintln!("OpenStoryRS: could not request pet loot: {error}");
+                    eprintln!("OpenStoryRS: could not send pet update: {error}");
                     self.channel_connected = false;
                     break;
                 }
@@ -769,7 +794,17 @@ impl ClientApp {
         } else {
             (self.gameplay_input.left, self.gameplay_input.right)
         };
-        let facing = match (left && !is_stunned, right && !is_stunned) {
+        // Upstream ignores player movement input during attacks but still lets
+        // the physics step resolve existing momentum.
+        let attack_active = scene.attack_stance.is_some();
+        let movement_left = left && !attack_active;
+        let movement_right = right && !attack_active;
+        let movement_up = self.gameplay_input.up && !attack_active;
+        let movement_down = self.gameplay_input.down && !attack_active;
+        if attack_active {
+            self.gameplay_input.jump_buffer = 0;
+        }
+        let facing = match (movement_left && !is_stunned, movement_right && !is_stunned) {
             (true, false) => Some(false),
             (false, true) => Some(true),
             _ => None,
@@ -814,22 +849,29 @@ impl ClientApp {
             }
         } else if let Some(footholds) = scene.footholds.as_ref() {
             for _ in 0..frame.updates {
+                self.gameplay_input.pickup_cooldown_ticks = self
+                    .gameplay_input
+                    .pickup_cooldown_ticks
+                    .saturating_sub(1);
                 if let Some(ladder) = scene.local_ladder {
                     scene.player.mode = PhysicsMode::Fixated;
                     scene.player.x = f64::from(ladder.x);
                     scene.player.horizontal_speed = 0.0;
-                    if self.gameplay_input.jump_buffer > 0 && (left || right) && !is_stunned {
+                    if self.gameplay_input.jump_buffer > 0
+                        && (movement_left || movement_right)
+                        && !is_stunned
+                    {
                         self.audio.play_world_sound(
                             &self.sound_archive,
                             "Game.img/Jump",
                             (rounded_i16(scene.player.x), rounded_i16(scene.player.y)),
                         );
-                        let jump_right = right;
+                        let jump_right = movement_right;
                         if scene.facing_right != jump_right {
                             scene.facing_right = jump_right;
                             scene.refresh_avatar_draws(&mut self.sprite_draws);
                         }
-                        scene.player.horizontal_speed = if left {
+                        scene.player.horizontal_speed = if movement_left {
                             -walk_force * 8.0
                         } else {
                             walk_force * 8.0
@@ -848,9 +890,9 @@ impl ClientApp {
                     } else {
                         scene.player.vertical_speed = if is_stunned {
                             0.0
-                        } else if self.gameplay_input.up && !self.gameplay_input.down {
+                        } else if movement_up && !movement_down {
                             -climb_force
-                        } else if self.gameplay_input.down && !self.gameplay_input.up {
+                        } else if movement_down && !movement_up {
                             climb_force
                         } else {
                             0.0
@@ -867,18 +909,18 @@ impl ClientApp {
                         const SWIM_FORCE: f64 = 0.25;
                         let horizontal = if is_stunned {
                             0.0
-                        } else if left && !right {
+                        } else if movement_left && !movement_right {
                             -SWIM_FORCE
-                        } else if right && !left {
+                        } else if movement_right && !movement_left {
                             SWIM_FORCE
                         } else {
                             0.0
                         };
                         let vertical = if is_stunned {
                             0.0
-                        } else if self.gameplay_input.up && !self.gameplay_input.down {
+                        } else if movement_up && !movement_down {
                             -SWIM_FORCE
-                        } else if self.gameplay_input.down && !self.gameplay_input.up {
+                        } else if movement_down && !movement_up {
                             SWIM_FORCE
                         } else {
                             0.0
@@ -894,7 +936,7 @@ impl ClientApp {
                             let direction = if is_stunned {
                                 0.0
                             } else {
-                                match (left, right) {
+                                match (movement_left, movement_right) {
                                     (true, false) => -1.0,
                                     (false, true) => 1.0,
                                     _ => 0.0,
@@ -903,10 +945,9 @@ impl ClientApp {
                             if direction != 0.0 {
                                 scene.player.apply_force(direction * walk_force, 0.0);
                             }
-                            if self.gameplay_input.jump_buffer > 0 && !is_stunned {
-                                if self.gameplay_input.down
-                                    && self.gameplay_input.jump_down_ticks < 5
-                                {
+                            if self.gameplay_input.jump_buffer > 0 && !is_stunned && !attack_active
+                            {
+                                if movement_down && self.gameplay_input.jump_down_ticks < 5 {
                                     self.gameplay_input.jump_down_ticks += 1;
                                 } else {
                                     self.audio.play_world_sound(
@@ -946,17 +987,23 @@ impl ClientApp {
                                     self.gameplay_input.jump_buffer = 0;
                                     self.gameplay_input.jump_down_ticks = 0;
                                 }
-                            } else if !self.gameplay_input.down {
+                            } else if !movement_down {
                                 self.gameplay_input.jump_down_ticks = 0;
                             }
                         } else {
                             self.gameplay_input.jump_down_ticks = 0;
                             if is_stunned {
                                 scene.player.horizontal_speed = 0.0;
-                            } else if left && !right && scene.player.horizontal_speed > 0.0 {
+                            } else if movement_left
+                                && !movement_right
+                                && scene.player.horizontal_speed > 0.0
+                            {
                                 scene.player.horizontal_speed =
                                     (scene.player.horizontal_speed - 0.025).max(0.0);
-                            } else if right && !left && scene.player.horizontal_speed < 0.0 {
+                            } else if movement_right
+                                && !movement_left
+                                && scene.player.horizontal_speed < 0.0
+                            {
                                 scene.player.horizontal_speed =
                                     (scene.player.horizontal_speed + 0.025).min(0.0);
                             }
@@ -1028,7 +1075,7 @@ impl ClientApp {
                         left && !is_stunned,
                         right && !is_stunned,
                         scene.local_map_seat.is_some(),
-                        self.gameplay_input.down,
+                        movement_down,
                         scene.local_ladder.map(|ladder| ladder.is_ladder),
                     );
                     if scene.last_movement != Some(movement) {
@@ -1052,6 +1099,28 @@ impl ClientApp {
             self.gameplay_input.jump_buffer = 0;
         }
 
+        if scene.footholds.is_some()
+            && scene.local_chair.is_none()
+            && scene.local_map_seat.is_none()
+            && self.channel_connected
+            && self.gameplay_input.pickup
+            && self.gameplay_input.pickup_cooldown_ticks == 0
+            && let Some(object_id) = scene.nearest_drop()
+        {
+            // The legacy client checks once per ~16 ms game frame.
+            self.gameplay_input.pickup_cooldown_ticks = 2;
+            let (x, y) = (rounded_i16(scene.player.x), rounded_i16(scene.player.y));
+            if let Some(session) = self.session.as_ref() {
+                match session.send_packet(openstory_protocol::pickup_item(object_id, x, y)) {
+                    Ok(()) => scene.mark_drop_pickup_attempt(object_id),
+                    Err(error) => {
+                        eprintln!("OpenStory: could not request item pickup: {error}");
+                        self.channel_connected = false;
+                    }
+                }
+            }
+        }
+
         let active_character = self.active_character.as_ref();
         let touch_protected = !self.channel_connected
             || active_character.is_none_or(|character| character.stats.hp == 0)
@@ -1066,6 +1135,7 @@ impl ClientApp {
         {
             let damage = calculate_player_touch_damage(
                 character,
+                self.inventory.as_ref(),
                 touch.damage,
                 &self.character_archive,
                 &self.skill_archive,
@@ -1119,6 +1189,10 @@ impl ClientApp {
             frame.updates,
         ) {
             Some(PortalWarp::SameMap { x, y }) => {
+                if self.gameplay_input.up {
+                    self.gameplay_input.suppress_up_until_release = true;
+                    self.gameplay_input.up = false;
+                }
                 self.audio.play_world_sound(
                     &self.sound_archive,
                     "Game.img/Portal",
@@ -1130,6 +1204,10 @@ impl ClientApp {
                 map_id,
                 portal_name,
             }) => {
+                if self.gameplay_input.up {
+                    self.gameplay_input.suppress_up_until_release = true;
+                    self.gameplay_input.up = false;
+                }
                 self.audio.play_world_sound(
                     &self.sound_archive,
                     "Game.img/Portal",
@@ -1461,6 +1539,34 @@ impl ClientApp {
         );
         let target_positions =
             scene.nearest_attack_targets(target_count, attack_range, horizontal_range_multiplier);
+        let mob_sound_start = Instant::now();
+        for (object_id, _, (target_x, target_y)) in &target_positions {
+            let Some(mob_id) = scene.mobs.get(object_id).map(|mob| mob.mob_id) else {
+                continue;
+            };
+            let position = (rounded_i16(*target_x), rounded_i16(*target_y));
+            for hit_index in 0..hit_count.clamp(1, 15) {
+                let delay = skill_hit_delays
+                    .get(usize::from(hit_index))
+                    .copied()
+                    .unwrap_or_default();
+                if delay.is_zero() {
+                    self.audio
+                        .play_mob_hit(&self.sound_archive, mob_id, position);
+                } else {
+                    if self.pending_mob_hit_sounds.len() >= 512 {
+                        self.pending_mob_hit_sounds.remove(0);
+                    }
+                    if let Some(play_at) = mob_sound_start.checked_add(delay) {
+                        self.pending_mob_hit_sounds.push(PendingMobHitSound {
+                            mob_id,
+                            position,
+                            play_at,
+                        });
+                    }
+                }
+            }
+        }
         if skill_id > 0 {
             let sound_start = Instant::now();
             for (_, _, (target_x, target_y)) in &target_positions {
@@ -1729,7 +1835,6 @@ impl ClientApp {
     }
 
     pub(super) fn open_inventory_tab(&mut self, tab: openstory_protocol::InventoryType) {
-        self.show_equipment_inventory = false;
         if self.show_inventory && self.inventory_tab == tab {
             self.show_inventory = false;
             self.inventory_drag_source = None;
@@ -1743,8 +1848,6 @@ impl ClientApp {
         self.inventory_drag_source = None;
         self.inventory_hover_slot = None;
         self.pending_scroll_slot = None;
-        self.show_skill_book = false;
-        self.show_pet_equipment = false;
         self.update_inventory_hover();
         self.refresh_inventory_texture();
     }
@@ -1752,12 +1855,6 @@ impl ClientApp {
     pub(super) fn toggle_equipment_inventory(&mut self) {
         self.show_equipment_inventory = !self.show_equipment_inventory;
         if self.show_equipment_inventory {
-            self.show_inventory = false;
-            self.inventory_drag_source = None;
-            self.inventory_hover_slot = None;
-            self.pending_scroll_slot = None;
-            self.show_skill_book = false;
-            self.show_pet_equipment = false;
             self.refresh_equipment_inventory_texture();
         }
     }
@@ -1769,8 +1866,6 @@ impl ClientApp {
             1 => {
                 self.show_skill_book = !self.show_skill_book;
                 if self.show_skill_book {
-                    self.show_inventory = false;
-                    self.show_pet_equipment = false;
                     self.skill_book_tab = 0;
                     self.skill_book_scroll_row = 0;
                     self.refresh_skill_book_entries();
@@ -1779,11 +1874,6 @@ impl ClientApp {
             }
             2 => {
                 self.show_quest_log = true;
-                self.show_inventory = false;
-                self.show_pet_equipment = false;
-                self.show_skill_book = false;
-                self.inventory_drag_source = None;
-                self.pending_scroll_slot = None;
                 self.quest_log_tab = QuestLogTab::Active;
                 self.quest_log_scroll = 0;
                 self.quest_log_selected = 0;
@@ -1796,29 +1886,14 @@ impl ClientApp {
             5 => self.open_inventory_tab(openstory_protocol::InventoryType::Equip),
             6 => {
                 self.show_party_panel = !self.show_party_panel;
-                if self.show_party_panel {
-                    self.show_buddy_panel = false;
-                    self.show_guild_panel = false;
-                    self.show_alliance_panel = false;
-                }
                 self.refresh_party_texture();
             }
             7 => {
                 self.show_buddy_panel = !self.show_buddy_panel;
-                if self.show_buddy_panel {
-                    self.show_party_panel = false;
-                    self.show_guild_panel = false;
-                    self.show_alliance_panel = false;
-                }
                 self.refresh_buddy_texture();
             }
             8 => {
                 self.show_guild_panel = !self.show_guild_panel;
-                if self.show_guild_panel {
-                    self.show_party_panel = false;
-                    self.show_buddy_panel = false;
-                    self.show_alliance_panel = false;
-                }
                 self.refresh_guild_texture();
             }
             9 => {
@@ -1895,8 +1970,6 @@ impl ClientApp {
                         Some(3) => {
                             self.show_skill_book = !self.show_skill_book;
                             if self.show_skill_book {
-                                self.show_inventory = false;
-                                self.show_pet_equipment = false;
                                 self.skill_book_tab = 0;
                                 self.skill_book_scroll_row = 0;
                                 self.refresh_skill_book_entries();
@@ -2235,6 +2308,24 @@ impl ClientApp {
         self.refresh_skill_macro_texture();
     }
 
+    fn begin_macro_skill_drag(&mut self, skill_id: i32, cursor: Point, assign_on_click: bool) {
+        self.skill_macro_editor.begin_skill_drag(
+            skill_id,
+            cursor.x - skill_macros::PANEL_X,
+            cursor.y - skill_macros::PANEL_Y,
+            assign_on_click,
+        );
+        self.skill_macro_drag_texture = decode_nx_icon(
+            &self.skill_archive,
+            &format!("{:03}.img/skill/{skill_id}/icon", skill_id / 10_000),
+        )
+        .and_then(|(width, height, pixels)| {
+            self.renderer
+                .as_ref()
+                .and_then(|renderer| renderer.upload_bgra(width, height, &pixels).ok())
+        });
+    }
+
     pub(super) fn click_skill_macro_editor(&mut self, cursor: Point) {
         let bounds = SpriteRect {
             x: skill_macros::PANEL_X,
@@ -2243,11 +2334,49 @@ impl ClientApp {
             height: skill_macros::PANEL_HEIGHT as f32,
             blend_mode: BlendMode::Alpha,
         };
+        let skills = self.skill_macro_choices();
         if !rect_contains(bounds, cursor) {
-            self.skill_macro_editor.close();
+            let book_x = cursor.x - SKILL_BOOK_PANEL_X;
+            let book_y = cursor.y - SKILL_BOOK_PANEL_Y;
+            let in_book = self.show_skill_book
+                && (0.0..SKILL_BOOK_PANEL_WIDTH as f32).contains(&book_x)
+                && (0.0..SKILL_BOOK_PANEL_HEIGHT as f32).contains(&book_y);
+            if in_book
+                && (SKILL_BOOK_PANEL_WIDTH as f32 - 24.0..SKILL_BOOK_PANEL_WIDTH as f32)
+                    .contains(&book_x)
+                && (4.0..25.0).contains(&book_y)
+            {
+                self.begin_skill_book_pointer(cursor);
+                if !self.show_skill_book {
+                    self.skill_macro_editor.close();
+                    self.skill_macro_drag_texture = None;
+                }
+                self.refresh_skill_macro_texture();
+                return;
+            }
+            if in_book && (24.0..44.0).contains(&book_y) {
+                self.begin_skill_book_pointer(cursor);
+                return;
+            }
+            let skill =
+                if in_book && (10.0..42.0).contains(&book_x) && (100.0..260.0).contains(&book_y) {
+                    let row = ((book_y - 100.0) / 40.0).floor() as usize;
+                    self.skill_book_entries
+                        .get(self.skill_book_scroll_row.saturating_add(row))
+                        .filter(|entry| entry.level > 0 && !entry.passive)
+                        .filter(|entry| skills.iter().any(|(id, _)| *id == entry.id))
+                        .map(|entry| entry.id)
+                } else {
+                    None
+                };
+            if let Some(skill_id) = skill {
+                self.begin_macro_skill_drag(skill_id, cursor, false);
+                self.refresh_skill_macro_texture();
+            } else if !in_book {
+                self.skill_macro_editor.close();
+            }
             return;
         }
-        let skills = self.skill_macro_choices();
         let action = skill_macros::hit_test(
             cursor.x - bounds.x,
             cursor.y - bounds.y,
@@ -2274,7 +2403,7 @@ impl ClientApp {
                 self.skill_macro_editor.clear_skill(slot);
             }
             Some(skill_macros::Action::AssignSkill(skill_id)) => {
-                self.skill_macro_editor.assign_skill(skill_id);
+                self.begin_macro_skill_drag(skill_id, cursor, true);
             }
             None => {}
         }
@@ -2968,34 +3097,13 @@ impl ClientApp {
                     self.show_pet_equipment = !self.show_pet_equipment;
                     if self.show_pet_equipment {
                         self.pet_equipment_scroll_row = 0;
-                        self.show_inventory = false;
-                        self.inventory_hover_slot = None;
-                        self.show_skill_book = false;
-                        self.inventory_drag_source = None;
-                        self.pending_scroll_slot = None;
                         self.refresh_pet_equipment_texture();
                     }
                 }
                 _ => {}
             },
             5 => match binding.action {
-                50 if pressed && !repeat => {
-                    if let Some((object_id, x, y)) = self.map_scene.as_ref().and_then(|scene| {
-                        scene.nearest_drop().map(|object_id| {
-                            (
-                                object_id,
-                                rounded_i16(scene.player.x),
-                                rounded_i16(scene.player.y),
-                            )
-                        })
-                    }) && let Some(session) = self.session.as_ref()
-                        && let Err(error) =
-                            session.send_packet(openstory_protocol::pickup_item(object_id, x, y))
-                    {
-                        eprintln!("OpenStory: could not request item pickup: {error}");
-                        self.channel_connected = false;
-                    }
-                }
+                50 => self.gameplay_input.pickup = pressed,
                 51 if !pressed || !repeat => {
                     if pressed
                         && !repeat
@@ -3026,7 +3134,9 @@ impl ClientApp {
                         self.gameplay_input.right = pressed;
                     }
                 }
-                202 => self.gameplay_input.up = pressed,
+                202 => {
+                    self.gameplay_input.up = pressed && !self.gameplay_input.suppress_up_until_release;
+                }
                 203 => self.gameplay_input.down = pressed,
                 _ => {}
             },
@@ -3140,29 +3250,28 @@ impl ClientApp {
         if self.show_settings {
             return true;
         }
-        if self.show_status {
-            if state == ElementState::Pressed && !repeat && self.is_menu_binding(key, 2) {
+        if self.show_status && state == ElementState::Pressed && !repeat {
+            if self.is_menu_binding(key, 2) {
                 self.show_status = false;
                 return true;
             }
-            if state == ElementState::Pressed && !repeat {
-                match key {
-                    PhysicalKey::Code(KeyCode::Escape) => {
-                        if self.status_auto_confirmation {
-                            self.resolve_status_auto_allocate(false);
-                        } else {
-                            self.show_status = false;
-                        }
+            match key {
+                PhysicalKey::Code(KeyCode::Escape) => {
+                    if self.status_auto_confirmation {
+                        self.resolve_status_auto_allocate(false);
+                    } else {
+                        self.show_status = false;
                     }
-                    PhysicalKey::Code(KeyCode::Enter | KeyCode::NumpadEnter)
-                        if self.status_auto_confirmation =>
-                    {
-                        self.resolve_status_auto_allocate(true);
-                    }
-                    _ => {}
+                    return true;
                 }
+                PhysicalKey::Code(KeyCode::Enter | KeyCode::NumpadEnter)
+                    if self.status_auto_confirmation =>
+                {
+                    self.resolve_status_auto_allocate(true);
+                    return true;
+                }
+                _ => {}
             }
-            return true;
         }
         let pressed = state == ElementState::Pressed;
         if !pressed {
@@ -3204,6 +3313,15 @@ impl ClientApp {
         if self.npc_shop.is_some() {
             return false;
         }
+        if self.show_skill_book
+            && pressed
+            && !repeat
+            && matches!(key, PhysicalKey::Code(KeyCode::Escape))
+        {
+            self.show_skill_book = false;
+            self.skill_book_texture = None;
+            return true;
+        }
         if self.monster_book.open {
             if pressed
                 && !repeat
@@ -3233,7 +3351,13 @@ impl ClientApp {
             self.escape_world_map();
             return true;
         }
-        if self.show_quest_log && !self.is_menu_binding(key, 8) {
+        if self.show_quest_log
+            && !self.is_menu_binding(key, 8)
+            && matches!(
+                key,
+                PhysicalKey::Code(KeyCode::Escape | KeyCode::ArrowLeft | KeyCode::ArrowRight)
+            )
+        {
             if pressed && !repeat {
                 match key {
                     PhysicalKey::Code(KeyCode::Escape) => {
@@ -3309,29 +3433,28 @@ impl ClientApp {
             }
             return true;
         }
-        if self.show_pet_equipment {
-            if (matches!(key, PhysicalKey::Code(KeyCode::Escape)) || self.is_menu_binding(key, 45))
-                && pressed
-                && !repeat
-            {
+        if self.show_pet_equipment && pressed && !repeat {
+            if matches!(key, PhysicalKey::Code(KeyCode::Escape)) || self.is_menu_binding(key, 45) {
                 self.show_pet_equipment = false;
-            } else if pressed && !repeat {
-                let scroll = match key {
-                    PhysicalKey::Code(KeyCode::ArrowUp) => -1,
-                    PhysicalKey::Code(KeyCode::ArrowDown) => 1,
-                    PhysicalKey::Code(KeyCode::PageUp) => -5,
-                    PhysicalKey::Code(KeyCode::PageDown) => 5,
-                    _ => 0,
-                };
-                self.scroll_pet_equipment_by(scroll);
+                return true;
             }
-            return true;
+            let scroll = match key {
+                PhysicalKey::Code(KeyCode::ArrowUp) => -1,
+                PhysicalKey::Code(KeyCode::ArrowDown) => 1,
+                PhysicalKey::Code(KeyCode::PageUp) => -5,
+                PhysicalKey::Code(KeyCode::PageDown) => 5,
+                _ => 0,
+            };
+            if scroll != 0 {
+                self.scroll_pet_equipment_by(scroll);
+                return true;
+            }
         }
         if !matches!(key, PhysicalKey::Code(KeyCode::Escape))
             && let Some(binding) = gameplay_key_binding(self.server_keymap.as_deref(), key)
             && binding.kind != 0
         {
-            if pressed && binding.kind == 5 && matches!(binding.action, 51 | 200..=203) {
+            if pressed && binding.kind == 5 && matches!(binding.action, 50 | 51 | 200..=203) {
                 self.gameplay_input.held_bindings.insert(key, binding);
             }
             return self.apply_keymap_binding(state, repeat, binding);

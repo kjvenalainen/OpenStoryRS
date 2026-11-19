@@ -459,11 +459,39 @@ fn render_storage_panel(
     pixels
 }
 
+const STORAGE_PANEL_WIDTH: usize = 463;
+const STORAGE_PANEL_HEIGHT: usize = 318;
+const STORAGE_LEFT_ROWS: usize = 5;
+const STORAGE_RIGHT_ROWS: usize = 4;
+
+fn storage_row_at(x: f32, y: f32, inventory: bool) -> Option<usize> {
+    let (left, top, rows) = if inventory { (234.0, 126.0, STORAGE_RIGHT_ROWS) } else { (4.0, 86.0, STORAGE_LEFT_ROWS) };
+    if !(left..left + 200.0).contains(&x) || y < top { return None; }
+    let offset = y - top;
+    let row = (offset / 40.0) as usize;
+    (row < rows && offset % 40.0 < 36.0).then_some(row)
+}
+
+fn storage_scrollbar_position(x: f32, y: f32, inventory: bool, count: usize, offset: usize) -> Option<usize> {
+    let (left, top, rows) = if inventory { (440.0, 126.0, STORAGE_RIGHT_ROWS) } else { (209.0, 86.0, STORAGE_LEFT_ROWS) };
+    let height = rows as f32 * 40.0;
+    if !(left..left + 12.0).contains(&x) || !(top..top + height).contains(&y) { return None; }
+    let maximum = count.saturating_sub(rows);
+    let next = if y < top + 12.0 { offset.saturating_sub(1) }
+        else if y >= top + height - 12.0 { offset.saturating_add(1) }
+        else { (((y - top - 18.0) / (height - 36.0)).clamp(0.0, 1.0) * maximum as f32).round() as usize };
+    Some(next.min(maximum))
+}
+
 fn render_storage_reference_panel(
     font: &fontdue::Font,
     storage: &openstory_protocol::StorageSnapshot,
-    _active_tab: openstory_protocol::InventoryType,
+    inventory: &openstory_protocol::InventorySnapshot,
+    active_tab: openstory_protocol::InventoryType,
     storage_scroll: usize,
+    inventory_scroll: usize,
+    selected_storage: Option<(openstory_protocol::InventoryType, u16, i32)>,
+    selected_inventory: Option<(openstory_protocol::InventoryType, u16, i32)>,
     meso_input: &str,
     meso_focused: bool,
     notice: Option<&str>,
@@ -471,257 +499,72 @@ fn render_storage_reference_panel(
     npc_archive: &NxArchive,
     item_archive: &NxArchive,
     character_archive: &NxArchive,
+    string_archive: &NxArchive,
     icon_cache: &mut HashMap<i32, Option<(u32, u32, Arc<[u8]>)>>,
+    name_cache: &mut HashMap<i32, Option<String>>,
 ) -> Vec<u8> {
-    const WIDTH: usize = 206;
-    const HEIGHT: usize = 355;
-    const VISIBLE: usize = 30;
+    const WIDTH: usize = STORAGE_PANEL_WIDTH;
+    const HEIGHT: usize = STORAGE_PANEL_HEIGHT;
     let mut pixels = vec![0_u8; WIDTH * HEIGHT * 4];
-    fill_dialogue_rect(
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        0,
-        0,
-        WIDTH,
-        HEIGHT,
-        [95, 118, 137, 255],
-    );
-    fill_dialogue_rect(
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        1,
-        1,
-        WIDTH - 2,
-        HEIGHT - 2,
-        [250, 250, 250, 255],
-    );
-    fill_dialogue_rect(
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        3,
-        3,
-        WIDTH - 6,
-        79,
-        [225, 225, 220, 255],
-    );
-    fill_dialogue_rect(
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        3,
-        84,
-        WIDTH - 6,
-        2,
-        [245, 147, 183, 255],
-    );
-    // The banker portrait and three right-side actions occupy the same header
-    // band as the v83 StoreBank window.
-    if !draw_storage_keeper(
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        npc_archive,
-        storage.npc_id,
-        39,
-        70,
-    ) {
-        draw_storage_keeper_placeholder(&mut pixels, WIDTH, HEIGHT, 16, 15);
+    let _ = composite_nx_ui_bitmap(&mut pixels, WIDTH, HEIGHT, ui_archive, "UIWindow.img/Trunk/backgrnd", 0, 0);
+    draw_storage_keeper(&mut pixels, WIDTH, HEIGHT, npc_archive, storage.npc_id, 53, 73);
+    for (path, x, y) in [
+        ("UIWindow.img/Trunk/BtGet/normal/0", 151, 12),
+        ("UIWindow.img/Trunk/BtSort/disabled/0", 186, 43),
+        ("UIWindow.img/Trunk/BtPut/normal/0", 383, 12),
+        ("UIWindow.img/Trunk/BtExit/normal/0", 383, 56),
+        ("UIWindow.img/Trunk/BtInCoin/normal/0", 3, 293),
+        ("UIWindow.img/Trunk/BtOutCoin/normal/0", 424, 293),
+    ] { let _ = composite_nx_ui_bitmap(&mut pixels, WIDTH, HEIGHT, ui_archive, path, x, y); }
+    let tabs = [openstory_protocol::InventoryType::Equip, openstory_protocol::InventoryType::Use, openstory_protocol::InventoryType::Setup, openstory_protocol::InventoryType::Etc, openstory_protocol::InventoryType::Cash];
+    for (index, tab) in tabs.into_iter().enumerate() {
+        let variant = if tab == active_tab { "enabled" } else { "disabled" };
+        let path = format!("UIWindow.img/Trunk/Tab/{variant}/{index}");
+        let _ = composite_nx_ui_bitmap(&mut pixels, WIDTH, HEIGHT, ui_archive, &path, 240 + index as i32 * 39, 98);
     }
-    for (y, path, anchor_x, anchor_y, label, face) in [
-        (7, "UIWindow.img/Trunk/BtExit/normal/0", 132, 7, "EXIT", [86, 190, 190, 255]),
-        (29, "UIWindow.img/Trunk/BtGet/normal/0", 132, 29, "TAKE OUT", [80, 153, 225, 255]),
-        (51, "UIWindow.img/Trunk/BtSort/normal/0", 167, 60, "ORGANIZE ITEM", [194, 167, 130, 255]),
+    let available: Vec<_> = inventory.items.iter().filter(|item| item.inventory_type == active_tab && item.slot > 0).collect();
+    for (x, top, rows, count, offset) in [(209, 86, STORAGE_LEFT_ROWS, storage.items.len(), storage_scroll), (440, 126, STORAGE_RIGHT_ROWS, available.len(), inventory_scroll)] {
+        let maximum = count.saturating_sub(rows);
+        let enabled = maximum > 0;
+        let (up, down) = if enabled { ("Basic.img/VScr/enabled/prev0", "Basic.img/VScr/enabled/next0") } else { ("Basic.img/VScr/disabled/prev", "Basic.img/VScr/disabled/next") };
+        let height = (rows * 40) as i32;
+        let _ = composite_nx_ui_bitmap(&mut pixels, WIDTH, HEIGHT, ui_archive, up, x, top);
+        let _ = composite_nx_ui_bitmap(&mut pixels, WIDTH, HEIGHT, ui_archive, down, x, top + height - 12);
+        if enabled {
+            let y = top + 12 + ((height - 36) as usize * offset.min(maximum) / maximum) as i32;
+            let _ = composite_nx_ui_bitmap(&mut pixels, WIDTH, HEIGHT, ui_archive, "Basic.img/VScr/enabled/thumb0", x, y);
+        }
+    }
+    for (items, start, rows, x, top, selected) in [
+        (storage.items.iter().collect::<Vec<_>>(), storage_scroll, STORAGE_LEFT_ROWS, 5_usize, 87_usize, selected_storage),
+        (available, inventory_scroll, STORAGE_RIGHT_ROWS, 235_usize, 127_usize, selected_inventory),
     ] {
-        if composite_nx_ui_bitmap(
-            &mut pixels, WIDTH, HEIGHT, ui_archive, path, anchor_x, anchor_y,
-        ).is_err() {
-            fill_dialogue_rect(&mut pixels, WIDTH, HEIGHT, 132, y, 70, 18, face);
-            draw_dialogue_text(
-                font, &mut pixels, WIDTH, HEIGHT, label, 135, y as i32 + 4,
-                7.0, 63, 12, [77, 67, 51],
-            );
+        for (row, item) in items.into_iter().skip(start).take(rows).enumerate() {
+            let y = top + row * 40;
+            if selected == Some((item.inventory_type, item.slot, item.item_id)) {
+                let _ = composite_nx_ui_bitmap(&mut pixels, WIDTH, HEIGHT, ui_archive, "UIWindow.img/Trunk/select", (x + 40) as i32, y as i32);
+            }
+            if let Some((iw, ih, icon)) = inventory_item_icon(item.item_id, item_archive, character_archive, icon_cache) {
+                composite_inventory_icon(&mut pixels, WIDTH, HEIGHT, &icon, iw as usize, ih as usize, x + 2, y + 2, 32);
+            }
+            let name = item_name(item.item_id, string_archive, name_cache);
+            let label = ui_foundation::ellipsize(font, &name, 10.0, 155.0);
+            draw_dialogue_text(font, &mut pixels, WIDTH, HEIGHT, &label, (x + 40) as i32, (y + 3) as i32, 10.0, 155, 14, [35, 38, 40]);
+            if item.count > 1 { draw_dialogue_text(font, &mut pixels, WIDTH, HEIGHT, &format!("x{}", item.count), (x + 40) as i32, (y + 19) as i32, 9.0, 155, 12, [60, 65, 68]); }
         }
     }
-
-    // Keep the reference's compact All tab and pale, tightly packed item grid.
-    fill_dialogue_rect(
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        4,
-        91,
-        34,
-        19,
-        [136, 102, 238, 255],
-    );
-    draw_dialogue_text(
-        font,
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        "All",
-        11,
-        94,
-        11.0,
-        24,
-        14,
-        [255, 255, 255],
-    );
-    let stored_items = storage.items.iter().collect::<Vec<_>>();
-    for slot in 0..VISIBLE {
-        let cell = ui_foundation::STORAGE_GRID.cell(slot);
-        let (x, y) = (cell.x as usize, cell.y as usize);
-        fill_dialogue_rect(
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            x,
-            y,
-            34,
-            34,
-            [226, 230, 230, 255],
-        );
-        fill_dialogue_rect(
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            x,
-            y,
-            34,
-            1,
-            [194, 205, 211, 255],
-        );
-        fill_dialogue_rect(
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            x,
-            y,
-            1,
-            34,
-            [194, 205, 211, 255],
-        );
-        let Some(item) = stored_items.get(storage_scroll + slot).copied() else {
-            continue;
-        };
-        if let Some((icon_width, icon_height, icon_pixels)) =
-            inventory_item_icon(item.item_id, item_archive, character_archive, icon_cache)
-        {
-            composite_inventory_icon(
-                &mut pixels,
-                WIDTH,
-                HEIGHT,
-                &icon_pixels,
-                icon_width as usize,
-                icon_height as usize,
-                x + 1,
-                y + 1,
-                32,
-            );
-        }
-        if item.count > 1 {
-            draw_dialogue_text(
-                font,
-                &mut pixels,
-                WIDTH,
-                HEIGHT,
-                &item.count.to_string(),
-                x as i32 + 20,
-                y as i32 + 23,
-                9.0,
-                13,
-                11,
-                [255, 255, 255],
-            );
-        }
+    for (value, x, width) in [(storage.meso.to_string(), 43, 150), (inventory.meso.to_string(), 274, 146)] {
+        let value = ui_foundation::ellipsize(font, &value, 10.0, width as f32);
+        draw_dialogue_text(font, &mut pixels, WIDTH, HEIGHT, &value, x, 297, 10.0, width, 14, [45, 45, 45]);
     }
-
-    fill_dialogue_rect(
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        5,
-        332,
-        195,
-        1,
-        [163, 177, 185, 255],
-    );
-    fill_dialogue_rect(
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        8,
-        337,
-        94,
-        15,
-        if meso_focused {
-            [246, 247, 238, 255]
-        } else {
-            [231, 234, 231, 255]
-        },
-    );
-    draw_dialogue_text(
-        font,
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        &format!("{} mesos", storage.meso),
-        10,
-        338,
-        10.0,
-        84,
-        13,
-        [79, 77, 65],
-    );
-    draw_dialogue_text(
-        font,
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        meso_input,
-        106,
-        338,
-        9.0,
-        43,
-        13,
-        [67, 76, 89],
-    );
-    for (x, label, face) in [
-        (151, "IN", [82, 176, 92, 255]),
-        (176, "OUT", [86, 156, 207, 255]),
-    ] {
-        fill_dialogue_rect(&mut pixels, WIDTH, HEIGHT, x, 337, 23, 15, face);
-        draw_dialogue_text(
-            font,
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            label,
-            x as i32 + 5,
-            338,
-            8.0,
-            18,
-            11,
-            [255, 255, 255],
-        );
-    }
+    // The amount field is shared by the two native transfer buttons.
+    draw_dialogue_text(font, &mut pixels, WIDTH, HEIGHT, "Amount", 263, 35, 10.0, 104, 14, [55, 55, 55]);
+    fill_dialogue_rect(&mut pixels, WIDTH, HEIGHT, 263, 52, 104, 17, if meso_focused { [255, 255, 255, 255] } else { [237, 237, 232, 255] });
+    let amount = ui_foundation::ellipsize(font, meso_input, 10.0, 98.0);
+    draw_dialogue_text(font, &mut pixels, WIDTH, HEIGHT, &amount, 266, 54, 10.0, 98, 13, [40, 40, 40]);
     if let Some(notice) = notice {
-        draw_dialogue_text(
-            font,
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            notice,
-            7,
-            354 - 12,
-            8.0,
-            WIDTH - 14,
-            11,
-            [161, 70, 66],
-        );
+        let notice = ui_foundation::ellipsize(font, notice, 9.0, 210.0);
+        draw_dialogue_text(font, &mut pixels, WIDTH, HEIGHT, &notice, 238, 72, 9.0, 210, 13, [150, 35, 35]);
     }
     pixels
 }
@@ -794,25 +637,29 @@ fn draw_storage_keeper(
     true
 }
 
-fn draw_storage_keeper_placeholder(
-    pixels: &mut [u8],
-    width: usize,
-    height: usize,
-    x: usize,
-    y: usize,
-) {
-    let put = |pixels: &mut [u8], px: usize, py: usize, w: usize, h: usize, color: [u8; 4]| {
-        fill_dialogue_rect(pixels, width, height, px, py, w, h, color);
-    };
-    put(pixels, x + 7, y, 22, 8, [27, 30, 38, 255]);
-    put(pixels, x + 4, y + 4, 27, 9, [53, 56, 61, 255]);
-    put(pixels, x + 7, y + 11, 21, 20, [190, 139, 92, 255]);
-    put(pixels, x + 9, y + 16, 4, 4, [35, 35, 36, 255]);
-    put(pixels, x + 22, y + 16, 4, 4, [35, 35, 36, 255]);
-    put(pixels, x + 12, y + 24, 13, 4, [35, 27, 25, 255]);
-    put(pixels, x + 4, y + 31, 27, 18, [59, 71, 71, 255]);
-    put(pixels, x, y + 35, 6, 5, [190, 139, 92, 255]);
-    put(pixels, x + 30, y + 35, 6, 5, [190, 139, 92, 255]);
-    put(pixels, x + 8, y + 47, 7, 6, [46, 40, 38, 255]);
-    put(pixels, x + 21, y + 47, 7, 6, [46, 40, 38, 255]);
+#[cfg(test)]
+mod storage_layout_tests {
+    use super::*;
+
+    #[test]
+    fn row_hit_testing_matches_both_native_lists_and_their_gaps() {
+        assert_eq!(storage_row_at(5.0, 86.0, false), Some(0));
+        assert_eq!(storage_row_at(5.0, 121.0, false), Some(0));
+        assert_eq!(storage_row_at(5.0, 122.0, false), None);
+        assert_eq!(storage_row_at(5.0, 246.0, false), Some(4));
+        assert_eq!(storage_row_at(5.0, 286.0, false), None);
+        assert_eq!(storage_row_at(235.0, 126.0, true), Some(0));
+        assert_eq!(storage_row_at(235.0, 246.0, true), Some(3));
+        assert_eq!(storage_row_at(235.0, 286.0, true), None);
+    }
+
+    #[test]
+    fn scrollbar_clicks_clamp_and_respect_list_lengths() {
+        assert_eq!(storage_scrollbar_position(209.0, 86.0, false, 20, 0), Some(0));
+        assert_eq!(storage_scrollbar_position(209.0, 285.0, false, 20, 0), Some(1));
+        assert_eq!(storage_scrollbar_position(209.0, 268.0, false, 20, 0), Some(15));
+        assert_eq!(storage_scrollbar_position(440.0, 285.0, true, 2, 0), Some(0));
+        assert_eq!(storage_scrollbar_position(439.0, 200.0, true, 20, 0), None);
+    }
 }
+

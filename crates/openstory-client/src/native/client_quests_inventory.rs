@@ -4,6 +4,7 @@ impl ClientApp {
     pub(super) fn apply_quest_update(&mut self, update: openstory_protocol::QuestUpdate) {
         self.quest_log.apply(update);
         self.refresh_npc_quest_marks();
+        self.refresh_quest_helper_texture();
         if self.show_quest_log {
             self.refresh_quest_log_texture();
         }
@@ -232,7 +233,7 @@ impl ClientApp {
         {
             (QUEST_LOG_PANEL_WIDTH as f32, QUEST_LOG_PANEL_HEIGHT as f32)
         } else {
-            (245.0, QUEST_LOG_PANEL_HEIGHT as f32)
+            (QUEST_LOG_LIST_WIDTH as f32, QUEST_LOG_PANEL_HEIGHT as f32)
         };
         if !rect_contains(
             SpriteRect {
@@ -366,7 +367,10 @@ impl ClientApp {
         }
         let local_x = cursor.x - PANEL_X;
         let local_y = cursor.y - PANEL_Y;
-        if local_x >= SKILL_BOOK_PANEL_WIDTH as f32 - 36.0 && local_y < 38.0 {
+        if (SKILL_BOOK_PANEL_WIDTH as f32 - 24.0..SKILL_BOOK_PANEL_WIDTH as f32)
+            .contains(&local_x)
+            && (4.0..25.0).contains(&local_y)
+        {
             self.show_skill_book = false;
             return true;
         }
@@ -389,8 +393,8 @@ impl ClientApp {
             self.open_skill_macro_editor();
             return true;
         }
-        if (89.0..245.0).contains(&local_y) {
-            let row = ((local_y - 89.0) / 39.0).floor() as usize;
+        if (100.0..260.0).contains(&local_y) {
+            let row = ((local_y - 100.0) / 40.0).floor() as usize;
             let Some(entry) = self
                 .skill_book_entries
                 .get(self.skill_book_scroll_row.saturating_add(row))
@@ -837,14 +841,23 @@ impl ClientApp {
                     openstory_protocol::use_item_packet(slot, item.item_id, client_tick)
                 }
             }
-            openstory_protocol::InventoryType::Equip if item.item_id / 10_000 == 181 => {
-                let Ok(slot) = i16::try_from(item.slot) else {
+            openstory_protocol::InventoryType::Equip
+                if (180..=183).contains(&(item.item_id / 10_000)) =>
+            {
+                let Some(source) = i16::try_from(item.slot).ok().filter(|slot| *slot > 0) else {
+                    return;
+                };
+                let Some(destination) = pet_equipment_destination(item.item_id, inventory) else {
+                    self.push_chat_line(
+                        "[Pet] The equipment slot for this item is not known yet.".to_owned(),
+                        [255, 210, 120],
+                    );
                     return;
                 };
                 openstory_protocol::move_item_packet(
                     openstory_protocol::InventoryType::Equip,
-                    slot,
-                    0,
+                    source,
+                    -destination,
                     1,
                     client_tick,
                 )
@@ -1004,6 +1017,7 @@ impl ClientApp {
             });
             if item_exists {
                 self.inventory_drag_source = Some((self.inventory_tab, slot, cursor));
+                self.refresh_inventory_drag_texture();
                 self.update_inventory_hover();
                 self.refresh_inventory_texture();
             }
@@ -1053,10 +1067,23 @@ impl ClientApp {
             self.show_pet_equipment = false;
             return true;
         }
-        if !(838.0..998.0).contains(&cursor.x) || !(348.0..593.0).contains(&cursor.y) {
+        let worn = self.inventory.as_ref().and_then(|inventory| {
+            pet_equipment_grid_item_at(inventory, cursor.x - 618.0, cursor.y - 128.0)
+                .map(|item| item.slot)
+        });
+        if let Some(slot) = worn {
+            self.activate_inventory_item(openstory_protocol::InventoryType::Equipped, slot);
+            self.refresh_pet_equipment_texture();
             return true;
         }
-        let index = ((cursor.y - 348.0) / 49.0).floor() as usize;
+        if !(634.0..992.0).contains(&cursor.x) || !(348.0..593.0).contains(&cursor.y) {
+            return true;
+        }
+        let row_y = cursor.y - 348.0;
+        if row_y % 49.0 >= 44.0 {
+            return true;
+        }
+        let index = (row_y / 49.0).floor() as usize;
         let selected = self.inventory.as_ref().and_then(|inventory| {
             pet_equipment_items(inventory)
                 .get(self.pet_equipment_scroll_row.saturating_add(index))
@@ -1073,6 +1100,7 @@ impl ClientApp {
         let Some((source_type, source_slot, origin)) = self.inventory_drag_source.take() else {
             return;
         };
+        self.inventory_drag_texture = None;
         let awaiting_attachment = self.cash_item_compose.as_ref().is_some_and(|compose| {
             compose.awaiting_attachment && compose.kind.uses_item_attachment(compose.item_id)
         });
@@ -1140,10 +1168,10 @@ impl ClientApp {
                 room.state.my_slot == 0
                     && rect_contains(
                         SpriteRect {
-                            x: HIRED_MERCHANT_PANEL_X + 14.0,
-                            y: HIRED_MERCHANT_PANEL_Y + 142.0,
-                            width: 354.0,
-                            height: 336.0,
+                            x: HIRED_MERCHANT_PANEL_X + 93.0,
+                            y: HIRED_MERCHANT_PANEL_Y + 177.0,
+                            width: 201.0,
+                            height: 200.0,
                             blend_mode: BlendMode::Alpha,
                         },
                         cursor,
@@ -1162,17 +1190,7 @@ impl ClientApp {
             if !trade_open {
                 return None;
             }
-            let local_x = cursor.x - (TRADE_PANEL_X + 174.0);
-            let local_y = cursor.y - (TRADE_PANEL_Y + 136.0);
-            if !(0.0..138.0).contains(&local_x) || !(0.0..138.0).contains(&local_y) {
-                return None;
-            }
-            let column = (local_x / 46.0).floor() as u8;
-            let row = (local_y / 46.0).floor() as u8;
-            if local_x % 46.0 >= 42.0 || local_y % 46.0 >= 42.0 {
-                return None;
-            }
-            Some(row * 3 + column)
+            trade_own_grid_slot(cursor.x - TRADE_PANEL_X, cursor.y - TRADE_PANEL_Y)
         });
         if moved && let Some(trade_slot) = trade_slot {
             self.begin_trade_stock(source_type, source_slot, trade_slot);

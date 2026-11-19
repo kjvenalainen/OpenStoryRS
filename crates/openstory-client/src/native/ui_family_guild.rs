@@ -39,130 +39,17 @@ fn render_family_panel(
     );
 
     if let Some(info) = state.info.as_ref() {
-        draw_dialogue_text(
-            font,
-            &mut pixels,
-            width,
-            height,
-            if info.name.trim().is_empty() {
-                "No family"
-            } else {
-                info.name.as_str()
-            },
-            15,
-            49,
-            13.0,
-            width - 30,
-            20,
-            [255, 226, 145],
-        );
-        for (index, (label, value)) in [
-            ("Reputation", info.current_reputation),
-            ("Total", info.total_reputation),
-            ("Today", info.todays_reputation),
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            let y = 82 + index as i32 * 23;
-            draw_dialogue_text(
-                font,
-                &mut pixels,
-                width,
-                height,
-                label,
-                18,
-                y,
-                9.0,
-                94,
-                15,
-                [190, 181, 157],
-            );
-            draw_dialogue_text(
-                font,
-                &mut pixels,
-                width,
-                height,
-                &value.to_string(),
-                122,
-                y,
-                9.0,
-                130,
-                15,
-                [248, 242, 221],
-            );
-        }
-        draw_dialogue_text(
-            font,
-            &mut pixels,
-            width,
-            height,
-            &format!(
-                "Juniors: {} / {}",
-                info.junior_count.max(0),
-                info.juniors_allowed.max(0)
-            ),
-            18,
-            158,
-            9.0,
-            width - 36,
-            16,
-            [214, 205, 181],
-        );
-        fill_dialogue_rect(
-            &mut pixels,
-            width,
-            height,
-            14,
-            185,
-            width - 28,
-            52,
-            [30, 25, 20, 228],
-        );
-        draw_dialogue_text(
-            font,
-            &mut pixels,
-            width,
-            height,
-            "Family motto · click to edit",
-            21,
-            187,
-            7.0,
-            width - 42,
-            12,
-            [178, 167, 143],
-        );
-        draw_dialogue_text(
-            font,
-            &mut pixels,
-            width,
-            height,
-            if info.message.trim().is_empty() {
-                "No motto set"
-            } else {
-                info.message.as_str()
-            },
-            21,
-            201,
-            9.0,
-            width - 42,
-            32,
-            [229, 220, 197],
-        );
+        let name = if info.name.trim().is_empty() { "No family" } else { info.name.as_str() };
+        let name = ui_foundation::ellipsize(font, name, 11.0, (width - 32) as f32);
+        draw_dialogue_text(font, &mut pixels, width, height, &name, 16, 36, 11.0, width - 32, 16, [255, 255, 255]);
+        let motto = if info.message.trim().is_empty() { "Click to edit family precept" } else { info.message.as_str() };
+        let motto = ui_foundation::ellipsize(font, motto, 10.0, (width - 36) as f32);
+        draw_dialogue_text(font, &mut pixels, width, height, &motto, 17, 66, 10.0, width - 36, 15, [45, 45, 45]);
+        draw_dialogue_text(font, &mut pixels, width, height, &format!("{} / {}", info.junior_count.max(0), info.juniors_allowed.max(0)), 70, 91, 10.0, width - 85, 14, [45, 45, 45]);
+        draw_dialogue_text(font, &mut pixels, width, height, &format!("{} / {}", info.current_reputation, info.total_reputation), 65, 122, 10.0, width - 78, 14, [45, 45, 45]);
+        draw_dialogue_text(font, &mut pixels, width, height, &info.todays_reputation.to_string(), 130, 141, 10.0, width - 145, 14, [45, 45, 45]);
     } else {
-        draw_dialogue_text(
-            font,
-            &mut pixels,
-            width,
-            height,
-            "Requesting family information…",
-            18,
-            64,
-            10.0,
-            width - 36,
-            30,
-            [70, 74, 80],
-        );
+        draw_dialogue_text(font, &mut pixels, width, height, "Requesting family information…", 17, 66, 10.0, width - 36, 15, [70, 74, 80]);
     }
 
     let default_abilities = [
@@ -181,80 +68,22 @@ fn render_family_panel(
     let ability_name = privilege.map_or(fallback.0, |privilege| privilege.name.as_str());
     let ability_description =
         privilege.map_or(fallback.1, |privilege| privilege.description.as_str());
-    fill_dialogue_rect(
-        &mut pixels,
-        width,
-        height,
-        14,
-        260,
-        width - 28,
-        91,
-        [28, 24, 19, 232],
-    );
-    draw_dialogue_text(
-        font,
-        &mut pixels,
-        width,
-        height,
-        "Family ability",
-        20,
-        270,
-        8.0,
-        100,
-        14,
-        [178, 167, 143],
-    );
-    draw_dialogue_text(
-        font,
-        &mut pixels,
-        width,
-        height,
-        ability_name,
-        20,
-        287,
-        11.0,
-        width - 40,
-        16,
-        [255, 225, 144],
-    );
-    for (path, x) in [
-        ("UIWindow.img/Family/BtLeft/normal/0", 204),
-        ("UIWindow.img/Family/BtRight/normal/0", 244),
-    ] {
+    let ability_name = ui_foundation::ellipsize(font, ability_name, 10.0, (width - 40) as f32);
+    draw_dialogue_text(font, &mut pixels, width, height, &ability_name, 20, 201, 10.0, width - 40, 15, [45, 45, 45]);
+    let cost = privilege.map_or_else(|| "—".to_owned(), |item| item.reputation_cost.to_string());
+    let uses = privilege.map_or_else(|| "—".to_owned(), |item| {
+        let used = state.info.as_ref().and_then(|info| info.entitlement_usage.iter().find(|usage| usage.ordinal == i32::from(item.kind))).map_or(0, |usage| usage.used);
+        format!("{} / {}", used, item.usage_limit)
+    });
+    draw_dialogue_text(font, &mut pixels, width, height, &cost, 22, 240, 10.0, 98, 15, [45, 45, 45]);
+    draw_dialogue_text(font, &mut pixels, width, height, &uses, 155, 240, 10.0, 90, 15, [45, 45, 45]);
+    let icon = format!("UIWindow.img/Family/RightIcon/{ability_index}");
+    let _ = composite_nx_ui_bitmap(&mut pixels, width, height, ui_archive, &icon, 215, 300);
+    for (path, x) in [("UIWindow.img/Family/BtLeft/normal/0", 204), ("UIWindow.img/Family/BtRight/normal/0", 244)] {
         let _ = composite_nx_ui_bitmap(&mut pixels, width, height, ui_archive, path, x, 305);
     }
-    draw_dialogue_text(
-        font,
-        &mut pixels,
-        width,
-        height,
-        ability_description,
-        20,
-        313,
-        8.0,
-        width - 40,
-        20,
-        [204, 195, 174],
-    );
-    if let Some(privilege) = privilege {
-        draw_dialogue_text(
-            font,
-            &mut pixels,
-            width,
-            height,
-            &format!(
-                "Cost: {} rep  ·  Uses: {}",
-                privilege.reputation_cost, privilege.usage_limit
-            ),
-            20,
-            334,
-            8.0,
-            width - 40,
-            14,
-            [196, 185, 159],
-        );
-    }
-    if let Some(notice) = state.notice.as_deref() {
+    draw_dialogue_text(font, &mut pixels, width, height, ability_description, 20, 270, 9.0, 175, 65, [58, 58, 58]);
+    if state.input.is_none() && let Some(notice) = state.notice.as_deref() {
         draw_dialogue_text(
             font,
             &mut pixels,
@@ -266,7 +95,7 @@ fn render_family_panel(
             8.0,
             width - 36,
             23,
-            [255, 157, 132],
+            [150, 35, 35],
         );
     }
     for (path, x) in [
@@ -276,172 +105,66 @@ fn render_family_panel(
     ] {
         let _ = composite_nx_ui_bitmap(&mut pixels, width, height, ui_archive, path, x, 397);
     }
-    draw_guild_button(
-        font,
-        &mut pixels,
-        width,
-        height,
-        (201, 390, 68, 32),
-        "Leave",
+    let _ = composite_nx_ui_bitmap(
+        &mut pixels, width, height, ui_archive,
+        "UIWindow.img/UserList/Guild/GuildInfo/BtWithdraw/normal/0", 201, 397,
     );
 
-    if let Some(input) = state.input.as_ref() {
-        fill_dialogue_rect(
-            &mut pixels,
-            width,
-            height,
-            0,
-            0,
-            width,
-            height,
-            [0, 0, 0, 150],
-        );
-        fill_dialogue_rect(
-            &mut pixels,
-            width,
-            height,
-            24,
-            124,
-            226,
-            166,
-            [27, 23, 19, 255],
-        );
-        for (x, y, w, h) in [
-            (24, 124, 226, 2),
-            (24, 288, 226, 2),
-            (24, 124, 2, 166),
-            (248, 124, 2, 166),
-        ] {
-            fill_dialogue_rect(&mut pixels, width, height, x, y, w, h, [147, 121, 78, 255]);
+    if state.input.is_some() || state.confirm_leave {
+        for pixel in pixels.chunks_exact_mut(4) {
+            for channel in &mut pixel[..3] { *channel = (u16::from(*channel) * 105 / 255) as u8; }
         }
-        let (heading, helper) = match input.kind {
-            FamilyInputKind::InviteJunior => ("Invite a junior", "Enter a name (max 13)"),
-            FamilyInputKind::EditPrecepts => ("Edit family motto", "Enter a motto (max 200)"),
-        };
-        draw_dialogue_text(
-            font,
-            &mut pixels,
-            width,
-            height,
-            heading,
-            38,
-            140,
-            12.0,
-            198,
-            18,
-            [255, 229, 169],
-        );
-        draw_dialogue_text(
-            font,
-            &mut pixels,
-            width,
-            height,
-            helper,
-            38,
-            164,
-            8.0,
-            198,
-            14,
-            [194, 183, 159],
-        );
-        fill_dialogue_rect(
-            &mut pixels,
-            width,
-            height,
-            38,
-            190,
-            198,
-            35,
-            [12, 10, 8, 255],
-        );
-        draw_dialogue_text(
-            font,
-            &mut pixels,
-            width,
-            height,
-            &input.text,
-            45,
-            199,
-            10.0,
-            184,
-            20,
-            [245, 236, 215],
-        );
-        draw_guild_button(font, &mut pixels, width, height, (53, 253, 79, 28), "OK");
-        draw_guild_button(
-            font,
-            &mut pixels,
-            width,
-            height,
-            (143, 253, 79, 28),
-            "Cancel",
-        );
-    } else if state.confirm_leave {
-        fill_dialogue_rect(
-            &mut pixels,
-            width,
-            height,
-            0,
-            0,
-            width,
-            height,
-            [0, 0, 0, 150],
-        );
-        fill_dialogue_rect(
-            &mut pixels,
-            width,
-            height,
-            24,
-            124,
-            226,
-            166,
-            [27, 23, 19, 255],
-        );
-        for (x, y, w, h) in [
-            (24, 124, 226, 2),
-            (24, 288, 226, 2),
-            (24, 124, 2, 166),
-            (248, 124, 2, 166),
-        ] {
-            fill_dialogue_rect(&mut pixels, width, height, x, y, w, h, [147, 121, 78, 255]);
+        let _ = composite_nx_ui_bitmap(&mut pixels, width, height, ui_archive, "Basic.img/YesNo/backgrnd", 5, 145);
+        if let Some(input) = state.input.as_ref() {
+            let heading = match input.kind {
+                FamilyInputKind::InviteJunior => "Enter the junior's name:",
+                FamilyInputKind::EditPrecepts => "Enter the family precept:",
+            };
+            draw_dialogue_text(font, &mut pixels, width, height, heading, 30, 166, 11.0, 214, 17, [35, 35, 35]);
+            fill_dialogue_rect(&mut pixels, width, height, 28, 192, 218, 22, [255, 255, 255, 255]);
+            let text = family_input_visible_text(font, &input.text, 208.0);
+            draw_dialogue_text(font, &mut pixels, width, height, &text, 33, 196, 10.0, 208, 15, [35, 35, 35]);
+            if let Some(notice) = state.notice.as_deref() {
+                let notice = ui_foundation::ellipsize(font, notice, 9.0, 218.0);
+                draw_dialogue_text(font, &mut pixels, width, height, &notice, 28, 219, 9.0, 218, 13, [150, 35, 35]);
+            }
+        } else {
+            draw_dialogue_text(font, &mut pixels, width, height, "Leave your family?", 30, 169, 12.0, 214, 18, [35, 35, 35]);
+            draw_dialogue_text(font, &mut pixels, width, height, "Your family relationship will end.", 30, 193, 10.0, 214, 24, [55, 55, 55]);
         }
-        draw_dialogue_text(
-            font,
-            &mut pixels,
-            width,
-            height,
-            "Leave your family?",
-            38,
-            162,
-            12.0,
-            198,
-            20,
-            [255, 229, 169],
-        );
-        draw_dialogue_text(
-            font,
-            &mut pixels,
-            width,
-            height,
-            "Your family relationship will end.",
-            38,
-            188,
-            8.0,
-            198,
-            24,
-            [210, 198, 175],
-        );
-        draw_guild_button(font, &mut pixels, width, height, (53, 253, 79, 28), "Leave");
-        draw_guild_button(
-            font,
-            &mut pixels,
-            width,
-            height,
-            (143, 253, 79, 28),
-            "Cancel",
-        );
+        let (accept, cancel) = if state.input.is_some() { ("Basic.img/BtOK/normal/0", "Basic.img/BtCancel/normal/0") } else { ("Basic.img/BtYes/normal/0", "Basic.img/BtNo/normal/0") };
+        for (path, x) in [(accept, 64), (cancel, 145)] {
+            let _ = composite_nx_ui_bitmap(&mut pixels, width, height, ui_archive, path, x, 239);
+        }
     }
+
     pixels
+}
+
+// Keep the caret end visible when a long family precept exceeds the field.
+fn family_input_visible_text(font: &fontdue::Font, text: &str, max_width: f32) -> String {
+    if dialogue_text_width(font, text, 10.0) <= max_width { return text.to_owned(); }
+    for (index, _) in text.char_indices().skip(1) {
+        let candidate = format!("…{}", &text[index..]);
+        if dialogue_text_width(font, &candidate, 10.0) <= max_width { return candidate; }
+    }
+    "…".to_owned()
+}
+
+#[cfg(test)]
+mod family_input_layout_tests {
+    use super::*;
+
+    #[test]
+    fn long_unicode_input_keeps_its_end_visible_within_the_field() {
+        let font = fontdue::Font::from_bytes(include_bytes!("../../assets/fonts/Roboto-Regular.ttf").as_slice(), fontdue::FontSettings::default()).unwrap();
+        let text = "Long family message with accented characters éé and a visible ending";
+        let visible = family_input_visible_text(&font, text, 100.0);
+        assert!(visible.starts_with('…'));
+        assert!(visible.ends_with("ending"));
+        assert!(dialogue_text_width(&font, &visible, 10.0) <= 100.0);
+        assert_eq!(family_input_visible_text(&font, "short", 100.0), "short");
+    }
 }
 
 fn render_family_tree_panel(
@@ -476,7 +199,9 @@ fn render_family_tree_panel(
             &mut pixels,
             width,
             height,
-            &chart.entries.len().to_string(),
+            &chart.member_counters.iter().find(|counter| counter.id_or_flag == -1 && counter.count >= 0).map(|counter| counter.count.to_string()).unwrap_or_else(|| {
+                chart.entries.iter().map(|entry| entry.character_id).collect::<std::collections::HashSet<_>>().len().to_string()
+            }),
             25,
             40,
             9.0,
@@ -555,8 +280,8 @@ fn render_family_tree_panel(
     pixels
 }
 
-// The artwork has room for the viewed member, two seniors, two juniors and
-// two juniors per junior. Clicking a plate requests that member's own chart.
+// The leader has a separate plate above the two senior positions. Clicking a
+// plate requests that member's own chart.
 fn family_tree_slots(chart: &openstory_protocol::FamilyChart) -> Vec<(usize, i32, i32)> {
     let Some(viewed) = chart
         .entries
@@ -567,8 +292,12 @@ fn family_tree_slots(chart: &openstory_protocol::FamilyChart) -> Vec<(usize, i32
         return Vec::new();
     };
     let mut slots = vec![(viewed, 223, 200)];
+    let leader = chart.entries.iter().position(|entry| entry.parent_id == 0);
+    if let Some(index) = leader.filter(|&index| chart.entries[index].character_id != chart.entries[viewed].character_id) {
+        slots.push((index, 223, 42));
+    }
     let mut senior = viewed;
-    for y in [147, 42] {
+    for y in [147, 95] {
         let parent = chart.entries[senior].parent_id;
         let Some(index) = chart
             .entries
@@ -577,11 +306,19 @@ fn family_tree_slots(chart: &openstory_protocol::FamilyChart) -> Vec<(usize, i32
         else {
             break;
         };
-        if slots.iter().any(|(seen, _, _)| *seen == index) {
+        if slots.iter().any(|(seen, _, _)| chart.entries[*seen].character_id == chart.entries[index].character_id) {
             break;
         }
         slots.push((index, 223, y));
         senior = index;
+    }
+    let parent_id = chart.entries[viewed].parent_id;
+    if parent_id != 0 {
+        if let Some((index, _)) = chart.entries.iter().enumerate().find(|(_, entry)| {
+            entry.parent_id == parent_id && entry.character_id != chart.entries[viewed].character_id
+        }) {
+            slots.push((index, 365, 200));
+        }
     }
     let children: Vec<usize> = chart
         .entries
@@ -616,6 +353,44 @@ fn family_tree_slots(chart: &openstory_protocol::FamilyChart) -> Vec<(usize, i32
         }
     }
     slots
+}
+
+#[cfg(test)]
+mod family_tree_tests {
+    use super::*;
+
+    #[test]
+    fn shows_leader_ancestors_and_sibling_in_distinct_plates() {
+        let entries = [(1, 0), (2, 1), (3, 2), (4, 3), (5, 3), (6, 4)]
+            .into_iter()
+            .map(|(character_id, parent_id)| openstory_protocol::FamilyChartEntry {
+                character_id,
+                parent_id,
+                job: 0,
+                level: 1,
+                online: false,
+                current_reputation: 0,
+                total_reputation: 0,
+                reputation_to_senior: 0,
+                todays_reputation: 0,
+                channel: 0,
+                time_online: 0,
+                name: String::new(),
+            })
+            .collect();
+        let chart = openstory_protocol::FamilyChart {
+            viewed_character_id: 4,
+            entries,
+            member_counters: Vec::new(),
+            entitlement_usage: Vec::new(),
+            add_button: None,
+        };
+        let positions: Vec<_> = family_tree_slots(&chart)
+            .into_iter()
+            .map(|(index, x, y)| (chart.entries[index].character_id, x, y))
+            .collect();
+        assert_eq!(positions, [(4, 223, 200), (1, 223, 42), (3, 223, 147), (2, 223, 95), (5, 365, 200), (6, 80, 253)]);
+    }
 }
 
 fn draw_family_nx_background(
@@ -667,6 +442,31 @@ fn draw_family_nx_background(
             pixels[dest_index + 3] =
                 (alpha + u16::from(pixels[dest_index + 3]) * inverse / 255).min(255) as u8;
         }
+    }
+}
+
+const GUILD_VISIBLE_ROWS: usize = 10;
+
+fn guild_scrollbar_position(x: f32, y: f32, count: usize, offset: usize) -> Option<usize> {
+    if !(306.0..318.0).contains(&x) || !(92.0..332.0).contains(&y) { return None; }
+    let maximum = count.saturating_sub(GUILD_VISIBLE_ROWS);
+    let next = if y < 104.0 { offset.saturating_sub(1) }
+        else if y >= 320.0 { offset.saturating_add(1) }
+        else { (((y - 110.0) / 204.0).clamp(0.0, 1.0) * maximum as f32).round() as usize };
+    Some(next.min(maximum))
+}
+
+#[cfg(test)]
+mod guild_roster_layout_tests {
+    use super::*;
+
+    #[test]
+    fn scrollbar_exposes_every_member_without_entering_the_footer() {
+        assert_eq!(guild_scrollbar_position(306.0, 92.0, 12, 0), Some(0));
+        assert_eq!(guild_scrollbar_position(306.0, 331.0, 12, 0), Some(1));
+        assert_eq!(guild_scrollbar_position(306.0, 314.0, 12, 0), Some(2));
+        assert_eq!(guild_scrollbar_position(306.0, 332.0, 12, 0), None);
+        assert!(92 + (GUILD_VISIBLE_ROWS - 1) * 24 + 23 < 344);
     }
 }
 
@@ -1087,7 +887,7 @@ fn render_guild_panel(
             &mut pixels,
             width,
             height,
-            (216, 5, 108, 21),
+            (216, 5, 102, 21),
             "Emblem",
         );
         let online = guild.members.iter().filter(|member| member.online).count();
@@ -1141,12 +941,15 @@ fn render_guild_panel(
                 [128, 83, 0],
             );
         }
-        let rows = if invite.is_some() || creation_invite.is_some() {
-            10
-        } else {
-            12
-        };
+        let rows = GUILD_VISIBLE_ROWS;
         let max_scroll = guild.members.len().saturating_sub(rows);
+        if max_scroll > 0 {
+            for (path, y) in [("Basic.img/VScr/enabled/prev0", 92), ("Basic.img/VScr/enabled/next0", 320)] {
+                let _ = composite_nx_ui_bitmap(&mut pixels, width, height, ui_archive, path, 306, y);
+            }
+            let thumb_y = 104 + 204 * scroll.min(max_scroll) / max_scroll;
+            let _ = composite_nx_ui_bitmap(&mut pixels, width, height, ui_archive, "Basic.img/VScr/enabled/thumb0", 306, thumb_y as i32);
+        }
         for (row, member) in guild
             .members
             .iter()
@@ -1163,16 +966,18 @@ fn render_guild_panel(
             } else {
                 [90, 90, 90]
             };
+            let member_line = ui_foundation::ellipsize(font, &format!("{}  Lv.{}  Job {}", member.name, member.level, member.job), 10.0, (width - 40) as f32);
+            let rank_line = ui_foundation::ellipsize(font, &format!("{rank}  ·  {status}"), 8.0, (width - 50) as f32);
             draw_dialogue_text(
                 font,
                 &mut pixels,
                 width,
                 height,
-                &format!("{}  Lv.{}  Job {}", member.name, member.level, member.job),
+                &member_line,
                 12,
                 y,
                 10.0,
-                width - 24,
+                width - 40,
                 14,
                 color,
             );
@@ -1181,11 +986,11 @@ fn render_guild_panel(
                 &mut pixels,
                 width,
                 height,
-                &format!("{rank}  ·  {status}"),
+                &rank_line,
                 24,
                 y + 11,
                 8.0,
-                width - 36,
+                width - 50,
                 12,
                 if member.online {
                     [55, 100, 55]
@@ -1399,12 +1204,38 @@ fn draw_guild_bitmap(
     }
 }
 
+const ALLIANCE_VISIBLE_ROWS: usize = 8;
+
+fn alliance_scrollbar_position(x: f32, y: f32, count: usize, offset: usize) -> Option<usize> {
+    if !(279.0..291.0).contains(&x) || !(116.0..308.0).contains(&y) { return None; }
+    let maximum = count.saturating_sub(ALLIANCE_VISIBLE_ROWS);
+    let next = if y < 128.0 { offset.saturating_sub(1) }
+        else if y >= 296.0 { offset.saturating_add(1) }
+        else { (((y - 134.0) / 156.0).clamp(0.0, 1.0) * maximum as f32).round() as usize };
+    Some(next.min(maximum))
+}
+
+#[cfg(test)]
+mod alliance_roster_layout_tests {
+    use super::*;
+
+    #[test]
+    fn scrollbar_reaches_later_guilds_and_clamps_at_both_ends() {
+        assert_eq!(alliance_scrollbar_position(279.0, 116.0, 12, 0), Some(0));
+        assert_eq!(alliance_scrollbar_position(279.0, 307.0, 12, 0), Some(1));
+        assert_eq!(alliance_scrollbar_position(279.0, 290.0, 12, 0), Some(4));
+        assert_eq!(alliance_scrollbar_position(279.0, 307.0, 3, 0), Some(0));
+        assert_eq!(alliance_scrollbar_position(278.0, 150.0, 12, 0), None);
+    }
+}
+
 fn render_alliance_panel(
     font: &fontdue::Font,
     ui_archive: &NxArchive,
     guild: Option<&openstory_protocol::GuildInfo>,
     alliance: Option<&openstory_protocol::AllianceInfo>,
     invite: Option<&(i32, String)>,
+    scroll: usize,
 ) -> Vec<u8> {
     let width = ALLIANCE_PANEL_WIDTH as usize;
     let height = ALLIANCE_PANEL_HEIGHT as usize;
@@ -1513,7 +1344,16 @@ fn render_alliance_panel(
             14,
             [72, 68, 60],
         );
-        for (row, member_guild) in alliance.guilds.iter().take(8).enumerate() {
+        let maximum = alliance.guilds.len().saturating_sub(ALLIANCE_VISIBLE_ROWS);
+        let scroll = scroll.min(maximum);
+        if maximum > 0 {
+            for (path, y) in [("Basic.img/VScr/enabled/prev0", 116), ("Basic.img/VScr/enabled/next0", 296)] {
+                let _ = composite_nx_ui_bitmap(&mut pixels, width, height, ui_archive, path, 279, y);
+            }
+            let thumb_y = 128 + 156 * scroll / maximum;
+            let _ = composite_nx_ui_bitmap(&mut pixels, width, height, ui_archive, "Basic.img/VScr/enabled/thumb0", 279, thumb_y as i32);
+        }
+        for (row, member_guild) in alliance.guilds.iter().skip(scroll).take(ALLIANCE_VISIBLE_ROWS).enumerate() {
             let local = guild.is_some_and(|guild| guild.id == member_guild.id);
             let name = if member_guild.name.is_empty() {
                 if local {
@@ -1527,16 +1367,17 @@ fn render_alliance_panel(
             } else {
                 member_guild.name.clone()
             };
+            let name = ui_foundation::ellipsize(font, &format!("{}{}", if local { "• " } else { "  " }, name), 11.0, (width - 54) as f32);
             draw_dialogue_text(
                 font,
                 &mut pixels,
                 width,
                 height,
-                &format!("{}{}", if local { "• " } else { "  " }, name),
+                &name,
                 18,
                 116 + row as i32 * 24,
                 11.0,
-                width - 36,
+                width - 54,
                 18,
                 if local { [128, 83, 0] } else { [52, 52, 52] },
             );

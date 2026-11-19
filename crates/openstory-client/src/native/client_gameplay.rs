@@ -351,6 +351,46 @@ impl ClientApp {
         }
     }
 
+    pub(super) fn schedule_mob_hit_sounds(
+        &mut self,
+        events: &[(i32, (i16, i16), Duration)],
+    ) {
+        let start = Instant::now();
+        for (mob_id, position, delay) in events {
+            if delay.is_zero() {
+                self.audio
+                    .play_mob_hit(&self.sound_archive, *mob_id, *position);
+                continue;
+            }
+            if self.pending_mob_hit_sounds.len() >= 512 {
+                self.pending_mob_hit_sounds.remove(0);
+            }
+            if let Some(play_at) = start.checked_add(*delay) {
+                self.pending_mob_hit_sounds.push(PendingMobHitSound {
+                    mob_id: *mob_id,
+                    position: *position,
+                    play_at,
+                });
+            }
+        }
+    }
+
+    pub(super) fn play_due_mob_hit_sounds(&mut self, now: Instant) {
+        let mut due = Vec::new();
+        self.pending_mob_hit_sounds.retain(|sound| {
+            if sound.play_at <= now {
+                due.push(*sound);
+                false
+            } else {
+                true
+            }
+        });
+        for sound in due {
+            self.audio
+                .play_mob_hit(&self.sound_archive, sound.mob_id, sound.position);
+        }
+    }
+
     pub(super) fn refresh_map_hud(&mut self) {
         if self.map_scene.is_none() {
             self.map_hud_texture = None;
@@ -621,6 +661,12 @@ impl ClientApp {
             &map_name,
             &street_name,
             presentation,
+            Some(minimap::WorldViewport {
+                left: -scene.camera_offset.0,
+                top: -scene.camera_offset.1,
+                width: 1024.0,
+                height: GAMEPLAY_VIEW_HEIGHT,
+            }),
             &markers,
             &self.font,
         ) {

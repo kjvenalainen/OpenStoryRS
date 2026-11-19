@@ -123,10 +123,9 @@ fn composite_nx_ui_bitmap_scaled_to(
             for channel in 0..3 {
                 let foreground = u32::from(source[source_index + channel]);
                 let background = u32::from(pixels[destination_index + channel]);
-                let premultiplied = foreground * source_alpha
-                    + background * destination_alpha * inverse / 255;
-                pixels[destination_index + channel] =
-                    (premultiplied / output_alpha.max(1)) as u8;
+                let premultiplied =
+                    foreground * source_alpha + background * destination_alpha * inverse / 255;
+                pixels[destination_index + channel] = (premultiplied / output_alpha.max(1)) as u8;
             }
             pixels[destination_index + 3] = output_alpha as u8;
         }
@@ -346,8 +345,7 @@ fn build_quit_confirmation_sprites(
         let source_width = usize::from(bitmap.width());
         let mut crop_pixels = vec![0_u8; crop_width as usize * crop_height as usize * 4];
         for row in 0..crop_height as usize {
-            let source_start =
-                ((crop_y as usize + row) * source_width + crop_x as usize) * 4;
+            let source_start = ((crop_y as usize + row) * source_width + crop_x as usize) * 4;
             let destination_start = row * crop_width as usize * 4;
             let row_bytes = crop_width as usize * 4;
             crop_pixels[destination_start..destination_start + row_bytes]
@@ -402,7 +400,8 @@ fn build_server_notice_art(
     archive: &NxArchive,
     font: &fontdue::Font,
     message: &str,
-) -> Result<(u32, u32, Vec<u8>, SpriteRect, SpriteRect), String> {
+    page: usize,
+) -> Result<(u32, u32, Vec<u8>, SpriteRect, SpriteRect, usize), String> {
     let background_path = "Login.img/Notice/backgrnd/0";
     let background = archive
         .root()
@@ -426,11 +425,32 @@ fn build_server_notice_art(
         height: height as f32,
         blend_mode: BlendMode::Alpha,
     };
-    let button_width = 76_u32.min(width.saturating_sub(24));
-    let button_height = 34_u32.min(height.saturating_sub(24));
+    let button_path = "Login.img/Notice/BtYes/normal/0";
+    let node = archive
+        .root()
+        .resolve(button_path)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| format!("missing native notice button {button_path:?}"))?;
+    let button_bitmap = node
+        .bitmap()
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| format!("native notice button {button_path:?} is not a bitmap"))?;
+    let button_width = u32::from(button_bitmap.width());
+    let button_height = u32::from(button_bitmap.height());
+    let button_x = width.saturating_sub(button_width) / 2;
+    let button_y = height.saturating_sub(button_height + 22);
+    composite_nx_ui_bitmap(
+        &mut pixels,
+        width as usize,
+        height as usize,
+        archive,
+        button_path,
+        button_x as i32,
+        button_y as i32,
+    )?;
     let button = SpriteRect {
-        x: panel.x + (width - button_width) as f32 / 2.0,
-        y: panel.y + height as f32 - button_height as f32 - 22.0,
+        x: panel.x + button_x as f32,
+        y: panel.y + button_y as f32,
         width: button_width as f32,
         height: button_height as f32,
         blend_mode: BlendMode::Alpha,
@@ -439,83 +459,45 @@ fn build_server_notice_art(
     let font_size = 14.0;
     let text_left = 104_u32.min(width.saturating_sub(24));
     let content_width = width.saturating_sub(text_left + 24);
-    let lines = wrap_server_notice(font, message, font_size, content_width as f32, 4);
-    let line_height = font_size.ceil() as u32 + 5;
-    let text_top = 30;
-    for (line_index, line) in lines.iter().enumerate() {
-        let line_width = measured_text_width(font, line, font_size)
-            .ceil()
-            .clamp(1.0, content_width as f32) as u32
-            + 2;
-        let label = rasterize_label_color(
+    let lines = wrap_server_notice(font, message, font_size, content_width as f32, usize::MAX);
+    let page_count = lines.len().div_ceil(4).max(1);
+    let page = page.min(page_count - 1);
+    for (index, line) in lines.iter().skip(page * 4).take(4).enumerate() {
+        draw_dialogue_text(
             font,
+            &mut pixels,
+            width as usize,
+            height as usize,
             line,
+            text_left as i32,
+            35 + index as i32 * 19,
             font_size,
-            line_width,
-            line_height,
+            content_width as usize,
+            19,
             [55, 40, 29],
         );
-        let top = text_top + line_index as u32 * line_height;
-        blend_notice_label(
+    }
+    if page_count > 1 {
+        let label = if page + 1 < page_count {
+            format!("{} / {} · OK to continue", page + 1, page_count)
+        } else {
+            format!("{} / {}", page + 1, page_count)
+        };
+        draw_dialogue_text(
+            font,
             &mut pixels,
-            width,
-            height,
-            text_left,
-            top,
+            width as usize,
+            height as usize,
             &label,
-            line_width,
-            line_height,
+            text_left as i32,
+            126,
+            10.0,
+            content_width as usize,
+            16,
+            [70, 50, 35],
         );
     }
-
-    let button_x = (button.x - panel.x) as u32;
-    let button_y = (button.y - panel.y) as u32;
-    fill_notice_rect(
-        &mut pixels,
-        width,
-        height,
-        button_x,
-        button_y,
-        button_width,
-        button_height,
-        [165, 194, 221, 255],
-    );
-    stroke_notice_rect(
-        &mut pixels,
-        width,
-        height,
-        button_x,
-        button_y,
-        button_width,
-        button_height,
-        [55, 93, 130, 255],
-    );
-    let label_width = measured_text_width(font, "OK", font_size)
-        .ceil()
-        .max(1.0) as u32
-        + 2;
-    let label_height = font_size.ceil() as u32 + 5;
-    let label = rasterize_label_color(
-        font,
-        "OK",
-        font_size,
-        label_width,
-        label_height,
-        [35, 48, 69],
-    );
-    let label_left = button_x + button_width.saturating_sub(label_width) / 2;
-    let label_top = button_y + button_height.saturating_sub(label_height) / 2;
-    blend_notice_label(
-        &mut pixels,
-        width,
-        height,
-        label_left,
-        label_top,
-        &label,
-        label_width,
-        label_height,
-    );
-    Ok((width, height, pixels, panel, button))
+    Ok((width, height, pixels, panel, button, page_count))
 }
 
 fn wrap_server_notice(
@@ -525,9 +507,8 @@ fn wrap_server_notice(
     max_width: f32,
     max_lines: usize,
 ) -> Vec<String> {
-    let bounded_message = message.chars().take(512).collect::<String>();
     let mut lines = Vec::new();
-    for paragraph in bounded_message.replace('\r', "").split('\n') {
+    for paragraph in message.replace('\r', "").split('\n') {
         let mut line = String::new();
         for word in paragraph.split_whitespace() {
             let candidate = if line.is_empty() {
@@ -547,7 +528,8 @@ fn wrap_server_notice(
             }
             for character in word.chars() {
                 let candidate = format!("{line}{character}");
-                if !line.is_empty() && measured_text_width(font, &candidate, font_size) > max_width {
+                if !line.is_empty() && measured_text_width(font, &candidate, font_size) > max_width
+                {
                     lines.push(std::mem::take(&mut line));
                     if lines.len() >= max_lines {
                         return lines;
@@ -567,80 +549,6 @@ fn wrap_server_notice(
         lines.push(String::new());
     }
     lines
-}
-
-fn blend_notice_label(
-    pixels: &mut [u8],
-    width: u32,
-    height: u32,
-    left: u32,
-    top: u32,
-    label: &[u8],
-    label_width: u32,
-    label_height: u32,
-) {
-    for y in 0..label_height.min(height.saturating_sub(top)) {
-        for x in 0..label_width.min(width.saturating_sub(left)) {
-            let source = ((y * label_width + x) * 4) as usize;
-            let destination = (((top + y) * width + left + x) * 4) as usize;
-            let alpha = u16::from(label[source + 3]);
-            if alpha == 0 {
-                continue;
-            }
-            for channel in 0..3 {
-                pixels[destination + channel] = ((u16::from(label[source + channel]) * alpha
-                    + u16::from(pixels[destination + channel]) * (255 - alpha))
-                    / 255) as u8;
-            }
-            pixels[destination + 3] = 255;
-        }
-    }
-}
-
-fn fill_notice_rect(
-    pixels: &mut [u8],
-    canvas_width: u32,
-    canvas_height: u32,
-    left: u32,
-    top: u32,
-    width: u32,
-    height: u32,
-    color: [u8; 4],
-) {
-    for y in top..top.saturating_add(height).min(canvas_height) {
-        for x in left..left.saturating_add(width).min(canvas_width) {
-            let offset = ((y * canvas_width + x) * 4) as usize;
-            pixels[offset..offset + 4].copy_from_slice(&color);
-        }
-    }
-}
-
-fn stroke_notice_rect(
-    pixels: &mut [u8],
-    canvas_width: u32,
-    canvas_height: u32,
-    left: u32,
-    top: u32,
-    width: u32,
-    height: u32,
-    color: [u8; 4],
-) {
-    for x in left..left.saturating_add(width).min(canvas_width) {
-        for y in [top, top.saturating_add(height.saturating_sub(1))] {
-            if y < canvas_height {
-                let offset = ((y * canvas_width + x) * 4) as usize;
-                pixels[offset..offset + 4].copy_from_slice(&color);
-            }
-        }
-    }
-    for y in top..top.saturating_add(height).min(canvas_height) {
-        for x in [left, left.saturating_add(width.saturating_sub(1))] {
-            if x < canvas_width {
-                let offset = ((y * canvas_width + x) * 4) as usize;
-                pixels[offset..offset + 4].copy_from_slice(&color);
-            }
-        }
-    }
 }
 
 fn centered_text_x(font: &fontdue::Font, text: &str, font_size: f32) -> f32 {
@@ -730,8 +638,12 @@ fn rasterize_label_color(
                 }
                 let src = row * metrics.width + column;
                 let dst = (y as usize * width as usize + x as usize) * 4;
-                pixels[dst..dst + 4]
-                    .copy_from_slice(&[color[0], color[1], color[2], coverage[src]]);
+                pixels[dst..dst + 4].copy_from_slice(&[
+                    color[0],
+                    color[1],
+                    color[2],
+                    coverage[src],
+                ]);
             }
         }
         pen_x += metrics.advance_width;
@@ -951,4 +863,27 @@ fn load_damage_glyph_atlas(
         .upload_bgra(atlas_width, atlas_height, &atlas)
         .map_err(|error| error.to_string())?;
     Ok((texture, glyphs))
+}
+
+#[cfg(test)]
+mod server_notice_tests {
+    use super::*;
+
+    #[test]
+    fn notice_wrapping_preserves_long_messages_and_bounds_each_line() {
+        let font = fontdue::Font::from_bytes(
+            include_bytes!("../../assets/fonts/Roboto-Regular.ttf").as_slice(),
+            fontdue::FontSettings::default(),
+        )
+        .unwrap();
+        let message = format!("{} {}", "maintenance ".repeat(80), "X".repeat(70));
+        let lines = wrap_server_notice(&font, &message, 14.0, 230.0, usize::MAX);
+        assert!(lines.len() > 4);
+        assert_eq!(lines.join("").replace(' ', ""), message.replace(' ', ""));
+        assert!(
+            lines
+                .iter()
+                .all(|line| measured_text_width(&font, line, 14.0) <= 230.0)
+        );
+    }
 }

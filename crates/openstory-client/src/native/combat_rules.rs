@@ -129,6 +129,7 @@ fn player_movement_forces(
 
 fn calculate_player_touch_damage(
     character: &openstory_protocol::CharacterInfo,
+    inventory: Option<&openstory_protocol::InventorySnapshot>,
     attack: i32,
     archive: &NxArchive,
     skill_archive: &NxArchive,
@@ -137,22 +138,30 @@ fn calculate_player_touch_damage(
     forced_stats: &ForcedEquipmentStats,
 ) -> i32 {
     let mut weapon_defense = 0_i64;
-    let item_ids = character
-        .look
-        .equips
-        .iter()
-        .map(|(_, item_id)| *item_id)
-        .collect::<HashSet<_>>();
-    for item_id in item_ids {
-        let Some(category) = character_equip_category(item_id) else {
-            continue;
-        };
-        let info_path = format!("{category}/0{item_id}.img/info");
-        if let Some(info) = archive.root().resolve(&info_path).ok().flatten() {
-            // Character.nx stores physical defense as incPDD (also used by
-            // the inventory UI), not incWDEF.
-            weapon_defense =
-                weapon_defense.saturating_add(integer_property(&info, "incPDD").unwrap_or(0));
+    let mut found_inventory_defense = false;
+    if let Some(inventory) = inventory {
+        for item in inventory.equipped() {
+            if let Some(equip) = item.equip.as_ref() {
+                // The wire equipment stat table already includes scroll and
+                // upgrade bonuses, matching CharStats::get_total(WDEF).
+                weapon_defense =
+                    weapon_defense.saturating_add(i64::from(equip.stats[8]));
+                found_inventory_defense = true;
+            }
+        }
+    }
+    if !found_inventory_defense {
+        for (_, item_id) in &character.look.equips {
+            let Some(category) = character_equip_category(*item_id) else {
+                continue;
+            };
+            let info_path = format!("{category}/0{item_id}.img/info");
+            if let Some(info) = archive.root().resolve(&info_path).ok().flatten() {
+                // Character.nx stores physical defense as incPDD (also used by
+                // the inventory UI), not incWDEF.
+                weapon_defense = weapon_defense
+                    .saturating_add(integer_property(&info, "incPDD").unwrap_or(0));
+            }
         }
     }
 
@@ -175,6 +184,8 @@ fn calculate_player_touch_damage(
         .clamp(0, 1000) as f64
         / 1000.0;
 
+    // Keep the v83 reference order: no defense means no reduction; otherwise
+    // use half the mob's attack plus attack divided by total weapon defense.
     let damage_before_achilles = if weapon_defense <= 0 {
         attack
     } else {

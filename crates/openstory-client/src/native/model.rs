@@ -4,6 +4,9 @@ struct GameplayInput {
     right: bool,
     up: bool,
     down: bool,
+    pickup: bool,
+    pickup_cooldown_ticks: u8,
+    suppress_up_until_release: bool,
     sit: bool,
     jump_buffer: u8,
     jump_down_ticks: u8,
@@ -17,6 +20,9 @@ struct ScrollingNoticeState {
 }
 
 struct ServerNoticePopup {
+    message: String,
+    page: usize,
+    page_count: usize,
     texture: GpuTexture,
     panel: SpriteRect,
     button: SpriteRect,
@@ -146,7 +152,7 @@ impl OptionControl {
     fn track_y(self) -> Option<usize> {
         match self {
             Self::GraphicsQuality => Some(44),
-            Self::EffectsQuality => Some(128),
+            Self::EffectsQuality => Some(269),
             Self::Music => Some(72),
             Self::MuteMusic => None,
             Self::SoundEffects => Some(100),
@@ -174,6 +180,7 @@ impl OptionControl {
     fn track_width(self) -> usize {
         match self {
             Self::Music | Self::SoundEffects => 100,
+            Self::EffectsQuality => 75,
             _ => 130,
         }
     }
@@ -221,6 +228,13 @@ struct KeyConfigAction {
 #[derive(Clone, Copy)]
 struct PendingSkillHitSound {
     skill_id: i32,
+    position: (i16, i16),
+    play_at: Instant,
+}
+
+#[derive(Clone, Copy)]
+struct PendingMobHitSound {
+    mob_id: i32,
     position: (i16, i16),
     play_at: Instant,
 }
@@ -911,6 +925,7 @@ struct MapSceneRuntime {
     regular_portal_elapsed: Duration,
     hidden_portal_frame_index: usize,
     hidden_portal_elapsed: Duration,
+    portal_entry_blocked: bool,
     portal_cooldown: u8,
     teleport_cooldown: u8,
     touch_damage_cooldown: Duration,
@@ -1273,6 +1288,7 @@ struct StatusMessageRuntime {
     text: String,
     color: [u8; 3],
     created_at: Instant,
+    icon: Option<(u32, u32, Arc<[u8]>)>,
     texture: Option<GpuTexture>,
 }
 
@@ -2298,6 +2314,9 @@ struct StorageUi {
     state: openstory_protocol::StorageSnapshot,
     tab: openstory_protocol::InventoryType,
     storage_scroll: usize,
+    inventory_scroll: usize,
+    selected_storage: Option<(openstory_protocol::InventoryType, u16, i32)>,
+    selected_inventory: Option<(openstory_protocol::InventoryType, u16, i32)>,
     meso_input: String,
     meso_focused: bool,
     notice: Option<String>,
@@ -2350,6 +2369,9 @@ struct TradeRoomItem {
 
 struct CharacterInfoUi {
     name: String,
+    look: Option<openstory_protocol::CharacterLook>,
+    wishlist_offset: usize,
+    selected_pet: usize,
     info: openstory_protocol::CharacterInfoReply,
     fame_pending: bool,
 }
@@ -2452,6 +2474,7 @@ struct CashShopUi {
     locker_slots: u16,
     character_slots: u16,
     pending_withdrawal: Option<i64>,
+    pending_nx_charge: bool,
     confirmation: bool,
     notice: Option<String>,
 }
@@ -2533,6 +2556,7 @@ impl CashShopUi {
             locker_slots: 0,
             character_slots: 0,
             pending_withdrawal: None,
+            pending_nx_charge: false,
             confirmation: false,
             notice: Some("Connecting to the Cash Shop…".to_owned()),
         }
@@ -2578,6 +2602,8 @@ struct MapDropRuntime {
     frame_index: usize,
     frame_elapsed: Duration,
     motion: DropMotion,
+    pickup_attempt: Option<Instant>,
+    pet_pickup_attempt: Option<Instant>,
 }
 
 struct DropFrameRuntime {
@@ -2734,6 +2760,8 @@ struct MapPetRuntime {
     y: f64,
     body: PhysicsBody,
     loot_target: Option<(f64, f64)>,
+    movement_ticks: u8,
+    last_sent_movement: Option<(i16, i16, u8)>,
     stance: u8,
     animations: HashMap<u8, Vec<ProjectileFrameRuntime>>,
     frame_index: usize,
@@ -2836,13 +2864,14 @@ impl MapPetRuntime {
         let owner_delta_x = owner.0 - self.body.x;
         let owner_delta_y = owner.1 - self.body.y;
         let owner_distance = owner_delta_x.hypot(owner_delta_y);
+        let max_owner_distance = if self.loot_target.is_some() { 250.0 } else { 150.0 };
         let current_state = self.state();
         self.body.horizontal_force = 0.0;
         self.body.vertical_force = 0.0;
 
         match current_state {
             0 | 1 => {
-                if owner_distance > 150.0 {
+                if owner_distance > max_owner_distance {
                     self.set_position(owner.0, owner.1);
                     self.loot_target = None;
                 } else {
@@ -2874,14 +2903,17 @@ impl MapPetRuntime {
                 self.body.flags.no_gravity = false;
             }
             2 => {
+                let destination = self.loot_target.unwrap_or(owner);
+                let delta_x = destination.0 - self.body.x;
+                let deadzone = if self.loot_target.is_some() { 8.0 } else { 50.0 };
                 if self.body.on_ground {
                     self.set_local_motion(1, self.stance & 1 == 1);
-                } else if owner_distance > 150.0 {
+                } else if owner_distance > max_owner_distance {
                     self.set_position(owner.0, owner.1);
-                } else if owner_delta_x > 50.0 {
+                } else if delta_x > deadzone {
                     self.body.horizontal_force = WALK_FORCE;
                     self.set_local_motion(2, true);
-                } else if owner_delta_x < -50.0 {
+                } else if delta_x < -deadzone {
                     self.body.horizontal_force = -WALK_FORCE;
                     self.set_local_motion(2, false);
                 }
@@ -3316,7 +3348,7 @@ impl MapSceneRuntime {
             .chain(&scene.door_frames)
             .flat_map(|frame| frame.sprites.clone())
             .collect();
-        let regular_portal_frames = scene
+        let regular_portal_frames: Vec<PortalFrameRuntime> = scene
             .regular_portal_frames
             .iter()
             .map(|frame| portal_frame_runtime(frame, draws))
@@ -3331,7 +3363,7 @@ impl MapSceneRuntime {
             .iter()
             .map(|frame| portal_frame_runtime(frame, draws))
             .collect();
-        let portals = scene
+        let portals: Vec<MapPortalRuntime> = scene
             .portals
             .into_iter()
             .map(|portal| MapPortalRuntime {
@@ -3344,6 +3376,14 @@ impl MapSceneRuntime {
                 touched: false,
             })
             .collect();
+        let portal_entry_blocked = select_portal(
+            &portals,
+            scene.spawn.0,
+            scene.spawn.1,
+            true,
+            &regular_portal_frames,
+        )
+        .is_some();
         let avatar_indices = avatar_frames
             .iter()
             .flat_map(|frame| frame.sprites.iter().filter_map(|sprite| sprite.draw_index))
@@ -3448,6 +3488,7 @@ impl MapSceneRuntime {
             regular_portal_elapsed: Duration::ZERO,
             hidden_portal_frame_index: 0,
             hidden_portal_elapsed: Duration::ZERO,
+            portal_entry_blocked,
             portal_cooldown: 0,
             teleport_cooldown: 0,
             touch_damage_cooldown: Duration::ZERO,
@@ -3631,25 +3672,32 @@ impl MapSceneRuntime {
                 portal.touched = matches!(portal.portal_type, 3 | 10)
                     && portal_bounds_contains(portal, self.player.x, self.player.y);
             }
-            if !up_pressed || !can_use_portal || self.portal_cooldown != 0 {
+            if !can_use_portal || self.portal_cooldown != 0 {
                 continue;
             }
-            // Script, spawn, and message portals often share proximity bounds
-            // with a real exit. Ignore entries without a destination before
-            // selecting a portal so an earlier tutorial marker cannot mask a
-            // usable warp portal later in the map's portal list.
-            let Some(portal) = self.portals.iter().find(|portal| {
-                portal.target_map_id < 999_999_999
-                    && portal_activation_contains(
-                        portal,
-                        self.player.x,
-                        self.player.y,
-                        &self.regular_portal_frames,
-                    )
-            }) else {
+            if self.portal_entry_blocked {
+                self.portal_entry_blocked = select_portal(
+                    &self.portals,
+                    self.player.x,
+                    self.player.y,
+                    true,
+                    &self.regular_portal_frames,
+                )
+                .is_some();
+                if self.portal_entry_blocked {
+                    continue;
+                }
+            }
+            let Some(portal) = select_portal(
+                &self.portals,
+                self.player.x,
+                self.player.y,
+                up_pressed,
+                &self.regular_portal_frames,
+            ) else {
                 continue;
             };
-            if portal.target_map_id == self.map_id {
+            if portal.target_map_id == self.map_id && !matches!(portal.portal_type, 7..=9 | 11) {
                 let Some(target) = self
                     .portals
                     .iter()
@@ -3812,6 +3860,14 @@ impl MapSceneRuntime {
         self.player.on_ground = foothold_id != 0;
         self.player.mode = PhysicsMode::Normal;
         self.last_movement = None;
+        self.portal_entry_blocked = select_portal(
+            &self.portals,
+            self.player.x,
+            self.player.y,
+            true,
+            &self.regular_portal_frames,
+        )
+        .is_some();
     }
 
     fn set_facing(&mut self, right: bool, draws: &mut [(usize, SpriteRect)]) {
@@ -4376,26 +4432,36 @@ impl MapSceneRuntime {
                 let frame = npc.frames().get(npc.frame_index)?;
                 let offset_x = (npc.x - self.player.x) as f32 + camera_bias_x;
                 let offset_y = (npc.y - self.player.y) as f32 + camera_bias_y;
-                frame
+                let sprite_contains = |rect: &SpriteRect, flip: bool| {
+                    let x = if flip {
+                        1024.0 - (rect.x + rect.width) + offset_x
+                    } else {
+                        rect.x + offset_x
+                    };
+                    rect_contains(
+                        SpriteRect {
+                            x,
+                            y: rect.y + offset_y,
+                            width: rect.width,
+                            height: rect.height,
+                            blend_mode: rect.blend_mode,
+                        },
+                        point,
+                    )
+                };
+                let on_npc = frame
                     .sprites
                     .iter()
-                    .any(|(_, rect)| {
-                        let x = if npc.flipped {
-                            1024.0 - (rect.x + rect.width) + offset_x
-                        } else {
-                            rect.x + offset_x
-                        };
-                        rect_contains(
-                            SpriteRect {
-                                x,
-                                y: rect.y + offset_y,
-                                width: rect.width,
-                                height: rect.height,
-                                blend_mode: rect.blend_mode,
-                            },
-                            point,
-                        )
-                    })
+                    .any(|(_, rect)| sprite_contains(rect, npc.flipped));
+                let on_quest_mark = npc
+                    .quest_mark_frames
+                    .get(npc.quest_mark_frame_index)
+                    .is_some_and(|mark| {
+                        mark.sprites
+                            .iter()
+                            .any(|(_, rect)| sprite_contains(rect, false))
+                    });
+                (on_npc || on_quest_mark)
                     // Prefer a server-marked or NX-scripted NPC when hitboxes
                     // overlap, while still allowing the legacy click-to-talk
                     // action on NPCs whose scripts are provided by the server.
@@ -4496,6 +4562,8 @@ impl MapSceneRuntime {
             motion: DropMotion::Falling {
                 elapsed: Duration::ZERO,
             },
+            pickup_attempt: None,
+            pet_pickup_attempt: None,
         };
         if spawn.mode == 2 {
             drop.x = drop.destination_x;
@@ -4536,10 +4604,14 @@ impl MapSceneRuntime {
     }
 
     fn nearest_drop(&self) -> Option<i32> {
+        let now = Instant::now();
         self.drops
             .iter()
             .filter(|(_, drop)| {
                 !matches!(drop.motion, DropMotion::PickedUp { .. })
+                    && drop.pickup_attempt.is_none_or(|last| {
+                        now.saturating_duration_since(last) >= Duration::from_secs(2)
+                    })
                     && self.player.x >= drop.x
                     && self.player.x <= drop.x + 32.0
                     && self.player.y >= drop.y
@@ -4553,6 +4625,12 @@ impl MapSceneRuntime {
                 left_distance.total_cmp(&right_distance)
             })
             .map(|(object_id, _)| *object_id)
+    }
+
+    fn mark_drop_pickup_attempt(&mut self, object_id: i32) {
+        if let Some(drop) = self.drops.get_mut(&object_id) {
+            drop.pickup_attempt = Some(Instant::now());
+        }
     }
 
     fn nearest_attack_targets(
@@ -4995,6 +5073,30 @@ impl MapSceneRuntime {
                 pet.advance(1);
                 if Some(pet.owner_id) == local_character_id {
                     pet.follow_local(owner, footholds);
+                    pet.movement_ticks = pet.movement_ticks.saturating_add(1);
+                    if pet.movement_ticks >= 10 {
+                        pet.movement_ticks = 0;
+                        let position = (
+                            rounded_i16(pet.body.x),
+                            rounded_i16(pet.body.y),
+                            pet.stance,
+                        );
+                        if pet.last_sent_movement != Some(position) {
+                            packets.push(openstory_protocol::move_pet(
+                                pet.unique_id,
+                                openstory_protocol::PlayerMovement {
+                                    x: position.0,
+                                    y: position.1,
+                                    last_x: rounded_i16(pet.body.previous_x),
+                                    last_y: rounded_i16(pet.body.previous_y),
+                                    foothold: pet.body.foothold_id,
+                                    stance: position.2,
+                                    duration: 80,
+                                },
+                            ));
+                            pet.last_sent_movement = Some(position);
+                        }
+                    }
                 }
             }
         }
@@ -5006,10 +5108,12 @@ impl MapSceneRuntime {
             return Vec::new();
         };
         let player = (self.player.x, self.player.y);
-        let drops = &self.drops;
+        let drops = &mut self.drops;
         let pets = &mut self.pets;
         let mut cooldown = self.pet_loot_cooldown;
         let mut packets = Vec::new();
+        let mut reserved = HashSet::new();
+        let now = Instant::now();
 
         for slot in 0..3 {
             let Some(pet) = pets.get_mut(&(local_character_id, slot)) else {
@@ -5017,8 +5121,13 @@ impl MapSceneRuntime {
             };
             let mut pickup: Option<i32> = None;
             let mut nearest: Option<(f64, i32, (f64, f64))> = None;
-            for (&object_id, drop) in drops {
-                if matches!(drop.motion, DropMotion::PickedUp { .. }) {
+            for (&object_id, drop) in drops.iter() {
+                if !matches!(drop.motion, DropMotion::Floating { .. })
+                    || reserved.contains(&object_id)
+                    || drop.pet_pickup_attempt.is_some_and(|last| {
+                        now.saturating_duration_since(last) < Duration::from_secs(2)
+                    })
+                {
                     continue;
                 }
                 let pet_dx = (drop.x - pet.x).abs();
@@ -5037,15 +5146,20 @@ impl MapSceneRuntime {
                 }
             }
             if let Some(object_id) = pickup {
+                if let Some(drop) = drops.get_mut(&object_id) {
+                    drop.pet_pickup_attempt = Some(now);
+                }
+                reserved.insert(object_id);
                 packets.push(openstory_protocol::pet_loot_packet(
                     pet.unique_id,
                     object_id,
                 ));
                 pet.loot_target = None;
                 cooldown = 60;
-            } else if let Some((_, _, target)) = nearest {
+            } else if let Some((_, object_id, target)) = nearest {
+                reserved.insert(object_id);
                 pet.loot_target = Some(target);
-            } else if cooldown != 60 {
+            } else {
                 pet.loot_target = None;
             }
         }
@@ -5972,6 +6086,29 @@ fn portal_bounds_contains(portal: &MapPortalRuntime, x: f64, y: f64) -> bool {
     (-25.0..=25.0).contains(&(x - portal.x)) && (-100.0..=25.0).contains(&(y - portal.y))
 }
 
+fn select_portal<'a>(
+    portals: &'a [MapPortalRuntime],
+    x: f64,
+    y: f64,
+    up: bool,
+    frames: &[PortalFrameRuntime],
+) -> Option<&'a MapPortalRuntime> {
+    let eligible = |portal: &&MapPortalRuntime| {
+        (up || matches!(portal.portal_type, 3 | 9))
+            && portal_activation_contains(portal, x, y, frames)
+    };
+    // Prefer a real destination over an overlapping script or tutorial marker.
+    portals
+        .iter()
+        .filter(eligible)
+        .find(|portal| portal.target_map_id < 999_999_999)
+        .or_else(|| {
+            portals.iter().filter(eligible).find(|portal| {
+                matches!(portal.portal_type, 7..=9 | 11) && !portal.name.is_empty()
+            })
+        })
+}
+
 fn portal_activation_contains(
     portal: &MapPortalRuntime,
     x: f64,
@@ -6053,6 +6190,27 @@ fn player_movement(
         foothold: player.foothold_id,
         stance: base_stance + u8::from(!facing_right),
         duration: 1,
+    }
+}
+
+#[cfg(test)]
+mod pet_pathing_tests {
+    use super::*;
+
+    #[test]
+    fn jumping_pet_keeps_chasing_loot_away_from_owner() {
+        let mut body = PhysicsBody::new(0.0, 0.0);
+        body.on_ground = false;
+        let mut pet = MapPetRuntime {
+            owner_id: 1, slot: 0, item_id: 0, unique_id: 1, name_label: None,
+            x: 0.0, y: 0.0, body, loot_target: Some((100.0, -50.0)),
+            movement_ticks: 0, last_sent_movement: None, stance: 4,
+            animations: HashMap::new(), frame_index: 0, elapsed: Duration::ZERO,
+            command_remaining: Duration::ZERO, interaction: None, speech_bubble_remaining: None,
+        };
+        pet.follow_local((-180.0, 0.0), None);
+        assert_eq!(pet.body.x, 0.0);
+        assert!(pet.body.horizontal_force > 0.0);
     }
 }
 

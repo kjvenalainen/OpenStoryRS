@@ -297,11 +297,6 @@ impl ClientApp {
     pub(super) fn execute_party_command(&mut self, command: PartyCommand) {
         if matches!(&command, PartyCommand::List) {
             self.show_party_panel = !self.show_party_panel;
-            if self.show_party_panel {
-                self.show_buddy_panel = false;
-                self.show_guild_panel = false;
-                self.show_alliance_panel = false;
-            }
             self.refresh_party_texture();
             if let Some(window) = self.window.as_ref() {
                 window.request_redraw();
@@ -419,9 +414,6 @@ impl ClientApp {
                 let display_name = from.strip_prefix("PS: ").unwrap_or(&from).to_owned();
                 self.pending_party_invite = Some((party_id, from));
                 self.show_party_panel = true;
-                self.show_buddy_panel = false;
-                self.show_guild_panel = false;
-                self.show_alliance_panel = false;
                 self.push_chat_line(
                     format!(
                         "[Party] {display_name} invited you. Use /party accept or /party deny."
@@ -439,8 +431,6 @@ impl ClientApp {
                     members: Vec::new(),
                 });
                 self.show_party_panel = true;
-                self.show_guild_panel = false;
-                self.show_alliance_panel = false;
                 self.push_chat_line("[Party] You created a party.".to_owned(), [190, 225, 255]);
             }
             PartyEvent::Snapshot(snapshot) => self.party_state = Some(snapshot),
@@ -628,11 +618,6 @@ impl ClientApp {
     pub(super) fn execute_buddy_command(&mut self, command: BuddyCommand) {
         if matches!(&command, BuddyCommand::List) {
             self.show_buddy_panel = !self.show_buddy_panel;
-            if self.show_buddy_panel {
-                self.show_party_panel = false;
-                self.show_guild_panel = false;
-                self.show_alliance_panel = false;
-            }
             self.refresh_buddy_texture();
             if let Some(window) = self.window.as_ref() {
                 window.request_redraw();
@@ -655,9 +640,6 @@ impl ClientApp {
             self.buddy_filter = group;
             self.buddy_scroll = 0;
             self.show_buddy_panel = true;
-            self.show_party_panel = false;
-            self.show_guild_panel = false;
-            self.show_alliance_panel = false;
             self.refresh_buddy_texture();
             return;
         }
@@ -816,9 +798,6 @@ impl ClientApp {
             BuddyEvent::Invite { character_id, name } => {
                 self.pending_buddy_invite = Some((character_id, name.clone()));
                 self.show_buddy_panel = true;
-                self.show_party_panel = false;
-                self.show_guild_panel = false;
-                self.show_alliance_panel = false;
                 self.buddy_scroll = self
                     .buddy_scroll
                     .min(self.buddy_entries.len().saturating_sub(5));

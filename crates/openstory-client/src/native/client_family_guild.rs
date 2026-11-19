@@ -98,18 +98,11 @@ impl ClientApp {
     pub(super) fn toggle_family_panel(&mut self) {
         self.show_family_panel = !self.show_family_panel;
         if self.show_family_panel {
-            self.show_party_panel = false;
-            self.show_buddy_panel = false;
-            self.show_guild_panel = false;
-            self.show_alliance_panel = false;
-            self.show_family_tree = false;
             if let Some(session) = self.session.as_ref()
                 && let Err(error) = session.send_packet(openstory_protocol::open_family_packet())
             {
                 self.family_ui.notice = Some(format!("Could not request family data: {error}"));
             }
-        } else {
-            self.show_family_tree = false;
         }
         self.refresh_family_texture();
         if self.show_family_tree {
@@ -289,18 +282,18 @@ impl ClientApp {
         let x = cursor.x - 375.0;
         let y = cursor.y - 165.0;
         if self.family_ui.input.is_some() {
-            if (53.0..132.0).contains(&x) && (253.0..281.0).contains(&y) {
+            if (64.0..129.0).contains(&x) && (239.0..263.0).contains(&y) {
                 self.submit_family_input();
-            } else if (143.0..222.0).contains(&x) && (253.0..281.0).contains(&y) {
+            } else if (145.0..210.0).contains(&x) && (239.0..263.0).contains(&y) {
                 self.family_ui.input = None;
             }
             self.refresh_family_texture();
             return;
         }
         if self.family_ui.confirm_leave {
-            if (53.0..132.0).contains(&x) && (253.0..281.0).contains(&y) {
+            if (64.0..129.0).contains(&x) && (239.0..263.0).contains(&y) {
                 self.resolve_family_leave(true);
-            } else if (143.0..222.0).contains(&x) && (253.0..281.0).contains(&y) {
+            } else if (145.0..210.0).contains(&x) && (239.0..263.0).contains(&y) {
                 self.family_ui.confirm_leave = false;
             }
             self.refresh_family_texture();
@@ -320,13 +313,13 @@ impl ClientApp {
                 key_text_for_ime_dedup: None,
             });
             self.family_ui.notice = None;
-        } else if (201.0..269.0).contains(&x) && (390.0..422.0).contains(&y) {
+        } else if (201.0..266.0).contains(&x) && (397.0..415.0).contains(&y) {
             self.family_ui.confirm_leave = true;
         } else if (236.0..266.0).contains(&x) && (300.0..332.0).contains(&y) {
             self.family_ui.selected_ability = (self.family_ui.selected_ability + 1) % 5;
         } else if (196.0..226.0).contains(&x) && (300.0..332.0).contains(&y) {
             self.family_ui.selected_ability = self.family_ui.selected_ability.saturating_sub(1);
-        } else if (14.0..260.0).contains(&x) && (185.0..237.0).contains(&y) {
+        } else if (10.0..260.0).contains(&x) && (60.0..85.0).contains(&y) {
             self.family_ui.input = Some(FamilyInput {
                 kind: FamilyInputKind::EditPrecepts,
                 text: self
@@ -381,6 +374,7 @@ impl ClientApp {
                 FamilyInputKind::InviteJunior => "Enter a character name first.".to_owned(),
                 FamilyInputKind::EditPrecepts => "The family motto cannot be empty.".to_owned(),
             });
+            self.family_ui.input = Some(input);
             return;
         }
         let packet = match input.kind {
@@ -391,11 +385,13 @@ impl ClientApp {
             Ok(packet) => {
                 let Some(session) = self.session.as_ref() else {
                     self.family_ui.notice = Some("No server connection.".to_owned());
+                    self.family_ui.input = Some(input);
                     self.refresh_family_texture();
                     return;
                 };
                 if let Err(error) = session.send_packet(packet) {
                     self.family_ui.notice = Some(format!("Could not send family request: {error}"));
+                    self.family_ui.input = Some(input);
                 } else {
                     self.family_ui.notice = Some(match input.kind {
                         FamilyInputKind::InviteJunior => format!("Invitation sent to {value}."),
@@ -408,6 +404,7 @@ impl ClientApp {
             }
             Err(error) => {
                 self.family_ui.notice = Some(format!("Invalid family request: {error}"));
+                self.family_ui.input = Some(input);
             }
         }
         self.refresh_family_texture();
@@ -717,7 +714,11 @@ impl ClientApp {
         match &mut self.guild_panel_mode {
             GuildPanelMode::Overview => {
                 if self.guild_info.is_some() {
-                    if (128.0..208.0).contains(&x) && (5.0..26.0).contains(&y) {
+                    if let Some(position) = self.guild_info.as_ref().and_then(|guild| {
+                        guild_scrollbar_position(x, y, guild.members.len(), self.guild_scroll)
+                    }) {
+                        self.guild_scroll = position;
+                    } else if (128.0..208.0).contains(&x) && (5.0..26.0).contains(&y) {
                         if let Some(guild) = self.guild_info.as_ref() {
                             self.guild_panel_mode = GuildPanelMode::RankTitles {
                                 titles: guild.rank_titles.clone(),
@@ -725,7 +726,7 @@ impl ClientApp {
                                 notice: None,
                             };
                         }
-                    } else if (216.0..324.0).contains(&x) && (5.0..26.0).contains(&y) {
+                    } else if (216.0..318.0).contains(&x) && (5.0..26.0).contains(&y) {
                         if let Some(guild) = self.guild_info.as_ref() {
                             let emblem = guild.emblem;
                             match load_guild_mark_catalog(&self.ui_archive) {
@@ -795,12 +796,17 @@ impl ClientApp {
     }
 
     pub(super) fn refresh_alliance_texture(&mut self) {
+        let maximum = self.alliance_info.as_ref().map_or(0, |alliance| {
+            alliance.guilds.len().saturating_sub(ALLIANCE_VISIBLE_ROWS)
+        });
+        self.alliance_scroll = self.alliance_scroll.min(maximum);
         let pixels = render_alliance_panel(
             &self.font,
             &self.ui_archive,
             self.guild_info.as_ref(),
             self.alliance_info.as_ref(),
             self.pending_alliance_invite.as_ref(),
+            self.alliance_scroll,
         );
         let Some(renderer) = self.renderer.as_ref() else {
             return;
@@ -824,11 +830,6 @@ impl ClientApp {
             self.show_guild_panel = !self.show_guild_panel;
             if !self.show_guild_panel {
                 self.guild_panel_mode = GuildPanelMode::Overview;
-            }
-            if self.show_guild_panel {
-                self.show_party_panel = false;
-                self.show_buddy_panel = false;
-                self.show_alliance_panel = false;
             }
             self.refresh_guild_texture();
             if let Some(window) = self.window.as_ref() {
@@ -1069,16 +1070,7 @@ impl ClientApp {
 
     pub(super) fn open_alliance_panel(&mut self) {
         self.show_alliance_panel = true;
-        self.show_party_panel = false;
-        self.show_buddy_panel = false;
-        self.show_guild_panel = false;
-        self.show_inventory = false;
-        self.show_skill_book = false;
-        self.show_quest_log = false;
-        self.show_pet_equipment = false;
-        self.inventory_drag_source = None;
-        self.pending_scroll_slot = None;
-        self.inventory_hover_slot = None;
+        self.alliance_scroll = 0;
         if self.channel_connected
             && self
                 .guild_info
@@ -1613,9 +1605,6 @@ impl ClientApp {
                 }
                 self.pending_guild_invite = Some((guild_id, inviter.clone()));
                 self.show_guild_panel = true;
-                self.show_party_panel = false;
-                self.show_buddy_panel = false;
-                self.show_alliance_panel = false;
                 self.push_chat_line(
                     format!("[Guild] {inviter} invited you. Press Y to accept or N to decline."),
                     [190, 225, 255],
@@ -1627,9 +1616,6 @@ impl ClientApp {
                 }
                 self.pending_guild_creation_invite = Some((leader.clone(), guild_name.clone()));
                 self.show_guild_panel = true;
-                self.show_party_panel = false;
-                self.show_buddy_panel = false;
-                self.show_alliance_panel = false;
                 self.push_chat_line(
                     format!("[Guild] {leader} asks you to help create {guild_name}. Press Y to agree or N to decline."),
                     [255, 222, 112],
@@ -1835,10 +1821,9 @@ impl ClientApp {
                 );
             }
         }
-        let maximum = self
-            .guild_info
-            .as_ref()
-            .map_or(0, |guild| guild.members.len().saturating_sub(12));
+        let maximum = self.guild_info.as_ref().map_or(0, |guild| {
+            guild.members.len().saturating_sub(GUILD_VISIBLE_ROWS)
+        });
         self.guild_scroll = self.guild_scroll.min(maximum);
         if self.show_guild_panel {
             self.refresh_guild_texture();
@@ -1937,14 +1922,6 @@ impl ClientApp {
             confirm_delete: false,
             feedback: None,
         });
-        self.show_guild_panel = false;
-        self.show_alliance_panel = false;
-        self.show_party_panel = false;
-        self.show_buddy_panel = false;
-        self.show_inventory = false;
-        self.show_skill_book = false;
-        self.show_quest_log = false;
-        self.chat_open = false;
         self.request_guild_bbs_page(0);
         self.refresh_guild_bbs_texture();
     }

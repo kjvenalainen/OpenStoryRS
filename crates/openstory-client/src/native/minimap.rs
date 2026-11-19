@@ -98,6 +98,14 @@ pub(super) struct Panel {
     pub hit_regions: Vec<HitRegion>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct WorldViewport {
+    pub left: f32,
+    pub top: f32,
+    pub width: f32,
+    pub height: f32,
+}
+
 #[derive(Clone)]
 struct SpriteImage {
     pixels: Arc<[u8]>,
@@ -335,6 +343,7 @@ pub(super) fn render(
     map_name: &str,
     street_name: &str,
     presentation: Presentation,
+    world_viewport: Option<WorldViewport>,
     markers: &[Marker<'_>],
     font: &Font,
 ) -> Result<Panel, String> {
@@ -493,6 +502,25 @@ pub(super) fn render(
                 zoomed_height,
                 false,
             );
+            if let Some(world_viewport) = world_viewport {
+                let (left, top) = data.project(world_viewport.left, world_viewport.top, zoom);
+                let (right, bottom) = data.project(
+                    world_viewport.left + world_viewport.width,
+                    world_viewport.top + world_viewport.height,
+                    zoom,
+                );
+                canvas.draw_outline_clipped(
+                    (width - zoomed_width) * 0.5 + left,
+                    canvas_y + top,
+                    right - left,
+                    bottom - top,
+                    (width - zoomed_width) * 0.5,
+                    canvas_y,
+                    (width - zoomed_width) * 0.5 + zoomed_width,
+                    canvas_y + zoomed_height,
+                    [0, 255, 255, 220],
+                );
+            }
             for portal in &data.portals {
                 let (map_x, map_y) = data.project(portal.x, portal.y, zoom);
                 if map_x < 0.0 || map_y < 0.0 || map_x >= zoomed_width || map_y >= zoomed_height {
@@ -1035,6 +1063,69 @@ impl Canvas {
                 tile_x += image.width as f32;
             }
             tile_y += image.height as f32;
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn draw_outline_clipped(
+        &mut self,
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        clip_left: f32,
+        clip_top: f32,
+        clip_right: f32,
+        clip_bottom: f32,
+        color: [u8; 4],
+    ) {
+        if ![x, y, width, height, clip_left, clip_top, clip_right, clip_bottom]
+            .into_iter()
+            .all(f32::is_finite)
+            || width <= 0.0
+            || height <= 0.0
+            || clip_right <= clip_left
+            || clip_bottom <= clip_top
+        {
+            return;
+        }
+
+        let left = x.round() as i32;
+        let right = (x + width).round() as i32;
+        let top = y.round() as i32;
+        let bottom = (y + height).round() as i32;
+        let min_x = (clip_left.ceil() as i32).max(0);
+        let max_x = (clip_right.floor() as i32).min(self.width as i32);
+        let min_y = (clip_top.ceil() as i32).max(0);
+        let max_y = (clip_bottom.floor() as i32).min(self.height as i32);
+
+        let mut blend_at = |pixel_x: i32, pixel_y: i32| {
+            if pixel_x < min_x || pixel_x >= max_x || pixel_y < min_y || pixel_y >= max_y {
+                return;
+            }
+            let index = (pixel_y as usize * self.width + pixel_x as usize) * 4;
+            blend_bgra(&mut self.pixels[index..index + 4], &color);
+        };
+
+        if top >= min_y && top < max_y {
+            for pixel_x in left.max(min_x)..right.min(max_x) {
+                blend_at(pixel_x, top);
+            }
+        }
+        if bottom >= min_y && bottom < max_y {
+            for pixel_x in left.max(min_x)..right.min(max_x) {
+                blend_at(pixel_x, bottom);
+            }
+        }
+        if left >= min_x && left < max_x {
+            for pixel_y in top.max(min_y)..bottom.min(max_y) {
+                blend_at(left, pixel_y);
+            }
+        }
+        if right >= min_x && right < max_x {
+            for pixel_y in top.max(min_y)..bottom.min(max_y) {
+                blend_at(right, pixel_y);
+            }
         }
     }
 

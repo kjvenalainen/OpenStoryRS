@@ -54,10 +54,10 @@ pub use capture::{
 };
 pub use cash_shop::{
     CashShopItem, CashShopOperation, OPCODE_BUY_CASH_ITEM, OPCODE_CASH_SHOP_OPERATION,
-    OPCODE_COUPON_CODE, OPCODE_ENTER_CASH_SHOP, OPCODE_QUERY_CASH_RESULT, OPCODE_SET_CASH_SHOP,
-    buy_cash_item_packet, cash_shop_coupon_packet, enter_cash_shop_packet, exit_cash_shop_packet,
-    parse_cash_balances, parse_cash_shop_open, parse_cash_shop_operation,
-    withdraw_cash_item_packet,
+    OPCODE_CHECK_CASH, OPCODE_COUPON_CODE, OPCODE_ENTER_CASH_SHOP, OPCODE_QUERY_CASH_RESULT,
+    OPCODE_SET_CASH_SHOP, buy_cash_item_packet, cash_shop_coupon_packet, charge_nx_credit_packet,
+    enter_cash_shop_packet, exit_cash_shop_packet, parse_cash_balances, parse_cash_shop_open,
+    parse_cash_shop_operation, withdraw_cash_item_packet,
 };
 pub use events::{
     EventReward, OPCODE_EVENT_INFO, OPCODE_REQUEST_EVENT_INFO, ServerEventInfo, parse_event_info,
@@ -157,7 +157,7 @@ pub use gameplay::{
     character_info_request_packet, create_party_packet, damage_reactor_packet, delete_buddy_packet,
     deny_party_invite_packet, expel_party_member_packet, face_expression, find_player_packet,
     general_chat_packet, give_fame_packet, heal_over_time_packet, invite_to_party_packet,
-    join_party_packet, leave_party_packet, move_mob, move_mob_action, move_player,
+    join_party_packet, leave_party_packet, move_mob, move_mob_action, move_pet, move_player,
     multi_chat_packet, npc_shop_item_action, npc_shop_leave, npc_shop_recharge, npc_talk_more,
     npc_talk_number, npc_talk_selection, npc_talk_text, parse_add_cooldown, parse_auto_hp_pot,
     parse_auto_mp_pot, parse_blow_weather, parse_buddy_list, parse_chair_cancel, parse_chair_show,
@@ -286,9 +286,10 @@ pub use party_search::{
 pub use quest::{
     CompletedQuest, OPCODE_QUEST_ACTION, OPCODE_QUEST_CLEAR, OPCODE_SHOW_STATUS_INFO,
     OPCODE_UPDATE_QUEST_INFO, QuestActionFailure, QuestEntry, QuestLog, QuestTimer,
-    QuestTimerUpdate, QuestUpdate, SkillCooldown, complete_quest_packet, forfeit_quest_packet,
-    parse_expired_quest, parse_quest_action_failure, parse_quest_clear, parse_quest_status_update,
-    parse_quest_timer_update, restore_lost_quest_item_packet, start_quest_packet,
+    QuestTimerUpdate, QuestUpdate, SkillCooldown, StatusInfoUpdate, complete_quest_packet,
+    forfeit_quest_packet, parse_expired_quest, parse_quest_action_failure, parse_quest_clear,
+    parse_quest_status_update, parse_quest_timer_update, parse_status_info_update,
+    restore_lost_quest_item_packet, start_quest_packet,
 };
 pub use rps::{
     OPCODE_RPS_ACTION, OPCODE_RPS_GAME, RpsGameEvent, parse_rps_game, rps_selection_packet,

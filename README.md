@@ -341,6 +341,7 @@ comes from the initial character packet and server quest updates, while names, e
 and descriptions come from `Quest.nx`. The available tab can start quests and ready active
 quests can be turned in through v83 quest actions. Objective rows show held item counts and
 server-reported monster progress, and nearby NPCs show available, active, or ready markers.
+The field Quest Helper shows up to five active quests with their current item and monster counts.
 A quest with non-scripted selectable rewards displays an item chooser in its detail panel; use
 its arrows or Left/Right to pick the item, and the chosen v83 selection index is sent when
 turning in the quest. Quests marked with `startscript` or `endscript` use the corresponding
@@ -380,9 +381,10 @@ Key-bound Use, Setup, and Cash items share the inventory activation path, includ
 pet-food handling, chair sit/stand, and special cash actions. Activating a Cash pet sends
 the v83 `SPAWN_PET` toggle request. Pet spawn/removal and movement packets update map pets
 using their NX stance art and name labels; server pet-name changes refresh the visible label.
-Local pets follow
-with foothold physics and use the legacy pet AI cadence to send `PET_LOOT` requests for nearby
-drops. Server pet-chat packets display timed speech bubbles above the correct pet, while pet
+Local pets follow with foothold physics, report movement to the server, and send `PET_LOOT`
+requests for nearby settled drops. Pets choose separate targets and briefly defer retries after
+a pickup request; the server remains authoritative over pickup eligibility. Server pet-chat
+packets display timed speech bubbles above the correct pet, while pet
 command packets play the NX success/failure interaction art, legacy alert/jump fallback, and
 matching pet sound category. `PET_EXCEPTION_LIST` packets consume the pet serial and excluded
 item IDs and report the server's exclusion count in yellow chat.

@@ -1,6 +1,29 @@
 use super::*;
 
 impl ClientApp {
+    pub(super) fn register_login_double_click(
+        &mut self,
+        target: Option<LoginDoubleClickTarget>,
+    ) -> bool {
+        const DOUBLE_CLICK_INTERVAL: Duration = Duration::from_millis(500);
+
+        let Some(target) = target else {
+            self.last_login_double_click = None;
+            return false;
+        };
+
+        let now = Instant::now();
+        if self.last_login_double_click.is_some_and(|(previous, at)| {
+            previous == target && now.saturating_duration_since(at) <= DOUBLE_CLICK_INTERVAL
+        }) {
+            self.last_login_double_click = None;
+            true
+        } else {
+            self.last_login_double_click = Some((target, now));
+            false
+        }
+    }
+
     pub(super) fn show_world_selection(&mut self, worlds: Vec<openstory_protocol::WorldInfo>) {
         self.worlds = worlds;
         self.selected_world = self
@@ -163,6 +186,24 @@ impl ClientApp {
             .rev()
             .find(|hit| rect_contains(hit.rect, cursor))
             .map(|hit| hit.action);
+        let double_click_target = match action {
+            Some(LoginAction::HighlightCharacter(index)) => {
+                Some(LoginDoubleClickTarget::Character(index))
+            }
+            _ => None,
+        };
+        let is_double_click = self.register_login_double_click(double_click_target);
+        if is_double_click
+            && let Some(LoginDoubleClickTarget::Character(index)) = double_click_target
+        {
+            self.audio
+                .play_ui_sound(&self.sound_archive, "UI.img/BtMouseClick");
+            self.select_character(index);
+            if let Some(window) = self.window.as_ref() {
+                window.request_redraw();
+            }
+            return true;
+        }
         if let Some(action) = action {
             self.audio
                 .play_ui_sound(&self.sound_archive, "UI.img/BtMouseClick");
@@ -609,6 +650,15 @@ impl ClientApp {
             .changes
             .iter()
             .any(|change| matches!(change, openstory_protocol::CharacterStatChange::Hp(0)));
+        let level_up = self.active_character.as_ref().is_some_and(|character| {
+            update.changes.iter().any(|change| {
+                matches!(
+                    change,
+                    openstory_protocol::CharacterStatChange::Level(level)
+                        if *level > character.stats.level
+                )
+            })
+        });
         let hp_delta = self.active_character.as_ref().and_then(|character| {
             update.changes.iter().find_map(|change| match change {
                 openstory_protocol::CharacterStatChange::Hp(value) => {
@@ -703,6 +753,21 @@ impl ClientApp {
                 .is_some_and(|character| character.stats.hp > 0)
         {
             self.clear_death_state();
+        }
+        if level_up
+            && let Some(character_id) = self.active_character.as_ref().map(|character| character.id)
+        {
+            self.audio
+                .play_ui_sound(&self.sound_archive, "Game.img/LevelUp");
+            self.show_foreign_character_effect(openstory_protocol::ForeignCharacterEffect {
+                character_id,
+                effect_type: 0,
+                variant: 0,
+                heal_amount: None,
+                skill_id: None,
+                level: 0,
+                direction: -1,
+            });
         }
     }
 

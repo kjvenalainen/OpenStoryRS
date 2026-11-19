@@ -139,12 +139,19 @@ fn append_map_entity_draws<'a>(
             + scene.projectiles.len()
             + 1,
     );
-    let local_player_layer = map_entity_foothold_layer(
-        scene,
-        scene.player.foothold_id,
-        scene.player.x,
-        scene.player.y,
-    );
+    let local_player_layer = if scene.local_ladder.is_some() {
+        // While climbing, the player keeps the foothold from the ground they
+        // left. Draw on the foreground layer instead so rope art cannot cover
+        // the character.
+        scene.player.foothold_layer
+    } else {
+        map_entity_foothold_layer(
+            scene,
+            scene.player.foothold_id,
+            scene.player.x,
+            scene.player.y,
+        )
+    };
     for (&object_id, drop) in &scene.drops {
         let layer = map_entity_foothold_layer(scene, drop.body.foothold_id, drop.x, drop.y);
         if matches!(pass, MapEntityDrawPass::Layer(pass_layer) if pass_layer == layer)
@@ -374,7 +381,14 @@ fn append_map_entity_draws<'a>(
                     .and_then(|frames| frames.get(reactor.frame_index))
                     .unwrap_or(&reactor.idle_frame);
                 let offset_x = (reactor.x - scene.player.x) as f32;
-                let offset_y = (reactor.y - scene.player.y) as f32;
+                // Reactors use the idle frame's origin as an additional ground
+                // offset, including while a hit animation is playing.
+                let idle_origin_y = reactor
+                    .idle_frame
+                    .sprites
+                    .first()
+                    .map_or(0.0, |(_, rect)| GAMEPLAY_CAMERA_CENTER_Y - rect.y);
+                let offset_y = (reactor.y - scene.player.y) as f32 - idle_origin_y;
                 for (texture_index, rect) in &frame.sprites {
                     let Some(texture) = textures.get(*texture_index) else {
                         continue;

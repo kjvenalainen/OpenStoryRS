@@ -5,6 +5,42 @@ impl ClientApp {
         if self.server_notice_popup.is_none() {
             return;
         }
+        if accept
+            && self
+                .server_notice_popup
+                .as_ref()
+                .is_some_and(|popup| popup.page + 1 < popup.page_count)
+        {
+            let popup = self.server_notice_popup.as_ref().unwrap();
+            let next_page = popup.page + 1;
+            let result = build_server_notice_art(
+                &self.legacy_ui_archive,
+                &self.font,
+                &popup.message,
+                next_page,
+            )
+            .and_then(|(_, _, pixels, _, _, _)| {
+                let renderer = self
+                    .renderer
+                    .as_ref()
+                    .ok_or_else(|| "renderer unavailable".to_owned())?;
+                renderer
+                    .update_bgra(&popup.texture, &pixels)
+                    .map_err(|error| error.to_string())
+            });
+            match result {
+                Ok(()) => {
+                    if let Some(popup) = self.server_notice_popup.as_mut() {
+                        popup.page = next_page;
+                    }
+                }
+                Err(error) => eprintln!("OpenStoryRS: could not advance server notice: {error}"),
+            }
+            if let Some(window) = self.window.as_ref() {
+                window.request_redraw();
+            }
+            return;
+        }
         self.server_notice_popup = None;
         if self.accept_tos_pending {
             self.accept_tos_pending = false;
@@ -40,6 +76,16 @@ impl ClientApp {
         );
         match scene.and_then(|scene| self.replace_scene(scene)) {
             Ok(()) => {
+                let up_is_held = self.gameplay_input.up
+                    || self
+                        .gameplay_input
+                        .held_bindings
+                        .values()
+                        .any(|binding| binding.action == 202);
+                if up_is_held {
+                    self.gameplay_input.suppress_up_until_release = true;
+                }
+                self.gameplay_input.up = false;
                 self.clear_clock();
                 if let Some(path) = music_path {
                     self.audio.play_music(&self.sound_archive, &path);

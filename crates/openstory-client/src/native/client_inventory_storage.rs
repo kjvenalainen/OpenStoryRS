@@ -1,7 +1,38 @@
 use super::*;
 
 impl ClientApp {
+    pub(super) fn refresh_inventory_drag_texture(&mut self) {
+        self.inventory_drag_texture = None;
+        let Some((inventory_type, slot, _)) = self.inventory_drag_source else {
+            return;
+        };
+        let Some(item) = self.inventory.as_ref().and_then(|inventory| {
+            inventory
+                .items
+                .iter()
+                .find(|item| item.inventory_type == inventory_type && item.slot == slot)
+        }) else {
+            return;
+        };
+        let pixels = render_inventory_item_cell(
+            &self.font,
+            item,
+            &self.legacy_ui_archive,
+            &self.item_archive,
+            &self.character_archive,
+            &mut self.inventory_icon_cache,
+        );
+        let Some(renderer) = self.renderer.as_ref() else {
+            return;
+        };
+        match renderer.upload_bgra(34, 33, &pixels) {
+            Ok(texture) => self.inventory_drag_texture = Some(texture),
+            Err(error) => eprintln!("OpenStoryRS: could not create inventory drag icon: {error}"),
+        }
+    }
+
     pub(super) fn refresh_inventory_texture(&mut self) {
+        self.refresh_quest_helper_texture();
         if self.show_equipment_inventory {
             self.refresh_equipment_inventory_texture();
         }
@@ -159,7 +190,20 @@ impl ClientApp {
     }
 
     pub(super) fn refresh_storage_texture(&mut self) {
-        let (Some(storage), Some(_inventory)) = (self.storage.as_ref(), self.inventory.as_ref())
+        if let (Some(storage), Some(inventory)) = (self.storage.as_mut(), self.inventory.as_ref()) {
+            storage.storage_scroll = storage
+                .storage_scroll
+                .min(storage.state.items.len().saturating_sub(STORAGE_LEFT_ROWS));
+            let inventory_count = inventory
+                .items
+                .iter()
+                .filter(|item| item.inventory_type == storage.tab && item.slot > 0)
+                .count();
+            storage.inventory_scroll = storage
+                .inventory_scroll
+                .min(inventory_count.saturating_sub(STORAGE_RIGHT_ROWS));
+        }
+        let (Some(storage), Some(inventory)) = (self.storage.as_ref(), self.inventory.as_ref())
         else {
             self.storage_texture = None;
             return;
@@ -167,8 +211,12 @@ impl ClientApp {
         let pixels = render_storage_reference_panel(
             &self.font,
             &storage.state,
+            inventory,
             storage.tab,
             storage.storage_scroll,
+            storage.inventory_scroll,
+            storage.selected_storage,
+            storage.selected_inventory,
             &storage.meso_input,
             storage.meso_focused,
             storage.notice.as_deref(),
@@ -176,13 +224,15 @@ impl ClientApp {
             &self.npc_archive,
             &self.item_archive,
             &self.character_archive,
+            &self.string_archive,
             &mut self.inventory_icon_cache,
+            &mut self.item_name_cache,
         );
         let Some(renderer) = self.renderer.as_ref() else {
             return;
         };
-        const WIDTH: u32 = 206;
-        const HEIGHT: u32 = 355;
+        const WIDTH: u32 = STORAGE_PANEL_WIDTH as u32;
+        const HEIGHT: u32 = STORAGE_PANEL_HEIGHT as u32;
         let result = if let Some(texture) = self.storage_texture.as_ref() {
             renderer.update_bgra(texture, &pixels).map(|()| None)
         } else {
@@ -203,6 +253,7 @@ impl ClientApp {
         let pixels = render_hired_merchant_room_panel(
             &self.font,
             room,
+            &self.legacy_ui_archive,
             &self.item_archive,
             &self.character_archive,
             &self.string_archive,
@@ -475,68 +526,37 @@ impl ClientApp {
     }
 
     pub(super) fn click_hired_merchant_room(&mut self, cursor: Point) {
-        let local_x = cursor.x - HIRED_MERCHANT_PANEL_X;
-        let local_y = cursor.y - HIRED_MERCHANT_PANEL_Y;
-        if !(0.0..HIRED_MERCHANT_PANEL_WIDTH as f32).contains(&local_x)
-            || !(0.0..HIRED_MERCHANT_PANEL_HEIGHT as f32).contains(&local_y)
-        {
-            return;
-        }
+        let x = cursor.x - HIRED_MERCHANT_PANEL_X;
+        let y = cursor.y - HIRED_MERCHANT_PANEL_Y;
         if self
             .hired_merchant_room
             .as_ref()
             .is_some_and(|room| room.stock_source.is_some())
         {
-            if (60.0..190.0).contains(&local_x) && (331.0..365.0).contains(&local_y) {
+            if (274.0..339.0).contains(&x) && (313.0..337.0).contains(&y) {
                 self.submit_hired_merchant_stock();
-            } else if (222.0..352.0).contains(&local_x) && (331.0..365.0).contains(&local_y) {
+            } else if (347.0..412.0).contains(&x) && (313.0..337.0).contains(&y) {
                 if let Some(room) = self.hired_merchant_room.as_mut() {
                     room.stock_source = None;
                     room.notice = None;
                 }
                 self.refresh_hired_merchant_room_texture();
-            } else if (192.0..352.0).contains(&local_x) && (279.0..309.0).contains(&local_y) {
-                if let Some(room) = self.hired_merchant_room.as_mut() {
-                    room.chat_focused = false;
-                }
             }
             return;
         }
-        if local_x >= 650.0 && local_y < 42.0 {
-            let room_type = self
-                .hired_merchant_room
-                .as_ref()
-                .map_or(5, |room| room.state.room_type);
-            let close_store = room_type == 5
-                && self
-                    .hired_merchant_room
-                    .as_ref()
-                    .is_some_and(|room| room.state.my_slot == 0 && !room.state.first_time);
-            if close_store
-                && self.send_hired_merchant_action(
-                    openstory_protocol::merchant_close_packet(),
-                    "close the hired merchant",
-                )
-            {
-                self.hired_merchant_room = None;
-                self.hired_merchant_texture = None;
-            } else if !close_store {
-                self.leave_hired_merchant_room(false);
-            }
+        if (536.0..575.0).contains(&x) && (365.0..382.0).contains(&y) {
+            self.send_hired_merchant_chat();
             return;
         }
-        if (390.0..686.0).contains(&local_x) && (500.0..534.0).contains(&local_y) {
-            if local_x >= 622.0 {
-                self.send_hired_merchant_chat();
-            } else if let Some(room) = self.hired_merchant_room.as_mut() {
+        if (329.0..531.0).contains(&x) && (365.0..383.0).contains(&y) {
+            if let Some(room) = self.hired_merchant_room.as_mut() {
                 room.chat_focused = true;
                 room.notice = None;
-                self.refresh_hired_merchant_room_texture();
             }
+            self.refresh_hired_merchant_room_texture();
             return;
         }
-        if (14.0..368.0).contains(&local_x) && (142.0..478.0).contains(&local_y) {
-            let row = ((local_y - 142.0) / 42.0).floor() as usize;
+        if let Some(row) = merchant_listing_row(x, y) {
             let target = self.hired_merchant_room.as_ref().and_then(|room| {
                 let index = room.item_scroll.saturating_add(row);
                 (index < room.state.items.len()).then_some(index)
@@ -551,97 +571,90 @@ impl ClientApp {
                     room.chat_focused = false;
                     room.notice = None;
                 }
-                let is_owner = self
-                    .hired_merchant_room
-                    .as_ref()
-                    .is_some_and(|room| room.state.my_slot == 0);
-                if already_selected && is_owner {
+                if already_selected
+                    && self
+                        .hired_merchant_room
+                        .as_ref()
+                        .is_some_and(|room| room.state.my_slot == 0)
+                {
                     self.withdraw_hired_merchant_item(index);
                 }
                 self.refresh_hired_merchant_room_texture();
             }
             return;
         }
-        if (552.0..584.0).contains(&local_y) {
-            let (is_owner, room_type, first_time) = self
-                .hired_merchant_room
-                .as_ref()
-                .map(|room| {
-                    (
-                        room.state.my_slot == 0,
-                        room.state.room_type,
-                        room.state.first_time,
-                    )
+        let action = self.hired_merchant_room.as_ref().and_then(|room| {
+            merchant_controls(&room.state)
+                .into_iter()
+                .find_map(|(action, _, bx, by)| {
+                    let width = match action {
+                        MerchantControl::Collect => 14.0,
+                        MerchantControl::Arrange => 69.0,
+                        _ => 80.0,
+                    };
+                    ((bx as f32..bx as f32 + width).contains(&x)
+                        && (by as f32..by as f32 + 18.0).contains(&y))
+                    .then_some(action)
                 })
-                .unwrap_or((false, 5, false));
-            if is_owner && room_type == 4 {
-                if (18.0..126.0).contains(&local_x) {
-                    self.send_hired_merchant_action(
-                        openstory_protocol::merchant_buy_open_packet(),
-                        "start the personal shop",
-                    );
-                } else if (134.0..234.0).contains(&local_x) {
-                    self.send_hired_merchant_action(
-                        openstory_protocol::merchant_take_meso_packet(),
-                        "collect personal-shop mesos",
-                    );
-                } else if (242.0..350.0).contains(&local_x) {
-                    self.leave_hired_merchant_room(false);
-                }
-            } else if is_owner {
-                if (18.0..126.0).contains(&local_x) {
-                    if first_time {
-                        if self.send_hired_merchant_action(
-                            openstory_protocol::merchant_buy_open_packet(),
-                            "open the hired merchant",
-                        ) {
-                            self.hired_merchant_room = None;
-                            self.hired_merchant_texture = None;
-                        }
-                    } else {
-                        self.leave_hired_merchant_room(true);
-                    }
-                } else if (134.0..234.0).contains(&local_x) {
-                    self.send_hired_merchant_action(
-                        openstory_protocol::merchant_organize_packet(),
-                        "organize hired merchant stock",
-                    );
-                } else if (242.0..342.0).contains(&local_x) {
-                    self.send_hired_merchant_action(
-                        openstory_protocol::merchant_take_meso_packet(),
-                        "collect hired merchant mesos",
-                    );
-                } else if (350.0..458.0).contains(&local_x) {
-                    self.leave_hired_merchant_room(false);
-                } else if (466.0..586.0).contains(&local_x)
-                    && !first_time
-                    && self.send_hired_merchant_action(
-                        openstory_protocol::merchant_close_packet(),
-                        "close the hired merchant",
-                    )
+        });
+        match action {
+            Some(MerchantControl::Start) => {
+                let hired = self
+                    .hired_merchant_room
+                    .as_ref()
+                    .is_some_and(|room| room.state.room_type == 5);
+                if self.send_hired_merchant_action(
+                    openstory_protocol::merchant_buy_open_packet(),
+                    "open the shop",
+                ) && hired
                 {
                     self.hired_merchant_room = None;
                     self.hired_merchant_texture = None;
                 }
-            } else if (18.0..134.0).contains(&local_x) {
-                self.buy_selected_hired_merchant_item();
-            } else if (142.0..258.0).contains(&local_x) {
-                self.leave_hired_merchant_room(false);
             }
-            self.refresh_hired_merchant_room_texture();
+            Some(MerchantControl::Arrange) => {
+                self.send_hired_merchant_action(
+                    openstory_protocol::merchant_organize_packet(),
+                    "organize hired merchant stock",
+                );
+            }
+            Some(MerchantControl::Collect) => {
+                self.send_hired_merchant_action(
+                    openstory_protocol::merchant_take_meso_packet(),
+                    "collect shop mesos",
+                );
+            }
+            Some(MerchantControl::Exit) => {
+                let maintenance = self.hired_merchant_room.as_ref().is_some_and(|room| {
+                    room.state.my_slot == 0 && room.state.room_type == 5 && !room.state.first_time
+                });
+                self.leave_hired_merchant_room(maintenance);
+            }
+            Some(MerchantControl::Close) => {
+                if self.send_hired_merchant_action(
+                    openstory_protocol::merchant_close_packet(),
+                    "close the hired merchant",
+                ) {
+                    self.hired_merchant_room = None;
+                    self.hired_merchant_texture = None;
+                }
+            }
+            Some(MerchantControl::Buy) => self.buy_selected_hired_merchant_item(),
+            None => return,
         }
+        self.refresh_hired_merchant_room_texture();
     }
 
     pub(super) fn scroll_hired_merchant_room(&mut self, cursor: Point, amount: f32) {
         let local_x = cursor.x - HIRED_MERCHANT_PANEL_X;
         let local_y = cursor.y - HIRED_MERCHANT_PANEL_Y;
-        if !(14.0..368.0).contains(&local_x) || !(142.0..478.0).contains(&local_y) {
+        if merchant_listing_row(local_x, local_y).is_none() {
             return;
         }
         let Some(room) = self.hired_merchant_room.as_mut() else {
             return;
         };
-        let maximum = room.state.items.len().saturating_sub(8);
+        let maximum = room.state.items.len().saturating_sub(5);
         room.item_scroll = room
             .item_scroll
             .saturating_add_signed(if amount > 0.0 { -1_isize } else { 1 })
@@ -654,12 +667,28 @@ impl ClientApp {
             self.character_info_texture = None;
             return;
         };
+        let look = self
+            .map_scene
+            .as_ref()
+            .and_then(|scene| scene.remote_players.get(&info.info.character_id))
+            .map(|player| &player.look)
+            .or_else(|| {
+                self.active_character
+                    .as_ref()
+                    .filter(|character| character.id == info.info.character_id)
+                    .map(|character| &character.look)
+            })
+            .or(info.look.as_ref());
         let pixels = render_character_info_panel(
             &self.font,
             info,
-            &self.ui_archive,
+            look,
+            &self.legacy_ui_archive,
+            &self.character_archive,
+            &self.item_archive,
             &self.string_archive,
             &mut self.item_name_cache,
+            &mut self.inventory_icon_cache,
         );
         let Some(renderer) = self.renderer.as_ref() else {
             return;
@@ -685,38 +714,66 @@ impl ClientApp {
     }
 
     pub(super) fn click_character_info(&mut self, cursor: Point) {
-        let local_x = cursor.x - CHARACTER_INFO_PANEL_X;
-        let local_y = cursor.y - CHARACTER_INFO_PANEL_Y;
-        if (354.0..386.0).contains(&local_x) && (8.0..40.0).contains(&local_y) {
+        let x = cursor.x - CHARACTER_INFO_PANEL_X;
+        let y = cursor.y - CHARACTER_INFO_PANEL_Y;
+        if (255.0..267.0).contains(&x) && (5.0..17.0).contains(&y) {
             self.character_info = None;
             self.character_info_texture = None;
+            return;
+        }
+        if (179.0..206.0).contains(&y) && (167.0..269.0).contains(&x) {
+            let index = ((x - 167.0) / 34.0) as usize;
+            if (x - 167.0) % 34.0 >= 30.0 {
+                return;
+            }
+            if let Some(ui) = self.character_info.as_mut() {
+                if index < ui.info.pets.len().min(3) {
+                    ui.selected_pet = index;
+                }
+            }
+            self.refresh_character_info_texture();
+            return;
+        }
+        if (146.0..158.0).contains(&y) && (488.0..518.0).contains(&x) {
+            if let Some(ui) = self.character_info.as_mut() {
+                if x < 500.0 {
+                    ui.wishlist_offset = ui.wishlist_offset.saturating_sub(1);
+                } else if x >= 506.0 {
+                    ui.wishlist_offset = ui
+                        .wishlist_offset
+                        .saturating_add(1)
+                        .min(ui.info.wishlist.len().saturating_sub(3));
+                }
+            }
+            self.refresh_character_info_texture();
             return;
         }
         let Some(name) = self.character_info.as_ref().map(|ui| ui.name.clone()) else {
             return;
         };
-        if (440.0..472.0).contains(&local_y) {
-            if (20.0..112.0).contains(&local_x) {
+        if (382.0..394.0).contains(&y) {
+            if (443.0..455.0).contains(&x) {
                 self.request_character_fame(true);
-            } else if (118.0..210.0).contains(&local_x) {
+            } else if (461.0..473.0).contains(&x) {
                 self.request_character_fame(false);
             }
             return;
         }
-        if !(402.0..436.0).contains(&local_y) {
+        if (326.0..343.0).contains(&y) {
+            if (306.0..365.0).contains(&x) {
+                if let Ok(packet) = openstory_protocol::invite_to_party_packet(&name) {
+                    self.send_party_packet(packet, "Party invitation sent.");
+                }
+                self.character_info = None;
+                self.character_info_texture = None;
+            } else if (372.0..431.0).contains(&x) {
+                self.execute_trade_command(TradeCommand::Invite(name));
+                self.character_info = None;
+                self.character_info_texture = None;
+            }
             return;
         }
-        if (20.0..112.0).contains(&local_x) {
-            if let Ok(packet) = openstory_protocol::invite_to_party_packet(&name) {
-                self.send_party_packet(packet, "Party invitation sent.");
-            }
-            self.character_info = None;
-            self.character_info_texture = None;
-        } else if (118.0..210.0).contains(&local_x) {
-            self.execute_trade_command(TradeCommand::Invite(name));
-            self.character_info = None;
-            self.character_info_texture = None;
-        } else if (216.0..308.0).contains(&local_x) {
+        if (443.0..508.0).contains(&x) && (348.0..372.0).contains(&y) {
             if self.guild_info.is_none() {
                 self.push_chat_line(
                     "[Guild] You must be in a guild to invite someone.".to_owned(),
@@ -736,6 +793,7 @@ impl ClientApp {
         let pixels = render_trade_room_panel(
             &self.font,
             room,
+            &self.legacy_ui_archive,
             &self.item_archive,
             &self.character_archive,
             &self.string_archive,
@@ -957,9 +1015,9 @@ impl ClientApp {
             .as_ref()
             .is_some_and(|room| room.pending_item.is_some())
         {
-            if (504.0..624.0).contains(&local_x) && (347.0..381.0).contains(&local_y) {
+            if (284.0..349.0).contains(&local_x) && (309.0..333.0).contains(&local_y) {
                 self.submit_trade_quantity();
-            } else if (632.0..704.0).contains(&local_x) && (347.0..381.0).contains(&local_y) {
+            } else if (357.0..422.0).contains(&local_x) && (309.0..333.0).contains(&local_y) {
                 if let Some(room) = self.trade_room.as_mut() {
                     room.pending_item = None;
                     room.quantity_input.clear();
@@ -969,17 +1027,15 @@ impl ClientApp {
             }
             return;
         }
-        if local_x >= 678.0 && local_y < 42.0 {
+        if (451.0..511.0).contains(&local_x) && (290.0..309.0).contains(&local_y) {
             if self.send_trade_action(openstory_protocol::trade_exit_packet(), "cancel the trade") {
                 self.trade_room = None;
                 self.trade_texture = None;
             }
             return;
         }
-        if (330.0..704.0).contains(&local_x) && (512.0..548.0).contains(&local_y) {
-            if local_x >= 638.0 {
-                self.send_trade_chat();
-            } else if let Some(room) = self.trade_room.as_mut() {
+        if (373.0..568.0).contains(&local_x) && (264.0..282.0).contains(&local_y) {
+            if let Some(room) = self.trade_room.as_mut() {
                 room.chat_focused = true;
                 room.meso_focused = false;
                 room.notice = None;
@@ -987,7 +1043,11 @@ impl ClientApp {
             self.refresh_trade_texture();
             return;
         }
-        if (18.0..150.0).contains(&local_x) && (306.0..346.0).contains(&local_y) {
+        if (247.0..261.0).contains(&local_x) && (280.0..294.0).contains(&local_y) {
+            self.submit_trade_meso();
+            return;
+        }
+        if (247.0..361.0).contains(&local_x) && (264.0..294.0).contains(&local_y) {
             if let Some(room) = self.trade_room.as_mut() {
                 room.meso_focused = true;
                 room.chat_focused = false;
@@ -996,27 +1056,24 @@ impl ClientApp {
             self.refresh_trade_texture();
             return;
         }
-        if (174.0..312.0).contains(&local_x) && (136.0..274.0).contains(&local_y) {
-            let col = ((local_x - 174.0) / 46.0).floor() as usize;
-            let row = ((local_y - 136.0) / 46.0).floor() as usize;
-            let within_cell = (local_x - 174.0) % 46.0 < 42.0 && (local_y - 136.0) % 46.0 < 42.0;
-            let slot = row.saturating_mul(3).saturating_add(col);
-            if col < 3 && row < 3 && within_cell {
-                if let Some(room) = self.trade_room.as_mut() {
-                    if room.own_items.get(slot).is_some_and(Option::is_some) {
-                        room.notice = Some(
-                            "An offered item cannot be removed. Cancel to reclaim it.".to_owned(),
-                        );
-                    } else {
-                        room.notice = None;
-                    }
-                    room.chat_focused = false;
+        if let Some(slot) = trade_own_grid_slot(local_x, local_y) {
+            if let Some(room) = self.trade_room.as_mut() {
+                if room
+                    .own_items
+                    .get(slot as usize)
+                    .is_some_and(Option::is_some)
+                {
+                    room.notice =
+                        Some("An offered item cannot be removed. Cancel to reclaim it.".to_owned());
+                } else {
+                    room.notice = None;
                 }
-                self.refresh_trade_texture();
+                room.chat_focused = false;
             }
+            self.refresh_trade_texture();
             return;
         }
-        if (18.0..132.0).contains(&local_x) && (552.0..586.0).contains(&local_y) {
+        if (385.0..445.0).contains(&local_x) && (290.0..309.0).contains(&local_y) {
             let eligible = self
                 .trade_room
                 .as_ref()
@@ -1038,13 +1095,6 @@ impl ClientApp {
                 room.notice = Some("Waiting for the other player to confirm…".to_owned());
             }
             self.refresh_trade_texture();
-        } else if (140.0..254.0).contains(&local_x) && (552.0..586.0).contains(&local_y) {
-            if self.send_trade_action(openstory_protocol::trade_exit_packet(), "cancel the trade") {
-                self.trade_room = None;
-                self.trade_texture = None;
-            }
-        } else if (258.0..372.0).contains(&local_x) && (552.0..586.0).contains(&local_y) {
-            self.submit_trade_meso();
         }
     }
 
@@ -1272,143 +1322,202 @@ impl ClientApp {
     }
 
     pub(super) fn click_storage(&mut self, cursor: Point) {
-        const LEFT: f32 = 182.0;
-        const TOP: f32 = 105.0;
-        let local_x = cursor.x - LEFT;
-        let local_y = cursor.y - TOP;
-        if !(0.0..206.0).contains(&local_x) || !(0.0..355.0).contains(&local_y) {
-            // The storage keeper remains open while the player inventory is
-            // visible beside it; clicking an inventory item stores that item.
-            if self.show_inventory
-                && let Some(slot) = inventory_slot_at(cursor, self.inventory_scroll_row)
-            {
-                let item = self.inventory.as_ref().and_then(|inventory| {
-                    inventory
-                        .items
-                        .iter()
-                        .find(|item| item.inventory_type == self.inventory_tab && item.slot == slot)
-                        .cloned()
-                });
-                if let Some(item) = item {
-                    if item.inventory_type != openstory_protocol::InventoryType::Equip
-                        && item.count > 1
-                    {
-                        self.open_storage_quantity_prompt(
-                            InventoryQuantityAction::StorageStore,
-                            &item,
-                            1,
-                        );
-                    } else {
-                        self.request_storage_store(&item, item.count.max(1));
-                    }
-                }
-            }
+        let x = cursor.x - 182.0;
+        let y = cursor.y - 105.0;
+        if !(0.0..STORAGE_PANEL_WIDTH as f32).contains(&x)
+            || !(0.0..STORAGE_PANEL_HEIGHT as f32).contains(&y)
+        {
             return;
         }
         if let Some(storage) = self.storage.as_mut() {
             storage.meso_focused = false;
         }
-        if (132.0..202.0).contains(&local_x) && (7.0..26.0).contains(&local_y) {
+        if (383.0..453.0).contains(&x) && (56.0..74.0).contains(&y) {
             self.close_storage();
             return;
         }
-        if (132.0..202.0).contains(&local_x) && (29.0..48.0).contains(&local_y) {
-            let target = self.storage.as_ref().and_then(|storage| {
-                storage
-                    .state
-                    .items
-                    .iter()
-                    .nth(storage.storage_scroll)
-                    .cloned()
-            });
-            if let Some(item) = target {
-                self.request_storage_take_out(&item, item.count.max(1));
-            }
-            return;
-        }
-        if (132.0..202.0).contains(&local_x) && (51.0..70.0).contains(&local_y) {
+        if (240.0..435.0).contains(&x) && (91.0..117.0).contains(&y) {
+            let tabs = [
+                openstory_protocol::InventoryType::Equip,
+                openstory_protocol::InventoryType::Use,
+                openstory_protocol::InventoryType::Setup,
+                openstory_protocol::InventoryType::Etc,
+                openstory_protocol::InventoryType::Cash,
+            ];
             if let Some(storage) = self.storage.as_mut() {
-                storage.notice = Some("Organize items in your inventory first.".to_owned());
+                storage.tab = tabs[((x - 240.0) / 39.0) as usize];
+                storage.inventory_scroll = 0;
+                storage.selected_inventory = None;
             }
             self.refresh_storage_texture();
             return;
         }
-        if (5.0..185.0).contains(&local_x) && (112.0..328.0).contains(&local_y) {
-            if let Some(index) = ui_foundation::STORAGE_GRID.hit(local_x, local_y) {
-                let target = self.storage.as_ref().and_then(|storage| {
-                    storage
-                        .state
-                        .items
-                        .iter()
-                        .nth(storage.storage_scroll + index)
-                        .cloned()
-                });
-                if let Some(item) = target {
-                    if item.inventory_type != openstory_protocol::InventoryType::Equip
-                        && item.count > 1
-                    {
-                        self.open_storage_quantity_prompt(
-                            InventoryQuantityAction::StorageTake,
-                            &item,
-                            item.count,
-                        );
-                    } else {
-                        self.request_storage_take_out(&item, item.count.max(1));
-                    }
-                }
-                return;
+        if (263.0..367.0).contains(&x) && (52.0..69.0).contains(&y) {
+            if let Some(storage) = self.storage.as_mut() {
+                storage.meso_focused = true;
+                storage.notice = None;
             }
+            self.refresh_storage_texture();
+            return;
         }
-        if (337.0..353.0).contains(&local_y) {
-            if (105.0..150.0).contains(&local_x) {
-                if let Some(storage) = self.storage.as_mut() {
-                    if !storage.meso_focused {
-                        storage.meso_input.clear();
-                    }
-                    storage.meso_focused = true;
-                    storage.notice = None;
-                }
-                self.refresh_storage_texture();
-                return;
-            }
+        if (293.0..311.0).contains(&y) {
             if let Some(amount) = self
                 .storage
                 .as_ref()
                 .and_then(|storage| storage.meso_input.parse::<i32>().ok())
                 .filter(|amount| *amount > 0)
             {
-                if (151.0..175.0).contains(&local_x) {
+                if (3.0..39.0).contains(&x) {
                     self.send_storage_action(
                         openstory_protocol::storage_meso_packet(-amount),
                         "deposit mesos",
                     );
-                } else if (176.0..200.0).contains(&local_x) {
+                } else if (424.0..460.0).contains(&x) {
                     self.send_storage_action(
                         openstory_protocol::storage_meso_packet(amount),
                         "withdraw mesos",
                     );
                 }
             }
+            return;
+        }
+        if let Some(storage) = self.storage.as_mut() {
+            let inventory_count = self.inventory.as_ref().map_or(0, |inventory| {
+                inventory
+                    .items
+                    .iter()
+                    .filter(|item| item.inventory_type == storage.tab && item.slot > 0)
+                    .count()
+            });
+            if let Some(position) = storage_scrollbar_position(
+                x,
+                y,
+                false,
+                storage.state.items.len(),
+                storage.storage_scroll,
+            ) {
+                storage.storage_scroll = position;
+                self.refresh_storage_texture();
+                return;
+            }
+            if let Some(position) =
+                storage_scrollbar_position(x, y, true, inventory_count, storage.inventory_scroll)
+            {
+                storage.inventory_scroll = position;
+                self.refresh_storage_texture();
+                return;
+            }
+        }
+        if let Some(row) = storage_row_at(x, y, false) {
+            if let Some(storage) = self.storage.as_mut() {
+                storage.selected_storage = storage
+                    .state
+                    .items
+                    .get(storage.storage_scroll + row)
+                    .map(|item| (item.inventory_type, item.slot, item.item_id));
+            }
+            self.refresh_storage_texture();
+            return;
+        }
+        if let Some(row) = storage_row_at(x, y, true) {
+            if let Some(storage) = self.storage.as_mut() {
+                storage.selected_inventory = self
+                    .inventory
+                    .as_ref()
+                    .and_then(|inventory| {
+                        inventory
+                            .items
+                            .iter()
+                            .filter(|item| item.inventory_type == storage.tab && item.slot > 0)
+                            .nth(storage.inventory_scroll + row)
+                    })
+                    .map(|item| (item.inventory_type, item.slot, item.item_id));
+            }
+            self.refresh_storage_texture();
+            return;
+        }
+        if (151.0..221.0).contains(&x) && (12.0..30.0).contains(&y) {
+            let item = self
+                .storage
+                .as_ref()
+                .and_then(|storage| {
+                    let key = storage.selected_storage?;
+                    storage
+                        .state
+                        .items
+                        .iter()
+                        .find(|item| (item.inventory_type, item.slot, item.item_id) == key)
+                })
+                .cloned();
+            if let Some(item) = item {
+                if item.inventory_type != openstory_protocol::InventoryType::Equip && item.count > 1
+                {
+                    self.open_storage_quantity_prompt(
+                        InventoryQuantityAction::StorageTake,
+                        &item,
+                        item.count,
+                    );
+                } else {
+                    self.request_storage_take_out(&item, item.count.max(1));
+                }
+            }
+            return;
+        }
+        if (383.0..453.0).contains(&x) && (12.0..30.0).contains(&y) {
+            let item = self
+                .storage
+                .as_ref()
+                .and_then(|storage| {
+                    let key = storage.selected_inventory?;
+                    self.inventory
+                        .as_ref()?
+                        .items
+                        .iter()
+                        .find(|item| (item.inventory_type, item.slot, item.item_id) == key)
+                })
+                .cloned();
+            if let Some(item) = item {
+                if item.inventory_type != openstory_protocol::InventoryType::Equip && item.count > 1
+                {
+                    self.open_storage_quantity_prompt(
+                        InventoryQuantityAction::StorageStore,
+                        &item,
+                        1,
+                    );
+                } else {
+                    self.request_storage_store(&item, item.count.max(1));
+                }
+            }
         }
     }
 
     pub(super) fn scroll_storage(&mut self, cursor: Point, amount: f32) {
-        const LEFT: f32 = 182.0;
-        const TOP: f32 = 105.0;
+        let x = cursor.x - 182.0;
+        let y = cursor.y - 105.0;
         let Some(storage) = self.storage.as_mut() else {
             return;
         };
-        if !(TOP + 112.0..TOP + 328.0).contains(&cursor.y)
-            || !(LEFT + 5.0..LEFT + 185.0).contains(&cursor.x)
-        {
+        let step = if amount > 0.0 { -1_isize } else { 1 };
+        if (4.0..225.0).contains(&x) && (86.0..286.0).contains(&y) {
+            storage.storage_scroll = storage
+                .storage_scroll
+                .saturating_add_signed(step)
+                .min(storage.state.items.len().saturating_sub(STORAGE_LEFT_ROWS));
+        } else if (234.0..455.0).contains(&x) && (126.0..286.0).contains(&y) {
+            let count = self.inventory.as_ref().map_or(0, |inventory| {
+                inventory
+                    .items
+                    .iter()
+                    .filter(|item| item.inventory_type == storage.tab && item.slot > 0)
+                    .count()
+            });
+            storage.inventory_scroll = storage
+                .inventory_scroll
+                .saturating_add_signed(step)
+                .min(count.saturating_sub(STORAGE_RIGHT_ROWS));
+        } else {
             return;
         }
-        let step = if amount > 0.0 { -1_isize } else { 1 };
-        let count = storage.state.items.iter().count();
-        storage.storage_scroll = storage
-            .storage_scroll
-            .saturating_add_signed(step)
-            .min(count.saturating_sub(30));
         self.refresh_storage_texture();
     }
 
@@ -1424,6 +1533,9 @@ impl ClientApp {
                     state,
                     tab: openstory_protocol::InventoryType::Equip,
                     storage_scroll: 0,
+                    inventory_scroll: 0,
+                    selected_storage: None,
+                    selected_inventory: None,
                     meso_input: "1000".to_owned(),
                     meso_focused: false,
                     notice: None,
@@ -1444,6 +1556,7 @@ impl ClientApp {
                         .items
                         .retain(|item| item.inventory_type != inventory_type);
                     storage.state.items.extend(items);
+                    storage.selected_storage = None;
                     storage.notice = Some("Storage updated".to_owned());
                 }
                 self.refresh_storage_texture();
@@ -1455,6 +1568,7 @@ impl ClientApp {
                 if let Some(storage) = self.storage.as_mut() {
                     storage.state.slot_capacity = slot_capacity;
                     storage.state.items = items;
+                    storage.selected_storage = None;
                 }
                 self.refresh_storage_texture();
             }

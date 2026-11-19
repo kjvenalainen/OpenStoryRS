@@ -22,6 +22,18 @@ impl ClientApp {
                 SKILL_BOOK_PANEL_WIDTH as f32,
                 SKILL_BOOK_PANEL_HEIGHT as f32,
             ),
+            DialogWindow::QuestHelper
+                if self.current_field.is_some()
+                    && !self.quest_helper_dismissed
+                    && let Some((width, height)) = self.quest_helper_texture_size =>
+            {
+                (
+                    QUEST_HELPER_PANEL_X,
+                    QUEST_HELPER_PANEL_Y,
+                    width as f32,
+                    height as f32,
+                )
+            }
             DialogWindow::QuestLog if self.show_quest_log => (
                 QUEST_LOG_PANEL_X,
                 QUEST_LOG_PANEL_Y,
@@ -62,8 +74,18 @@ impl ClientApp {
                 let panel = self.npc_dialogue.as_ref()?.panel;
                 (panel.x, panel.y, panel.width, panel.height)
             }
-            DialogWindow::NpcShop if self.npc_shop.is_some() => (202.0, 124.0, 620.0, 520.0),
-            DialogWindow::Storage if self.storage.is_some() => (182.0, 105.0, 206.0, 355.0),
+            DialogWindow::NpcShop if self.npc_shop.is_some() => (
+                NPC_SHOP_PANEL_X,
+                NPC_SHOP_PANEL_Y,
+                NPC_SHOP_PANEL_WIDTH,
+                NPC_SHOP_PANEL_HEIGHT,
+            ),
+            DialogWindow::Storage if self.storage.is_some() => (
+                182.0,
+                105.0,
+                STORAGE_PANEL_WIDTH as f32,
+                STORAGE_PANEL_HEIGHT as f32,
+            ),
             DialogWindow::HiredMerchant if self.hired_merchant_room.is_some() => (
                 HIRED_MERCHANT_PANEL_X,
                 HIRED_MERCHANT_PANEL_Y,
@@ -190,7 +212,7 @@ impl ClientApp {
         })
     }
 
-    fn dialog_window_order(&self) -> [DialogWindow; 30] {
+    fn dialog_window_order(&self) -> [DialogWindow; 31] {
         [
             DialogWindow::EventList,
             DialogWindow::Wedding,
@@ -216,6 +238,7 @@ impl ClientApp {
             DialogWindow::KeyConfig,
             DialogWindow::Settings,
             DialogWindow::Status,
+            DialogWindow::QuestHelper,
             DialogWindow::QuestLog,
             DialogWindow::SkillBook,
             DialogWindow::SkillMacros,
@@ -237,15 +260,291 @@ impl ClientApp {
             || self.show_status_menu
     }
 
-    fn dialog_window_offset(&self, window: DialogWindow) -> (f32, f32) {
+    pub(super) fn escape_topmost_dialog(&mut self) -> bool {
+        if self.inventory_drop_prompt.is_some() {
+            self.inventory_drop_prompt = None;
+            self.inventory_drop_prompt_texture = None;
+            return true;
+        }
+        if self.cash_shop.is_some() {
+            let modal = self.cash_shop.as_ref().map_or(0, |shop| {
+                if shop.confirmation {
+                    1
+                } else if shop.coupon_open {
+                    2
+                } else {
+                    0
+                }
+            });
+            if let Some(shop) = self.cash_shop.as_mut() {
+                match modal {
+                    1 => shop.confirmation = false,
+                    2 => {
+                        shop.coupon_open = false;
+                        shop.coupon_focused = false;
+                    }
+                    _ => {}
+                }
+            }
+            if modal == 0 {
+                self.exit_cash_shop();
+            }
+            self.refresh_cash_shop_texture();
+            return true;
+        }
+        if self.chat_open {
+            self.chat_open = false;
+            self.cash_item_compose = None;
+            self.refresh_chat_texture();
+            return true;
+        }
+        if self.messenger.is_some() {
+            self.handle_messenger_key(
+                PhysicalKey::Code(KeyCode::Escape),
+                ElementState::Pressed,
+                false,
+            );
+            return true;
+        }
+        if self.show_status_menu {
+            self.show_status_menu = false;
+            self.status_menu_texture = None;
+            return true;
+        }
+        if self.monster_carnival.is_some() {
+            self.monster_carnival = None;
+            return true;
+        }
+
+        let Some(window) = self
+            .dialog_window_order()
+            .into_iter()
+            .find(|window| self.dialog_window_rect(*window).is_some())
+        else {
+            return false;
+        };
+
+        match window {
+            DialogWindow::Inventory => {
+                if self.pending_scroll_slot.take().is_some() {
+                    self.refresh_inventory_texture();
+                } else {
+                    self.show_inventory = false;
+                    self.inventory_drag_source = None;
+                    self.inventory_hover_slot = None;
+                }
+            }
+            DialogWindow::EquipmentInventory => self.show_equipment_inventory = false,
+            DialogWindow::PetEquipment => self.show_pet_equipment = false,
+            DialogWindow::SkillBook => {
+                self.show_skill_book = false;
+                self.skill_book_texture = None;
+            }
+            DialogWindow::QuestLog => {
+                if self.quest_forfeit_confirmation.take().is_some() {
+                    self.refresh_quest_log_texture();
+                } else {
+                    self.show_quest_log = false;
+                }
+            }
+            DialogWindow::Status => {
+                if self.status_auto_confirmation {
+                    self.resolve_status_auto_allocate(false);
+                } else {
+                    self.show_status = false;
+                }
+            }
+            DialogWindow::Settings => self.cancel_settings(),
+            DialogWindow::KeyConfig => {
+                if self.quickslot_key_capture.take().is_some()
+                    || self.key_config_capture.take().is_some()
+                {
+                    self.refresh_key_config_texture();
+                } else {
+                    self.close_key_config(false);
+                }
+            }
+            DialogWindow::SkillMacros => {
+                self.handle_skill_macro_editor_key(
+                    PhysicalKey::Code(KeyCode::Escape),
+                    ElementState::Pressed,
+                    false,
+                    None,
+                );
+            }
+            DialogWindow::QuestHelper => self.quest_helper_dismissed = true,
+            DialogWindow::OwlSearch => {
+                self.owl_search = None;
+                self.owl_texture = None;
+            }
+            DialogWindow::NpcDialogue => self.cancel_npc_dialogue(),
+            DialogWindow::NpcShop => {
+                if self
+                    .npc_shop
+                    .as_ref()
+                    .is_some_and(|shop| shop.confirmation.is_some())
+                {
+                    self.resolve_npc_shop_confirmation(false);
+                } else {
+                    self.close_npc_shop();
+                }
+            }
+            DialogWindow::Storage => self.close_storage(),
+            DialogWindow::HiredMerchant => {
+                if let Some(room) = self.hired_merchant_room.as_mut()
+                    && room.stock_source.take().is_some()
+                {
+                    self.refresh_hired_merchant_room_texture();
+                } else {
+                    self.leave_hired_merchant_room(false);
+                }
+            }
+            DialogWindow::TradeRoom => {
+                if let Some(room) = self.trade_room.as_mut()
+                    && room.pending_item.take().is_some()
+                {
+                    room.quantity_input.clear();
+                    room.notice = None;
+                    self.refresh_trade_texture();
+                } else if self
+                    .send_trade_action(openstory_protocol::trade_exit_packet(), "cancel the trade")
+                {
+                    self.trade_room = None;
+                    self.trade_texture = None;
+                    self.show_inventory = false;
+                }
+            }
+            DialogWindow::CharacterInfo => {
+                self.character_info = None;
+                self.character_info_texture = None;
+            }
+            DialogWindow::Whisper => {
+                if self.whisper_input_focused {
+                    self.whisper_input_focused = false;
+                    self.whisper_target_focused = false;
+                    self.refresh_whisper_texture();
+                } else {
+                    self.active_whisper = None;
+                    self.whisper_texture = None;
+                }
+            }
+            DialogWindow::Party => self.show_party_panel = false,
+            DialogWindow::Buddy => self.show_buddy_panel = false,
+            DialogWindow::Guild => {
+                if matches!(&self.guild_panel_mode, GuildPanelMode::Overview) {
+                    self.show_guild_panel = false;
+                } else {
+                    self.guild_panel_mode = GuildPanelMode::Overview;
+                    self.refresh_guild_texture();
+                }
+            }
+            DialogWindow::Family => {
+                if self.family_ui.input.take().is_some() {
+                    self.refresh_family_texture();
+                } else if self.family_ui.confirm_leave {
+                    self.resolve_family_leave(false);
+                } else {
+                    self.show_family_panel = false;
+                }
+            }
+            DialogWindow::FamilyTree => {
+                self.show_family_tree = false;
+                self.refresh_family_tree_texture();
+            }
+            DialogWindow::Alliance => self.show_alliance_panel = false,
+            DialogWindow::GuildBbs => {
+                let mut close_board = false;
+                if let Some(bbs) = self.guild_bbs.as_mut() {
+                    if bbs.draft.take().is_some() {
+                        bbs.feedback = None;
+                    } else if bbs.confirm_delete {
+                        bbs.confirm_delete = false;
+                    } else {
+                        close_board = true;
+                    }
+                }
+                if close_board {
+                    self.guild_bbs = None;
+                } else {
+                    self.refresh_guild_bbs_texture();
+                }
+            }
+            DialogWindow::EventList => self.close_event_list(),
+            DialogWindow::Wedding => self.close_wedding_panel(),
+            DialogWindow::ChannelSwitch => self.close_channel_switch(),
+            DialogWindow::WorldMap => self.escape_world_map(),
+            DialogWindow::PartySearch => {
+                self.party_search = None;
+                self.party_search_texture = None;
+                self.party_search_actions.clear();
+            }
+            DialogWindow::MonsterBook => {
+                if self.monster_book.search_open {
+                    self.monster_book.search_open = false;
+                    self.monster_book.search_notice = None;
+                    self.refresh_monster_book_texture();
+                } else {
+                    self.monster_book.open = false;
+                    self.monster_book.texture = None;
+                    self.monster_book.clear_selected_card();
+                    self.monster_book_animation_texture = None;
+                }
+            }
+        }
+        true
+    }
+
+    pub(super) fn dialog_window_offset(&self, window: DialogWindow) -> (f32, f32) {
         self.dialog_window_offsets
             .get(&window)
             .copied()
             .unwrap_or((0.0, 0.0))
     }
 
+    pub(super) fn dialog_window_is_topmost_at(&self, target: DialogWindow, cursor: Point) -> bool {
+        let order = self.dialog_window_order();
+        let Some(target_index) = order.iter().position(|window| *window == target) else {
+            return false;
+        };
+        !order.iter().take(target_index).any(|window| {
+            let Some(base) = self.dialog_window_rect(*window) else {
+                return false;
+            };
+            let (offset_x, offset_y) = self.dialog_window_offset(*window);
+            rect_contains(
+                SpriteRect {
+                    x: base.x + offset_x,
+                    y: base.y + offset_y,
+                    ..base
+                },
+                cursor,
+            )
+        })
+    }
+
+    pub(super) fn dialog_window_hit_test(&self, target: DialogWindow, cursor: Point) -> bool {
+        let Some(base) = self.dialog_window_rect(target) else {
+            return false;
+        };
+        let (offset_x, offset_y) = self.dialog_window_offset(target);
+        rect_contains(
+            SpriteRect {
+                x: base.x + offset_x,
+                y: base.y + offset_y,
+                ..base
+            },
+            cursor,
+        ) && self.dialog_window_is_topmost_at(target, cursor)
+    }
+
+    pub(super) fn topmost_dialog_window_at(&self, cursor: Point) -> Option<DialogWindow> {
+        self.dialog_window_order()
+            .into_iter()
+            .find(|window| self.dialog_window_hit_test(*window, cursor))
+    }
+
     pub(super) fn begin_dialog_window_drag(&mut self, cursor: Point) -> bool {
-        for window in self.dialog_window_order().into_iter().rev() {
+        for window in self.dialog_window_order() {
             let Some(base) = self.dialog_window_rect(window) else {
                 continue;
             };
@@ -292,8 +591,22 @@ impl ClientApp {
         true
     }
 
+    pub(super) fn persist_dialog_window_position(&self, window: DialogWindow) {
+        if window != DialogWindow::SkillBook {
+            return;
+        }
+        let Some(base) = self.dialog_window_rect(window) else {
+            return;
+        };
+        let (offset_x, offset_y) = self.dialog_window_offset(window);
+        if let Err(error) = settings::save_skill_book_position(base.x + offset_x, base.y + offset_y)
+        {
+            eprintln!("OpenStoryRS: could not save skill window position: {error}");
+        }
+    }
+
     pub(super) fn dialog_window_input_cursor(&self, cursor: Point) -> Point {
-        for window in self.dialog_window_order().into_iter().rev() {
+        for window in self.dialog_window_order() {
             let Some(base) = self.dialog_window_rect(window) else {
                 continue;
             };
@@ -328,6 +641,12 @@ impl ClientApp {
                 self.pet_equipment_texture.as_ref(),
             ),
             (DialogWindow::SkillBook, self.skill_book_texture.as_ref()),
+            (
+                DialogWindow::QuestHelper,
+                (!self.quest_helper_dismissed)
+                    .then_some(self.quest_helper_texture.as_ref())
+                    .flatten(),
+            ),
             (DialogWindow::QuestLog, self.quest_log_texture.as_ref()),
             (DialogWindow::Status, self.status_texture.as_ref()),
             (DialogWindow::Status, self.status_detail_texture.as_ref()),

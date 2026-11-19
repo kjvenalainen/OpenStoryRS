@@ -809,10 +809,46 @@ impl ClientApp {
                 }
             }
             openstory_protocol::OPCODE_SHOW_STATUS_INFO => {
-                match openstory_protocol::parse_quest_status_update(packet) {
-                    Ok(Some(update)) => self.apply_quest_update(update),
-                    Ok(None) => {}
-                    Err(error) => eprintln!("OpenStory: invalid quest status update: {error}"),
+                match openstory_protocol::parse_status_info_update(packet) {
+                    Ok(Some(openstory_protocol::StatusInfoUpdate::Item { item_id, quantity })) => {
+                        let name =
+                            item_name(item_id, &self.string_archive, &mut self.item_name_cache);
+                        let sign = if quantity < 0 { "-" } else { "+" };
+                        self.show_item_status_message(
+                            format!("Gained an item: {name} ({sign}{})", quantity.unsigned_abs()),
+                            [255, 255, 255],
+                            item_id,
+                        );
+                    }
+                    Ok(Some(openstory_protocol::StatusInfoUpdate::Experience {
+                        white,
+                        gain,
+                        bonus,
+                    })) => {
+                        let sign = if gain < 0 { "-" } else { "+" };
+                        self.show_status_message(
+                            format!("You have gained experience ({sign}{})", gain.unsigned_abs()),
+                            if white {
+                                [255, 255, 255]
+                            } else {
+                                [255, 220, 44]
+                            },
+                        );
+                        if bonus > 0 {
+                            self.show_status_message(
+                                format!("+ Bonus EXP (+{bonus})"),
+                                [255, 220, 44],
+                            );
+                        }
+                    }
+                    Ok(None) => match openstory_protocol::parse_quest_status_update(packet) {
+                        Ok(Some(update)) => self.apply_quest_update(update),
+                        Ok(None) => {}
+                        Err(error) => {
+                            eprintln!("OpenStory: invalid quest status update: {error}")
+                        }
+                    },
+                    Err(error) => eprintln!("OpenStory: invalid status info update: {error}"),
                 }
             }
             openstory_protocol::OPCODE_QUEST_CLEAR => {
@@ -1778,6 +1814,28 @@ impl ClientApp {
                                 )
                             },
                         );
+                        if Some(attack.attacker_id) != local_id {
+                            let mut mob_hit_sound_events = Vec::new();
+                            if let Some(scene) = self.map_scene.as_ref() {
+                                for target in &attack.targets {
+                                    let Some(mob) = scene.mobs.get(&target.object_id) else {
+                                        continue;
+                                    };
+                                    let position = (rounded_i16(mob.x), rounded_i16(mob.y));
+                                    for (hit_index, _) in target.damage_lines.iter().enumerate() {
+                                        mob_hit_sound_events.push((
+                                            mob.mob_id,
+                                            position,
+                                            hit_delays
+                                                .get(hit_index)
+                                                .copied()
+                                                .unwrap_or_default(),
+                                        ));
+                                    }
+                                }
+                            }
+                            self.schedule_mob_hit_sounds(&mob_hit_sound_events);
+                        }
                         if Some(attack.attacker_id) != local_id
                             && let Some(position) = self
                                 .map_scene
@@ -2225,7 +2283,39 @@ impl ClientApp {
             }
             openstory_protocol::OPCODE_REMOVE_LOOT => {
                 match openstory_protocol::parse_drop_remove(packet) {
-                    Ok(update) => self.remove_drop(update),
+                    Ok(update) => {
+                        if update.mode > 1 {
+                            let pickup_position = update.looter_id.and_then(|looter_id| {
+                                self.map_scene.as_ref().and_then(|scene| {
+                                    if self
+                                        .active_character
+                                        .as_ref()
+                                        .is_some_and(|character| character.id == looter_id)
+                                    {
+                                        Some((
+                                            rounded_i16(scene.player.x),
+                                            rounded_i16(scene.player.y),
+                                        ))
+                                    } else {
+                                        scene.remote_players.get(&looter_id).map(|character| {
+                                            (rounded_i16(character.x), rounded_i16(character.y))
+                                        })
+                                    }
+                                })
+                            });
+                            if let Some(position) = pickup_position {
+                                self.audio.play_world_sound(
+                                    &self.sound_archive,
+                                    "Game.img/PickUpItem",
+                                    position,
+                                );
+                            } else {
+                                self.audio
+                                    .play_ui_sound(&self.sound_archive, "Game.img/PickUpItem");
+                            }
+                        }
+                        self.remove_drop(update);
+                    }
                     Err(error) => eprintln!("OpenStory: invalid drop removal: {error}"),
                 }
             }
@@ -2441,9 +2531,7 @@ impl ClientApp {
                                 .map(|mob| (mob.mob_id, rounded_i16(mob.x), rounded_i16(mob.y)))
                         });
                         if let Some((mob_id, x, y)) = mob_sound {
-                            let path = format!("Mob.img/{mob_id:07}.img/Damage");
-                            self.audio
-                                .play_world_sound(&self.sound_archive, &path, (x, y));
+                            self.audio.play_mob_hit(&self.sound_archive, mob_id, (x, y));
                         }
                         if let Some(scene) = self.map_scene.as_mut() {
                             scene.show_mob_damage(damage);

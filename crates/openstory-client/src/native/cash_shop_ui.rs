@@ -37,13 +37,14 @@ pub(super) enum HitAction {
     Close,
     Help,
     Coupon,
+    Charge,
+    CheckCash,
     Search,
     CatalogView,
     LockerView,
     Category(usize),
     Product(usize),
     BuyProduct(usize),
-    BuySelected,
     Currency(usize),
     PreviousPage,
     NextPage,
@@ -241,13 +242,13 @@ pub(super) fn render(
             "CashShop.img/CSStatus/BtCharge/normal/0",
             505,
             550,
-            HitAction::Currency(0),
+            HitAction::Charge,
         ),
         (
             "CashShop.img/CSStatus/BtCheck/normal/0",
             549,
             550,
-            HitAction::Currency(1),
+            HitAction::CheckCash,
         ),
         (
             "CashShop.img/CSStatus/BtCoupon/normal/0",
@@ -482,56 +483,47 @@ pub(super) fn render(
         22.0,
         HitAction::NextPage,
     ));
-    for (row, balance) in state.balances.into_iter().enumerate() {
-        let value = grouped_number(balance);
+    // The artwork lists credit, prepaid, then points; server balances use
+    // credit, points, prepaid. Keep the rendered value and selected currency paired.
+    for (row, currency) in [0_usize, 2, 1].into_iter().enumerate() {
+        let value = grouped_number(state.balances[currency]);
         let width = super::dialogue_text_width(font, &value, 11.0).ceil() as i32;
+        let top = Y + 537 + row * 14;
         add_text(
             font,
             &mut pixels,
             &value,
             (X + 482) as i32 - width,
-            (Y + 551 + row * 14) as i32,
+            top as i32,
             11.0,
             145,
             15,
             [20, 20, 20],
         );
-    }
-    if let Some(product) = state
-        .selected_sn
-        .and_then(|sn| products.iter().find(|product| product.sn == sn))
-    {
-        let gender = match product.gender {
-            0 => "Male",
-            1 => "Female",
-            _ => "All characters",
-        };
-        let duration = if product.period > 0 {
-            format!("{} days", product.period)
+        let path = if state.currency == currency {
+            "Basic.img/CheckBox/1"
         } else {
-            "Permanent".to_owned()
+            "Basic.img/CheckBox/0"
         };
-        let description = format!("{gender} · {duration}");
-        add_text(
-            font,
+        draw_asset(
             &mut pixels,
-            &description,
-            (X + 278) as i32,
-            (Y + 535) as i32,
-            10.0,
-            250,
-            14,
-            [30, 30, 30],
-        );
+            ui_archive,
+            path,
+            (X + 360) as f32,
+            (top + 3) as f32,
+            1.0,
+        )?;
         hit_regions.push(logical_region(
             (X + 278) as f32,
-            (Y + 535) as f32,
-            250.0,
+            top as f32,
+            205.0,
             14.0,
-            HitAction::BuySelected,
+            HitAction::Currency(currency),
         ));
     }
-    if let Some(notice) = state.notice.as_deref() {
+    if !state.coupon_open
+        && let Some(notice) = state.notice.as_deref()
+    {
         add_text(
             font,
             &mut pixels,
@@ -547,6 +539,7 @@ pub(super) fn render(
     if state.confirmation {
         hit_regions.clear();
         draw_purchase_confirmation(
+            ui_archive,
             font,
             state,
             products,
@@ -554,8 +547,8 @@ pub(super) fn render(
             name_cache,
             &mut pixels,
             &mut hit_regions,
-        );
-    } else if state.coupon_open || state.coupon_focused || !state.coupon_code.is_empty() {
+        )?;
+    } else if state.coupon_open {
         hit_regions.clear();
         draw_coupon_dialog(ui_archive, font, state, &mut pixels, &mut hit_regions)?;
     }
@@ -635,8 +628,11 @@ pub(super) fn render_preview(
                 })
                 .collect();
         }
-        "coupon" => {
-            state.coupon_focused = true;
+        "coupon" | "coupon-pending" | "coupon-error" => {
+            state.coupon_open = true;
+            state.coupon_focused = variant != "coupon-pending";
+            state.coupon_pending = variant == "coupon-pending";
+            state.notice = (variant == "coupon-error").then(|| "Invalid coupon code.".to_owned());
             state.coupon_code = "MAPLE2026".to_owned();
         }
         "confirmation" => state.confirmation = true,
@@ -665,6 +661,7 @@ pub(super) fn render_preview(
 }
 
 fn draw_purchase_confirmation(
+    ui_archive: &NxArchive,
     font: &fontdue::Font,
     state: &super::CashShopUi,
     products: &[super::CashShopProduct],
@@ -672,53 +669,93 @@ fn draw_purchase_confirmation(
     name_cache: &mut HashMap<i32, Option<String>>,
     pixels: &mut [u8],
     hit_regions: &mut Vec<HitRegion>,
-) {
+) -> Result<(), String> {
     blend_rect(pixels, 0, 0, WIDTH, HEIGHT, [0, 0, 0, 176]);
-    blend_rect(pixels, 304, 250, 416, 228, [235, 240, 242, 255]);
-    stroke_rect(pixels, 304, 250, 416, 228, [105, 130, 145, 255]);
-    add_text(
-        font,
+    draw_asset(
         pixels,
-        "Confirm purchase",
-        336,
-        278,
-        18.0,
-        350,
-        28,
-        [30, 30, 30],
-    );
-    let summary = state
+        ui_archive,
+        "Basic.img/YesNo/backgrnd",
+        380.0,
+        318.0,
+        1.0,
+    )?
+    .ok_or_else(|| "missing native purchase confirmation background".to_owned())?;
+    if let Some(product) = state
         .selected_sn
-        .and_then(|sn| products.iter().find(|product| product.sn == sn))
-        .map(|product| {
-            format!(
-                "{} for {} NX?",
-                super::item_name(product.item_id, string_archive, name_cache),
-                grouped_number(product.price)
-            )
-        })
-        .unwrap_or_else(|| "Select a product first".to_owned());
-    add_text(
-        font,
-        pixels,
-        &summary,
-        336,
-        321,
-        13.0,
-        350,
-        42,
-        [40, 40, 40],
-    );
-    draw_button(pixels, 380, 412, 124, 40, "CONFIRM", font, true);
-    draw_button(pixels, 516, 412, 124, 40, "CANCEL", font, false);
-    hit_regions.push(region(
-        Rect::new(380.0, 412.0, 124.0, 40.0),
-        HitAction::ConfirmPurchase,
-    ));
-    hit_regions.push(region(
-        Rect::new(516.0, 412.0, 124.0, 40.0),
-        HitAction::CancelPurchase,
-    ));
+        .and_then(|sn| products.iter().find(|p| p.sn == sn))
+    {
+        let name = super::item_name(product.item_id, string_archive, name_cache);
+        let name = super::ui_foundation::ellipsize(font, &name, 11.0, 170.0);
+        add_text(
+            font,
+            pixels,
+            &format!("Buy {name}?"),
+            410,
+            343,
+            11.0,
+            204,
+            18,
+            [35, 35, 35],
+        );
+        let currency = ["NX Credit", "Maple Points", "NX Prepaid"][state.currency.min(2)];
+        add_text(
+            font,
+            pixels,
+            &format!("Price: {} {currency}", grouped_number(product.price)),
+            410,
+            365,
+            11.0,
+            204,
+            18,
+            [35, 35, 35],
+        );
+        let gender = match product.gender {
+            0 => "Male",
+            1 => "Female",
+            _ => "All characters",
+        };
+        let duration = if product.period > 0 {
+            format!("{} days", product.period)
+        } else {
+            "Permanent".to_owned()
+        };
+        add_text(
+            font,
+            pixels,
+            &format!("{gender} · {duration}"),
+            410,
+            385,
+            10.0,
+            204,
+            15,
+            [60, 60, 60],
+        );
+    } else {
+        add_text(
+            font,
+            pixels,
+            "Select a product first",
+            410,
+            343,
+            11.0,
+            204,
+            18,
+            [35, 35, 35],
+        );
+    }
+    for (path, x, action) in [
+        (
+            "Basic.img/BtYes/normal/0",
+            439.0,
+            HitAction::ConfirmPurchase,
+        ),
+        ("Basic.img/BtNo/normal/0", 520.0, HitAction::CancelPurchase),
+    ] {
+        let bounds = draw_asset(pixels, ui_archive, path, x, 412.0, 1.0)?
+            .ok_or_else(|| format!("missing native button {path}"))?;
+        hit_regions.push(region(bounds, action));
+    }
+    Ok(())
 }
 
 fn draw_coupon_dialog(
@@ -729,124 +766,68 @@ fn draw_coupon_dialog(
     hit_regions: &mut Vec<HitRegion>,
 ) -> Result<(), String> {
     blend_rect(pixels, 0, 0, WIDTH, HEIGHT, [0, 0, 0, 176]);
-    let coupon = draw_asset(
+    draw_asset(
         pixels,
         ui_archive,
-        "CashShopGL.img/Popup/Cupon/background",
-        374.0,
-        352.0,
+        "Basic.img/YesNo/backgrnd",
+        380.0,
+        318.0,
         1.0,
-    )?;
-    if coupon.is_none() {
-        blend_rect(pixels, 350, 330, 324, 150, [42, 39, 34, 255]);
-        stroke_rect(pixels, 350, 330, 324, 150, [215, 174, 103, 255]);
-    }
+    )?
+    .ok_or_else(|| "missing native coupon dialog background".to_owned())?;
     add_text(
         font,
         pixels,
-        "COUPON CODE",
-        386,
-        358,
-        13.0,
-        252,
-        18,
-        if coupon.is_some() {
-            [64, 46, 28]
-        } else {
-            [235, 220, 190]
-        },
-    );
-    blend_rect(pixels, 386, 378, 252, 28, [250, 244, 226, 255]);
-    add_text(
-        font,
-        pixels,
-        &state.coupon_code,
-        394,
-        384,
-        11.0,
-        234,
-        16,
-        [41, 37, 30],
-    );
-    draw_button(
-        pixels,
-        452,
-        415,
-        84,
-        32,
         if state.coupon_pending {
-            "WAITING"
+            "Redeeming coupon…"
         } else {
-            "REDEEM"
+            "Enter your coupon code:"
         },
-        font,
-        !state.coupon_pending,
+        410,
+        343,
+        11.0,
+        204,
+        18,
+        [35, 35, 35],
     );
-    draw_button(pixels, 542, 415, 84, 32, "CANCEL", font, false);
+    blend_rect(pixels, 403, 369, 218, 22, [255, 255, 255, 255]);
+    let code = super::ui_foundation::ellipsize(font, &state.coupon_code, 11.0, 206.0);
+    add_text(font, pixels, &code, 409, 372, 11.0, 206, 16, [35, 35, 35]);
+    if !state.coupon_pending
+        && let Some(notice) = state.notice.as_deref()
+    {
+        let notice = super::ui_foundation::ellipsize(font, notice, 10.0, 218.0);
+        add_text(
+            font,
+            pixels,
+            &notice,
+            403,
+            394,
+            10.0,
+            218,
+            15,
+            [150, 35, 35],
+        );
+    }
     hit_regions.push(region(
-        Rect::new(386.0, 378.0, 252.0, 28.0),
+        Rect::new(403.0, 369.0, 218.0, 22.0),
         HitAction::CouponInput,
     ));
-    hit_regions.push(region(
-        Rect::new(452.0, 415.0, 84.0, 32.0),
-        HitAction::CouponSubmit,
-    ));
-    hit_regions.push(region(
-        Rect::new(542.0, 415.0, 84.0, 32.0),
-        HitAction::CouponCancel,
-    ));
+    let ok_path = if state.coupon_pending {
+        "Basic.img/BtOK/disabled/0"
+    } else {
+        "Basic.img/BtOK/normal/0"
+    };
+    let bounds = draw_asset(pixels, ui_archive, ok_path, 439.0, 412.0, 1.0)?
+        .ok_or_else(|| format!("missing native button {ok_path}"))?;
+    if !state.coupon_pending {
+        hit_regions.push(region(bounds, HitAction::CouponSubmit));
+    }
+    let path = "Basic.img/BtCancel/normal/0";
+    let bounds = draw_asset(pixels, ui_archive, path, 520.0, 412.0, 1.0)?
+        .ok_or_else(|| format!("missing native button {path}"))?;
+    hit_regions.push(region(bounds, HitAction::CouponCancel));
     Ok(())
-}
-
-fn draw_button(
-    pixels: &mut [u8],
-    x: usize,
-    y: usize,
-    width: usize,
-    height: usize,
-    label: &str,
-    font: &fontdue::Font,
-    active: bool,
-) {
-    blend_rect(
-        pixels,
-        x,
-        y,
-        width,
-        height,
-        if active {
-            [116, 83, 45, 248]
-        } else {
-            [63, 61, 55, 238]
-        },
-    );
-    stroke_rect(
-        pixels,
-        x,
-        y,
-        width,
-        height,
-        if active {
-            [225, 185, 110, 255]
-        } else {
-            [124, 116, 100, 255]
-        },
-    );
-    add_text(
-        font,
-        pixels,
-        label,
-        (x + 5) as i32,
-        (y + ((height.saturating_sub(15)) / 2)) as i32,
-        9.0,
-        width.saturating_sub(10),
-        16,
-        if active {
-            [255, 242, 218]
-        } else {
-            [197, 190, 176]
-        },
-    );
 }
 
 fn draw_asset(

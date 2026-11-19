@@ -187,6 +187,20 @@ impl ApplicationHandler for ClientApp {
                     }
                     return;
                 }
+                if self.skill_macro_editor.has_skill_drag()
+                    && let Some(cursor) = self.cursor
+                {
+                    let cursor = self.dialog_window_input_cursor(cursor);
+                    if self.skill_macro_editor.update_skill_drag(
+                        cursor.x - skill_macros::PANEL_X,
+                        cursor.y - skill_macros::PANEL_Y,
+                    ) {
+                        self.refresh_skill_macro_texture();
+                        if let Some(window) = self.window.as_ref() {
+                            window.request_redraw();
+                        }
+                    }
+                }
                 if self.update_rps_game_hover()
                     && let Some(window) = self.window.as_ref()
                 {
@@ -247,7 +261,11 @@ impl ApplicationHandler for ClientApp {
                 ..
             } => {
                 self.finish_quickslot_pointer();
-                if self.show_key_config {
+                if self.show_key_config
+                    && self.cursor.is_some_and(|cursor| {
+                        self.dialog_window_hit_test(DialogWindow::KeyConfig, cursor)
+                    })
+                {
                     self.finish_key_config_pointer(
                         self.cursor
                             .map(|cursor| self.dialog_window_input_cursor(cursor)),
@@ -259,7 +277,27 @@ impl ApplicationHandler for ClientApp {
                 if self.server_notice_popup.is_some() {
                     return;
                 }
-                if self.dialog_window_drag.take().is_some() {
+                if let Some(drag) = self.dialog_window_drag.take() {
+                    self.persist_dialog_window_position(drag.window);
+                    if let Some(window) = self.window.as_ref() {
+                        window.request_redraw();
+                    }
+                    return;
+                }
+                if self.skill_macro_editor.has_skill_drag() {
+                    let cursor = self
+                        .cursor
+                        .map(|cursor| self.dialog_window_input_cursor(cursor))
+                        .map(|cursor| {
+                            (
+                                cursor.x - skill_macros::PANEL_X,
+                                cursor.y - skill_macros::PANEL_Y,
+                            )
+                        });
+                    let skills = self.skill_macro_choices();
+                    self.skill_macro_editor.finish_skill_drag(cursor, &skills);
+                    self.skill_macro_drag_texture = None;
+                    self.refresh_skill_macro_texture();
                     if let Some(window) = self.window.as_ref() {
                         window.request_redraw();
                     }
@@ -336,10 +374,63 @@ impl ApplicationHandler for ClientApp {
                     }
                     return;
                 }
+                // The skill window overlaps the collapsed minimap controls. Handle
+                // its close button in screen coordinates before lower layers can
+                // reinterpret the same click as a world-map request.
+                let (skill_book_offset_x, skill_book_offset_y) =
+                    self.dialog_window_offset(DialogWindow::SkillBook);
+                let skill_book_close = SpriteRect {
+                    x: SKILL_BOOK_PANEL_X + skill_book_offset_x + SKILL_BOOK_PANEL_WIDTH as f32
+                        - 24.0,
+                    y: SKILL_BOOK_PANEL_Y + skill_book_offset_y + 4.0,
+                    width: 24.0,
+                    height: 21.0,
+                    blend_mode: BlendMode::Alpha,
+                };
+                if self.show_skill_book
+                    && rect_contains(skill_book_close, cursor)
+                    && self.dialog_window_is_topmost_at(DialogWindow::SkillBook, cursor)
+                {
+                    if self.skill_macro_editor.open {
+                        self.click_skill_macro_editor(self.dialog_window_input_cursor(cursor));
+                    } else {
+                        self.begin_skill_book_pointer(Point {
+                            x: cursor.x - skill_book_offset_x,
+                            y: cursor.y - skill_book_offset_y,
+                        });
+                    }
+                    if let Some(window) = self.window.as_ref() {
+                        window.request_redraw();
+                    }
+                    return;
+                }
                 if self.begin_dialog_window_drag(cursor) {
                     return;
                 }
+                let screen_cursor = cursor;
                 let cursor = self.dialog_window_input_cursor(cursor);
+                if self.dialog_window_hit_test(DialogWindow::QuestHelper, screen_cursor) {
+                    let (offset_x, offset_y) = self.dialog_window_offset(DialogWindow::QuestHelper);
+                    let local_x = screen_cursor.x - QUEST_HELPER_PANEL_X - offset_x;
+                    let local_y = screen_cursor.y - QUEST_HELPER_PANEL_Y - offset_y;
+                    if (QUEST_HELPER_PANEL_WIDTH as f32 - 14.0
+                        ..QUEST_HELPER_PANEL_WIDTH as f32 - 2.0)
+                        .contains(&local_x)
+                        && (5.0..17.0).contains(&local_y)
+                    {
+                        self.quest_helper_dismissed = true;
+                    } else if (QUEST_HELPER_PANEL_WIDTH as f32 - 49.0
+                        ..QUEST_HELPER_PANEL_WIDTH as f32 - 37.0)
+                        .contains(&local_x)
+                        && (6.0..18.0).contains(&local_y)
+                    {
+                        self.activate_status_menu_item(2);
+                    }
+                    if let Some(window) = self.window.as_ref() {
+                        window.request_redraw();
+                    }
+                    return;
+                }
                 if self.rps_game.is_some() {
                     self.click_rps_game_button(cursor);
                     if let Some(window) = self.window.as_ref() {
@@ -347,7 +438,9 @@ impl ApplicationHandler for ClientApp {
                     }
                     return;
                 }
-                if self.wedding_panel_open {
+                if self.wedding_panel_open
+                    && self.dialog_window_hit_test(DialogWindow::Wedding, screen_cursor)
+                {
                     let close = SpriteRect {
                         x: (1024.0 - WEDDING_INVITATION_WIDTH as f32) * 0.5 + 88.0,
                         y: (768.0 - WEDDING_PANEL_HEIGHT as f32) * 0.5 + 220.0,
@@ -363,7 +456,9 @@ impl ApplicationHandler for ClientApp {
                     }
                     return;
                 }
-                if self.event_list_open {
+                if self.event_list_open
+                    && self.dialog_window_hit_test(DialogWindow::EventList, screen_cursor)
+                {
                     self.click_event_list(cursor);
                     if let Some(window) = self.window.as_ref() {
                         window.request_redraw();
@@ -411,24 +506,44 @@ impl ApplicationHandler for ClientApp {
                     }
                     return;
                 }
-                if self.show_key_config {
+                if self.show_key_config
+                    && self.dialog_window_hit_test(DialogWindow::KeyConfig, screen_cursor)
+                {
                     self.click_key_config(cursor);
                     if let Some(window) = self.window.as_ref() {
                         window.request_redraw();
                     }
                     return;
                 }
-                if self.skill_macro_editor.open {
+                if self.skill_macro_editor.open
+                    && self.dialog_window_hit_test(DialogWindow::SkillMacros, screen_cursor)
+                {
                     self.click_skill_macro_editor(cursor);
                     if let Some(window) = self.window.as_ref() {
                         window.request_redraw();
                     }
                     return;
                 }
-                if self.monster_book.open && self.monster_book.search_open {
+                // Skill windows sit above the world map in the dialog stack;
+                // consume their clicks before the map can handle the same point.
+                if self.show_skill_book
+                    && self.dialog_window_hit_test(DialogWindow::SkillBook, screen_cursor)
+                    && self.begin_skill_book_pointer(cursor)
+                {
+                    if let Some(window) = self.window.as_ref() {
+                        window.request_redraw();
+                    }
                     return;
                 }
-                if self.click_channel_switch(cursor) {
+                if self.monster_book.open
+                    && self.monster_book.search_open
+                    && self.dialog_window_hit_test(DialogWindow::MonsterBook, screen_cursor)
+                {
+                    return;
+                }
+                if self.dialog_window_hit_test(DialogWindow::ChannelSwitch, screen_cursor)
+                    && self.click_channel_switch(cursor)
+                {
                     if let Some(window) = self.window.as_ref() {
                         window.request_redraw();
                     }
@@ -441,32 +556,42 @@ impl ApplicationHandler for ClientApp {
                     return;
                 }
                 self.messenger_chat_focused = false;
-                if self.click_minimap(cursor) {
+                if self.topmost_dialog_window_at(screen_cursor).is_none()
+                    && self.click_minimap(cursor)
+                {
                     if let Some(window) = self.window.as_ref() {
                         window.request_redraw();
                     }
                     return;
                 }
-                if self.character_info.is_some() {
+                if self.character_info.is_some()
+                    && self.dialog_window_hit_test(DialogWindow::CharacterInfo, screen_cursor)
+                {
                     self.click_character_info(cursor);
                     if let Some(window) = self.window.as_ref() {
                         window.request_redraw();
                     }
                     return;
                 }
-                if self.click_monster_book(cursor) {
+                if self.dialog_window_hit_test(DialogWindow::MonsterBook, screen_cursor)
+                    && self.click_monster_book(cursor)
+                {
                     if let Some(window) = self.window.as_ref() {
                         window.request_redraw();
                     }
                     return;
                 }
-                if self.click_party_search(cursor) {
+                if self.dialog_window_hit_test(DialogWindow::PartySearch, screen_cursor)
+                    && self.click_party_search(cursor)
+                {
                     if let Some(window) = self.window.as_ref() {
                         window.request_redraw();
                     }
                     return;
                 }
-                if self.click_world_map(cursor) {
+                if self.dialog_window_hit_test(DialogWindow::WorldMap, screen_cursor)
+                    && self.click_world_map(cursor)
+                {
                     if let Some(window) = self.window.as_ref() {
                         window.request_redraw();
                     }
@@ -526,14 +651,18 @@ impl ApplicationHandler for ClientApp {
                     }
                     return;
                 }
-                if self.owl_search.is_some() {
+                if self.owl_search.is_some()
+                    && self.dialog_window_hit_test(DialogWindow::OwlSearch, screen_cursor)
+                {
                     self.click_owl_panel(cursor);
                     if let Some(window) = self.window.as_ref() {
                         window.request_redraw();
                     }
                     return;
                 }
-                if self.show_settings {
+                if self.show_settings
+                    && self.dialog_window_hit_test(DialogWindow::Settings, screen_cursor)
+                {
                     self.click_settings(cursor);
                     if let Some(window) = self.window.as_ref() {
                         window.request_redraw();
@@ -550,10 +679,14 @@ impl ApplicationHandler for ClientApp {
                 if self.pic_entry.is_some() {
                     return;
                 }
-                if self.click_whisper_window(cursor) {
+                if self.dialog_window_hit_test(DialogWindow::Whisper, screen_cursor)
+                    && self.click_whisper_window(cursor)
+                {
                     return;
                 }
-                if self.show_family_tree {
+                if self.show_family_tree
+                    && self.dialog_window_hit_test(DialogWindow::FamilyTree, screen_cursor)
+                {
                     if cursor.x >= 223.0
                         && cursor.x < 223.0 + FAMILY_TREE_PANEL_WIDTH as f32
                         && cursor.y >= 191.0
@@ -566,7 +699,9 @@ impl ApplicationHandler for ClientApp {
                     }
                     return;
                 }
-                if self.show_family_panel {
+                if self.show_family_panel
+                    && self.dialog_window_hit_test(DialogWindow::Family, screen_cursor)
+                {
                     if cursor.x >= 375.0
                         && cursor.x < 375.0 + FAMILY_PANEL_WIDTH as f32
                         && cursor.y >= 165.0
@@ -579,7 +714,9 @@ impl ApplicationHandler for ClientApp {
                     }
                     return;
                 }
-                if self.guild_bbs.is_some() {
+                if self.guild_bbs.is_some()
+                    && self.dialog_window_hit_test(DialogWindow::GuildBbs, screen_cursor)
+                {
                     self.click_guild_bbs(cursor);
                     self.refresh_guild_bbs_texture();
                     if let Some(window) = self.window.as_ref() {
@@ -587,7 +724,9 @@ impl ApplicationHandler for ClientApp {
                     }
                     return;
                 }
-                if self.show_guild_panel {
+                if self.show_guild_panel
+                    && self.dialog_window_hit_test(DialogWindow::Guild, screen_cursor)
+                {
                     if cursor.x >= 680.0
                         && cursor.x < 680.0 + GUILD_PANEL_WIDTH as f32
                         && cursor.y >= 174.0
@@ -601,6 +740,7 @@ impl ApplicationHandler for ClientApp {
                     return;
                 }
                 if self.show_alliance_panel
+                    && self.dialog_window_hit_test(DialogWindow::Alliance, screen_cursor)
                     && (cursor.x >= 300.0 + ALLIANCE_PANEL_WIDTH as f32 - 34.0)
                     && (cursor.x < 300.0 + ALLIANCE_PANEL_WIDTH as f32)
                     && (cursor.y >= 190.0)
@@ -612,7 +752,30 @@ impl ApplicationHandler for ClientApp {
                     }
                     return;
                 }
-                if self.show_status {
+                if self.show_alliance_panel
+                    && self.dialog_window_hit_test(DialogWindow::Alliance, screen_cursor)
+                    && (300.0..300.0 + ALLIANCE_PANEL_WIDTH as f32).contains(&cursor.x)
+                    && (190.0..190.0 + ALLIANCE_PANEL_HEIGHT as f32).contains(&cursor.y)
+                {
+                    if let Some(position) = self.alliance_info.as_ref().and_then(|alliance| {
+                        alliance_scrollbar_position(
+                            cursor.x - 300.0,
+                            cursor.y - 190.0,
+                            alliance.guilds.len(),
+                            self.alliance_scroll,
+                        )
+                    }) {
+                        self.alliance_scroll = position;
+                        self.refresh_alliance_texture();
+                    }
+                    if let Some(window) = self.window.as_ref() {
+                        window.request_redraw();
+                    }
+                    return;
+                }
+                if self.show_status
+                    && self.dialog_window_hit_test(DialogWindow::Status, screen_cursor)
+                {
                     self.click_status_panel(cursor);
                     if let Some(window) = self.window.as_ref() {
                         window.request_redraw();
@@ -626,7 +789,10 @@ impl ApplicationHandler for ClientApp {
                     }
                     return;
                 }
-                if self.show_quest_log && self.click_quest_log(cursor) {
+                if self.show_quest_log
+                    && self.dialog_window_hit_test(DialogWindow::QuestLog, screen_cursor)
+                {
+                    self.click_quest_log(cursor);
                     if let Some(window) = self.window.as_ref() {
                         window.request_redraw();
                     }
@@ -647,16 +813,31 @@ impl ApplicationHandler for ClientApp {
                     }
                     return;
                 }
-                if self.show_equipment_inventory && self.begin_equipment_inventory_pointer(cursor) {
+                if self.show_equipment_inventory
+                    && self.dialog_window_hit_test(DialogWindow::EquipmentInventory, screen_cursor)
+                    && self.begin_equipment_inventory_pointer(cursor)
+                {
                     return;
                 }
-                if self.show_pet_equipment && self.begin_pet_equipment_pointer(cursor) {
+                if self.show_pet_equipment
+                    && self.dialog_window_hit_test(DialogWindow::PetEquipment, screen_cursor)
+                    && self.begin_pet_equipment_pointer(cursor)
+                {
                     return;
                 }
-                if self.show_skill_book && self.begin_skill_book_pointer(cursor) {
+                if self.show_skill_book
+                    && self.dialog_window_hit_test(DialogWindow::SkillBook, screen_cursor)
+                    && self.begin_skill_book_pointer(cursor)
+                {
                     return;
                 }
-                if self.show_inventory && self.begin_inventory_pointer(cursor) {
+                if self.show_inventory
+                    && self.dialog_window_hit_test(DialogWindow::Inventory, screen_cursor)
+                    && self.begin_inventory_pointer(cursor)
+                {
+                    return;
+                }
+                if self.topmost_dialog_window_at(screen_cursor).is_some() {
                     return;
                 }
                 if self.click_native_status_bar(cursor) {
@@ -706,6 +887,27 @@ impl ApplicationHandler for ClientApp {
                             .find(|hit| rect_contains(hit.rect, cursor))
                             .map(|hit| hit.action)
                     });
+                let channel_double_click = match action {
+                    Some(LoginAction::SelectChannel(channel_id)) => self
+                        .register_login_double_click(Some(LoginDoubleClickTarget::Channel(
+                            channel_id,
+                        ))),
+                    _ => {
+                        self.register_login_double_click(None);
+                        false
+                    }
+                };
+                if channel_double_click && let Some(LoginAction::SelectChannel(channel_id)) = action
+                {
+                    self.audio
+                        .play_ui_sound(&self.sound_archive, "UI.img/BtMouseClick");
+                    self.select_channel(channel_id);
+                    self.request_characters();
+                    if let Some(window) = self.window.as_ref() {
+                        window.request_redraw();
+                    }
+                    return;
+                }
                 if let Some(action) = action {
                     if !self.login_action_enabled(action) {
                         return;
@@ -781,7 +983,11 @@ impl ApplicationHandler for ClientApp {
                 let cursor = self
                     .cursor
                     .map(|cursor| self.dialog_window_input_cursor(cursor));
-                if self.event_list_open {
+                if self.event_list_open
+                    && self.cursor.is_some_and(|cursor| {
+                        self.dialog_window_hit_test(DialogWindow::EventList, cursor)
+                    })
+                {
                     if cursor.is_some_and(|cursor| {
                         rect_contains(
                             SpriteRect {
@@ -798,7 +1004,11 @@ impl ApplicationHandler for ClientApp {
                     }
                     return;
                 }
-                if self.show_key_config {
+                if self.show_key_config
+                    && self.cursor.is_some_and(|cursor| {
+                        self.dialog_window_hit_test(DialogWindow::KeyConfig, cursor)
+                    })
+                {
                     if cursor.is_some_and(|cursor| {
                         rect_contains(
                             SpriteRect {
@@ -820,11 +1030,15 @@ impl ApplicationHandler for ClientApp {
                     }
                     return;
                 }
-                if self.skill_macro_editor.open {
+                if self.skill_macro_editor.open
+                    && self.cursor.is_some_and(|cursor| {
+                        self.dialog_window_hit_test(DialogWindow::SkillMacros, cursor)
+                    })
+                {
                     if let Some(cursor) = cursor {
                         let local_x = cursor.x - skill_macros::PANEL_X;
                         let local_y = cursor.y - skill_macros::PANEL_Y;
-                        if skill_macros::skill_list_contains(local_x, local_y) {
+                        if amount != 0.0 && skill_macros::skill_list_contains(local_x, local_y) {
                             self.skill_macro_editor.scroll_skills(
                                 if amount > 0.0 { -1 } else { 1 },
                                 self.skill_macro_choices().len(),
@@ -833,29 +1047,55 @@ impl ApplicationHandler for ClientApp {
                             if let Some(window) = self.window.as_ref() {
                                 window.request_redraw();
                             }
+                        } else if self.show_skill_book
+                            && (SKILL_BOOK_PANEL_X
+                                ..SKILL_BOOK_PANEL_X + SKILL_BOOK_PANEL_WIDTH as f32)
+                                .contains(&cursor.x)
+                            && (SKILL_BOOK_PANEL_Y
+                                ..SKILL_BOOK_PANEL_Y + SKILL_BOOK_PANEL_HEIGHT as f32)
+                                .contains(&cursor.y)
+                            && amount != 0.0
+                        {
+                            let direction = if amount > 0.0 { -1_isize } else { 1 };
+                            let maximum = self
+                                .skill_book_entries
+                                .len()
+                                .saturating_sub(SKILL_BOOK_VISIBLE_ROWS);
+                            self.skill_book_scroll_row = self
+                                .skill_book_scroll_row
+                                .saturating_add_signed(direction)
+                                .min(maximum);
+                            self.refresh_skill_book_texture();
+                            if let Some(window) = self.window.as_ref() {
+                                window.request_redraw();
+                            }
                         }
                     }
                     return;
                 }
-                if self
-                    .cursor
-                    .is_some_and(|cursor| self.scroll_world_map_results(cursor, amount))
-                {
+                if self.cursor.is_some_and(|cursor| {
+                    self.dialog_window_hit_test(DialogWindow::WorldMap, cursor)
+                        && self.scroll_world_map_results(cursor, amount)
+                }) {
                     if let Some(window) = self.window.as_ref() {
                         window.request_redraw();
                     }
                     return;
                 }
-                if self
-                    .cursor
-                    .is_some_and(|cursor| self.scroll_monster_book_drops(cursor, amount))
-                {
+                if self.cursor.is_some_and(|cursor| {
+                    self.dialog_window_hit_test(DialogWindow::MonsterBook, cursor)
+                        && self.scroll_monster_book_drops(cursor, amount)
+                }) {
                     if let Some(window) = self.window.as_ref() {
                         window.request_redraw();
                     }
                     return;
                 }
-                if self.monster_book.search_open {
+                if self.monster_book.search_open
+                    && self.cursor.is_some_and(|cursor| {
+                        self.dialog_window_hit_test(DialogWindow::MonsterBook, cursor)
+                    })
+                {
                     return;
                 }
                 if self.monster_book.open
@@ -885,6 +1125,9 @@ impl ApplicationHandler for ClientApp {
                     return;
                 }
                 if let Some(cursor) = cursor
+                    && self.cursor.is_some_and(|screen_cursor| {
+                        self.dialog_window_hit_test(DialogWindow::PartySearch, screen_cursor)
+                    })
                     && self.party_search.as_ref().is_some_and(|state| {
                         (state.x..state.x + party_search::PANEL_WIDTH as f32).contains(&cursor.x)
                             && (state.y..state.y + party_search::PANEL_HEIGHT as f32)
@@ -951,7 +1194,11 @@ impl ApplicationHandler for ClientApp {
                     if let Some(window) = self.window.as_ref() {
                         window.request_redraw();
                     }
-                } else if self.owl_search.is_some() {
+                } else if self.owl_search.is_some()
+                    && self.cursor.is_some_and(|cursor| {
+                        self.dialog_window_hit_test(DialogWindow::OwlSearch, cursor)
+                    })
+                {
                     if let Some(owl) = self.owl_search.as_mut()
                         && owl.result_item_id.is_some()
                         && !owl.results.is_empty()
@@ -971,6 +1218,9 @@ impl ApplicationHandler for ClientApp {
                     return;
                 }
                 if self.show_pet_equipment
+                    && self.cursor.is_some_and(|cursor| {
+                        self.dialog_window_hit_test(DialogWindow::PetEquipment, cursor)
+                    })
                     && cursor.is_some_and(|cursor| {
                         (634.0..1002.0).contains(&cursor.x) && (348.0..588.0).contains(&cursor.y)
                     })
@@ -1019,7 +1269,7 @@ impl ApplicationHandler for ClientApp {
                     }
                 } else if self.storage.is_some()
                     && cursor.is_some_and(|cursor| {
-                        (182.0..842.0).contains(&cursor.x) && (230.0..534.0).contains(&cursor.y)
+                        (182.0..645.0).contains(&cursor.x) && (191.0..391.0).contains(&cursor.y)
                     })
                 {
                     if let Some(cursor) = cursor {
@@ -1029,6 +1279,9 @@ impl ApplicationHandler for ClientApp {
                         window.request_redraw();
                     }
                 } else if self.show_quest_log
+                    && self.cursor.is_some_and(|cursor| {
+                        self.dialog_window_hit_test(DialogWindow::QuestLog, cursor)
+                    })
                     && cursor.is_some_and(|cursor| {
                         (QUEST_LOG_PANEL_X + 8.0..QUEST_LOG_PANEL_X + 238.0).contains(&cursor.x)
                             && (QUEST_LOG_PANEL_Y + 50.0..QUEST_LOG_PANEL_Y + 254.0)
@@ -1054,6 +1307,9 @@ impl ApplicationHandler for ClientApp {
                         window.request_redraw();
                     }
                 } else if self.show_buddy_panel
+                    && self.cursor.is_some_and(|cursor| {
+                        self.dialog_window_hit_test(DialogWindow::Buddy, cursor)
+                    })
                     && cursor.is_some_and(|cursor| {
                         (BUDDY_PANEL_X..BUDDY_PANEL_X + BUDDY_PANEL_WIDTH as f32)
                             .contains(&cursor.x)
@@ -1076,15 +1332,38 @@ impl ApplicationHandler for ClientApp {
                     if let Some(window) = self.window.as_ref() {
                         window.request_redraw();
                     }
+                } else if self.show_alliance_panel
+                    && self.cursor.is_some_and(|cursor| {
+                        self.dialog_window_hit_test(DialogWindow::Alliance, cursor)
+                    })
+                    && cursor.is_some_and(|cursor| {
+                        (300.0..300.0 + ALLIANCE_PANEL_WIDTH as f32).contains(&cursor.x)
+                            && (306.0..498.0).contains(&cursor.y)
+                    })
+                {
+                    let maximum = self.alliance_info.as_ref().map_or(0, |alliance| {
+                        alliance.guilds.len().saturating_sub(ALLIANCE_VISIBLE_ROWS)
+                    });
+                    self.alliance_scroll = if amount > 0.0 {
+                        self.alliance_scroll.saturating_sub(1)
+                    } else {
+                        self.alliance_scroll.saturating_add(1).min(maximum)
+                    };
+                    self.refresh_alliance_texture();
+                    if let Some(window) = self.window.as_ref() {
+                        window.request_redraw();
+                    }
                 } else if self.show_guild_panel
+                    && self.cursor.is_some_and(|cursor| {
+                        self.dialog_window_hit_test(DialogWindow::Guild, cursor)
+                    })
                     && cursor.is_some_and(|cursor| {
                         (680.0..1016.0).contains(&cursor.x) && (174.0..594.0).contains(&cursor.y)
                     })
                 {
-                    let maximum = self
-                        .guild_info
-                        .as_ref()
-                        .map_or(0, |guild| guild.members.len().saturating_sub(12));
+                    let maximum = self.guild_info.as_ref().map_or(0, |guild| {
+                        guild.members.len().saturating_sub(GUILD_VISIBLE_ROWS)
+                    });
                     self.guild_scroll = if amount > 0.0 {
                         self.guild_scroll.saturating_sub(1)
                     } else {
@@ -1123,7 +1402,10 @@ impl ApplicationHandler for ClientApp {
                     }
                 } else if self.npc_shop.is_some()
                     && cursor.is_some_and(|cursor| {
-                        (202.0..822.0).contains(&cursor.x) && (124.0..644.0).contains(&cursor.y)
+                        (NPC_SHOP_PANEL_X..NPC_SHOP_PANEL_X + NPC_SHOP_PANEL_WIDTH)
+                            .contains(&cursor.x)
+                            && (NPC_SHOP_PANEL_Y..NPC_SHOP_PANEL_Y + NPC_SHOP_PANEL_HEIGHT)
+                                .contains(&cursor.y)
                     })
                 {
                     self.scroll_npc_shop(amount);
@@ -1131,6 +1413,9 @@ impl ApplicationHandler for ClientApp {
                         window.request_redraw();
                     }
                 } else if self.show_inventory
+                    && self.cursor.is_some_and(|cursor| {
+                        self.dialog_window_hit_test(DialogWindow::Inventory, cursor)
+                    })
                     && cursor.is_some_and(|cursor| {
                         (INVENTORY_PANEL_X..INVENTORY_PANEL_X + INVENTORY_PANEL_WIDTH as f32)
                             .contains(&cursor.x)
@@ -1144,6 +1429,9 @@ impl ApplicationHandler for ClientApp {
                         window.request_redraw();
                     }
                 } else if self.show_skill_book
+                    && self.cursor.is_some_and(|cursor| {
+                        self.dialog_window_hit_test(DialogWindow::SkillBook, cursor)
+                    })
                     && cursor.is_some_and(|cursor| {
                         (SKILL_BOOK_PANEL_X..SKILL_BOOK_PANEL_X + SKILL_BOOK_PANEL_WIDTH as f32)
                             .contains(&cursor.x)
@@ -1216,6 +1504,17 @@ impl ApplicationHandler for ClientApp {
                             _ => {}
                         }
                     }
+                    if let Some(window) = self.window.as_ref() {
+                        window.request_redraw();
+                    }
+                    return;
+                }
+                if self.rps_game.is_none()
+                    && event.state == ElementState::Pressed
+                    && !event.repeat
+                    && event.physical_key == PhysicalKey::Code(KeyCode::Escape)
+                    && self.escape_topmost_dialog()
+                {
                     if let Some(window) = self.window.as_ref() {
                         window.request_redraw();
                     }
@@ -1599,8 +1898,8 @@ impl ApplicationHandler for ClientApp {
                                     self.send_trade_chat();
                                 } else {
                                     self.click_trade_room(Point {
-                                        x: TRADE_PANEL_X + 20.0,
-                                        y: TRADE_PANEL_Y + 568.0,
+                                        x: TRADE_PANEL_X + 390.0,
+                                        y: TRADE_PANEL_Y + 295.0,
                                     });
                                 }
                             }
@@ -2672,10 +2971,16 @@ impl ApplicationHandler for ClientApp {
                 }
             }
             WindowEvent::Focused(false) => {
+                if self.skill_macro_editor.has_skill_drag() {
+                    self.skill_macro_editor.finish_skill_drag(None, &[]);
+                    self.skill_macro_drag_texture = None;
+                    self.refresh_skill_macro_texture();
+                }
                 self.gameplay_input = GameplayInput::default();
                 self.key_config_pointer_start = None;
                 self.quickslot_pointer_binding = None;
                 if self.inventory_drag_source.take().is_some() {
+                    self.inventory_drag_texture = None;
                     self.refresh_inventory_texture();
                     if let Some(window) = self.window.as_ref() {
                         window.request_redraw();
@@ -3399,6 +3704,25 @@ impl ApplicationHandler for ClientApp {
                         });
                     }
                 }
+                if self.current_field.is_some()
+                    && !self.quest_helper_dismissed
+                    && let Some(texture) = self.quest_helper_texture.as_ref()
+                    && let Some((_, height)) = self.quest_helper_texture_size
+                {
+                    let (offset_x, offset_y) = self.dialog_window_offset(DialogWindow::QuestHelper);
+                    draws.push(SpriteDraw {
+                        texture,
+                        x: QUEST_HELPER_PANEL_X + offset_x,
+                        y: QUEST_HELPER_PANEL_Y + offset_y,
+                        width: QUEST_HELPER_PANEL_WIDTH as f32,
+                        height: height as f32,
+                        uv: [0.0, 0.0, 1.0, 1.0],
+                        tint: [1.0, 1.0, 1.0],
+                        blend_mode: BlendMode::Alpha,
+                        flip_x: false,
+                        opacity: 1.0,
+                    });
+                }
                 if self.show_status {
                     if let Some(texture) = self.status_texture.as_ref() {
                         draws.push(SpriteDraw {
@@ -3551,8 +3875,8 @@ impl ApplicationHandler for ClientApp {
                         texture,
                         x: 182.0,
                         y: 105.0,
-                        width: 206.0,
-                        height: 355.0,
+                        width: STORAGE_PANEL_WIDTH as f32,
+                        height: STORAGE_PANEL_HEIGHT as f32,
                         uv: [0.0, 0.0, 1.0, 1.0],
                         tint: [1.0, 1.0, 1.0],
                         blend_mode: BlendMode::Alpha,
@@ -3904,20 +4228,6 @@ impl ApplicationHandler for ClientApp {
                     });
                 }
                 if self.skill_macro_editor.open {
-                    if let Some(black) = self.solid_textures.first() {
-                        draws.push(SpriteDraw {
-                            texture: black,
-                            x: 0.0,
-                            y: 0.0,
-                            width: 1024.0,
-                            height: 768.0,
-                            uv: [0.0, 0.0, 1.0, 1.0],
-                            tint: [0.0, 0.0, 0.0],
-                            blend_mode: BlendMode::Alpha,
-                            flip_x: false,
-                            opacity: 0.48,
-                        });
-                    }
                     if let Some(texture) = self.skill_macro_texture.as_ref() {
                         draws.push(SpriteDraw {
                             texture,
@@ -3931,6 +4241,32 @@ impl ApplicationHandler for ClientApp {
                             flip_x: false,
                             opacity: 1.0,
                         });
+                    }
+                    if self.skill_macro_editor.skill_drag_moved()
+                        && let (Some(texture), Some(cursor)) =
+                            (self.skill_macro_drag_texture.as_ref(), self.cursor)
+                    {
+                        let local = self.dialog_window_input_cursor(cursor);
+                        let inside = (skill_macros::PANEL_X
+                            ..skill_macros::PANEL_X + skill_macros::PANEL_WIDTH as f32)
+                            .contains(&local.x)
+                            && (skill_macros::PANEL_Y
+                                ..skill_macros::PANEL_Y + skill_macros::PANEL_HEIGHT as f32)
+                                .contains(&local.y);
+                        if !inside {
+                            draws.push(SpriteDraw {
+                                texture,
+                                x: cursor.x - 16.0,
+                                y: cursor.y - 16.0,
+                                width: 32.0,
+                                height: 32.0,
+                                uv: [0.0, 0.0, 1.0, 1.0],
+                                tint: [1.0, 1.0, 1.0],
+                                blend_mode: BlendMode::Alpha,
+                                flip_x: false,
+                                opacity: 0.85,
+                            });
+                        }
                     }
                 }
                 if self.quit_confirmation {
@@ -4143,6 +4479,23 @@ impl ApplicationHandler for ClientApp {
                         opacity: 1.0,
                     });
                 }
+                if self.inventory_drag_source.is_some()
+                    && let (Some(texture), Some(cursor)) =
+                        (self.inventory_drag_texture.as_ref(), self.cursor)
+                {
+                    draws.push(SpriteDraw {
+                        texture,
+                        x: cursor.x - 17.0,
+                        y: cursor.y - 16.0,
+                        width: 34.0,
+                        height: 33.0,
+                        uv: [0.0, 0.0, 1.0, 1.0],
+                        tint: [1.0, 1.0, 1.0],
+                        blend_mode: BlendMode::Alpha,
+                        flip_x: false,
+                        opacity: 1.0,
+                    });
+                }
                 if self.current_field.is_some() {
                     for (index, message) in self.status_messages.iter().enumerate() {
                         let Some(texture) = message.texture.as_ref() else {
@@ -4248,6 +4601,7 @@ impl ApplicationHandler for ClientApp {
         self.expire_maple_tv_broadcast(now);
         self.expire_character_buffs(now);
         self.play_due_skill_hit_sounds(now);
+        self.play_due_mob_hit_sounds(now);
         let elapsed = now.saturating_duration_since(self.last_simulation_update);
         self.last_simulation_update = now;
         self.advance_avatar_megaphone(elapsed, now);

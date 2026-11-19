@@ -24,6 +24,15 @@ pub(super) enum Action {
     AssignSkill(i32),
 }
 
+#[derive(Clone, Copy, Debug)]
+struct SkillDrag {
+    skill_id: i32,
+    start: (f32, f32),
+    current: (f32, f32),
+    assign_on_click: bool,
+    moved: bool,
+}
+
 #[derive(Clone, Debug, Default)]
 pub(super) struct State {
     pub open: bool,
@@ -32,6 +41,7 @@ pub(super) struct State {
     pub selected_slot: usize,
     pub skill_scroll: usize,
     pub key_text_for_ime_dedup: Option<String>,
+    drag: Option<SkillDrag>,
     drafts: Vec<SkillMacro>,
 }
 
@@ -50,12 +60,14 @@ impl State {
         self.selected_slot = 0;
         self.skill_scroll = 0;
         self.key_text_for_ime_dedup = None;
+        self.drag = None;
     }
 
     pub fn close(&mut self) {
         self.open = false;
         self.name_focused = false;
         self.key_text_for_ime_dedup = None;
+        self.drag = None;
     }
 
     pub fn drafts(&self) -> &[SkillMacro] {
@@ -107,6 +119,62 @@ impl State {
         self.name_focused = false;
     }
 
+    pub fn begin_skill_drag(&mut self, skill_id: i32, x: f32, y: f32, assign_on_click: bool) {
+        if skill_id > 0 {
+            self.drag = Some(SkillDrag {
+                skill_id,
+                start: (x, y),
+                current: (x, y),
+                assign_on_click,
+                moved: false,
+            });
+            self.name_focused = false;
+        }
+    }
+
+    pub fn update_skill_drag(&mut self, x: f32, y: f32) -> bool {
+        if let Some(drag) = self.drag.as_mut() {
+            drag.current = (x, y);
+            drag.moved |= (x - drag.start.0).hypot(y - drag.start.1) >= 4.0;
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn has_skill_drag(&self) -> bool {
+        self.drag.is_some()
+    }
+
+    pub fn skill_drag_moved(&self) -> bool {
+        self.drag.is_some_and(|drag| drag.moved)
+    }
+
+    pub fn finish_skill_drag(
+        &mut self,
+        cursor: Option<(f32, f32)>,
+        skills: &[(i32, String)],
+    ) -> bool {
+        let Some(drag) = self.drag.take() else {
+            return false;
+        };
+        let Some((x, y)) = cursor else { return true };
+        if !skills.iter().any(|(id, _)| *id == drag.skill_id) {
+            return true;
+        }
+        let moved = drag.moved || (x - drag.start.0).hypot(y - drag.start.1) >= 4.0;
+        if moved {
+            if let Some((row, slot)) = macro_slot_at(x, y) {
+                self.select_macro(row);
+                self.select_slot(slot);
+                self.assign_skill(drag.skill_id);
+            }
+        } else if drag.assign_on_click {
+            self.assign_skill(drag.skill_id);
+        }
+        true
+    }
+
     pub fn insert_text(&mut self, text: &str) {
         if !self.name_focused {
             return;
@@ -144,13 +212,28 @@ impl State {
     }
 }
 
+fn macro_slot_at(x: f32, y: f32) -> Option<(usize, usize)> {
+    for row in 0..SKILL_MACRO_COUNT {
+        let top = 46.0 + row as f32 * 44.0;
+        for slot in 0..3 {
+            let left = 14.0 + slot as f32 * 36.0;
+            if (left..left + 32.0).contains(&x) && (top..top + 32.0).contains(&y) {
+                return Some((row, slot));
+            }
+        }
+    }
+    None
+}
+
 pub(super) fn hit_test(
     local_x: f32,
     local_y: f32,
     state: &State,
     skills: &[(i32, String)],
 ) -> Option<Action> {
-    if local_y < 24.0 && local_x >= PANEL_WIDTH as f32 - 32.0 {
+    if (6.0..21.0).contains(&local_y)
+        && (PANEL_WIDTH as f32 - 32.0..PANEL_WIDTH as f32).contains(&local_x)
+    {
         return Some(Action::Close);
     }
     for row in 0..SKILL_MACRO_COUNT {
@@ -159,7 +242,13 @@ pub(super) fn hit_test(
             for slot in 0..3 {
                 let left = 14.0 + slot as f32 * 36.0;
                 if (left..left + 32.0).contains(&local_x) {
-                    if row == state.selected_macro && local_x >= left + 24.0 && local_y < top + 9.0
+                    if row == state.selected_macro
+                        && state
+                            .drafts
+                            .get(row)
+                            .is_some_and(|entry| entry.skills[slot] > 0)
+                        && local_x >= left + 24.0
+                        && local_y < top + 9.0
                     {
                         return Some(Action::ClearSkill(slot));
                     }
@@ -185,11 +274,11 @@ pub(super) fn hit_test(
             .get(state.skill_scroll.saturating_add(row))
             .map(|(id, _)| Action::AssignSkill(*id));
     }
-    if (350.0..375.0).contains(&local_y) {
-        if (108.0..201.0).contains(&local_x) {
+    if (351.0..375.0).contains(&local_y) {
+        if (108.0..173.0).contains(&local_x) {
             return Some(Action::Save);
         }
-        if (6.0..101.0).contains(&local_x) {
+        if (6.0..71.0).contains(&local_x) {
             return Some(Action::Close);
         }
     }
@@ -436,22 +525,35 @@ pub(super) fn render(
             230,
         );
     }
-    for (row, (_, name)) in skills
+    for (row, (skill_id, name)) in skills
         .iter()
         .skip(state.skill_scroll)
         .take(VISIBLE_SKILLS)
         .enumerate()
     {
+        let y = SKILL_ROW_TOP as usize + row * SKILL_ROW_HEIGHT as usize;
+        let _ = super::composite_nx_ui_bitmap_scaled_to(
+            &mut pixels,
+            width,
+            height,
+            skill_archive,
+            &format!("{:03}.img/skill/{skill_id}/icon", skill_id / 10_000),
+            8,
+            y + 1,
+            16,
+            16,
+        );
+        let name = super::ui_foundation::ellipsize(font, name, 9.0, 169.0);
         draw_dialogue_text(
             font,
             &mut pixels,
             width,
             height,
-            name,
-            9,
-            SKILL_ROW_TOP as i32 + row as i32 * SKILL_ROW_HEIGHT as i32,
+            &name,
+            29,
+            y as i32,
             9.0,
-            188,
+            169,
             16,
             [70, 48, 33],
         );
@@ -462,12 +564,58 @@ pub(super) fn render(
     ] {
         let _ = composite_nx_ui_bitmap(&mut pixels, width, height, ui_archive, path, x, 351);
     }
+    if let Some(drag) = state.drag {
+        let (x, y) = drag.current;
+        if drag.moved && (0.0..width as f32).contains(&x) && (0.0..height as f32).contains(&y) {
+            let _ = composite_nx_ui_bitmap(
+                &mut pixels,
+                width,
+                height,
+                skill_archive,
+                &format!(
+                    "{:03}.img/skill/{}/icon",
+                    drag.skill_id / 10_000,
+                    drag.skill_id
+                ),
+                x.round() as i32 - 16,
+                y.round() as i32 + 16,
+            );
+        }
+    }
     pixels
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dragging_assigns_to_the_drop_cell_and_clicks_keep_the_existing_shortcut() {
+        let skills = vec![(1_001_004, "Power Strike".to_owned())];
+        let mut state = State::default();
+        state.open(&[]);
+        state.begin_skill_drag(1_001_004, 10.0, 295.0, true);
+        assert!(state.finish_skill_drag(Some((10.0, 295.0)), &skills));
+        assert_eq!(state.drafts()[0].skills[0], 1_001_004);
+        state.begin_skill_drag(1_001_004, 10.0, 295.0, true);
+        state.finish_skill_drag(Some((52.0, 91.0)), &skills);
+        assert_eq!(state.drafts()[1].skills[1], 1_001_004);
+        assert_eq!((state.selected_macro, state.selected_slot), (1, 1));
+        state.begin_skill_drag(1_001_004, 10.0, 295.0, true);
+        state.finish_skill_drag(Some((48.0, 91.0)), &skills); // grid gap
+        assert_eq!(state.drafts()[1].skills[0], 0);
+        state.begin_skill_drag(1_001_004, 10.0, 295.0, true);
+        state.update_skill_drag(30.0, 295.0);
+        state.finish_skill_drag(Some((10.0, 295.0)), &skills);
+        assert_eq!(state.drafts()[1].skills[1], 1_001_004);
+        assert_eq!(state.drafts()[1].skills[2], 0);
+        state.begin_skill_drag(1_001_004, -300.0, 0.0, false);
+        state.finish_skill_drag(None, &skills);
+        assert_eq!(state.drafts()[1].skills[1], 1_001_004);
+        state.begin_skill_drag(1_001_004, -300.0, 0.0, false);
+        state.finish_skill_drag(Some((15.0, 47.0)), &[]);
+        assert_eq!(state.drafts()[0].skills[0], 1_001_004);
+    }
 
     #[test]
     fn grid_and_skill_list_hit_the_drawn_cells() {
@@ -488,8 +636,14 @@ mod tests {
         );
         assert_eq!(
             hit_test(39.0, 47.0, &state, &skills),
+            Some(Action::SelectSlot(0, 0))
+        );
+        state.assign_skill(1_001_004);
+        assert_eq!(
+            hit_test(39.0, 47.0, &state, &skills),
             Some(Action::ClearSkill(0))
         );
+        assert_eq!(hit_test(180.0, 355.0, &state, &skills), None);
         assert_eq!(
             hit_test(65.0, 205.0, &state, &skills),
             Some(Action::FocusName)

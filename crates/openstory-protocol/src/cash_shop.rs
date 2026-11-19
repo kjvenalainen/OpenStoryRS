@@ -9,6 +9,8 @@ pub const OPCODE_QUERY_CASH_RESULT: u16 = 324;
 pub const OPCODE_CASH_SHOP_OPERATION: u16 = 325;
 pub const OPCODE_BUY_CASH_ITEM: u16 = 229;
 pub const OPCODE_COUPON_CODE: u16 = 230;
+/// Client-to-server v83 Cash Shop balance request (`RecvOpcode.CHECK_CASH`).
+pub const OPCODE_CHECK_CASH: u16 = 228;
 
 const MAX_CASH_SHOP_LOCKER_ITEMS: usize = 256;
 
@@ -107,6 +109,14 @@ pub fn enter_cash_shop_packet() -> Vec<u8> {
 /// The legacy client exits the Cash Shop with a bare CHANGE_MAP opcode.
 pub fn exit_cash_shop_packet() -> Vec<u8> {
     PacketWriter::new(OPCODE_CHANGE_MAP).into_bytes()
+}
+
+/// Requests the server to grant 10,000 NX Credit from the Cash Shop Charge button.
+/// The trailing action byte is an OpenStory server extension to `CHECK_CASH`.
+pub fn charge_nx_credit_packet() -> Vec<u8> {
+    let mut packet = PacketWriter::new(OPCODE_CHECK_CASH);
+    packet.write_u8(1);
+    packet.into_bytes()
 }
 
 /// `currency` uses the server wire values: 1 = NX Credit, 2 = Maple Points,

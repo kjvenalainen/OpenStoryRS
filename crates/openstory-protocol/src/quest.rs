@@ -42,6 +42,12 @@ pub enum QuestUpdate {
     Completed { id: i16, timestamp: i64 },
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StatusInfoUpdate {
+    Item { item_id: i32, quantity: i32 },
+    Experience { white: bool, gain: i32, bonus: i32 },
+}
+
 /// A server-reported reason a quest action could not be completed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum QuestActionFailure {
@@ -148,6 +154,31 @@ pub fn parse_quest_status_update(bytes: &[u8]) -> Result<Option<QuestUpdate>, Pa
         _ => return Ok(None),
     };
     Ok(Some(update))
+}
+
+/// Parses the item and experience feed variants of `SHOW_STATUS_INFO`.
+/// Other status modes are left to their owning handlers.
+pub fn parse_status_info_update(bytes: &[u8]) -> Result<Option<StatusInfoUpdate>, PacketError> {
+    let mut packet = PacketReader::new(bytes);
+    expect_opcode(&mut packet, OPCODE_SHOW_STATUS_INFO)?;
+    match packet.read_i8()? {
+        0 => match packet.read_i8()? {
+            0 => Ok(Some(StatusInfoUpdate::Item {
+                item_id: packet.read_i32()?,
+                quantity: packet.read_i32()?,
+            })),
+            _ => Ok(None),
+        },
+        3 => {
+            let white = packet.read_bool()?;
+            let gain = packet.read_i32()?;
+            packet.read_bool()?;
+            let bonus = packet.read_i32()?;
+            packet.skip(19)?;
+            Ok(Some(StatusInfoUpdate::Experience { white, gain, bonus }))
+        }
+        _ => Ok(None),
+    }
 }
 
 /// Decodes the visual quest-completion notification packet.

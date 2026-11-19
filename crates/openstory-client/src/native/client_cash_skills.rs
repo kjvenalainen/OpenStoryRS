@@ -801,7 +801,10 @@ impl ClientApp {
                 let Ok(id) = name.parse::<i32>() else {
                     continue;
                 };
-                if id / 10_000 != i32::from(prefix) {
+                // v83 skill IDs start at 1000; small values in the learned
+                // skill packet are not book entries (and otherwise appear as
+                // fabricated rows such as "Skill 12").
+                if id < 1_000 || id / 10_000 != i32::from(prefix) {
                     continue;
                 }
                 let level = self.skills.get(&id).map_or(0, |skill| skill.level);
@@ -980,8 +983,9 @@ impl ClientApp {
         // The server can grant skills that are not present in the local NX
         // archive. Keep those visible and usable as generic active skills.
         for skill in self.skills.values() {
-            if skill.id / 10_000 != i32::from(subjob)
-                && !(self.skill_book_tab == 0 && skill.id / 10_000 == 0)
+            if skill.id < 1_000
+                || (skill.id / 10_000 != i32::from(subjob)
+                    && !(self.skill_book_tab == 0 && skill.id / 10_000 == 0))
             {
                 continue;
             }
@@ -1174,6 +1178,38 @@ impl ClientApp {
             Ok(Some(texture)) => self.quest_log_texture = Some(texture),
             Ok(None) => {}
             Err(error) => eprintln!("OpenStory: could not update quest log: {error}"),
+        }
+    }
+
+    pub(super) fn refresh_quest_helper_texture(&mut self) {
+        let entries = quest_helper_entries(
+            &self.quest_log,
+            &self.quest_archive,
+            &self.string_archive,
+            self.inventory.as_ref(),
+            &mut self.item_name_cache,
+        );
+        let (width, height, pixels) =
+            render_quest_helper_panel(&self.font, &entries, &self.legacy_ui_archive);
+        let Some(renderer) = self.renderer.as_ref() else {
+            return;
+        };
+        let dimensions = (width, height);
+        let result = if self.quest_helper_texture_size == Some(dimensions) {
+            self.quest_helper_texture
+                .as_ref()
+                .map(|texture| renderer.update_bgra(texture, &pixels).map(|()| None))
+                .unwrap_or_else(|| renderer.upload_bgra(width, height, &pixels).map(Some))
+        } else {
+            renderer.upload_bgra(width, height, &pixels).map(Some)
+        };
+        match result {
+            Ok(Some(texture)) => {
+                self.quest_helper_texture = Some(texture);
+                self.quest_helper_texture_size = Some(dimensions);
+            }
+            Ok(None) => {}
+            Err(error) => eprintln!("OpenStory: could not update quest helper: {error}"),
         }
     }
 }

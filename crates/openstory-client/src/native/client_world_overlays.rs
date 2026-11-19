@@ -1266,16 +1266,6 @@ impl ClientApp {
         self.show_status_detail = false;
         self.status_auto_confirmation = false;
         if self.show_status {
-            self.show_inventory = false;
-            self.inventory_drag_source = None;
-            self.inventory_hover_slot = None;
-            self.show_pet_equipment = false;
-            self.show_skill_book = false;
-            self.show_quest_log = false;
-            self.show_party_panel = false;
-            self.show_buddy_panel = false;
-            self.show_guild_panel = false;
-            self.show_alliance_panel = false;
             self.refresh_status_texture();
         }
     }

@@ -358,16 +358,39 @@ fn render_skill_book_panel(
     for tab in 0..visible_tabs.min(5) {
         let active = tab == selected_tab;
         let left = 5 + usize::from(tab) * 32;
-        let frame = if active { "Tab1" } else { "Tab0" };
-        let frame_path = format!("UIWindow.img/Item/New/{frame}/{tab}");
-        let _ = composite_nx_ui_bitmap(
+        let tab_state = if active { "1" } else { "0" };
+        let _ = composite_nx_ui_bitmap_scaled_to(
             &mut pixels,
             WIDTH,
             HEIGHT,
             ui_archive,
-            &frame_path,
-            left as i32,
+            &format!("Basic.img/Tab2/left{tab_state}"),
+            left,
             25,
+            4,
+            17,
+        );
+        let _ = composite_nx_ui_bitmap_scaled_to(
+            &mut pixels,
+            WIDTH,
+            HEIGHT,
+            ui_archive,
+            &format!("Basic.img/Tab2/fill{tab_state}"),
+            left + 4,
+            25,
+            24,
+            17,
+        );
+        let _ = composite_nx_ui_bitmap_scaled_to(
+            &mut pixels,
+            WIDTH,
+            HEIGHT,
+            ui_archive,
+            &format!("Basic.img/Tab2/right{tab_state}"),
+            left + 28,
+            25,
+            4,
+            17,
         );
         let path = format!(
             "UIWindow.img/Skill/Tab/{}/{tab}",
@@ -580,7 +603,7 @@ fn render_options_panel(
     const WIDTH: usize = SETTINGS_PANEL_WIDTH as usize;
     const HEIGHT: usize = SETTINGS_PANEL_HEIGHT as usize;
     const GAME_X: usize = 300;
-    const GAME_Y: usize = 366;
+    const GAME_Y: usize = 0;
     let mut pixels = vec![0_u8; WIDTH * HEIGHT * 4];
 
     // These are the two stock v83 settings windows at their authored sizes.
@@ -621,7 +644,7 @@ fn render_options_panel(
         (OptionControl::MpWarning, gameplay_settings.mp_warning),
     ] {
         let y = slider.track_y().expect("sliders have a track position");
-        const TRACK_LEFT: usize = 104;
+        let track_left = if slider == OptionControl::EffectsQuality { 359 } else { 104 };
         let track_width = slider.track_width();
         let _ = composite_nx_ui_bitmap_scaled_to(
             &mut pixels,
@@ -629,7 +652,7 @@ fn render_options_panel(
             HEIGHT,
             ui_archive,
             "Basic.img/Slider/mid",
-            TRACK_LEFT,
+            track_left,
             y.saturating_sub(3),
             track_width,
             6,
@@ -642,13 +665,13 @@ fn render_options_panel(
                 HEIGHT,
                 ui_archive,
                 "Basic.img/Slider/mid",
-                TRACK_LEFT,
+                track_left,
                 y.saturating_sub(3),
                 filled_width,
                 6,
             );
         }
-        let thumb_x = TRACK_LEFT + filled_width;
+        let thumb_x = track_left + filled_width;
         let thumb_state = if slider == selected {
             "thumbMouseOver"
         } else {
@@ -664,6 +687,8 @@ fn render_options_panel(
             y.saturating_sub(7) as i32,
         );
     }
+
+    draw_dialogue_text(font, &mut pixels, WIDTH, HEIGHT, "Effects", 307, 262, 9.0, 48, 13, [38, 48, 55]);
 
     for (control, y, muted) in [
         (
@@ -697,7 +722,7 @@ fn render_options_panel(
         HEIGHT,
         ui_archive,
         263,
-        231,
+        241,
         selected == OptionControl::ScreenShake,
         gameplay_settings.screen_shake_enabled,
     );
@@ -714,13 +739,13 @@ fn render_options_panel(
     for (control, x, label, active) in [
         (
             OptionControl::Resolution800,
-            64,
+            5,
             "800 x 600",
             display_settings.width == 800 && display_settings.height == 600,
         ),
         (
             OptionControl::Resolution1024,
-            164,
+            103,
             "1024 x 768",
             display_settings.width == 1024 && display_settings.height == 768,
         ),
@@ -731,7 +756,7 @@ fn render_options_panel(
             HEIGHT,
             ui_archive,
             x,
-            260,
+            338,
             selected == control,
             active,
         );
@@ -742,7 +767,7 @@ fn render_options_panel(
             HEIGHT,
             label,
             x as i32 + 23,
-            264,
+            342,
             8.0,
             68,
             12,
@@ -817,17 +842,19 @@ fn render_options_panel(
         let _ = composite_nx_ui_bitmap(&mut pixels, WIDTH, HEIGHT, ui_archive, path, x, 341);
     }
     if let Some(notice) = notice {
+        fill_dialogue_rect(&mut pixels, WIDTH, HEIGHT, 4, 339, 194, 22, [189, 204, 215, 255]);
+        let notice = ui_foundation::ellipsize(font, notice, 9.0, 190.0);
         draw_dialogue_text(
             font,
             &mut pixels,
             WIDTH,
             HEIGHT,
-            notice,
+            &notice,
             5,
-            369,
+            342,
             9.0,
-            GAME_X - 10,
-            22,
+            190,
+            18,
             [120, 24, 24],
         );
     }
@@ -858,10 +885,14 @@ impl GameplayInput {
             && !self.held_bindings.values().any(|other| *other == binding)
         {
             match binding.action {
+                50 => self.pickup = false,
                 51 => self.sit = false,
                 200 => self.left = false,
                 201 => self.right = false,
-                202 => self.up = false,
+                202 => {
+                    self.suppress_up_until_release = false;
+                    self.up = false;
+                }
                 203 => self.down = false,
                 _ => {}
             }
@@ -880,10 +911,14 @@ impl GameplayInput {
                     .any(|binding| binding.action == 201)
             }
             PhysicalKey::Code(KeyCode::ArrowUp) => {
-                self.up = self
+                let held = self
                     .held_bindings
                     .values()
-                    .any(|binding| binding.action == 202)
+                    .any(|binding| binding.action == 202);
+                if !held {
+                    self.suppress_up_until_release = false;
+                }
+                self.up = held && !self.suppress_up_until_release;
             }
             PhysicalKey::Code(KeyCode::ArrowDown) => {
                 self.down = self

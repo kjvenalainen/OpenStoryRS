@@ -53,6 +53,12 @@ enum LoginAction {
     CancelCharacterCreation,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LoginDoubleClickTarget {
+    Channel(u8),
+    Character(usize),
+}
+
 struct CharacterCreationState {
     job: Option<u16>,
     female: bool,
@@ -1103,13 +1109,26 @@ fn load_character_customization_scene(
 
     let gender_y = 250.0;
     for (female, label, x) in [(false, "Male", 590.0), (true, "Female", 700.0)] {
-        append_text_sprite(&mut sprites, font, label, x, gender_y, 14.0);
+        let checkbox = if creation.female == female {
+            "Basic.img/CheckBox/1"
+        } else {
+            "Basic.img/CheckBox/0"
+        };
+        append_optional_sprite_at_top_left(
+            &mut sprites,
+            legacy_ui,
+            checkbox,
+            x,
+            gender_y + 5.0,
+            1.0,
+        )?;
+        append_text_sprite(&mut sprites, font, label, x + 17.0, gender_y, 14.0);
         actions.push(LoginActionRegion {
             rect: SpriteRect {
-                x: x - 8.0,
-                y: gender_y - 3.0,
-                width: 100.0,
-                height: 26.0,
+                x,
+                y: gender_y,
+                width: 90.0,
+                height: 24.0,
                 blend_mode: BlendMode::Alpha,
             },
             action: LoginAction::ToggleCreationGender(female),
@@ -1131,44 +1150,26 @@ fn load_character_customization_scene(
         let value = selected(index).unwrap_or_default();
         let value_name =
             character_creation_option_name(index, value, string_archive, item_name_cache);
+        let text = ui_foundation::ellipsize(font, &format!("{label}: {value_name}"), 13.0, 202.0);
         append_character_creation_option_text(
             &mut sprites,
             font,
-            &format!("{label}: {value_name}"),
+            &text,
             593.0,
             y,
             13.0,
             [82, 53, 29],
         );
-        append_character_creation_option_text(
-            &mut sprites,
-            font,
-            "<",
-            808.0,
-            y,
-            16.0,
-            [82, 53, 29],
-        );
-        append_character_creation_option_text(
-            &mut sprites,
-            font,
-            ">",
-            847.0,
-            y,
-            16.0,
-            [82, 53, 29],
-        );
-        for (direction, x) in [(-1_i8, 800.0), (1_i8, 839.0)] {
-            actions.push(LoginActionRegion {
-                rect: SpriteRect {
-                    x,
-                    y: y - 2.0,
-                    width: 34.0,
-                    height: 25.0,
-                    blend_mode: BlendMode::Alpha,
-                },
-                action: LoginAction::CycleCreationOption(index, direction),
-            });
+        for (direction, asset, x) in [(-1_i8, "BtLeft", 805.0), (1_i8, "BtRight", 829.0)] {
+            let path = format!("{custom_path}/{asset}/normal/0");
+            if let Some(rect) =
+                append_optional_sprite_at_top_left(&mut sprites, legacy_ui, &path, x, y + 3.0, 1.0)?
+            {
+                actions.push(LoginActionRegion {
+                    rect,
+                    action: LoginAction::CycleCreationOption(index, direction),
+                });
+            }
         }
     }
 
@@ -1183,15 +1184,6 @@ fn load_character_customization_scene(
     } else {
         ""
     };
-    append_character_creation_option_text(
-        &mut sprites,
-        font,
-        "Character name",
-        610.0,
-        539.0,
-        12.0,
-        [82, 53, 29],
-    );
     append_character_creation_option_text(
         &mut sprites,
         font,

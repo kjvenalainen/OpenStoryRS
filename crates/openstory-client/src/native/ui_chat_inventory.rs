@@ -264,6 +264,76 @@ fn blit_chat_balloon_part(
     }
 }
 
+fn render_inventory_item_cell(
+    font: &fontdue::Font,
+    item: &openstory_protocol::InventoryItem,
+    ui_archive: &NxArchive,
+    item_archive: &NxArchive,
+    character_archive: &NxArchive,
+    icon_cache: &mut HashMap<i32, Option<(u32, u32, Arc<[u8]>)>>,
+) -> Vec<u8> {
+    let mut pixels = vec![0; 34 * 33 * 4];
+    if let Some((icon_width, icon_height, icon_pixels)) =
+        inventory_item_icon(item.item_id, item_archive, character_archive, icon_cache)
+    {
+        let (icon_x, icon_y) =
+            inventory_item_icon_offset(item.item_id, item_archive, character_archive)
+                .unwrap_or((1, 0));
+        composite_bgra_pixels(
+            &mut pixels,
+            34,
+            33,
+            &icon_pixels,
+            icon_width as usize,
+            icon_height as usize,
+            icon_x - 2,
+            icon_y - 2,
+        );
+    }
+    if item.inventory_type != openstory_protocol::InventoryType::Equip && item.count > 0 {
+        let count = item.count.to_string();
+        if count.len() > 4 {
+            // Five native 8px glyphs do not fit a 34px cell. Keep all digits
+            // legible with the regular numeric face in this case.
+            draw_dialogue_text(
+                font,
+                &mut pixels,
+                34,
+                33,
+                &count,
+                0,
+                20,
+                10.0,
+                34,
+                13,
+                [255, 255, 255],
+            );
+        } else {
+            let mut digit_x = 0;
+            for digit in count.chars() {
+                let path = format!("Basic.img/ItemNo/{digit}");
+                let digit_width = resolve_ui_path(&ui_archive.root(), &path)
+                    .ok()
+                    .flatten()
+                    .and_then(|node| node.bitmap().ok().flatten())
+                    .map(|bitmap| usize::from(bitmap.width()))
+                    .unwrap_or(8);
+                let _ = composite_nx_ui_bitmap(
+                    &mut pixels,
+                    34,
+                    33,
+                    ui_archive,
+                    &path,
+                    digit_x as i32,
+                    20,
+                );
+                digit_x += digit_width;
+            }
+        }
+    }
+    pixels
+}
+
 fn render_inventory_panel(
     font: &fontdue::Font,
     inventory: &openstory_protocol::InventorySnapshot,
@@ -294,16 +364,39 @@ fn render_inventory_panel(
     }
     for (index, tab) in inventory_tabs().into_iter().enumerate() {
         let bounds = ui_foundation::inventory_tab(index);
-        let frame = if tab == active_tab { "Tab1" } else { "Tab0" };
-        let path = format!("UIWindow.img/Item/New/{frame}/{index}");
-        let _ = composite_nx_ui_bitmap(
+        let tab_state = if tab == active_tab { "1" } else { "0" };
+        let _ = composite_nx_ui_bitmap_scaled_to(
             &mut pixels,
             WIDTH,
             HEIGHT,
             ui_archive,
-            &path,
-            bounds.x as i32,
-            bounds.y as i32,
+            &format!("Basic.img/Tab2/left{tab_state}"),
+            bounds.x as usize,
+            bounds.y as usize,
+            4,
+            bounds.height as usize,
+        );
+        let _ = composite_nx_ui_bitmap_scaled_to(
+            &mut pixels,
+            WIDTH,
+            HEIGHT,
+            ui_archive,
+            &format!("Basic.img/Tab2/fill{tab_state}"),
+            bounds.x as usize + 4,
+            bounds.y as usize,
+            bounds.width as usize - 8,
+            bounds.height as usize,
+        );
+        let _ = composite_nx_ui_bitmap_scaled_to(
+            &mut pixels,
+            WIDTH,
+            HEIGHT,
+            ui_archive,
+            &format!("Basic.img/Tab2/right{tab_state}"),
+            bounds.x as usize + bounds.width as usize - 4,
+            bounds.y as usize,
+            4,
+            bounds.height as usize,
         );
         let state = if tab == active_tab {
             "enabled"
@@ -348,22 +441,14 @@ fn render_inventory_panel(
             else {
                 continue;
             };
-            if let Some((icon_width, icon_height, icon_pixels)) =
-                inventory_item_icon(item.item_id, item_archive, character_archive, icon_cache)
-            {
-                let (icon_x, icon_y) =
-                    inventory_item_icon_offset(item.item_id, item_archive, character_archive)
-                        .unwrap_or((1, 0));
-                let mut cell_pixels = vec![0; 34 * 33 * 4];
-                composite_bgra_pixels(
-                    &mut cell_pixels,
-                    34,
-                    33,
-                    &icon_pixels,
-                    icon_width as usize,
-                    icon_height as usize,
-                    icon_x - 2,
-                    icon_y - 2,
+            if drag_source != Some((active_tab, slot)) {
+                let cell_pixels = render_inventory_item_cell(
+                    font,
+                    item,
+                    ui_archive,
+                    item_archive,
+                    character_archive,
+                    icon_cache,
                 );
                 composite_bgra_pixels(
                     &mut pixels,
@@ -375,61 +460,6 @@ fn render_inventory_panel(
                     x as i32,
                     y as i32,
                 );
-            }
-            if active_tab != openstory_protocol::InventoryType::Equip && item.count > 0 {
-                let count = item.count.to_string();
-                let mut count_pixels = vec![0; 34 * 33 * 4];
-                if count.len() > 4 {
-                    // Five native 8px glyphs do not fit a 34px cell. Keep all
-                    // digits legible with the regular numeric face in this case.
-                    draw_dialogue_text(
-                        font,
-                        &mut count_pixels,
-                        34,
-                        33,
-                        &count,
-                        0,
-                        20,
-                        10.0,
-                        34,
-                        13,
-                        [255, 255, 255],
-                    );
-                } else {
-                    let mut digit_x = 0;
-                    for digit in count.chars() {
-                        let path = format!("Basic.img/ItemNo/{digit}");
-                        let digit_width = resolve_ui_path(&ui_archive.root(), &path)
-                            .ok()
-                            .flatten()
-                            .and_then(|node| node.bitmap().ok().flatten())
-                            .map(|bitmap| usize::from(bitmap.width()))
-                            .unwrap_or(8);
-                        let _ = composite_nx_ui_bitmap(
-                            &mut count_pixels,
-                            34,
-                            33,
-                            ui_archive,
-                            &path,
-                            digit_x as i32,
-                            20,
-                        );
-                        digit_x += digit_width;
-                    }
-                }
-                composite_bgra_pixels(
-                    &mut pixels,
-                    WIDTH,
-                    HEIGHT,
-                    &count_pixels,
-                    34,
-                    33,
-                    x as i32,
-                    y as i32,
-                );
-            }
-            if drag_source == Some((active_tab, slot)) {
-                fill_dialogue_rect(&mut pixels, WIDTH, HEIGHT, x, y, 34, 33, [90, 136, 182, 72]);
             }
         }
     }
@@ -991,10 +1021,49 @@ fn pet_equipment_items(
     let mut items: Vec<_> = inventory
         .items
         .iter()
-        .filter(|item| item.item_id / 10_000 == 181)
+        .filter(|item| {
+            (180..=183).contains(&(item.item_id / 10_000))
+                && (matches!(
+                    item.inventory_type,
+                    openstory_protocol::InventoryType::Equip
+                        | openstory_protocol::InventoryType::Cash
+                ) || (item.inventory_type == openstory_protocol::InventoryType::Equipped
+                    && pet_equipment_grid_position(item.item_id).is_none()))
+        })
         .collect();
     items.sort_by_key(|item| (item.inventory_type as u8, item.slot));
     items
+}
+
+// The native pet panel labels identify these v83 item categories. Equipped
+// entries are matched by item identity, not by guessed server slot numbers.
+fn pet_equipment_grid_position(item_id: i32) -> Option<(usize, usize)> {
+    let (column, row) = match item_id {
+        1_812_000 => (1, 1),                // Meso Magnet
+        1_812_001 => (0, 1),                // Item Pouch
+        1_812_002 => (0, 0),                // HP Potion Pouch
+        1_812_003 => (2, 0),                // MP Potion Pouch
+        1_812_004 => (0, 3),                // Wing Boots
+        1_812_007 => (0, 2),                // Item Ignore Pendant
+        id if id / 10_000 == 180 => (3, 2), // pet equipment
+        id if id / 10_000 == 182 => (2, 3), // name ring
+        id if id / 10_000 == 183 => (3, 3), // quote ring
+        _ => return None,
+    };
+    Some((12 + column * 33, 34 + row * 33))
+}
+
+fn pet_equipment_grid_item_at(
+    inventory: &openstory_protocol::InventorySnapshot,
+    x: f32,
+    y: f32,
+) -> Option<&openstory_protocol::InventoryItem> {
+    inventory.equipped().find(|item| {
+        pet_equipment_grid_position(item.item_id).is_some_and(|(left, top)| {
+            (left as f32..left as f32 + 32.0).contains(&x)
+                && (top as f32..top as f32 + 32.0).contains(&y)
+        })
+    })
 }
 
 fn equipment_inventory_slot_position(slot: u16) -> Option<(usize, usize)> {
@@ -1096,55 +1165,42 @@ fn render_pet_equipment_panel(
     const WIDTH: usize = 390;
     const HEIGHT: usize = 480;
     let mut pixels = vec![0_u8; WIDTH * HEIGHT * 4];
-    fill_dialogue_rect(
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        0,
-        0,
-        WIDTH,
-        HEIGHT,
-        [239, 241, 239, 255],
-    );
-    for (x, y, w, h) in [
-        (0, 0, WIDTH, 1),
-        (0, HEIGHT - 1, WIDTH, 1),
-        (0, 0, 1, HEIGHT),
-        (WIDTH - 1, 0, 1, HEIGHT),
+    fill_dialogue_rect(&mut pixels, WIDTH, HEIGHT, 0, 0, WIDTH, HEIGHT, [239, 241, 239, 255]);
+    // Use the game's tiled window frame behind the pet summaries and gear list.
+    for (part, x, y, w, h) in [
+        ("top/left", 0, 0, 6, 25), ("top/center", 6, 0, WIDTH - 12, 25), ("top/right", WIDTH - 6, 0, 6, 25),
+        ("center/left", 0, 25, 6, HEIGHT - 31), ("center/center", 6, 25, WIDTH - 12, HEIGHT - 31), ("center/right", WIDTH - 6, 25, 6, HEIGHT - 31),
+        ("bottom/left", 0, HEIGHT - 6, 6, 6), ("bottom/center", 6, HEIGHT - 6, WIDTH - 12, 6), ("bottom/right", WIDTH - 6, HEIGHT - 6, 6, 6),
     ] {
-        fill_dialogue_rect(&mut pixels, WIDTH, HEIGHT, x, y, w, h, [92, 108, 119, 255]);
+        let path = format!("UIWindow.img/EventWindow/backgrnd/{part}");
+        let _ = composite_nx_ui_bitmap_scaled_to(&mut pixels, WIDTH, HEIGHT, ui_archive, &path, x, y, w, h);
     }
-    // Compose the original equipment frame and pet grid at native size.
-    let _ = composite_nx_ui_bitmap(
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        ui_archive,
-        "UIWindow.img/Equip/backgrnd",
-        0,
-        0,
-    );
-    let _ = composite_nx_ui_bitmap(
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        ui_archive,
-        "UIWindow.img/Equip/pet",
-        0,
-        23,
-    );
-    // The base equipment frame is taller than the pet layer. Its lower doll
-    // portion must not show through behind the separate gear list.
-    fill_dialogue_rect(
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        1,
-        204,
-        WIDTH - 2,
-        HEIGHT - 205,
-        [239, 241, 239, 255],
-    );
+    // The pet grid covers only the top of the equipment frame; clip its
+    // unused doll section before compositing the original art over the frame.
+    let mut equipment = vec![0_u8; 175 * 204 * 4];
+    let _ = composite_nx_ui_bitmap(&mut equipment, 175, 204, ui_archive, "UIWindow.img/Equip/backgrnd", 0, 0);
+    let _ = composite_nx_ui_bitmap(&mut equipment, 175, 204, ui_archive, "UIWindow.img/Equip/pet", 0, 23);
+    composite_bgra_pixels(&mut pixels, WIDTH, HEIGHT, &equipment, 175, 204, 0, 0);
+    for item in inventory.equipped() {
+        let Some((x, y)) = pet_equipment_grid_position(item.item_id) else {
+            continue;
+        };
+        if let Some((w, h, icon)) =
+            inventory_item_icon(item.item_id, item_archive, character_archive, icon_cache)
+        {
+            composite_inventory_icon(
+                &mut pixels,
+                WIDTH,
+                HEIGHT,
+                &icon,
+                w as usize,
+                h as usize,
+                x,
+                y,
+                32,
+            );
+        }
+    }
     let _ = composite_nx_ui_bitmap(
         &mut pixels,
         WIDTH,
@@ -1162,7 +1218,7 @@ fn render_pet_equipment_panel(
         HEIGHT,
         "Pets",
         188,
-        18,
+        7,
         12.0,
         160,
         17,
@@ -1210,6 +1266,7 @@ fn render_pet_equipment_panel(
             } else {
                 pet.name.clone()
             };
+            let pet_name = ui_foundation::ellipsize(font, &pet_name, 11.0, 135.0);
             draw_dialogue_text(
                 font,
                 &mut pixels,
@@ -1253,7 +1310,7 @@ fn render_pet_equipment_panel(
         &mut pixels,
         WIDTH,
         HEIGHT,
-        "Available pet gear",
+        "Other pet gear",
         16,
         208,
         10.0,
@@ -1269,7 +1326,7 @@ fn render_pet_equipment_panel(
             &mut pixels,
             WIDTH,
             HEIGHT,
-            "No pet equipment in your Equip inventory.",
+            "No other pet equipment.",
             24,
             256,
             11.0,
@@ -1306,6 +1363,7 @@ fn render_pet_equipment_panel(
             );
         }
         let name = item_name(item.item_id, string_archive, name_cache);
+        let name = ui_foundation::ellipsize(font, &name, 11.0, 220.0);
         draw_dialogue_text(
             font,
             &mut pixels,
@@ -1319,36 +1377,47 @@ fn render_pet_equipment_panel(
             17,
             [43, 48, 48],
         );
+        let location = match item.inventory_type {
+            openstory_protocol::InventoryType::Equipped => {
+                "Equipped · click to remove".to_owned()
+            }
+            openstory_protocol::InventoryType::Cash => "Cash inventory".to_owned(),
+            _ if pet_equipment_destination(item.item_id, inventory).is_some() => {
+                "Click to equip".to_owned()
+            }
+            _ => "Cannot equip".to_owned(),
+        };
         draw_dialogue_text(
             font,
             &mut pixels,
             WIDTH,
             HEIGHT,
-            &format!(
-                "{} slot {}",
-                if item.inventory_type == openstory_protocol::InventoryType::Cash {
-                    "Cash"
-                } else {
-                    "Equip"
-                },
-                item.slot
-            ),
+            &location,
             68,
             (y + 25) as i32,
             9.0,
-            120,
+            220,
             13,
             [80, 88, 87],
         );
-        let _ = composite_nx_ui_bitmap(
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            ui_archive,
-            "UIWindow.img/ShortCut/BtEquip/normal/0",
-            294,
-            y as i32 + 9,
-        );
+        if item.inventory_type != openstory_protocol::InventoryType::Equipped {
+            let path = if item.inventory_type == openstory_protocol::InventoryType::Equip
+                && pet_equipment_destination(item.item_id, inventory).is_none()
+            {
+                "UIWindow.img/ShortCut/BtEquip/disabled/0"
+            } else {
+                "UIWindow.img/ShortCut/BtEquip/normal/0"
+            };
+            let _ = composite_nx_ui_bitmap(
+                &mut pixels,
+                WIDTH,
+                HEIGHT,
+                ui_archive,
+                path,
+                294,
+                y as i32 + 9,
+            );
+        }
     }
     if !gear.is_empty() {
         draw_dialogue_text(
@@ -1386,4 +1455,73 @@ fn render_pet_equipment_panel(
         }
     }
     pixels
+}
+
+#[cfg(test)]
+mod pet_equipment_grid_tests {
+    use super::*;
+    use openstory_protocol::{InventoryItem, InventorySnapshot, InventoryType};
+
+    #[test]
+    fn pet_equip_targets_are_positive_and_do_not_replace_unrelated_items() {
+        let empty = InventorySnapshot::default();
+        assert_eq!(pet_equipment_destination(1_822_000, &empty), Some(114));
+        let packet = openstory_protocol::move_item_packet(InventoryType::Equip, 3, -114, 1, 0);
+        assert_eq!(&packet[9..11], &(-114_i16).to_le_bytes());
+        assert_eq!(pet_equipment_destination(1_812_000, &empty), None);
+        let mut inventory = empty;
+        inventory.items.push(InventoryItem {
+            inventory_type: InventoryType::Equipped,
+            slot: 114,
+            item_id: 1_000_000,
+            ..Default::default()
+        });
+        assert_eq!(pet_equipment_destination(1_822_000, &inventory), None);
+        inventory.items.push(InventoryItem {
+            inventory_type: InventoryType::Equipped,
+            slot: 120,
+            item_id: 1_812_000,
+            ..Default::default()
+        });
+        assert_eq!(pet_equipment_destination(1_812_000, &inventory), Some(120));
+        assert_eq!(pet_equipment_destination(1_832_000, &inventory), None);
+    }
+
+    #[test]
+    fn worn_items_map_to_the_labeled_cells_and_do_not_appear_as_available() {
+        let inventory = InventorySnapshot {
+            items: vec![
+                InventoryItem {
+                    inventory_type: InventoryType::Equipped,
+                    slot: 114,
+                    item_id: 1_812_000,
+                    ..Default::default()
+                },
+                InventoryItem {
+                    inventory_type: InventoryType::Equip,
+                    slot: 1,
+                    item_id: 1_812_001,
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        assert_eq!(
+            pet_equipment_grid_item_at(&inventory, 46.0, 68.0).map(|item| item.item_id),
+            Some(1_812_000)
+        );
+        assert!(pet_equipment_grid_item_at(&inventory, 44.0, 68.0).is_none());
+        assert_eq!(pet_equipment_items(&inventory).len(), 1);
+        assert_eq!(pet_equipment_items(&inventory)[0].item_id, 1_812_001);
+        assert_eq!(pet_equipment_grid_position(1_812_002), Some((12, 34)));
+        assert_eq!(pet_equipment_grid_position(1_822_000), Some((78, 133)));
+        assert_eq!(
+            inventory_icon_path(1_802_000),
+            Some((true, "PetEquip/01802000.img/info/icon".to_owned()))
+        );
+        assert_eq!(
+            item_name_path(1_832_000).as_deref(),
+            Some("Eqp.img/Eqp/PetEquip/1832000/name")
+        );
+    }
 }

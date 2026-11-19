@@ -700,6 +700,7 @@ pub const OPCODE_MOVE_DRAGON: u16 = 182;
 pub const OPCODE_REMOVE_DRAGON: u16 = 183;
 pub const OPCODE_SPAWN_PET_RECEIVED: u16 = 168;
 pub const OPCODE_MOVE_PET: u16 = 170;
+pub const OPCODE_SEND_MOVE_PET: u16 = 167;
 pub const OPCODE_PET_LOOT: u16 = 170;
 pub const OPCODE_PET_CHAT_RECEIVED: u16 = 171;
 pub const OPCODE_PET_NAME_CHANGE: u16 = 172;
@@ -2336,6 +2337,57 @@ pub fn pet_loot_packet(pet_id: i32, object_id: i32) -> Vec<u8> {
     packet.write_bytes(&[0; 13]);
     packet.write_i32(object_id);
     packet.into_bytes()
+}
+
+/// Reports an absolute pet movement to the channel server.
+pub fn move_pet(pet_id: i32, movement: PlayerMovement) -> Vec<u8> {
+    let mut packet = PacketWriter::new(OPCODE_SEND_MOVE_PET);
+    packet.write_i32(pet_id);
+    packet.write_bytes(&[0; 8]);
+    packet.write_u8(1);
+    packet.write_u8(0);
+    packet.write_point_i16(movement.x, movement.y);
+    packet.write_point_i16(movement.last_x, movement.last_y);
+    packet.write_u16(movement.foothold);
+    packet.write_u8(movement.stance);
+    packet.write_i16(movement.duration);
+    packet.into_bytes()
+}
+
+#[cfg(test)]
+mod pet_movement_packet_tests {
+    use super::*;
+
+    #[test]
+    fn pet_movement_matches_channel_handler_layout() {
+        let movement = PlayerMovement {
+            x: 12,
+            y: -7,
+            last_x: 2,
+            last_y: 3,
+            foothold: 9,
+            stance: 4,
+            duration: 80,
+        };
+        let bytes = move_pet(123, movement);
+        let mut reader = PacketReader::new(&bytes);
+        assert_eq!(reader.read_u16().unwrap(), 167);
+        assert_eq!(reader.read_i32().unwrap(), 123);
+        reader.skip(8).unwrap();
+        let fragments = parse_movements(&mut reader).unwrap();
+        assert_eq!(fragments.len(), 1);
+        assert_eq!(
+            (
+                fragments[0].x,
+                fragments[0].y,
+                fragments[0].foothold,
+                fragments[0].stance,
+                fragments[0].duration
+            ),
+            (12, -7, 9, 4, 80)
+        );
+        assert!(reader.is_empty());
+    }
 }
 
 pub fn face_expression(expression: i32) -> Vec<u8> {

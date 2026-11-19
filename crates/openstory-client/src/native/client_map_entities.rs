@@ -399,8 +399,22 @@ impl ClientApp {
                     .map(|character| character.stats.name.clone())
             })
             .unwrap_or_else(|| format!("Character {}", info.character_id));
+        let look = self
+            .map_scene
+            .as_ref()
+            .and_then(|scene| scene.remote_players.get(&info.character_id))
+            .map(|player| player.look.clone())
+            .or_else(|| {
+                self.active_character
+                    .as_ref()
+                    .filter(|character| character.id == info.character_id)
+                    .map(|character| character.look.clone())
+            });
         self.character_info = Some(CharacterInfoUi {
             name,
+            look,
+            wishlist_offset: 0,
+            selected_pet: 0,
             info,
             fame_pending: false,
         });
@@ -961,8 +975,10 @@ impl ClientApp {
             NpcShopMode::Buy,
             0,
             0,
-            1,
             inventory.as_ref(),
+            self.active_character
+                .as_ref()
+                .map(|character| &character.look),
             None,
             None,
             &self.legacy_ui_archive,
@@ -976,7 +992,11 @@ impl ClientApp {
         let Some(renderer) = self.renderer.as_ref() else {
             return;
         };
-        match renderer.upload_bgra(620, 520, &pixels) {
+        match renderer.upload_bgra(
+            NPC_SHOP_TEXTURE_WIDTH as u32,
+            NPC_SHOP_TEXTURE_HEIGHT as u32,
+            &pixels,
+        ) {
             Ok(texture) => {
                 self.npc_shop = Some(NpcShopUi {
                     state,
@@ -1191,6 +1211,10 @@ impl ClientApp {
             Ok(balances) => {
                 if let Some(state) = self.cash_shop.as_mut() {
                     state.balances = balances;
+                    if state.pending_nx_charge {
+                        state.pending_nx_charge = false;
+                        state.notice = Some("Cash balance updated.".to_owned());
+                    }
                     self.refresh_cash_shop_texture();
                 }
             }
@@ -1385,9 +1409,43 @@ impl ClientApp {
                     state.notice = Some("Cash Shop help is not available yet.".to_owned());
                 }
             }
+            cash_shop_ui::HitAction::Charge => {
+                let result = self.session.as_ref().map(|session| {
+                    session.send_packet(openstory_protocol::charge_nx_credit_packet())
+                });
+                match result {
+                    Some(Ok(())) => {
+                        if let Some(state) = self.cash_shop.as_mut() {
+                            state.pending_nx_charge = true;
+                            state.notice = Some(
+                                "Charge request sent; waiting for the updated balance.".to_owned(),
+                            );
+                        }
+                    }
+                    Some(Err(error)) => {
+                        eprintln!("OpenStoryRS: could not request NX Credit: {error}");
+                        self.channel_connected = false;
+                        if let Some(state) = self.cash_shop.as_mut() {
+                            state.notice = Some("Could not send the NX request.".to_owned());
+                        }
+                    }
+                    None => {
+                        if let Some(state) = self.cash_shop.as_mut() {
+                            state.notice = Some("Not connected to the server.".to_owned());
+                        }
+                    }
+                }
+            }
+            cash_shop_ui::HitAction::CheckCash => {
+                if let Some(state) = self.cash_shop.as_mut() {
+                    state.notice =
+                        Some("Cash charging and balance checking are unavailable here.".to_owned());
+                }
+            }
             cash_shop_ui::HitAction::Coupon => {
                 if let Some(state) = self.cash_shop.as_mut() {
                     state.coupon_open = true;
+                    state.notice = None;
                     state.coupon_focused = !state.coupon_pending;
                     state.search_focused = false;
                 }
@@ -1439,16 +1497,6 @@ impl ClientApp {
                     } else {
                         state.notice = Some("Waiting for the server to open the shop.".to_owned());
                     }
-                }
-            }
-            cash_shop_ui::HitAction::BuySelected => {
-                if let Some(state) = self.cash_shop.as_mut() {
-                    if state.entered && state.selected_sn.is_some() {
-                        state.confirmation = true;
-                    } else {
-                        state.notice = Some("Choose an available item first.".to_owned());
-                    }
-                    state.search_focused = false;
                 }
             }
             cash_shop_ui::HitAction::Currency(currency) => {
@@ -1593,7 +1641,6 @@ impl ClientApp {
         let state = shop.state.clone();
         let selected = shop.selected;
         let first_visible = shop.first_visible;
-        let quantity = shop.quantity;
         let mode = shop.mode;
         let notice = shop.notice.clone();
         let confirmation = shop.confirmation;
@@ -1603,8 +1650,10 @@ impl ClientApp {
             mode,
             selected,
             first_visible,
-            quantity,
             inventory.as_ref(),
+            self.active_character
+                .as_ref()
+                .map(|character| &character.look),
             notice.as_deref(),
             confirmation,
             &self.legacy_ui_archive,
@@ -1947,38 +1996,53 @@ impl ClientApp {
     }
 
     pub(super) fn click_npc_shop(&mut self, cursor: Point) {
-        const PANEL_X: f32 = 202.0;
-        const PANEL_Y: f32 = 124.0;
         if !rect_contains(
             SpriteRect {
-                x: PANEL_X,
-                y: PANEL_Y,
-                width: 620.0,
-                height: 520.0,
+                x: NPC_SHOP_PANEL_X,
+                y: NPC_SHOP_PANEL_Y,
+                width: NPC_SHOP_PANEL_WIDTH,
+                height: NPC_SHOP_PANEL_HEIGHT,
                 blend_mode: BlendMode::Alpha,
             },
             cursor,
         ) {
             return;
         }
-        let x = cursor.x - PANEL_X;
-        let y = cursor.y - PANEL_Y;
+        let x = (cursor.x - NPC_SHOP_PANEL_X) * NPC_SHOP_TEXTURE_WIDTH as f32
+            / NPC_SHOP_PANEL_WIDTH;
+        let y = (cursor.y - NPC_SHOP_PANEL_Y) * NPC_SHOP_TEXTURE_HEIGHT as f32
+            / NPC_SHOP_PANEL_HEIGHT;
         if self
             .npc_shop
             .as_ref()
             .is_some_and(|shop| shop.confirmation.is_some())
         {
-            if (286.0..310.0).contains(&y) && (224.0..289.0).contains(&x) {
+            if (298.0..322.0).contains(&y) && (195.0..261.0).contains(&x) {
                 self.resolve_npc_shop_confirmation(true);
-            } else if (286.0..310.0).contains(&y) && (330.0..395.0).contains(&x) {
+            } else if (298.0..322.0).contains(&y) && (355.0..421.0).contains(&x) {
                 self.resolve_npc_shop_confirmation(false);
             }
             return;
         }
-        if (382.0..400.0).contains(&y) {
-            if (455.0..535.0).contains(&x) {
-                self.close_npc_shop();
-            } else if (83.0..163.0).contains(&x) {
+        if self
+            .npc_shop
+            .as_ref()
+            .is_some_and(|shop| shop.notice.is_some())
+        {
+            if (298.0..322.0).contains(&y) && (414.0..474.0).contains(&x) {
+                if let Some(shop) = self.npc_shop.as_mut() {
+                    shop.notice = None;
+                }
+                self.refresh_npc_shop();
+            }
+            return;
+        }
+        if (18.0..41.0).contains(&y) && (202.0..294.0).contains(&x) {
+            self.close_npc_shop();
+            return;
+        }
+        if (45.0..68.0).contains(&y) {
+            if (202.0..294.0).contains(&x) {
                 if self
                     .npc_shop
                     .as_ref()
@@ -1986,7 +2050,21 @@ impl ClientApp {
                 {
                     self.buy_selected_npc_shop_item();
                 }
-            } else if (313.0..393.0).contains(&x) {
+            } else if (296.0..348.0).contains(&x)
+                && self
+                    .npc_shop
+                    .as_ref()
+                    .is_some_and(|shop| {
+                        shop.mode == NpcShopMode::Buy
+                            && shop
+                                .state
+                                .items
+                                .get(shop.selected)
+                                .is_some_and(|item| item.rechargeable)
+                    })
+            {
+                self.recharge_selected_npc_shop_item();
+            } else if (478.0..570.0).contains(&x) {
                 if self
                     .npc_shop
                     .as_ref()
@@ -1997,15 +2075,35 @@ impl ClientApp {
             }
             return;
         }
-        let column_mode = if (83.0..283.0).contains(&x) {
+        if (132.0..165.0).contains(&y) {
+            let mode = if (8.0..211.0).contains(&x) {
+                Some(NpcShopMode::Buy)
+            } else if (316.0..608.0).contains(&x) {
+                Some(NpcShopMode::Sell)
+            } else {
+                None
+            };
+            if let Some(mode) = mode {
+                if let Some(shop) = self.npc_shop.as_mut() {
+                    shop.mode = mode;
+                    shop.first_visible = 0;
+                    shop.selected = 0;
+                    shop.quantity = 1;
+                    shop.notice = None;
+                }
+                self.refresh_npc_shop();
+            }
+            return;
+        }
+        let column_mode = if (8.0..300.0).contains(&x) {
             Some(NpcShopMode::Buy)
-        } else if (313.0..513.0).contains(&x) {
+        } else if (316.0..608.0).contains(&x) {
             Some(NpcShopMode::Sell)
         } else {
             None
         };
-        if let Some(column_mode) = column_mode.filter(|_| (161.0..361.0).contains(&y)) {
-            let row = ((y - 161.0) / 40.0) as usize;
+        if let Some(column_mode) = column_mode.filter(|_| (173.0..497.0).contains(&y)) {
+            let row = ((y - 173.0) / 54.0) as usize;
             let Some(shop) = self.npc_shop.as_mut() else {
                 return;
             };
@@ -2033,47 +2131,6 @@ impl ClientApp {
             }
             return;
         }
-        if !(412.0..437.0).contains(&y) {
-            return;
-        }
-        if (193.0..225.0).contains(&x) {
-            if let Some(shop) = self.npc_shop.as_mut() {
-                shop.quantity = shop.quantity.saturating_sub(1).max(1);
-            }
-            self.refresh_npc_shop();
-        } else if (230.0..262.0).contains(&x) {
-            if let Some(shop) = self.npc_shop.as_mut() {
-                let maximum = match shop.mode {
-                    NpcShopMode::Buy => shop.state.items.get(shop.selected).map(|item| {
-                        if item.buyable == 0 {
-                            100
-                        } else {
-                            item.buyable.max(1)
-                        }
-                    }),
-                    NpcShopMode::Sell => self.inventory.as_ref().and_then(|inventory| {
-                        npc_shop_sellable_items(
-                            inventory,
-                            &self.item_archive,
-                            &self.character_archive,
-                        )
-                        .get(shop.selected)
-                        .map(|item| i16::try_from(item.count.max(1)).unwrap_or(i16::MAX))
-                    }),
-                };
-                if let Some(maximum) = maximum {
-                    shop.quantity = shop.quantity.saturating_add(1).min(maximum);
-                }
-            }
-            self.refresh_npc_shop();
-        } else if (280.0..310.0).contains(&x)
-            && self
-                .npc_shop
-                .as_ref()
-                .is_some_and(|shop| shop.mode == NpcShopMode::Buy)
-        {
-            self.recharge_selected_npc_shop_item();
-        }
     }
 
     pub(super) fn scroll_npc_shop(&mut self, amount: f32) {
@@ -2089,14 +2146,14 @@ impl ClientApp {
                         .len()
                 }),
             };
-            let maximum = item_count.saturating_sub(5);
+            let maximum = item_count.saturating_sub(NPC_SHOP_VISIBLE_ROWS);
             shop.first_visible = if amount > 0.0 {
                 shop.first_visible.saturating_sub(1)
             } else {
                 shop.first_visible.saturating_add(1).min(maximum)
             };
             if shop.selected < shop.first_visible
-                || shop.selected >= shop.first_visible.saturating_add(5)
+                || shop.selected >= shop.first_visible.saturating_add(NPC_SHOP_VISIBLE_ROWS)
             {
                 shop.selected = shop.first_visible.min(item_count.saturating_sub(1));
                 shop.quantity = 1;
@@ -2725,6 +2782,8 @@ impl ClientApp {
                 y: f64::from(spawn.y),
                 body,
                 loot_target: None,
+                movement_ticks: 0,
+                last_sent_movement: None,
                 stance: spawn.stance,
                 animations,
                 frame_index: 0,
@@ -3301,8 +3360,8 @@ impl ClientApp {
     pub(super) fn show_server_notice_popup(&mut self, message: &str) {
         self.audio
             .play_ui_sound(&self.sound_archive, "UI.img/DlgNotice");
-        let (width, height, pixels, panel, button) =
-            match build_server_notice_art(&self.legacy_ui_archive, &self.font, message) {
+        let (width, height, pixels, panel, button, page_count) =
+            match build_server_notice_art(&self.legacy_ui_archive, &self.font, message, 0) {
                 Ok(art) => art,
                 Err(error) => {
                     eprintln!("OpenStoryRS: could not build server notice: {error}");
@@ -3316,6 +3375,9 @@ impl ClientApp {
             Ok(texture) => {
                 self.quit_confirmation = false;
                 self.server_notice_popup = Some(ServerNoticePopup {
+                    message: message.to_owned(),
+                    page: 0,
+                    page_count,
                     texture,
                     panel,
                     button,
@@ -3548,13 +3610,6 @@ impl ClientApp {
                 self.show_inventory = true;
                 self.inventory_tab = openstory_protocol::InventoryType::Equip;
                 self.inventory_scroll_row = 0;
-                self.show_status = false;
-                self.show_pet_equipment = false;
-                self.show_skill_book = false;
-                self.show_quest_log = false;
-                self.inventory_drag_source = None;
-                self.inventory_hover_slot = None;
-                self.pending_scroll_slot = None;
                 self.update_inventory_hover();
                 self.refresh_inventory_texture();
             }
@@ -3566,13 +3621,6 @@ impl ClientApp {
             openstory_protocol::OpenUiRequest::SkillBook => {
                 if !self.show_skill_book {
                     self.show_skill_book = true;
-                    self.show_inventory = false;
-                    self.show_status = false;
-                    self.show_pet_equipment = false;
-                    self.show_quest_log = false;
-                    self.inventory_hover_slot = None;
-                    self.inventory_drag_source = None;
-                    self.pending_scroll_slot = None;
                     self.skill_book_tab = 0;
                     self.skill_book_scroll_row = 0;
                     self.refresh_skill_book_entries();
@@ -3581,27 +3629,10 @@ impl ClientApp {
             }
             openstory_protocol::OpenUiRequest::BuddyList => {
                 self.show_buddy_panel = true;
-                self.show_party_panel = false;
-                self.show_guild_panel = false;
-                self.show_alliance_panel = false;
                 self.refresh_buddy_texture();
             }
             openstory_protocol::OpenUiRequest::Messenger => self.open_messenger(),
             openstory_protocol::OpenUiRequest::MonsterBook => {
-                self.show_inventory = false;
-                self.show_status = false;
-                self.show_pet_equipment = false;
-                self.show_skill_book = false;
-                self.show_quest_log = false;
-                self.inventory_drag_source = None;
-                self.inventory_hover_slot = None;
-                self.pending_scroll_slot = None;
-                self.character_info = None;
-                self.world_map.open = false;
-                self.world_map.texture = None;
-                self.party_search = None;
-                self.party_search_texture = None;
-                self.party_search_actions.clear();
                 self.monster_book.open = true;
                 self.monster_book.page = 0;
                 self.monster_book.category = None;
@@ -3620,13 +3651,6 @@ impl ClientApp {
             openstory_protocol::OpenUiRequest::QuestLog => {
                 if !self.show_quest_log {
                     self.show_quest_log = true;
-                    self.show_inventory = false;
-                    self.show_status = false;
-                    self.show_pet_equipment = false;
-                    self.show_skill_book = false;
-                    self.inventory_hover_slot = None;
-                    self.inventory_drag_source = None;
-                    self.pending_scroll_slot = None;
                     self.quest_log_tab = QuestLogTab::Active;
                     self.quest_log_scroll = 0;
                     self.quest_log_selected = 0;

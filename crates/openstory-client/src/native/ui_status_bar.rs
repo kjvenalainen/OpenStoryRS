@@ -5,22 +5,39 @@ fn rect_contains(rect: SpriteRect, point: Point) -> bool {
         && point.y < rect.y + rect.height
 }
 
-fn render_status_message_line(font: &fontdue::Font, text: &str, color: [u8; 3]) -> Vec<u8> {
+fn render_status_message_line(
+    font: &fontdue::Font,
+    text: &str,
+    color: [u8; 3],
+    icon: Option<&(u32, u32, Arc<[u8]>)>,
+) -> Vec<u8> {
     const TEXT_SIZE: f32 = 12.0;
+    const ICON_SIZE: usize = 14;
+    const ICON_GAP: usize = 3;
     let width = STATUS_MESSAGE_WIDTH as usize;
     let height = STATUS_MESSAGE_HEIGHT as usize;
     let mut pixels = vec![0_u8; width * height * 4];
-    let text_width = dialogue_text_width(font, text, TEXT_SIZE).ceil() as usize;
-    let x = width.saturating_sub(text_width.saturating_add(2));
-    let max_width = width.saturating_sub(x + 1);
+    let icon_space = icon.map_or(0, |_| ICON_SIZE + ICON_GAP);
+    let available_text_width = width.saturating_sub(icon_space + 4);
+    let display_text = ui_foundation::ellipsize(
+        font,
+        text,
+        TEXT_SIZE,
+        available_text_width as f32,
+    );
+    let text_width = dialogue_text_width(font, &display_text, TEXT_SIZE)
+        .ceil()
+        .min(available_text_width as f32) as usize;
+    let x = width.saturating_sub(text_width.saturating_add(3));
+    let max_width = width.saturating_sub(x + 2);
     draw_dialogue_text(
         font,
         &mut pixels,
         width,
         height,
-        text,
+        &display_text,
         x as i32 + 1,
-        2,
+        3,
         TEXT_SIZE,
         max_width,
         height.saturating_sub(2),
@@ -31,15 +48,68 @@ fn render_status_message_line(font: &fontdue::Font, text: &str, color: [u8; 3]) 
         &mut pixels,
         width,
         height,
-        text,
+        &display_text,
         x as i32,
-        1,
+        2,
         TEXT_SIZE,
         max_width,
         height.saturating_sub(2),
         color,
     );
+    if let Some((icon_width, icon_height, icon_pixels)) = icon {
+        let icon_x = x.saturating_sub(ICON_GAP + ICON_SIZE);
+        composite_scaled_nx_icon(
+            &mut pixels,
+            width,
+            height,
+            icon_pixels,
+            *icon_width as usize,
+            *icon_height as usize,
+            icon_x as i32,
+            ((height - ICON_SIZE) / 2) as i32,
+            ICON_SIZE,
+            ICON_SIZE,
+        );
+    }
     pixels
+}
+
+fn composite_scaled_nx_icon(
+    destination: &mut [u8],
+    canvas_width: usize,
+    canvas_height: usize,
+    source: &[u8],
+    source_width: usize,
+    source_height: usize,
+    left: i32,
+    top: i32,
+    draw_width: usize,
+    draw_height: usize,
+) {
+    if source_width == 0 || source_height == 0 || draw_width == 0 || draw_height == 0 {
+        return;
+    }
+    let mut scaled = vec![0_u8; draw_width * draw_height * 4];
+    for y in 0..draw_height {
+        let source_y = y * source_height / draw_height;
+        for x in 0..draw_width {
+            let source_x = x * source_width / draw_width;
+            let source_index = (source_y * source_width + source_x) * 4;
+            let destination_index = (y * draw_width + x) * 4;
+            scaled[destination_index..destination_index + 4]
+                .copy_from_slice(&source[source_index..source_index + 4]);
+        }
+    }
+    composite_bgra_pixels(
+        destination,
+        canvas_width,
+        canvas_height,
+        &scaled,
+        draw_width,
+        draw_height,
+        left,
+        top,
+    );
 }
 
 #[derive(Clone, Copy)]

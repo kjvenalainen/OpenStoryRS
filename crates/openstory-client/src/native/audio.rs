@@ -253,6 +253,18 @@ impl AudioEngine {
         self.play_world_sound(archive, &format!("Skill.img/{skill_name}/Hit"), position);
     }
 
+    pub(super) fn play_mob_hit(
+        &mut self,
+        archive: &NxArchive,
+        mob_id: i32,
+        position: (i16, i16),
+    ) {
+        if mob_id <= 0 {
+            return;
+        }
+        self.play_world_sound(archive, &format!("Mob.img/{mob_id:07}/Damage"), position);
+    }
+
     fn audio_payload(
         &mut self,
         archive: &NxArchive,

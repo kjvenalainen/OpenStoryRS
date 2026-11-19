@@ -611,6 +611,296 @@ fn quest_objective_lines(
     lines
 }
 
+#[derive(Clone, Debug)]
+struct QuestHelperDisplayEntry {
+    name: String,
+    objectives: Vec<String>,
+}
+
+fn quest_helper_entries(
+    log: &openstory_protocol::QuestLog,
+    archive: &NxArchive,
+    string_archive: &NxArchive,
+    inventory: Option<&openstory_protocol::InventorySnapshot>,
+    item_name_cache: &mut HashMap<i32, Option<String>>,
+) -> Vec<QuestHelperDisplayEntry> {
+    log.started
+        .iter()
+        .take(5)
+        .map(|quest| {
+            let mut objectives = Vec::new();
+            for (item_id, required) in quest_requirement_pairs(archive, quest.id, 1, "item") {
+                if required == 0 {
+                    continue;
+                }
+                let have = inventory.map_or(0, |snapshot| snapshot.item_count(item_id));
+                let name = item_name(item_id, string_archive, item_name_cache);
+                objectives.push(format!("{have} / {required} {name}"));
+            }
+            let mut mob_index = 0;
+            for (mob_id, required) in quest_requirement_pairs(archive, quest.id, 1, "mob") {
+                let progress_index = mob_index;
+                mob_index += 1;
+                if required == 0 {
+                    continue;
+                }
+                let killed = quest_progress_counter(&quest.data, progress_index);
+                let name = string_archive
+                    .root()
+                    .resolve(&format!("Mob.img/{mob_id}/name"))
+                    .ok()
+                    .flatten()
+                    .and_then(|node| match node.value().ok()? {
+                        NodeValue::String(name) if !name.trim().is_empty() => Some(name),
+                        _ => None,
+                    })
+                    .unwrap_or_else(|| format!("Monster #{mob_id}"));
+                objectives.push(format!("{killed} / {required} {name}"));
+            }
+            if objectives.is_empty() {
+                objectives.push("In progress...".to_owned());
+            }
+            QuestHelperDisplayEntry {
+                name: quest_info_text(archive, quest.id, "name")
+                    .unwrap_or_else(|| format!("Quest {}", quest.id)),
+                objectives,
+            }
+        })
+        .collect()
+}
+
+fn render_quest_helper_panel(
+    font: &fontdue::Font,
+    entries: &[QuestHelperDisplayEntry],
+    ui_archive: &NxArchive,
+) -> (u32, u32, Vec<u8>) {
+    const WIDTH: usize = QUEST_HELPER_PANEL_WIDTH as usize;
+    const HEADER_HEIGHT: usize = 25;
+    const CONTENT_TOP: usize = 27;
+    const ENTRY_NAME_HEIGHT: usize = 18;
+    const OBJECTIVE_HEIGHT: usize = 14;
+    const ENTRY_GAP: usize = 7;
+    const BOTTOM_PADDING: usize = 5;
+    const HEADER_CLOSE_BUTTON_X: usize = WIDTH - 14;
+    const HEADER_AUTO_BUTTON_X: usize = HEADER_CLOSE_BUTTON_X - 22;
+    const HEADER_QUEST_BUTTON_X: usize = HEADER_AUTO_BUTTON_X - 13;
+
+    let content_height = entries.iter().fold(0_usize, |height, entry| {
+        height
+            .saturating_add(ENTRY_NAME_HEIGHT)
+            .saturating_add(entry.objectives.len().saturating_mul(OBJECTIVE_HEIGHT))
+            .saturating_add(ENTRY_GAP)
+    });
+    let height = if entries.is_empty() {
+        61
+    } else {
+        CONTENT_TOP
+            .saturating_add(content_height)
+            .saturating_add(BOTTOM_PADDING)
+    };
+    let mut pixels = vec![0_u8; WIDTH * height * 4];
+
+    let _ = composite_nx_ui_bitmap_scaled_to(
+        &mut pixels,
+        WIDTH,
+        height,
+        ui_archive,
+        "UIWindow.img/QuestAlarm/backgrndmax",
+        0,
+        0,
+        WIDTH,
+        HEADER_HEIGHT,
+    );
+    let _ = composite_nx_ui_bitmap_scaled_to(
+        &mut pixels,
+        WIDTH,
+        height,
+        ui_archive,
+        "UIWindow.img/QuestAlarm/backgrndcenter",
+        0,
+        HEADER_HEIGHT,
+        WIDTH,
+        height.saturating_sub(HEADER_HEIGHT + 5),
+    );
+    let _ = composite_nx_ui_bitmap_scaled_to(
+        &mut pixels,
+        WIDTH,
+        height,
+        ui_archive,
+        "UIWindow.img/QuestAlarm/backgrndbottom",
+        0,
+        height.saturating_sub(5),
+        WIDTH,
+        5,
+    );
+
+    let title_font = ui_foundation::bold_font().unwrap_or(font);
+    draw_dialogue_text(
+        title_font,
+        &mut pixels,
+        WIDTH,
+        height,
+        &format!("Quest Helper ({}/{})", entries.len(), 5),
+        5,
+        4,
+        9.0,
+        WIDTH - 76,
+        13,
+        [40, 42, 39],
+    );
+    let _ = composite_nx_ui_bitmap(
+        &mut pixels,
+        WIDTH,
+        height,
+        ui_archive,
+        "UIWindow.img/QuestAlarm/BtQ/normal/0",
+        HEADER_QUEST_BUTTON_X as i32,
+        6,
+    );
+    let _ = composite_nx_ui_bitmap(
+        &mut pixels,
+        WIDTH,
+        height,
+        ui_archive,
+        "UIWindow.img/QuestAlarm/BtAuto/normal/0",
+        HEADER_AUTO_BUTTON_X as i32,
+        6,
+    );
+    let _ = composite_nx_ui_bitmap(
+        &mut pixels,
+        WIDTH,
+        height,
+        ui_archive,
+        "Basic.img/BtClose/normal/0",
+        HEADER_CLOSE_BUTTON_X as i32,
+        5,
+    );
+
+    let mut y = CONTENT_TOP as i32;
+    if entries.is_empty() {
+        ui_foundation::draw_text_role(
+            font,
+            &mut pixels,
+            WIDTH,
+            height,
+            "No quest tracked",
+            15,
+            y,
+            ui_foundation::UiTextRole::Small,
+            WIDTH - 28,
+            14,
+            Some([75, 72, 65]),
+        );
+    }
+    for entry in entries {
+        let name_font = ui_foundation::bold_font().unwrap_or(font);
+        let name = ui_foundation::ellipsize(name_font, &entry.name, 10.0, (WIDTH - 34) as f32);
+        draw_dialogue_text(
+            name_font,
+            &mut pixels,
+            WIDTH,
+            height,
+            &name,
+            8,
+            y,
+            10.0,
+            WIDTH - 34,
+            15,
+            [34, 33, 29],
+        );
+        let _ = composite_nx_ui_bitmap_scaled_to(
+            &mut pixels,
+            WIDTH,
+            height,
+            ui_archive,
+            "Basic.img/BtClose2/normal/0",
+            WIDTH - 13,
+            y as usize + 2,
+            10,
+            10,
+        );
+        y += ENTRY_NAME_HEIGHT as i32;
+        for objective in &entry.objectives {
+            ui_foundation::draw_text_role(
+                font,
+                &mut pixels,
+                WIDTH,
+                height,
+                objective,
+                11,
+                y,
+                ui_foundation::UiTextRole::Small,
+                WIDTH - 24,
+                13,
+                Some([58, 57, 52]),
+            );
+            y += OBJECTIVE_HEIGHT as i32;
+        }
+        y += ENTRY_GAP as i32;
+    }
+
+    (WIDTH as u32, height as u32, pixels)
+}
+
+fn draw_quest_panel_scrollbar(
+    pixels: &mut [u8],
+    width: usize,
+    height: usize,
+    ui_archive: &NxArchive,
+    x: usize,
+    y: usize,
+    track_height: usize,
+    thumb_offset: usize,
+) {
+    const BAR_WIDTH: usize = 15;
+    const ARROW_HEIGHT: usize = 13;
+    if track_height <= ARROW_HEIGHT * 2 {
+        return;
+    }
+    let _ = composite_nx_ui_bitmap_scaled_to(
+        pixels,
+        width,
+        height,
+        ui_archive,
+        "Basic.img/VScr4/enabled/base",
+        x,
+        y + ARROW_HEIGHT,
+        BAR_WIDTH,
+        track_height - ARROW_HEIGHT * 2,
+    );
+    let _ = composite_nx_ui_bitmap(
+        pixels,
+        width,
+        height,
+        ui_archive,
+        "Basic.img/VScr4/enabled/prev0",
+        x as i32,
+        y as i32,
+    );
+    let _ = composite_nx_ui_bitmap(
+        pixels,
+        width,
+        height,
+        ui_archive,
+        "Basic.img/VScr4/enabled/next0",
+        x as i32,
+        (y + track_height - ARROW_HEIGHT) as i32,
+    );
+    let thumb_y = y
+        .saturating_add(ARROW_HEIGHT)
+        .saturating_add(thumb_offset)
+        .min(y + track_height - 25);
+    let _ = composite_nx_ui_bitmap(
+        pixels,
+        width,
+        height,
+        ui_archive,
+        "Basic.img/VScr4/enabled/thumb0",
+        x as i32,
+        thumb_y as i32,
+    );
+}
+
 fn render_quest_log_panel(
     font: &fontdue::Font,
     log: &openstory_protocol::QuestLog,
@@ -630,7 +920,7 @@ fn render_quest_log_panel(
 ) -> Vec<u8> {
     const WIDTH: usize = QUEST_LOG_PANEL_WIDTH as usize;
     const HEIGHT: usize = QUEST_LOG_PANEL_HEIGHT as usize;
-    const LIST_WIDTH: usize = 245;
+    const LIST_WIDTH: usize = QUEST_LOG_LIST_WIDTH as usize;
     const DETAIL_X: usize = QUEST_LOG_DETAIL_X;
     const VISIBLE_ROWS: usize = QUEST_LOG_VISIBLE_ROWS;
     let mut pixels = vec![0_u8; WIDTH * HEIGHT * 4];
@@ -644,20 +934,17 @@ fn render_quest_log_panel(
         &[("UIWindow.img/Quest/backgrnd", 0, 0)],
     );
     if selected_quest.is_some() {
-        // The installed v83 UI.nx has no UIWindow2.img/Quest/quest_info
-        // subtree. Its backgrnd3/4 assets are blue-card variants and backgrnd5
-        // is a modal paper texture, so use the authored white Quest window
-        // frame for the detail pane as well.
+        // The v83 detail pane is an authored single backdrop beside the list.
         let _ = composite_nx_ui_layers(
             &mut pixels,
             WIDTH,
             HEIGHT,
             ui_archive,
             &[
-                ("UIWindow.img/Quest/backgrnd", DETAIL_X as i32, 0),
+                ("UIWindow.img/Quest/backgrnd2", DETAIL_X as i32, 0),
                 (
-                    "UIWindow.img/BtUIClose/normal/0",
-                    (DETAIL_X + QUEST_LOG_DETAIL_WIDTH as usize - 35) as i32,
+                    "Basic.img/BtClose/normal/0",
+                    (DETAIL_X + QUEST_LOG_DETAIL_WIDTH as usize - 13) as i32,
                     5,
                 ),
             ],
@@ -667,18 +954,72 @@ fn render_quest_log_panel(
     let available = tab == QuestLogTab::Available;
     let completed = tab == QuestLogTab::Completed;
     for (index, selected_tab) in [available, active, completed].into_iter().enumerate() {
-        let state = if selected_tab { "enabled" } else { "disabled" };
-        let path = format!("UIWindow.img/Quest/Tab/{state}/{index}");
-        let x = 17 + index as i32 * 70;
-        let _ = composite_nx_ui_bitmap(&mut pixels, WIDTH, HEIGHT, ui_archive, &path, x, 23);
+        let tab_x = 10 + index * 70;
+        let tab_state = if selected_tab { "1" } else { "0" };
+        let _ = composite_nx_ui_bitmap(
+            &mut pixels,
+            WIDTH,
+            HEIGHT,
+            ui_archive,
+            &format!("Basic.img/Tab2/left{tab_state}"),
+            tab_x as i32,
+            23,
+        );
+        let _ = composite_nx_ui_bitmap_scaled_to(
+            &mut pixels,
+            WIDTH,
+            HEIGHT,
+            ui_archive,
+            &format!("Basic.img/Tab2/fill{tab_state}"),
+            tab_x + 4,
+            23,
+            62,
+            19,
+        );
+        let _ = composite_nx_ui_bitmap(
+            &mut pixels,
+            WIDTH,
+            HEIGHT,
+            ui_archive,
+            &format!("Basic.img/Tab2/right{tab_state}"),
+            (tab_x + 66) as i32,
+            23,
+        );
+        let label_state = if selected_tab { "enabled" } else { "disabled" };
+        let label_path = format!("UIWindow.img/Quest/Tab/{label_state}/{index}");
+        let label_width = [45, 51, 45][index];
+        let label_height = [11, 13, 13][index];
+        let _ = composite_nx_ui_bitmap(
+            &mut pixels,
+            WIDTH,
+            HEIGHT,
+            ui_archive,
+            &label_path,
+            (tab_x + (70 - label_width) / 2) as i32,
+            21 + (24 - label_height) / 2,
+        );
     }
+    let title_font = ui_foundation::bold_font().unwrap_or(font);
+    draw_dialogue_text(
+        title_font,
+        &mut pixels,
+        WIDTH,
+        HEIGHT,
+        "S",
+        38,
+        5,
+        8.0,
+        8,
+        10,
+        [30, 30, 30],
+    );
     let _ = composite_nx_ui_bitmap(
         &mut pixels,
         WIDTH,
         HEIGHT,
         ui_archive,
-        "UIWindow.img/BtUIClose/normal/0",
-        (LIST_WIDTH - 35) as i32,
+        "Basic.img/BtClose/normal/0",
+        (LIST_WIDTH - 18) as i32,
         5,
     );
 
@@ -708,32 +1049,30 @@ fn render_quest_log_panel(
                 break;
             };
             let y = ui_foundation::QUEST_GRID.cell(visible).y as usize;
-            if index == selected {
-                let _ = composite_nx_ui_bitmap(
-                    &mut pixels,
-                    WIDTH,
-                    HEIGHT,
-                    ui_archive,
-                    "UIWindow.img/Quest/icon1",
-                    11,
-                    y as i32 + 4,
-                );
-            } else {
-                let _ = composite_nx_ui_bitmap(
-                    &mut pixels,
-                    WIDTH,
-                    HEIGHT,
-                    ui_archive,
-                    "UIWindow.img/Quest/icon0",
-                    11,
-                    y as i32 + 4,
-                );
-            }
+            let icon_path = match tab {
+                QuestLogTab::Available => "UIWindow.img/Quest/icon0",
+                QuestLogTab::Active => "UIWindow.img/Quest/icon2/0",
+                QuestLogTab::Completed => "UIWindow.img/Quest/icon4",
+            };
+            let _ = composite_nx_ui_bitmap(
+                &mut pixels,
+                WIDTH,
+                HEIGHT,
+                ui_archive,
+                icon_path,
+                11,
+                y as i32 + 4,
+            );
             let name =
                 quest_info_text(archive, id, "name").unwrap_or_else(|| "Unknown quest".to_owned());
             let name = ui_foundation::ellipsize(font, &name, 11.0, (LIST_WIDTH - 42) as f32);
+            let name_font = if index == selected {
+                ui_foundation::bold_font().unwrap_or(font)
+            } else {
+                font
+            };
             draw_dialogue_text(
-                font,
+                name_font,
                 &mut pixels,
                 WIDTH,
                 HEIGHT,
@@ -743,41 +1082,26 @@ fn render_quest_log_panel(
                 11.0,
                 LIST_WIDTH - 42,
                 18,
-                if index == selected {
-                    [35, 104, 163]
-                } else {
-                    [41, 39, 33]
-                },
+                if index == selected { [34, 72, 112] } else { [28, 28, 28] },
             );
         }
     }
-    draw_dialogue_text(
-        font,
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        &format!("{} quest(s)", ids.len()),
-        14,
-        378,
-        9.0,
-        170,
-        14,
-        [74, 70, 61],
-    );
+    if ids.len() > VISIBLE_ROWS {
+        draw_quest_panel_scrollbar(
+            &mut pixels,
+            WIDTH,
+            HEIGHT,
+            ui_archive,
+            LIST_WIDTH - 15,
+            50,
+            327,
+            176,
+        );
+    }
 
     if let Some(id) = selected_quest {
         let text_x = DETAIL_X as i32 + 18;
         let text_width = QUEST_LOG_DETAIL_WIDTH as usize - 36;
-        fill_dialogue_rect(
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            DETAIL_X + 9,
-            25,
-            227,
-            65,
-            [157, 111, 57, 255],
-        );
         let name =
             quest_info_text(archive, id, "name").unwrap_or_else(|| "Unknown quest".to_owned());
         let name = ui_foundation::ellipsize(font, &name, 11.0, 150.0);
@@ -787,10 +1111,10 @@ fn render_quest_log_panel(
             WIDTH,
             HEIGHT,
             &name,
-            text_x,
-            30,
+            DETAIL_X as i32 + 39,
+            41,
             11.0,
-            150,
+            176,
             26,
             [255, 255, 255],
         );
@@ -805,12 +1129,12 @@ fn render_quest_log_panel(
             WIDTH,
             HEIGHT,
             state,
-            text_x,
-            57,
+            DETAIL_X as i32 + 39,
+            63,
             10.0,
-            150,
+            176,
             15,
-            [255, 255, 255],
+            [225, 235, 244],
         );
         if let Some(npc_id) = archive
             .root()
@@ -830,27 +1154,17 @@ fn render_quest_log_panel(
                     &portrait,
                     60,
                     60,
-                    (DETAIL_X + 173) as i32,
-                    28,
+                    (DETAIL_X + 200) as i32,
+                    32,
                 );
             }
         }
-        if let Some(summary) = quest_info_text(archive, id, "0") {
-            draw_dialogue_text(
-                font,
-                &mut pixels,
-                WIDTH,
-                HEIGHT,
-                &clean_npc_markup(&summary),
-                text_x,
-                103,
-                11.0,
-                text_width,
-                34,
-                [53, 50, 44],
-            );
-        }
-        if let Some(description) = quest_info_text(archive, id, "1") {
+        let description = if active || completed {
+            quest_info_text(archive, id, "1").or_else(|| quest_info_text(archive, id, "0"))
+        } else {
+            quest_info_text(archive, id, "0")
+        };
+        if let Some(description) = description {
             draw_dialogue_text(
                 font,
                 &mut pixels,
@@ -858,13 +1172,30 @@ fn render_quest_log_panel(
                 HEIGHT,
                 &clean_npc_markup(&description),
                 text_x,
-                139,
+                129,
                 10.0,
                 text_width,
                 32,
                 [73, 69, 61],
             );
         }
+        if completed {
+            if let Some(note) = quest_info_text(archive, id, "2") {
+                draw_dialogue_text(
+                    font,
+                    &mut pixels,
+                    WIDTH,
+                    HEIGHT,
+                    &clean_npc_markup(&note),
+                    text_x,
+                    220,
+                    10.0,
+                    text_width,
+                    48,
+                    [73, 69, 61],
+                );
+            }
+        } else {
         draw_dialogue_text(
             font,
             &mut pixels,
@@ -933,6 +1264,7 @@ fn render_quest_log_panel(
                 );
             }
         }
+        }
         if active {
             let reward_choices = character.map_or_else(Vec::new, |character| {
                 quest_reward_choices(id, archive, string_archive, character, item_name_cache)
@@ -971,6 +1303,25 @@ fn render_quest_log_panel(
                 DETAIL_X as i32 + 42,
                 367,
             );
+        } else if completed {
+            let _ = composite_nx_ui_bitmap(
+                &mut pixels,
+                WIDTH,
+                HEIGHT,
+                ui_archive,
+                "UIWindow.img/Quest/BtAlert/disabled/0",
+                DETAIL_X as i32 + 151,
+                367,
+            );
+            let _ = composite_nx_ui_bitmap(
+                &mut pixels,
+                WIDTH,
+                HEIGHT,
+                ui_archive,
+                "UIWindow.img/Quest/BtGiveup/disabled/0",
+                DETAIL_X as i32 + 243,
+                367,
+            );
         } else if active {
             let can_complete = log
                 .started
@@ -998,6 +1349,18 @@ fn render_quest_log_panel(
                 367,
             );
         }
+    }
+    if selected_quest.is_some() {
+        draw_quest_panel_scrollbar(
+            &mut pixels,
+            WIDTH,
+            HEIGHT,
+            ui_archive,
+            WIDTH - 15,
+            117,
+            250,
+            36,
+        );
     }
     if let Some(id) = confirmation {
         let overlay_x = ((WIDTH - 266) / 2) as i32;
@@ -1143,6 +1506,9 @@ fn render_status_panel(
         (stats.luck.to_string(), 59, 298),
     ];
     for (value, x, y) in values {
+        let has_ap_button = stats.ability_points > 0 && matches!(y, 112 | 130 | 244 | 262 | 280 | 298);
+        let text_width = if has_ap_button { 92 } else { 111 };
+        let value = ui_foundation::ellipsize(font, &value, ui_foundation::UiTextRole::Value.style().size, text_width as f32);
         ui_foundation::draw_text_role(
             font,
             &mut pixels,
@@ -1152,10 +1518,17 @@ fn render_status_panel(
             x,
             y,
             ui_foundation::UiTextRole::Value,
-            111,
+            text_width,
             16,
             Some(color),
         );
+    }
+    if stats.ability_points > 0 {
+        let button_state = if waiting_for_stats { "disabled" } else { "normal" };
+        let path = format!("UIWindow.img/Stat/BtApUp/{button_state}/0");
+        for y in [114, 132, 244, 262, 280, 298] {
+            let _ = composite_nx_ui_bitmap(&mut pixels, WIDTH, HEIGHT, ui_archive, &path, 155, y);
+        }
     }
     let ability_points = stats.ability_points.to_string();
     let emphasis_style = ui_foundation::UiTextRole::Emphasis.style();

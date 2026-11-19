@@ -103,17 +103,6 @@ pub(super) const QUEST_GRID: UiGrid = UiGrid {
     cell_height: 20.0,
 };
 
-pub(super) const STORAGE_GRID: UiGrid = UiGrid {
-    x: 5.0,
-    y: 112.0,
-    columns: 5,
-    rows: 6,
-    step_x: 36.0,
-    step_y: 36.0,
-    cell_width: 34.0,
-    cell_height: 34.0,
-};
-
 pub(super) const QUICKSLOT_GRID: UiGrid = UiGrid {
     x: 7.0,
     y: 8.0,

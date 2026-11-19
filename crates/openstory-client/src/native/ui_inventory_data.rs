@@ -58,6 +58,30 @@ fn first_free_equip_inventory_slot(
         .and_then(|slot| i16::try_from(slot).ok())
 }
 
+// Cosmic's v83 character-info response reads the pet label ring from -114.
+// Other pet slots are reusable only when the server already placed the same
+// item in one; never guess a destination or use zero (the drop operation).
+fn pet_equipment_destination(
+    item_id: i32,
+    inventory: &openstory_protocol::InventorySnapshot,
+) -> Option<i16> {
+    if !(180..=183).contains(&(item_id / 10_000)) {
+        return None;
+    }
+    if let Some(slot) = inventory
+        .equipped()
+        .find(|item| item.item_id == item_id)
+        .and_then(|item| i16::try_from(item.slot).ok())
+        .filter(|slot| *slot > 0)
+    {
+        return Some(slot);
+    }
+    if item_id == 1_822_000 && !inventory.equipped().any(|item| item.slot == 114) {
+        return Some(114);
+    }
+    None
+}
+
 fn equip_slot_for_item(
     item_id: i32,
     inventory: &openstory_protocol::InventorySnapshot,
@@ -302,7 +326,7 @@ fn inventory_icon_path(item_id: i32) -> Option<(bool, String)> {
     let (is_character, path) = match item_id / 1_000_000 {
         1 => {
             let category = match item_prefix {
-                181 => "PetEquip",
+                180..=183 => "PetEquip",
                 190 | 191 => "TamingMob",
                 _ => match item_prefix - 100 {
                     0 => "Cap",
@@ -470,7 +494,7 @@ fn item_name_path(item_id: i32) -> Option<String> {
     Some(match item_id / 1_000_000 {
         1 => {
             let category = match item_prefix {
-                181 => "PetEquip",
+                180..=183 => "PetEquip",
                 190 | 191 => "TamingMob",
                 _ => match item_prefix - 100 {
                     0 => "Cap",

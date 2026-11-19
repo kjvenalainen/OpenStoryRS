@@ -293,11 +293,16 @@ impl ClientApp {
     }
 
     pub(super) fn set_option_setting_from_cursor(&mut self, slider: OptionControl, x: f32) {
-        const TRACK_LEFT: f32 = SETTINGS_PANEL_X + 104.0;
+        let track_left = SETTINGS_PANEL_X
+            + if slider == OptionControl::EffectsQuality {
+                359.0
+            } else {
+                104.0
+            };
         if slider.track_y().is_none() {
             return;
         }
-        let percent = ((x - TRACK_LEFT) / slider.track_width() as f32 * 100.0)
+        let percent = ((x - track_left) / slider.track_width() as f32 * 100.0)
             .round()
             .clamp(0.0, 100.0);
         self.settings_selected_slider = slider;
@@ -313,10 +318,13 @@ impl ClientApp {
         }
         let local_x = cursor.x - SETTINGS_PANEL_X;
         let local_y = cursor.y - SETTINGS_PANEL_Y;
-        if (98.0..272.0).contains(&local_x)
+        if (350.0..445.0).contains(&local_x) && (257.0..282.0).contains(&local_y) {
+            self.settings_selected_slider = OptionControl::EffectsQuality;
+            self.settings_dragging = Some(OptionControl::EffectsQuality);
+            self.set_option_setting_from_cursor(OptionControl::EffectsQuality, cursor.x);
+        } else if (98.0..272.0).contains(&local_x)
             && let Some(slider) = [
                 OptionControl::GraphicsQuality,
-                OptionControl::EffectsQuality,
                 OptionControl::Music,
                 OptionControl::SoundEffects,
                 OptionControl::HpWarning,
@@ -333,7 +341,7 @@ impl ClientApp {
             self.settings_selected_slider = slider;
             self.settings_dragging = Some(slider);
             self.set_option_setting_from_cursor(slider, cursor.x);
-        } else if (231.0..258.0).contains(&local_y) && (263.0..296.0).contains(&local_x) {
+        } else if (241.0..258.0).contains(&local_y) && (263.0..296.0).contains(&local_x) {
             self.settings_selected_slider = OptionControl::ScreenShake;
             self.toggle_selected_option_setting();
         } else if (63.0..84.0).contains(&local_y) && (263.0..296.0).contains(&local_x) {
@@ -345,10 +353,10 @@ impl ClientApp {
         } else if (296.0..323.0).contains(&local_y) && (258.0..286.0).contains(&local_x) {
             self.settings_selected_slider = OptionControl::Windowed;
             self.toggle_selected_option_setting();
-        } else if (258.0..284.0).contains(&local_y) && (64.0..158.0).contains(&local_x) {
+        } else if (338.0..365.0).contains(&local_y) && (5.0..100.0).contains(&local_x) {
             self.settings_selected_slider = OptionControl::Resolution800;
             self.set_option_setting(OptionControl::Resolution800, 100);
-        } else if (258.0..284.0).contains(&local_y) && (164.0..286.0).contains(&local_x) {
+        } else if (338.0..365.0).contains(&local_y) && (103.0..198.0).contains(&local_x) {
             self.settings_selected_slider = OptionControl::Resolution1024;
             self.set_option_setting(OptionControl::Resolution1024, 100);
         } else if let Some(control) = option_permission_at(local_x, local_y) {
@@ -812,6 +820,25 @@ impl ClientApp {
     }
 
     pub(super) fn show_status_message(&mut self, text: String, color: [u8; 3]) {
+        self.push_status_message(text, color, None);
+    }
+
+    pub(super) fn show_item_status_message(&mut self, text: String, color: [u8; 3], item_id: i32) {
+        let icon = inventory_item_icon(
+            item_id,
+            &self.item_archive,
+            &self.character_archive,
+            &mut self.inventory_icon_cache,
+        );
+        self.push_status_message(text, color, icon);
+    }
+
+    fn push_status_message(
+        &mut self,
+        text: String,
+        color: [u8; 3],
+        icon: Option<(u32, u32, Arc<[u8]>)>,
+    ) {
         if text.is_empty() {
             return;
         }
@@ -819,6 +846,7 @@ impl ClientApp {
             text,
             color,
             created_at: Instant::now(),
+            icon,
             texture: None,
         });
         while self.status_messages.len() > STATUS_MESSAGE_LIMIT {
@@ -838,7 +866,12 @@ impl ClientApp {
             if message.texture.is_some() {
                 continue;
             }
-            let pixels = render_status_message_line(&self.font, &message.text, message.color);
+            let pixels = render_status_message_line(
+                &self.font,
+                &message.text,
+                message.color,
+                message.icon.as_ref(),
+            );
             match renderer.upload_bgra(STATUS_MESSAGE_WIDTH, STATUS_MESSAGE_HEIGHT, &pixels) {
                 Ok(texture) => message.texture = Some(texture),
                 Err(error) => eprintln!("OpenStoryRS: could not upload status message: {error}"),
@@ -884,9 +917,28 @@ fn option_permission_at(x: f32, y: f32) -> Option<OptionControl> {
             .contains(&x)
             .then_some(())
             .filter(|()| {
-                let top = 397.0 + index as f32 * 18.0;
+                let top = 31.0 + index as f32 * 18.0;
                 (top..top + 18.0).contains(&y)
             })
             .map(|()| control)
     })
+}
+
+#[cfg(test)]
+mod options_layout_tests {
+    use super::*;
+
+    #[test]
+    fn social_rows_match_the_aligned_game_options_frame() {
+        assert_eq!(
+            option_permission_at(310.0, 31.0),
+            Some(OptionControl::AllowWhisper)
+        );
+        assert_eq!(
+            option_permission_at(310.0, 229.0),
+            Some(OptionControl::AllowFamilyInvite)
+        );
+        assert_eq!(option_permission_at(310.0, 247.0), None);
+        assert_eq!(option_permission_at(299.0, 31.0), None);
+    }
 }

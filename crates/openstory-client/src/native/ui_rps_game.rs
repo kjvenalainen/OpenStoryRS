@@ -126,21 +126,11 @@ fn render_rps_game_panel(
             )?;
         }
 
-        let (overlay, character, message, color) = match game.result {
-            Some(0) => (
-                Some("lose"),
-                Some("charLose"),
-                "You lose!",
-                [255, 255, 0],
-            ),
-            Some(1) => (
-                Some("win"),
-                Some("charWin"),
-                "You win!",
-                [255, 255, 0],
-            ),
-            Some(2) => (Some("draw"), None, "Draw!", [255, 255, 0]),
-            _ => (None, None, "", [255, 255, 0]),
+        let (overlay, character) = match game.result {
+            Some(0) => (Some("lose"), Some("charLose")),
+            Some(1) => (Some("win"), Some("charWin")),
+            Some(2) => (Some("draw"), None),
+            _ => (None, None),
         };
         if let Some(overlay) = overlay {
             composite_ui_bitmap(
@@ -149,8 +139,8 @@ fn render_rps_game_panel(
                 height,
                 archive,
                 &format!("UIWindow.img/RpsGame/{overlay}"),
-                panel_x + panel_width as i32 / 2,
-                panel_y + 50,
+                panel_x + (panel_width as i32 - 246) / 2,
+                panel_y + 145,
             )?;
         }
         if let Some(character) = character {
@@ -164,20 +154,6 @@ fn render_rps_game_panel(
                 panel_y + 40,
             )?;
         }
-        let text_width = dialogue_text_width(font, message, 12.0).ceil() as usize;
-        draw_dialogue_text(
-            font,
-            &mut pixels,
-            width,
-            height,
-            message,
-            panel_x + ((panel_width.saturating_sub(text_width)) / 2) as i32,
-            panel_y + 300,
-            12.0,
-            panel_width,
-            18,
-            color,
-        );
     }
 
     let score = format!("Wins: {}", game.wins);
@@ -193,7 +169,7 @@ fn render_rps_game_panel(
         12.0,
         panel_width,
         18,
-        [255, 255, 255],
+        [45, 51, 58],
     );
 
     Ok(pixels)

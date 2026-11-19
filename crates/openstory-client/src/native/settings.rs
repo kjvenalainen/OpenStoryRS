@@ -448,6 +448,22 @@ fn parse_quickslot_keys(value: &str) -> Option<[u8; 8]> {
     fields.next().is_none().then_some(keys)
 }
 
+pub(super) fn load_skill_book_position() -> Option<(f32, f32)> {
+    let path = settings_path()?;
+    let contents = fs::read_to_string(path).ok()?;
+    let value = contents.lines().find_map(|line| {
+        let (name, value) = line.split_once('=')?;
+        (name.trim() == "SkillBookPosition").then_some(value.trim())
+    })?;
+    let (x, y) = value.split_once(',')?;
+    let (x, y) = (x.trim().parse::<f32>().ok()?, y.trim().parse::<f32>().ok()?);
+    (x.is_finite() && y.is_finite()).then_some((x, y))
+}
+
+pub(super) fn save_skill_book_position(x: f32, y: f32) -> Result<PathBuf, String> {
+    update_settings_file(&[("SkillBookPosition", format!("{x:.1},{y:.1}"))], &[])
+}
+
 fn update_settings_file(
     updates: &[(&str, String)],
     remove_keys: &[&str],
