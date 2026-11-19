@@ -9,6 +9,34 @@ pub(super) const LOGICAL_HEIGHT: f32 = 768.0;
 pub(super) const SKILL_MACRO_BUTTON: UiRect = UiRect::new(122.0, 265.0, 48.0, 18.0);
 pub(super) const REVIVE_BUTTON: UiRect = UiRect::new(482.0, 425.0, 66.0, 27.0);
 
+pub(super) const STATUS_AUTO_BUTTON: UiRect = UiRect::new(98.0, 203.0, 73.0, 35.0);
+pub(super) const STATUS_DETAIL_BUTTON: UiRect = UiRect::new(124.0, 323.0, 47.0, 18.0);
+
+pub(super) fn status_ap_buttons() -> [(openstory_protocol::AbilityStat, UiRect); 6] {
+    use openstory_protocol::AbilityStat;
+    [
+        (AbilityStat::Hp, 114.0),
+        (AbilityStat::Mp, 132.0),
+        (AbilityStat::Strength, 244.0),
+        (AbilityStat::Dexterity, 262.0),
+        (AbilityStat::Intelligence, 280.0),
+        (AbilityStat::Luck, 298.0),
+    ]
+    .map(|(stat, y)| (stat, UiRect::new(155.0, y, 12.0, 12.0)))
+}
+
+pub(super) fn skill_tab(tab: usize) -> UiRect {
+    UiRect::new(5.0 + tab as f32 * 32.0, 25.0, 32.0, 17.0)
+}
+
+pub(super) fn skill_row(row: usize) -> UiRect {
+    UiRect::new(6.0, 100.0 + row as f32 * 40.0, 141.0, 35.0)
+}
+
+pub(super) fn skill_sp_button(row: usize) -> UiRect {
+    UiRect::new(130.0, skill_row(row).y + 21.0, 12.0, 12.0)
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(super) struct UiRect {
     pub x: f32,
@@ -272,6 +300,12 @@ pub(super) fn bold_font() -> Option<&'static fontdue::Font> {
         if configured.is_none() && std::env::var_os("OPENSTORY_FONT_PATH").is_some() {
             return None;
         }
+        // Arial Bold belongs with the Arial regular face. If the regular face
+        // fell back to Roboto, keep headings in that family too instead of
+        // mixing Arial Bold with Roboto Regular.
+        if configured.is_none() && !system_arial_regular_available() {
+            return None;
+        }
         let paths = configured.map(std::path::PathBuf::from).into_iter().chain([
             "/System/Library/Fonts/Supplemental/Arial Bold.ttf".into(),
             "C:/Windows/Fonts/arialbd.ttf".into(),
@@ -284,6 +318,17 @@ pub(super) fn bold_font() -> Option<&'static fontdue::Font> {
             })
     })
     .as_ref()
+}
+
+fn system_arial_regular_available() -> bool {
+    [
+        "/System/Library/Fonts/Supplemental/Arial.ttf",
+        "C:/Windows/Fonts/arial.ttf",
+        "/usr/share/fonts/truetype/msttcorefonts/Arial.ttf",
+    ]
+    .into_iter()
+    .filter_map(|path| std::fs::read(path).ok())
+    .any(|bytes| fontdue::Font::from_bytes(bytes, fontdue::FontSettings::default()).is_ok())
 }
 
 #[cfg(test)]

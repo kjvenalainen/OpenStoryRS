@@ -68,6 +68,8 @@ struct ClientApp {
     inventory_drag_texture: Option<GpuTexture>,
     equipment_inventory_texture: Option<GpuTexture>,
     inventory_tooltip_texture: Option<GpuTexture>,
+    npc_shop_texture: Option<GpuTexture>,
+    npc_shop: Option<NpcShopUi>,
     storage_texture: Option<GpuTexture>,
     hired_merchant_texture: Option<GpuTexture>,
     trade_texture: Option<GpuTexture>,

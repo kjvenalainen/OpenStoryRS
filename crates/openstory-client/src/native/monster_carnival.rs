@@ -245,32 +245,19 @@ fn draw_text(
     size: f32,
     color: [u8; 3],
 ) {
-    let mut cursor_x = x;
-    for character in text.chars() {
-        let (metrics, coverage) = font.rasterize(character, size);
-        let left = cursor_x.round() as i32 + metrics.xmin;
-        let top = (baseline_y + size).round() as i32 - metrics.height as i32 - metrics.ymin;
-        for row in 0..metrics.height {
-            for column in 0..metrics.width {
-                let target_x = left + column as i32;
-                let target_y = top + row as i32;
-                if !(0..width as i32).contains(&target_x) || !(0..height as i32).contains(&target_y)
-                {
-                    continue;
-                }
-                let alpha = coverage[row * metrics.width + column];
-                if alpha == 0 {
-                    continue;
-                }
-                let offset = (target_y as usize * width + target_x as usize) * 4;
-                blend_bgra(
-                    &mut canvas[offset..offset + 4],
-                    &[color[2], color[1], color[0], alpha],
-                );
-            }
-        }
-        cursor_x += metrics.advance_width;
-    }
+    super::draw_dialogue_text(
+        font,
+        canvas,
+        width,
+        height,
+        text,
+        x.round() as i32,
+        baseline_y.round() as i32,
+        size,
+        width,
+        height,
+        color,
+    );
 }
 
 fn blend_bgra(destination: &mut [u8], source: &[u8]) {

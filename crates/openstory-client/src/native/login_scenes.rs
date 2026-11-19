@@ -45,7 +45,6 @@ enum LoginAction {
     PreviousCharacterPage,
     NextCharacterPage,
     BeginCharacterCreation,
-    ChooseCreationClass(u16),
     CycleCreationOption(usize, i8),
     ToggleCreationGender(bool),
     FocusCreationName,
@@ -60,7 +59,7 @@ enum LoginDoubleClickTarget {
 }
 
 struct CharacterCreationState {
-    job: Option<u16>,
+    job: u16,
     female: bool,
     name: String,
     name_focused: bool,
@@ -72,23 +71,9 @@ struct CharacterCreationState {
 }
 
 impl CharacterCreationState {
-    fn class_select() -> Self {
-        Self {
-            job: None,
-            female: false,
-            name: String::new(),
-            name_focused: false,
-            pools: Vec::new(),
-            indices: [0; 8],
-            awaiting_name: false,
-            awaiting_create: false,
-            notice: None,
-        }
-    }
-
     fn customize(job: u16, pools: Vec<Vec<i32>>) -> Self {
         Self {
-            job: Some(job),
+            job,
             female: false,
             name: String::new(),
             name_focused: true,
@@ -949,69 +934,6 @@ fn load_character_selection_scene(
     })
 }
 
-fn load_character_class_scene(
-    map: &NxArchive,
-    legacy_ui: &NxArchive,
-    font: &fontdue::Font,
-) -> Result<LoginSceneAssets, String> {
-    let mut sprites = Vec::with_capacity(16);
-    let mut actions = Vec::with_capacity(4);
-    append_sprite(
-        &mut sprites,
-        map,
-        "Back/login.img/back/11",
-        512.0,
-        384.0,
-        1.28,
-    )?;
-    append_text_sprite(
-        &mut sprites,
-        font,
-        "Choose a character class",
-        270.0,
-        96.0,
-        20.0,
-    );
-
-    let classes = [
-        (1_u16, "Explorer", "normal/BtNormal"),
-        (0_u16, "Cygnus Knight", "knight/BtKnight"),
-        (2_u16, "Aran", "aran/BtAran"),
-    ];
-    let positions = [(102.0_f32, 192.0_f32), (404.0, 192.0), (673.0, 192.0)];
-    for ((job, label, asset), (x, y)) in classes.into_iter().zip(positions) {
-        let base = format!("Login.img/RaceSelect/{asset}/normal/0");
-        if let Some(rect) = append_optional_sprite(&mut sprites, legacy_ui, &base, x, y, 1.28)? {
-            actions.push(LoginActionRegion {
-                rect,
-                action: LoginAction::ChooseCreationClass(job),
-            });
-        }
-        append_text_sprite(&mut sprites, font, label, x + 14.0, y + 290.0, 15.0);
-    }
-    if let Some(rect) = append_optional_sprite(
-        &mut sprites,
-        legacy_ui,
-        "Login.img/Common/BtStart/normal/0",
-        0.0,
-        515.0 * 1.28,
-        1.28,
-    )? {
-        actions.push(LoginActionRegion {
-            rect,
-            action: LoginAction::CancelCharacterCreation,
-        });
-    }
-    Ok(LoginSceneAssets {
-        sprites,
-        actions,
-        map_scene: None,
-        animated_art: Vec::new(),
-        login_buttons: Vec::new(),
-        save_id_indicator_draws: None,
-    })
-}
-
 fn load_character_customization_scene(
     map: &NxArchive,
     legacy_ui: &NxArchive,
@@ -1022,19 +944,57 @@ fn load_character_customization_scene(
     creation: &CharacterCreationState,
     font: &fontdue::Font,
 ) -> Result<LoginSceneAssets, String> {
-    let job = creation
-        .job
-        .ok_or_else(|| "creation class is not selected".to_owned())?;
-    let (job_name, customize_asset) = match job {
-        0 => ("Cygnus Knight", "NewCharKnight"),
-        1 => ("Explorer", "NewChar"),
-        2 => ("Aran", "NewCharAran"),
+    let job = creation.job;
+    let customize_asset = match job {
+        1 => "NewChar",
         _ => return Err(format!("unsupported character-creation job {job}")),
     };
     let custom_path = format!("Login.img/{customize_asset}");
     let mut sprites = Vec::with_capacity(48);
     let mut actions = Vec::with_capacity(24);
-    append_tiled_background(&mut sprites, map, "Back/login.img/back/1", 1024, 768, 1.28)?;
+    let sky_index = sprites.len();
+    append_sprite(
+        &mut sprites,
+        map,
+        "Back/login.img/back/2",
+        10.0,
+        300.0,
+        1.0,
+    )?;
+    sprites[sky_index].rect = SpriteRect {
+        x: 0.0,
+        y: 0.0,
+        width: 1024.0,
+        height: 768.0,
+        blend_mode: BlendMode::Alpha,
+    };
+    for cloud_x in [200.0_f32, 1000.0] {
+        append_sprite(
+            &mut sprites,
+            map,
+            "Back/login.img/back/27",
+            cloud_x * 1.28,
+            300.0 * 1.28,
+            1.28,
+        )?;
+        clip_last_login_sprite(&mut sprites);
+    }
+    for (path, x, y) in [
+        ("15", 153.0_f32, 685.0_f32),
+        ("16", 200.0, 400.0),
+        ("17", 160.0, 263.0),
+        ("18", 349.0, 1220.0),
+    ] {
+        append_sprite(
+            &mut sprites,
+            map,
+            &format!("Back/login.img/back/{path}"),
+            x * 1.28,
+            y * 1.28,
+            1.28,
+        )?;
+        clip_last_login_sprite(&mut sprites);
+    }
     append_sprite(
         &mut sprites,
         legacy_ui,
@@ -1043,8 +1003,23 @@ fn load_character_customization_scene(
         384.0,
         1.28,
     )?;
-    append_text_sprite(&mut sprites, font, "Create Character", 385.0, 125.0, 22.0);
-    append_text_sprite(&mut sprites, font, job_name, 385.0, 155.0, 16.0);
+    append_sprite(
+        &mut sprites,
+        map,
+        "Obj/login.img/NewChar/signboard/1/0",
+        (115.0 + 85.0) * 1.28,
+        (170.0 + 65.0) * 1.28,
+        1.28,
+    )?;
+    append_character_creation_option_text(
+        &mut sprites,
+        font,
+        "Create a character",
+        16.0 * 1.28,
+        26.0 * 1.28,
+        15.0,
+        [105, 67, 27],
+    );
 
     // These are the actual v83 class-specific customization boards. The
     // newer C++ branch refers to a `CustomizeChar` node absent from the v83
@@ -1057,7 +1032,6 @@ fn load_character_customization_scene(
         143.0,
         1.28,
     )?;
-
     let selected = |pool: usize| -> Option<i32> {
         creation
             .pools
@@ -1099,9 +1073,9 @@ fn load_character_customization_scene(
             &mut sprites,
             character_archive,
             &look,
-            390.0,
-            490.0,
-            1.2,
+            360.0 * 1.28,
+            348.0 * 1.28,
+            1.28,
             true,
             &mut avatar_cache,
         )?;
@@ -1266,6 +1240,62 @@ fn load_character_customization_scene(
         login_buttons: Vec::new(),
         save_id_indicator_draws: None,
     })
+}
+
+fn clip_last_login_sprite(sprites: &mut [DecodedSprite]) {
+    let Some(sprite) = sprites.last_mut() else {
+        return;
+    };
+    let rect = sprite.rect;
+    let source_width = sprite.texture_width as usize;
+    let source_height = sprite.texture_height as usize;
+    if rect.x >= 0.0
+        && rect.y >= 0.0
+        && rect.x + rect.width <= 1024.0
+        && rect.y + rect.height <= 768.0
+        || rect.width <= 0.0
+        || rect.height <= 0.0
+        || source_width == 0
+        || source_height == 0
+    {
+        return;
+    }
+    let left = rect.x.max(0.0);
+    let top = rect.y.max(0.0);
+    let right = (rect.x + rect.width).min(1024.0);
+    let bottom = (rect.y + rect.height).min(768.0);
+    if right <= left || bottom <= top {
+        return;
+    }
+    let source_left = (((left - rect.x) / rect.width * source_width as f32).floor() as usize)
+        .min(source_width);
+    let source_top = (((top - rect.y) / rect.height * source_height as f32).floor() as usize)
+        .min(source_height);
+    let source_right = (((right - rect.x) / rect.width * source_width as f32).ceil() as usize)
+        .min(source_width);
+    let source_bottom = (((bottom - rect.y) / rect.height * source_height as f32).ceil() as usize)
+        .min(source_height);
+    let crop_width = source_right.saturating_sub(source_left);
+    let crop_height = source_bottom.saturating_sub(source_top);
+    if crop_width == 0 || crop_height == 0 {
+        return;
+    }
+    let mut cropped = Vec::with_capacity(crop_width * crop_height * 4);
+    for row in source_top..source_bottom {
+        let start = (row * source_width + source_left) * 4;
+        cropped.extend_from_slice(&sprite.pixels[start..start + crop_width * 4]);
+    }
+    sprite.texture_key = format!(
+        "{}:canvas-clip:{source_left}:{source_top}:{source_right}:{source_bottom}",
+        sprite.texture_key
+    );
+    sprite.texture_width = crop_width as u32;
+    sprite.texture_height = crop_height as u32;
+    sprite.pixels = Arc::from(cropped);
+    sprite.rect.x = left;
+    sprite.rect.y = top;
+    sprite.rect.width = right - left;
+    sprite.rect.height = bottom - top;
 }
 
 fn append_character_creation_option_text(
@@ -1519,9 +1549,7 @@ fn load_character_creation_options(
     female: bool,
 ) -> Result<Vec<Vec<i32>>, String> {
     let base = match job {
-        0 => "MakeCharInfo.img/PremiumChar",
         1 => "MakeCharInfo.img/Info/Char",
-        2 => "MakeCharInfo.img/OrientChar",
         _ => return Err(format!("unsupported character-creation job {job}")),
     };
     let gender = if female { "Female" } else { "Male" };

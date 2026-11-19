@@ -164,6 +164,8 @@ impl ClientApp {
             inventory_drag_texture: None,
             equipment_inventory_texture: None,
             inventory_tooltip_texture: None,
+            npc_shop_texture: None,
+            npc_shop: None,
             storage_texture: None,
             hired_merchant_texture: None,
             trade_texture: None,

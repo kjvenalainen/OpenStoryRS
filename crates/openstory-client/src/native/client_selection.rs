@@ -280,45 +280,36 @@ impl ClientApp {
     }
 
     pub(super) fn begin_character_creation(&mut self) {
-        self.character_creation = Some(CharacterCreationState::class_select());
-        self.refresh_character_creation_scene();
-    }
-
-    pub(super) fn choose_creation_class(&mut self, job: u16) {
-        match load_character_creation_options(&self.etc_archive, job, false) {
-            Ok(options) => {
-                self.character_creation = Some(CharacterCreationState::customize(job, options));
-                self.refresh_character_creation_scene();
-            }
+        const EXPLORER_CREATION_JOB: u16 = 1;
+        let job = EXPLORER_CREATION_JOB;
+        let mut creation = match load_character_creation_options(&self.etc_archive, job, false) {
+            Ok(options) => CharacterCreationState::customize(job, options),
             Err(error) => {
                 eprintln!("OpenStory: could not load character creation options: {error}");
-                if let Some(creation) = self.character_creation.as_mut() {
-                    creation.notice =
-                        Some("Character appearance data could not be loaded".to_owned());
-                }
-                self.refresh_character_creation_scene();
+                let mut creation = CharacterCreationState::customize(job, vec![Vec::new(); 8]);
+                creation.notice = Some("Character appearance data could not be loaded".to_owned());
+                creation
             }
-        }
+        };
+        creation.name_focused = true;
+        self.character_creation = Some(creation);
+        self.refresh_character_creation_scene();
     }
 
     pub(super) fn refresh_character_creation_scene(&mut self) {
         let Some(creation) = self.character_creation.as_ref() else {
             return;
         };
-        let scene = if creation.job.is_some() {
-            load_character_customization_scene(
-                &self.map_archive,
-                &self.legacy_ui_archive,
-                &self.character_archive,
-                &self.string_archive,
-                &mut self.item_name_cache,
-                self.login_caret_visible,
-                creation,
-                &self.font,
-            )
-        } else {
-            load_character_class_scene(&self.map_archive, &self.legacy_ui_archive, &self.font)
-        };
+        let scene = load_character_customization_scene(
+            &self.map_archive,
+            &self.legacy_ui_archive,
+            &self.character_archive,
+            &self.string_archive,
+            &mut self.item_name_cache,
+            self.login_caret_visible,
+            creation,
+            &self.font,
+        );
         match scene.and_then(|scene| self.replace_scene(scene)) {
             Ok(()) => self.show_login_fields = false,
             Err(error) => eprintln!("OpenStory: could not display character creation: {error}"),
@@ -378,7 +369,7 @@ impl ClientApp {
             .character_creation
             .as_ref()
             .filter(|creation| !creation.awaiting_name && !creation.awaiting_create)
-            .and_then(|creation| creation.job)
+            .map(|creation| creation.job)
         else {
             return;
         };
@@ -479,9 +470,7 @@ impl ClientApp {
             self.refresh_character_creation_scene();
             return;
         }
-        let Some(job) = creation.job else {
-            return;
-        };
+        let job = creation.job;
         let selected = |pool: usize| -> Option<i32> {
             let values = creation.pools.get(pool)?;
             values.get(*creation.indices.get(pool)?).copied()
@@ -739,6 +728,7 @@ impl ClientApp {
         }
         self.refresh_map_hud();
         self.refresh_inventory_texture();
+        self.refresh_npc_shop_texture();
         self.refresh_skill_book_entries();
         self.refresh_skill_book_texture();
         self.refresh_npc_quest_marks();

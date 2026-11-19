@@ -354,10 +354,7 @@ fn draw_centered_text(
     baseline_y: f32,
     color: [u8; 3],
 ) {
-    let text_width = text
-        .chars()
-        .map(|character| font.metrics(character, 14.0).advance_width)
-        .sum::<f32>();
+    let text_width = super::ui_foundation::measure_text(font, text, 14.0);
     draw_text(
         canvas,
         width,
@@ -380,32 +377,19 @@ fn draw_text(
     baseline_y: f32,
     color: [u8; 3],
 ) {
-    let mut cursor_x = x;
-    for character in text.chars() {
-        let (metrics, coverage) = font.rasterize(character, 14.0);
-        let left = cursor_x.round() as i32 + metrics.xmin;
-        let top = (baseline_y + 14.0).round() as i32 - metrics.height as i32 - metrics.ymin;
-        for row in 0..metrics.height {
-            for column in 0..metrics.width {
-                let target_x = left + column as i32;
-                let target_y = top + row as i32;
-                if !(0..width as i32).contains(&target_x) || !(0..height as i32).contains(&target_y)
-                {
-                    continue;
-                }
-                let alpha = coverage[row * metrics.width + column];
-                if alpha == 0 {
-                    continue;
-                }
-                let index = (target_y as usize * width + target_x as usize) * 4;
-                blend_bgra(
-                    &mut canvas[index..index + 4],
-                    &[color[2], color[1], color[0], alpha],
-                );
-            }
-        }
-        cursor_x += metrics.advance_width;
-    }
+    super::draw_dialogue_text(
+        font,
+        canvas,
+        width,
+        height,
+        text,
+        x.round() as i32,
+        baseline_y.round() as i32,
+        14.0,
+        width,
+        height,
+        color,
+    );
 }
 
 fn blend_bgra(destination: &mut [u8], source: &[u8]) {
@@ -423,22 +407,5 @@ fn blend_bgra(destination: &mut [u8], source: &[u8]) {
 }
 
 fn truncate_to_width(font: &Font, text: &str, maximum_width: f32) -> String {
-    let text_width = |value: &str| {
-        value
-            .chars()
-            .map(|character| font.metrics(character, 14.0).advance_width)
-            .sum::<f32>()
-    };
-    if text_width(text) <= maximum_width {
-        return text.to_owned();
-    }
-    let mut result = String::new();
-    for character in text.chars() {
-        if text_width(&format!("{result}{character}…")) > maximum_width {
-            break;
-        }
-        result.push(character);
-    }
-    result.push('…');
-    result
+    super::ui_foundation::ellipsize(font, text, 14.0, maximum_width)
 }

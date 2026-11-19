@@ -201,6 +201,7 @@ impl ApplicationHandler for ClientApp {
                         }
                     }
                 }
+                self.update_npc_shop_hover();
                 if self.update_rps_game_hover()
                     && let Some(window) = self.window.as_ref()
                 {
@@ -782,6 +783,13 @@ impl ApplicationHandler for ClientApp {
                     }
                     return;
                 }
+                if self.npc_shop.is_some() {
+                    self.click_npc_shop(cursor);
+                    if let Some(window) = self.window.as_ref() {
+                        window.request_redraw();
+                    }
+                    return;
+                }
                 if self.storage.is_some() {
                     self.click_storage(cursor);
                     if let Some(window) = self.window.as_ref() {
@@ -922,7 +930,6 @@ impl ApplicationHandler for ClientApp {
                         LoginAction::PreviousCharacterPage => self.change_character_page(-1),
                         LoginAction::NextCharacterPage => self.change_character_page(1),
                         LoginAction::BeginCharacterCreation => self.begin_character_creation(),
-                        LoginAction::ChooseCreationClass(job) => self.choose_creation_class(job),
                         LoginAction::CycleCreationOption(option, direction) => {
                             self.cycle_creation_option(option, direction)
                         }
@@ -1260,6 +1267,13 @@ impl ApplicationHandler for ClientApp {
                             .is_some_and(|cursor| rect_contains(dialogue.panel, cursor))
                 }) {
                     self.scroll_npc_dialogue_text(if amount > 0.0 { -1 } else { 1 });
+                    if let Some(window) = self.window.as_ref() {
+                        window.request_redraw();
+                    }
+                } else if self.npc_shop.is_some() {
+                    if let Some(cursor) = cursor {
+                        self.scroll_npc_shop(cursor, amount);
+                    }
                     if let Some(window) = self.window.as_ref() {
                         window.request_redraw();
                     }
@@ -2072,6 +2086,13 @@ impl ApplicationHandler for ClientApp {
                             _ => {}
                         }
                     }
+                    if let Some(window) = self.window.as_ref() {
+                        window.request_redraw();
+                    }
+                    return;
+                }
+                if self.npc_shop.is_some() {
+                    self.key_npc_shop(&event);
                     if let Some(window) = self.window.as_ref() {
                         window.request_redraw();
                     }
@@ -3764,6 +3785,7 @@ impl ApplicationHandler for ClientApp {
                     && self.active_whisper.is_some()
                     && self.npc_dialogue.is_none()
                     && self.storage.is_none()
+                    && self.npc_shop.is_none()
                     && self.cash_shop.is_none()
                     && let Some(texture) = self.whisper_texture.as_ref()
                 {
@@ -3803,6 +3825,22 @@ impl ApplicationHandler for ClientApp {
                         y: dialogue.panel.y,
                         width: dialogue.panel.width,
                         height: dialogue.panel.height,
+                        uv: [0.0, 0.0, 1.0, 1.0],
+                        tint: [1.0, 1.0, 1.0],
+                        blend_mode: BlendMode::Alpha,
+                        flip_x: false,
+                        opacity: 1.0,
+                    });
+                }
+                if self.npc_shop.is_some()
+                    && let Some(texture) = self.npc_shop_texture.as_ref()
+                {
+                    draws.push(SpriteDraw {
+                        texture,
+                        x: NPC_SHOP_X,
+                        y: NPC_SHOP_Y,
+                        width: NPC_SHOP_WIDTH as f32,
+                        height: NPC_SHOP_HEIGHT as f32,
                         uv: [0.0, 0.0, 1.0, 1.0],
                         tint: [1.0, 1.0, 1.0],
                         blend_mode: BlendMode::Alpha,

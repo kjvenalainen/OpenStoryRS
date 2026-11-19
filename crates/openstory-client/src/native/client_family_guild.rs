@@ -1884,7 +1884,8 @@ impl ClientApp {
         let Some(bbs) = self.guild_bbs.as_ref() else {
             return;
         };
-        let pixels = render_guild_bbs_panel(&self.font, bbs, self.guild_info.as_ref());
+        let pixels =
+            render_guild_bbs_panel(&self.font, &self.ui_archive, bbs, self.guild_info.as_ref());
         let Some(renderer) = self.renderer.as_ref() else {
             return;
         };

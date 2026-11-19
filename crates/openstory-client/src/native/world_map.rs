@@ -1369,28 +1369,11 @@ fn fill_rect(
 }
 
 fn text_width(font: &Font, text: &str) -> f32 {
-    text.chars()
-        .map(|character| font.metrics(character, 14.0).advance_width)
-        .sum()
+    super::ui_foundation::measure_text(font, text, 14.0)
 }
 
 fn fit_text(font: &Font, text: &str, width: f32) -> String {
-    if text_width(font, text) <= width {
-        return text.to_owned();
-    }
-    let mut fitted = String::new();
-    let ellipsis_width = text_width(font, "…");
-    let mut used = 0.0;
-    for character in text.chars() {
-        let next = font.metrics(character, 14.0).advance_width;
-        if used + next + ellipsis_width > width {
-            break;
-        }
-        fitted.push(character);
-        used += next;
-    }
-    fitted.push('…');
-    fitted
+    super::ui_foundation::ellipsize(font, text, 14.0, width)
 }
 
 fn draw_text_color(
@@ -1403,34 +1386,19 @@ fn draw_text_color(
     y: f32,
     color: [u8; 3],
 ) {
-    let mut cursor_x = x;
-    for character in text.chars() {
-        let (metrics, coverage) = font.rasterize(character, 14.0);
-        let left = cursor_x.round() as i32 + metrics.xmin;
-        let top = (y + 14.0).round() as i32 - metrics.height as i32 - metrics.ymin;
-        for row in 0..metrics.height {
-            for column in 0..metrics.width {
-                let target_x = left + column as i32;
-                let target_y = top + row as i32;
-                if !(0..width as i32).contains(&target_x) || !(0..height as i32).contains(&target_y)
-                {
-                    continue;
-                }
-                let alpha = coverage[row * metrics.width + column];
-                let index = (target_y as usize * width + target_x as usize) * 4;
-                let inverse = 255 - u16::from(alpha);
-                for channel in 0..3 {
-                    canvas[index + channel] = ((u16::from(color[channel]) * u16::from(alpha)
-                        + u16::from(canvas[index + channel]) * inverse)
-                        / 255) as u8;
-                }
-                canvas[index + 3] = (u16::from(alpha)
-                    + u16::from(canvas[index + 3]) * inverse / 255)
-                    .min(255) as u8;
-            }
-        }
-        cursor_x += metrics.advance_width;
-    }
+    super::draw_dialogue_text(
+        font,
+        canvas,
+        width,
+        height,
+        text,
+        x.round() as i32,
+        y.round() as i32,
+        14.0,
+        width.saturating_sub(x.max(0.0) as usize),
+        height.saturating_sub(y.max(0.0) as usize),
+        color,
+    );
 }
 
 fn draw_shadowed_text_color(

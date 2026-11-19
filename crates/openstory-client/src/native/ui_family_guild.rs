@@ -6,16 +6,6 @@ fn render_family_panel(
     let width = FAMILY_PANEL_WIDTH as usize;
     let height = FAMILY_PANEL_HEIGHT as usize;
     let mut pixels = vec![0; width * height * 4];
-    fill_dialogue_rect(
-        &mut pixels,
-        width,
-        height,
-        0,
-        0,
-        width,
-        height,
-        [18, 15, 12, 242],
-    );
     let _ = composite_nx_ui_bitmap_scaled_to(
         &mut pixels,
         width,
@@ -121,7 +111,6 @@ fn render_family_panel(
                 FamilyInputKind::EditPrecepts => "Enter the family precept:",
             };
             draw_dialogue_text(font, &mut pixels, width, height, heading, 30, 166, 11.0, 214, 17, [35, 35, 35]);
-            fill_dialogue_rect(&mut pixels, width, height, 28, 192, 218, 22, [255, 255, 255, 255]);
             let text = family_input_visible_text(font, &input.text, 208.0);
             draw_dialogue_text(font, &mut pixels, width, height, &text, 33, 196, 10.0, 208, 15, [35, 35, 35]);
             if let Some(notice) = state.notice.as_deref() {
@@ -175,16 +164,6 @@ fn render_family_tree_panel(
     let width = FAMILY_TREE_PANEL_WIDTH as usize;
     let height = FAMILY_TREE_PANEL_HEIGHT as usize;
     let mut pixels = vec![0; width * height * 4];
-    fill_dialogue_rect(
-        &mut pixels,
-        width,
-        height,
-        0,
-        0,
-        width,
-        height,
-        [17, 15, 13, 243],
-    );
     draw_family_nx_background(
         &mut pixels,
         width,
@@ -401,48 +380,22 @@ fn draw_family_nx_background(
     path: &str,
     scale: f32,
 ) {
-    let bitmap = resolve_ui_path(&archive.root(), path)
-        .ok()
-        .flatten()
-        .and_then(|node| node.bitmap().ok().flatten());
-    let Some(bitmap) = bitmap else {
-        for (x, y, w, h) in [
-            (0, 0, width, 2),
-            (0, height - 2, width, 2),
-            (0, 0, 2, height),
-            (width - 2, 0, 2, height),
-        ] {
-            fill_dialogue_rect(pixels, width, height, x, y, w, h, [130, 105, 68, 255]);
-        }
+    let Some((source_width, source_height, _, _)) = nx_ui_bitmap_geometry(archive, path) else {
         return;
     };
-    let Ok(source) = bitmap.decode_bgra_shared() else {
-        return;
-    };
-    let source_width = usize::from(bitmap.width());
-    let source_height = usize::from(bitmap.height());
     let dest_width = ((source_width as f32 * scale).round() as usize).min(width);
     let dest_height = ((source_height as f32 * scale).round() as usize).min(height);
-    for dest_y in 0..dest_height {
-        let source_y = ((dest_y as f32 / scale).floor() as usize).min(source_height - 1);
-        for dest_x in 0..dest_width {
-            let source_x = ((dest_x as f32 / scale).floor() as usize).min(source_width - 1);
-            let source_index = (source_y * source_width + source_x) * 4;
-            let alpha = u16::from(source[source_index + 3]);
-            if alpha == 0 {
-                continue;
-            }
-            let dest_index = (dest_y * width + dest_x) * 4;
-            let inverse = 255 - alpha;
-            for channel in 0..3 {
-                pixels[dest_index + channel] = ((u16::from(source[source_index + channel]) * alpha
-                    + u16::from(pixels[dest_index + channel]) * inverse)
-                    / 255) as u8;
-            }
-            pixels[dest_index + 3] =
-                (alpha + u16::from(pixels[dest_index + 3]) * inverse / 255).min(255) as u8;
-        }
-    }
+    let _ = composite_nx_ui_bitmap_scaled_to(
+        pixels,
+        width,
+        height,
+        archive,
+        path,
+        0,
+        0,
+        dest_width,
+        dest_height,
+    );
 }
 
 const GUILD_VISIBLE_ROWS: usize = 10;
@@ -484,16 +437,6 @@ fn render_guild_panel(
     let width = GUILD_PANEL_WIDTH as usize;
     let height = GUILD_PANEL_HEIGHT as usize;
     let mut pixels = vec![0; width * height * 4];
-    fill_dialogue_rect(
-        &mut pixels,
-        width,
-        height,
-        0,
-        0,
-        width,
-        height,
-        [16, 14, 12, 225],
-    );
     draw_family_nx_background(
         &mut pixels,
         width,
@@ -502,14 +445,6 @@ fn render_guild_panel(
         "UIWindow.img/UserList/Guild/backgrnd",
         height as f32 / 304.0,
     );
-    for (x, y, w, h) in [
-        (0, 0, width, 2),
-        (0, height - 2, width, 2),
-        (0, 0, 2, height),
-        (width - 2, 0, 2, height),
-    ] {
-        fill_dialogue_rect(&mut pixels, width, height, x, y, w, h, [112, 96, 72, 255]);
-    }
     draw_dialogue_text(
         font,
         &mut pixels,
@@ -551,16 +486,6 @@ fn render_guild_panel(
                 28,
                 [92, 83, 69],
             );
-            fill_dialogue_rect(
-                &mut pixels,
-                width,
-                height,
-                14,
-                140,
-                width - 28,
-                38,
-                [42, 38, 32, 255],
-            );
             draw_dialogue_text(
                 font,
                 &mut pixels,
@@ -573,9 +498,9 @@ fn render_guild_panel(
                 width - 48,
                 18,
                 if name.is_empty() {
-                    [135, 130, 120]
+                    [120, 112, 98]
                 } else {
-                    [245, 236, 215]
+                    [45, 38, 29]
                 },
             );
             if let Some(notice) = notice {
@@ -596,6 +521,7 @@ fn render_guild_panel(
             draw_guild_button(
                 font,
                 &mut pixels,
+                ui_archive,
                 width,
                 height,
                 (34, 344, 112, 34),
@@ -604,6 +530,7 @@ fn render_guild_panel(
             draw_guild_button(
                 font,
                 &mut pixels,
+                ui_archive,
                 width,
                 height,
                 (190, 344, 112, 34),
@@ -644,20 +571,6 @@ fn render_guild_panel(
             );
             for (index, title) in titles.iter().enumerate() {
                 let y = 88 + index as i32 * 46;
-                fill_dialogue_rect(
-                    &mut pixels,
-                    width,
-                    height,
-                    14,
-                    y as usize,
-                    width - 28,
-                    36,
-                    if index == *selected {
-                        [64, 52, 37, 255]
-                    } else {
-                        [35, 32, 28, 255]
-                    },
-                );
                 draw_dialogue_text(
                     font,
                     &mut pixels,
@@ -669,7 +582,7 @@ fn render_guild_panel(
                     8.0,
                     70,
                     12,
-                    [180, 172, 152],
+                    if index == *selected { [20, 104, 174] } else { [92, 83, 69] },
                 );
                 draw_dialogue_text(
                     font,
@@ -682,7 +595,7 @@ fn render_guild_panel(
                     11.0,
                     width - 124,
                     16,
-                    [245, 236, 215],
+                    if index == *selected { [20, 104, 174] } else { [45, 38, 29] },
                 );
             }
             if let Some(notice) = notice {
@@ -700,10 +613,11 @@ fn render_guild_panel(
                     [255, 148, 130],
                 );
             }
-            draw_guild_button(font, &mut pixels, width, height, (34, 350, 112, 34), "Save");
+            draw_guild_button(font, &mut pixels, ui_archive, width, height, (34, 350, 112, 34), "Save");
             draw_guild_button(
                 font,
                 &mut pixels,
+                ui_archive,
                 width,
                 height,
                 (190, 350, 112, 34),
@@ -743,25 +657,14 @@ fn render_guild_panel(
                 18,
                 [70, 60, 45],
             );
-            fill_dialogue_rect(
+            let _ = composite_nx_ui_bitmap(
                 &mut pixels,
                 width,
                 height,
-                132,
-                78,
-                72,
-                72,
-                [12, 10, 8, 255],
-            );
-            fill_dialogue_rect(
-                &mut pixels,
-                width,
-                height,
-                137,
-                83,
-                62,
-                62,
-                [36, 32, 27, 255],
+                ui_archive,
+                "UIWindow.img/UserList/Guild/MakeMark/inner",
+                177,
+                114,
             );
             if let Some(bitmap) = background_preview {
                 draw_guild_bitmap(&mut pixels, width, height, 137, 83, 4, bitmap);
@@ -811,20 +714,6 @@ fn render_guild_panel(
             ];
             for (index, (label, value)) in fields.iter().enumerate() {
                 let y = 176 + index as i32 * 38;
-                fill_dialogue_rect(
-                    &mut pixels,
-                    width,
-                    height,
-                    14,
-                    y as usize,
-                    width - 28,
-                    30,
-                    if index == *selected {
-                        [64, 52, 37, 255]
-                    } else {
-                        [35, 32, 28, 255]
-                    },
-                );
                 draw_dialogue_text(
                     font,
                     &mut pixels,
@@ -836,9 +725,9 @@ fn render_guild_panel(
                     9.0,
                     150,
                     14,
-                    [210, 202, 184],
+                    if index == *selected { [20, 104, 174] } else { [92, 83, 69] },
                 );
-                draw_guild_button(font, &mut pixels, width, height, (220, y + 3, 28, 24), "−");
+                draw_guild_button(font, &mut pixels, ui_archive, width, height, (220, y + 3, 28, 24), "−");
                 draw_dialogue_text(
                     font,
                     &mut pixels,
@@ -850,14 +739,15 @@ fn render_guild_panel(
                     10.0,
                     34,
                     14,
-                    [245, 236, 215],
+                    if index == *selected { [20, 104, 174] } else { [45, 38, 29] },
                 );
-                draw_guild_button(font, &mut pixels, width, height, (290, y + 3, 28, 24), "+");
+                draw_guild_button(font, &mut pixels, ui_archive, width, height, (290, y + 3, 28, 24), "+");
             }
-            draw_guild_button(font, &mut pixels, width, height, (34, 350, 112, 34), "Save");
+            draw_guild_button(font, &mut pixels, ui_archive, width, height, (34, 350, 112, 34), "Save");
             draw_guild_button(
                 font,
                 &mut pixels,
+                ui_archive,
                 width,
                 height,
                 (190, 350, 112, 34),
@@ -881,10 +771,11 @@ fn render_guild_panel(
         GuildPanelMode::Overview => {}
     }
     if let Some(guild) = guild {
-        draw_guild_button(font, &mut pixels, width, height, (128, 5, 80, 21), "Ranks");
+        draw_guild_button(font, &mut pixels, ui_archive, width, height, (128, 5, 80, 21), "Edit");
         draw_guild_button(
             font,
             &mut pixels,
+            ui_archive,
             width,
             height,
             (216, 5, 102, 21),
@@ -1015,15 +906,16 @@ fn render_guild_panel(
             );
         }
     } else if let Some((leader, guild_name)) = creation_invite {
-        fill_dialogue_rect(
+        let _ = composite_nx_ui_bitmap_scaled_to(
             &mut pixels,
             width,
             height,
+            ui_archive,
+            "UIWindow.img/UtilDlgEx/line",
             10,
             height - 52,
-            width - 20,
-            1,
-            [84, 76, 62, 255],
+            width.saturating_sub(20),
+            2,
         );
         draw_dialogue_text(
             font,
@@ -1055,6 +947,7 @@ fn render_guild_panel(
         draw_guild_button(
             font,
             &mut pixels,
+            ui_archive,
             width,
             height,
             (90, 104, 156, 34),
@@ -1062,15 +955,16 @@ fn render_guild_panel(
         );
     }
     if let Some((_, inviter)) = invite {
-        fill_dialogue_rect(
+        let _ = composite_nx_ui_bitmap_scaled_to(
             &mut pixels,
             width,
             height,
+            ui_archive,
+            "UIWindow.img/UtilDlgEx/line",
             10,
             height - 52,
-            width - 20,
-            1,
-            [84, 76, 62, 255],
+            width.saturating_sub(20),
+            2,
         );
         draw_dialogue_text(
             font,
@@ -1106,42 +1000,33 @@ fn render_guild_panel(
 fn draw_guild_button(
     font: &fontdue::Font,
     pixels: &mut [u8],
+    ui_archive: &NxArchive,
     width: usize,
     height: usize,
     rect: (i32, i32, usize, usize),
     label: &str,
 ) {
     let (x, y, button_width, button_height) = rect;
-    fill_dialogue_rect(
-        pixels,
-        width,
-        height,
-        x as usize,
-        y as usize,
-        button_width,
-        button_height,
-        [65, 54, 38, 255],
-    );
-    fill_dialogue_rect(
-        pixels,
-        width,
-        height,
-        x as usize,
-        y as usize,
-        button_width,
-        1,
-        [142, 120, 82, 255],
-    );
-    fill_dialogue_rect(
-        pixels,
-        width,
-        height,
-        x as usize,
-        (y + button_height as i32 - 1) as usize,
-        button_width,
-        1,
-        [142, 120, 82, 255],
-    );
+    let path = match label {
+        "Create" => Some("UIWindow.img/UserList/Guild/Make/BtAgree/normal/0"),
+        "Save" => Some("UIWindow.img/UserList/Guild/GuildEdit/BtSave/normal/0"),
+        "Cancel" => Some("UIWindow.img/UserList/Guild/GuildBoard/BtCancel/normal/0"),
+        "Edit" => Some("UIWindow.img/UserList/Guild/GuildGrade/BtModf/normal/0"),
+        "−" => Some("UIWindow.img/UserList/Guild/GuildRank/BtLeft/normal/0"),
+        "+" => Some("UIWindow.img/UserList/Guild/GuildRank/BtRight/normal/0"),
+        _ => None,
+    };
+    if let Some(path) = path {
+        let _ = composite_nx_ui_bitmap_centered(
+            pixels,
+            width,
+            height,
+            ui_archive,
+            path,
+            ui_foundation::UiRect::new(x as f32, y as f32, button_width as f32, button_height as f32),
+        );
+        return;
+    }
     let text_width = dialogue_text_width(font, label, 9.0);
     draw_dialogue_text(
         font,
@@ -1154,7 +1039,7 @@ fn draw_guild_button(
         9.0,
         button_width.saturating_sub(8),
         14,
-        [238, 226, 197],
+        [45, 38, 29],
     );
 }
 
@@ -1240,16 +1125,6 @@ fn render_alliance_panel(
     let width = ALLIANCE_PANEL_WIDTH as usize;
     let height = ALLIANCE_PANEL_HEIGHT as usize;
     let mut pixels = vec![0; width * height * 4];
-    fill_dialogue_rect(
-        &mut pixels,
-        width,
-        height,
-        0,
-        0,
-        width,
-        height,
-        [16, 14, 12, 232],
-    );
     draw_family_nx_background(
         &mut pixels,
         width,
@@ -1258,14 +1133,6 @@ fn render_alliance_panel(
         "UIWindow.img/UserList/GuildUnion/backgrnd",
         height as f32 / 304.0,
     );
-    for (x, y, w, h) in [
-        (0, 0, width, 2),
-        (0, height - 2, width, 2),
-        (0, 0, 2, height),
-        (width - 2, 0, 2, height),
-    ] {
-        fill_dialogue_rect(&mut pixels, width, height, x, y, w, h, [112, 96, 72, 255]);
-    }
     draw_dialogue_text(
         font,
         &mut pixels,
@@ -1445,15 +1312,16 @@ fn render_alliance_panel(
         );
     }
     if let Some((_, inviter)) = invite {
-        fill_dialogue_rect(
+        let _ = composite_nx_ui_bitmap_scaled_to(
             &mut pixels,
             width,
             height,
+            ui_archive,
+            "UIWindow.img/UtilDlgEx/line",
             12,
             height - 76,
             width - 24,
-            1,
-            [84, 76, 62, 255],
+            2,
         );
         draw_dialogue_text(
             font,
@@ -1487,87 +1355,37 @@ fn render_alliance_panel(
 
 fn render_guild_bbs_panel(
     font: &fontdue::Font,
+    ui_archive: &NxArchive,
     bbs: &GuildBbsUi,
     guild: Option<&openstory_protocol::GuildInfo>,
 ) -> Vec<u8> {
     let width = GUILD_BBS_PANEL_WIDTH as usize;
     let height = GUILD_BBS_PANEL_HEIGHT as usize;
     let mut pixels = vec![0; width * height * 4];
-    fill_dialogue_rect(
+    let _ = composite_nx_ui_bitmap_scaled_to(
         &mut pixels,
         width,
         height,
+        ui_archive,
+        "UIWindow.img/UserList/Guild/GuildBoard/backgrnd",
         0,
         0,
         width,
         height,
-        [16, 14, 12, 245],
     );
-    for (x, y, w, h) in [
-        (0, 0, width, 2),
-        (0, height - 2, width, 2),
-        (0, 0, 2, height),
-        (width - 2, 0, 2, height),
+    for (x, button_width, path) in [
+        (604, 54, "UIWindow.img/UserList/Guild/GuildBoard/BtList/normal/0"),
+        (660, 44, "UIWindow.img/UserList/Guild/GuildRank/BtLeft/normal/0"),
+        (706, 44, "UIWindow.img/UserList/Guild/GuildRank/BtRight/normal/0"),
+        (774, 40, "UIWindow.img/UserList/Guild/GuildBoard/BtCancel/normal/0"),
     ] {
-        fill_dialogue_rect(&mut pixels, width, height, x, y, w, h, [124, 105, 76, 255]);
-    }
-    draw_dialogue_text(
-        font,
-        &mut pixels,
-        width,
-        height,
-        "Guild Bulletin Board",
-        12,
-        9,
-        15.0,
-        520,
-        22,
-        [238, 215, 168],
-    );
-
-    for (x, label) in [
-        (604, "Refresh"),
-        (660, "Prev"),
-        (706, "Next"),
-        (774, "Close"),
-    ] {
-        let button_width = match label {
-            "Refresh" => 54,
-            "Close" => 40,
-            _ => 44,
-        };
-        fill_dialogue_rect(
+        let _ = composite_nx_ui_bitmap_centered(
             &mut pixels,
             width,
             height,
-            x,
-            46,
-            button_width,
-            30,
-            [58, 49, 37, 255],
-        );
-        fill_dialogue_rect(
-            &mut pixels,
-            width,
-            height,
-            x,
-            46,
-            button_width,
-            1,
-            [142, 118, 80, 255],
-        );
-        draw_dialogue_text(
-            font,
-            &mut pixels,
-            width,
-            height,
-            label,
-            x as i32 + 5,
-            55,
-            9.0,
-            button_width - 10,
-            16,
-            [232, 220, 190],
+            ui_archive,
+            path,
+            ui_foundation::UiRect::new(x as f32, 46.0, button_width as f32, 30.0),
         );
     }
 
@@ -1584,33 +1402,13 @@ fn render_guild_bbs_panel(
         height,
         &format!("{} posts · {page_label}", bbs.total_threads),
         12,
-        54,
+        76,
         10.0,
         360,
         18,
-        [190, 184, 168],
+        [92, 83, 69],
     );
 
-    fill_dialogue_rect(
-        &mut pixels,
-        width,
-        height,
-        10,
-        82,
-        356,
-        426,
-        [31, 28, 23, 255],
-    );
-    fill_dialogue_rect(
-        &mut pixels,
-        width,
-        height,
-        374,
-        82,
-        width - 386,
-        448,
-        [31, 28, 23, 255],
-    );
     draw_dialogue_text(
         font,
         &mut pixels,
@@ -1622,7 +1420,7 @@ fn render_guild_bbs_panel(
         10.0,
         340,
         16,
-        [208, 192, 153],
+        [70, 60, 45],
     );
     draw_dialogue_text(
         font,
@@ -1635,7 +1433,7 @@ fn render_guild_bbs_panel(
         10.0,
         420,
         16,
-        [208, 192, 153],
+        [70, 60, 45],
     );
 
     let mut rows: Vec<(&openstory_protocol::BbsThread, bool)> = Vec::new();
@@ -1655,24 +1453,12 @@ fn render_guild_bbs_panel(
             10.0,
             330,
             32,
-            [175, 170, 156],
+            [92, 83, 69],
         );
     }
     for (index, (thread, is_notice)) in rows.iter().take(11).enumerate() {
         let y = 108 + index as i32 * 30;
         let selected = bbs.thread.as_ref().is_some_and(|view| view.id == thread.id);
-        if selected {
-            fill_dialogue_rect(
-                &mut pixels,
-                width,
-                height,
-                14,
-                (y - 3) as usize,
-                348,
-                28,
-                [60, 50, 36, 255],
-            );
-        }
         let author = guild
             .and_then(|guild| {
                 guild
@@ -1700,11 +1486,7 @@ fn render_guild_bbs_panel(
             10.0,
             336,
             14,
-            if *is_notice {
-                [255, 222, 112]
-            } else {
-                [230, 224, 208]
-            },
+            if selected { [20, 104, 174] } else if *is_notice { [128, 83, 0] } else { [45, 38, 29] },
         );
         draw_dialogue_text(
             font,
@@ -1717,7 +1499,7 @@ fn render_guild_bbs_panel(
             8.0,
             336,
             12,
-            [160, 154, 140],
+            [92, 83, 69],
         );
     }
 
@@ -1744,7 +1526,7 @@ fn render_guild_bbs_panel(
             13.0,
             416,
             34,
-            [255, 224, 160],
+            [45, 38, 29],
         );
         draw_dialogue_text(
             font,
@@ -1757,17 +1539,18 @@ fn render_guild_bbs_panel(
             9.0,
             416,
             18,
-            [165, 160, 146],
+            [92, 83, 69],
         );
-        fill_dialogue_rect(
+        let _ = composite_nx_ui_bitmap_scaled_to(
             &mut pixels,
             width,
             height,
+            ui_archive,
+            "UIWindow.img/UtilDlgEx/line",
             386,
             170,
             width - 398,
-            1,
-            [80, 70, 54, 255],
+            2,
         );
         draw_dialogue_text(
             font,
@@ -1780,18 +1563,19 @@ fn render_guild_bbs_panel(
             10.0,
             416,
             176,
-            [222, 216, 200],
+            [45, 38, 29],
         );
         if !thread.replies.is_empty() {
-            fill_dialogue_rect(
+            let _ = composite_nx_ui_bitmap_scaled_to(
                 &mut pixels,
                 width,
                 height,
+                ui_archive,
+                "UIWindow.img/UtilDlgEx/line",
                 386,
                 310,
                 width - 398,
-                1,
-                [80, 70, 54, 255],
+                2,
             );
             draw_dialogue_text(
                 font,
@@ -1804,7 +1588,7 @@ fn render_guild_bbs_panel(
                 10.0,
                 416,
                 16,
-                [208, 192, 153],
+                [70, 60, 45],
             );
             let start = thread.replies.len().saturating_sub(4);
             for (index, reply) in thread.replies[start..].iter().enumerate() {
@@ -1831,35 +1615,11 @@ fn render_guild_bbs_panel(
                     9.0,
                     416,
                     22,
-                    [195, 190, 176],
+                    [80, 74, 62],
                 );
             }
         }
 
-        fill_dialogue_rect(
-            &mut pixels,
-            width,
-            height,
-            386,
-            450,
-            350,
-            42,
-            if bbs.reply_focused {
-                [46, 42, 34, 255]
-            } else {
-                [39, 36, 30, 255]
-            },
-        );
-        fill_dialogue_rect(
-            &mut pixels,
-            width,
-            height,
-            744,
-            450,
-            68,
-            42,
-            [70, 58, 42, 255],
-        );
         draw_dialogue_text(
             font,
             &mut pixels,
@@ -1871,28 +1631,23 @@ fn render_guild_bbs_panel(
                 &bbs.reply_input
             },
             394,
-            463,
+            453,
             9.0,
             338,
             24,
             if bbs.reply_input.is_empty() && !bbs.reply_focused {
-                [145, 140, 128]
+                [120, 112, 98]
             } else {
-                [235, 228, 208]
+                [45, 38, 29]
             },
         );
-        draw_dialogue_text(
-            font,
+        let _ = composite_nx_ui_bitmap_centered(
             &mut pixels,
             width,
             height,
-            "Reply",
-            755,
-            463,
-            9.0,
-            54,
-            24,
-            [240, 224, 190],
+            ui_archive,
+            "UIWindow.img/UserList/Guild/GuildBoard/BtComment/normal/0",
+            ui_foundation::UiRect::new(744.0, 450.0, 68.0, 42.0),
         );
     } else {
         draw_dialogue_text(
@@ -1906,46 +1661,25 @@ fn render_guild_bbs_panel(
             11.0,
             416,
             24,
-            [172, 166, 151],
+            [92, 83, 69],
         );
     }
 
-    for (x, label, button_width) in [(14, "Write", 76), (98, "Notice", 86), (192, "Delete", 86)] {
-        fill_dialogue_rect(
+    for (x, button_width, path) in [
+        (14, 76, "UIWindow.img/UserList/Guild/GuildBoard/BtWrite/normal/0"),
+        (98, 86, "UIWindow.img/UserList/Guild/GuildBoard/BtComment/normal/0"),
+        (192, 86, "UIWindow.img/UserList/Guild/GuildBoard/BtDelete/normal/0"),
+    ] {
+        let _ = composite_nx_ui_bitmap_centered(
             &mut pixels,
             width,
             height,
-            x,
-            462,
-            button_width,
-            36,
-            [58, 49, 37, 255],
-        );
-        draw_dialogue_text(
-            font,
-            &mut pixels,
-            width,
-            height,
-            label,
-            x as i32 + 9,
-            473,
-            9.0,
-            button_width - 18,
-            16,
-            [232, 220, 190],
+            ui_archive,
+            path,
+            ui_foundation::UiRect::new(x as f32, 462.0, button_width as f32, 36.0),
         );
     }
     if bbs.thread.is_none() {
-        fill_dialogue_rect(
-            &mut pixels,
-            width,
-            height,
-            386,
-            450,
-            426,
-            42,
-            [28, 25, 21, 255],
-        );
         draw_dialogue_text(
             font,
             &mut pixels,
@@ -1957,7 +1691,7 @@ fn render_guild_bbs_panel(
             9.0,
             402,
             20,
-            [145, 140, 128],
+            [120, 112, 98],
         );
     }
     if let Some(feedback) = bbs.feedback.as_deref() {
@@ -1972,7 +1706,7 @@ fn render_guild_bbs_panel(
             8.0,
             width - 306,
             14,
-            [255, 210, 120],
+            [150, 35, 35],
         );
     }
     draw_dialogue_text(
@@ -1986,7 +1720,7 @@ fn render_guild_bbs_panel(
         9.0,
         width - 24,
         15,
-        [170, 164, 148],
+        [92, 83, 69],
     );
 
     if let Some(draft) = bbs.draft.as_ref() {
@@ -2000,24 +1734,17 @@ fn render_guild_bbs_panel(
             height,
             [0, 0, 0, 176],
         );
-        fill_dialogue_rect(
+        let _ = composite_nx_ui_bitmap_scaled_to(
             &mut pixels,
             width,
             height,
+            ui_archive,
+            "UIWindow.img/UserList/Guild/GuildBoard/backgrnd1",
             192,
             124,
             440,
             350,
-            [19, 17, 14, 255],
         );
-        for (x, y, w, h) in [
-            (192, 124, 440, 2),
-            (192, 472, 440, 2),
-            (192, 124, 2, 350),
-            (630, 124, 2, 350),
-        ] {
-            fill_dialogue_rect(&mut pixels, width, height, x, y, w, h, [126, 105, 73, 255]);
-        }
         draw_dialogue_text(
             font,
             &mut pixels,
@@ -2033,7 +1760,7 @@ fn render_guild_bbs_panel(
             14.0,
             404,
             22,
-            [240, 217, 172],
+            [45, 38, 29],
         );
         draw_dialogue_text(
             font,
@@ -2046,21 +1773,7 @@ fn render_guild_bbs_panel(
             9.0,
             370,
             16,
-            [195, 188, 170],
-        );
-        fill_dialogue_rect(
-            &mut pixels,
-            width,
-            height,
-            224,
-            192,
-            376,
-            30,
-            if draft.focus == GuildBbsDraftFocus::Title {
-                [55, 48, 37, 255]
-            } else {
-                [38, 35, 30, 255]
-            },
+            [92, 83, 69],
         );
         draw_dialogue_text(
             font,
@@ -2073,7 +1786,7 @@ fn render_guild_bbs_panel(
             10.0,
             360,
             18,
-            [238, 232, 216],
+            if draft.focus == GuildBbsDraftFocus::Title { [20, 104, 174] } else { [45, 38, 29] },
         );
         draw_dialogue_text(
             font,
@@ -2086,21 +1799,7 @@ fn render_guild_bbs_panel(
             9.0,
             370,
             16,
-            [195, 188, 170],
-        );
-        fill_dialogue_rect(
-            &mut pixels,
-            width,
-            height,
-            224,
-            246,
-            376,
-            156,
-            if draft.focus == GuildBbsDraftFocus::Content {
-                [55, 48, 37, 255]
-            } else {
-                [38, 35, 30, 255]
-            },
+            [92, 83, 69],
         );
         draw_dialogue_text(
             font,
@@ -2113,7 +1812,7 @@ fn render_guild_bbs_panel(
             10.0,
             360,
             140,
-            [238, 232, 216],
+            if draft.focus == GuildBbsDraftFocus::Content { [20, 104, 174] } else { [45, 38, 29] },
         );
         if let Some(feedback) = bbs.feedback.as_deref() {
             draw_dialogue_text(
@@ -2127,32 +1826,20 @@ fn render_guild_bbs_panel(
                 8.0,
                 376,
                 14,
-                [255, 190, 130],
+                [150, 35, 35],
             );
         }
-        for (x, label) in [(410, "Cancel"), (510, "Publish")] {
-            fill_dialogue_rect(
+        for (x, path) in [
+            (410, "UIWindow.img/UserList/Guild/GuildBoard/BtCancel/normal/0"),
+            (510, "UIWindow.img/UserList/Guild/GuildBoard/BtSave/normal/0"),
+        ] {
+            let _ = composite_nx_ui_bitmap_centered(
                 &mut pixels,
                 width,
                 height,
-                x,
-                422,
-                90,
-                36,
-                [69, 57, 41, 255],
-            );
-            draw_dialogue_text(
-                font,
-                &mut pixels,
-                width,
-                height,
-                label,
-                x as i32 + 10,
-                433,
-                9.0,
-                70,
-                16,
-                [240, 224, 190],
+                ui_archive,
+                path,
+                ui_foundation::UiRect::new(x as f32, 422.0, 90.0, 36.0),
             );
         }
         draw_dialogue_text(
@@ -2166,7 +1853,7 @@ fn render_guild_bbs_panel(
             8.0,
             404,
             14,
-            [160, 154, 140],
+            [92, 83, 69],
         );
     } else if bbs.confirm_delete {
         fill_dialogue_rect(
@@ -2179,15 +1866,14 @@ fn render_guild_bbs_panel(
             height,
             [0, 0, 0, 176],
         );
-        fill_dialogue_rect(
+        let _ = composite_nx_ui_bitmap(
             &mut pixels,
             width,
             height,
+            ui_archive,
+            "Basic.img/YesNo/backgrnd",
             260,
             220,
-            304,
-            124,
-            [19, 17, 14, 255],
         );
         draw_dialogue_text(
             font,
@@ -2200,31 +1886,19 @@ fn render_guild_bbs_panel(
             12.0,
             260,
             20,
-            [240, 217, 172],
+            [45, 38, 29],
         );
-        for (x, label) in [(320, "Cancel"), (420, "Delete")] {
-            fill_dialogue_rect(
+        for (x, path) in [
+            (320, "Basic.img/BtNo/normal/0"),
+            (420, "Basic.img/BtYes/normal/0"),
+        ] {
+            let _ = composite_nx_ui_bitmap_centered(
                 &mut pixels,
                 width,
                 height,
-                x,
-                300,
-                80,
-                34,
-                [69, 57, 41, 255],
-            );
-            draw_dialogue_text(
-                font,
-                &mut pixels,
-                width,
-                height,
-                label,
-                x as i32 + 8,
-                310,
-                9.0,
-                64,
-                16,
-                [240, 224, 190],
+                ui_archive,
+                path,
+                ui_foundation::UiRect::new(x as f32, 300.0, 80.0, 34.0),
             );
         }
     }

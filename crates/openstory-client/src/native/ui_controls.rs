@@ -357,7 +357,8 @@ fn render_skill_book_panel(
     );
     for tab in 0..visible_tabs.min(5) {
         let active = tab == selected_tab;
-        let left = 5 + usize::from(tab) * 32;
+        let bounds = ui_foundation::skill_tab(usize::from(tab));
+        let left = bounds.x as usize;
         let tab_state = if active { "1" } else { "0" };
         let _ = composite_nx_ui_bitmap_scaled_to(
             &mut pixels,
@@ -396,14 +397,8 @@ fn render_skill_book_panel(
             "UIWindow.img/Skill/Tab/{}/{tab}",
             if active { "enabled" } else { "disabled" }
         );
-        let _ = composite_nx_ui_bitmap(
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            ui_archive,
-            &path,
-            left as i32 + 8,
-            28,
+        let _ = composite_nx_ui_bitmap_centered(
+            &mut pixels, WIDTH, HEIGHT, ui_archive, &path, bounds,
         );
     }
     if let Some((icon_width, icon_height, icon)) = book_icon {
@@ -450,7 +445,7 @@ fn render_skill_book_panel(
         .take(SKILL_BOOK_VISIBLE_ROWS)
         .enumerate()
     {
-        let y = 100 + row * 40;
+        let y = ui_foundation::skill_row(row).y as usize;
         let _ = composite_nx_ui_bitmap(
             &mut pixels,
             WIDTH,
@@ -531,8 +526,8 @@ fn render_skill_book_panel(
             HEIGHT,
             ui_archive,
             &path,
-            130,
-            y as i32 + 21,
+            ui_foundation::skill_sp_button(row).x as i32,
+            ui_foundation::skill_sp_button(row).y as i32,
         );
     }
     if entries.is_empty() {

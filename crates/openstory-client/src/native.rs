@@ -88,6 +88,7 @@ include!("native/ui_cash_storage.rs");
 include!("native/ui_trade_merchant.rs");
 include!("native/ui_inventory_data.rs");
 include!("native/ui_npc.rs");
+include!("native/ui_npc_shop.rs");
 include!("native/ui_status_bar.rs");
 include!("native/ui_wedding.rs");
 include!("native/ui_event_list.rs");

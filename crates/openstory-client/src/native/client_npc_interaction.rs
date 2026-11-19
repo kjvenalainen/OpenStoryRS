@@ -112,7 +112,7 @@ impl ClientApp {
             return;
         }
         self.pending_npc_talk = None;
-        if self.npc_dialogue.is_some() || self.storage.is_some() {
+        if self.npc_dialogue.is_some() || self.storage.is_some() || self.npc_shop.is_some() {
             return;
         }
         let Some(npc_id) = self

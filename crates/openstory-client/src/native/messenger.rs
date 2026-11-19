@@ -351,70 +351,30 @@ pub fn render(ui_archive: &NxArchive, font: &Font, state: &State) -> Result<Pane
         },
     });
 
-    // A separate Leave control makes the server-side leave operation explicit;
-    // the original close button also leaves for compatibility with the C++ UI.
-    let leave_bounds = HitRect {
-        x: state.x + 12.0,
-        y: state.y + 304.0,
-        width: 62.0,
-        height: 20.0,
-    };
-    draw_button(&mut pixels, width, height, font, 12, 304, 62, 20, "Leave");
-    actions.push(ActionHit {
-        bounds: leave_bounds,
-        action: Action::Leave,
-    });
-
     if let Some(prompt) = &state.invite_prompt {
         // A modal consumes input; retain only the window close target beneath it.
         actions.retain(|hit| hit.action == Action::Close);
-        draw_modal(&mut pixels, width, height, font, prompt);
-        let center_x = width as f32 / 2.0;
-        let input_y = height as f32 / 2.0 - 13.0;
-        let button_y = height as f32 / 2.0 + 20.0;
+        let modal = draw_modal(&mut pixels, width, height, ui_archive, font, prompt)?;
         if matches!(prompt, InvitePrompt::EnterName { .. }) {
             actions.push(ActionHit {
-                bounds: global_rect(state, center_x - 85.0, input_y, 170.0, 22.0),
+                bounds: global_rect(
+                    state,
+                    modal.bounds.x + 28.0,
+                    modal.bounds.y + 56.0,
+                    170.0,
+                    22.0,
+                ),
                 action: Action::FocusInviteName,
             });
         }
-        let accept = HitRect {
-            x: state.x + center_x - 74.0,
-            y: state.y + button_y,
-            width: 66.0,
-            height: 20.0,
+        let button_hit = |rect: super::ui_foundation::UiRect| HitRect {
+            x: state.x + rect.x,
+            y: state.y + rect.y,
+            width: rect.width,
+            height: rect.height,
         };
-        let decline = HitRect {
-            x: state.x + center_x + 8.0,
-            y: state.y + button_y,
-            width: 66.0,
-            height: 20.0,
-        };
-        draw_button(
-            &mut pixels,
-            width,
-            height,
-            font,
-            (center_x - 74.0) as i32,
-            button_y as i32,
-            66,
-            20,
-            match prompt {
-                InvitePrompt::EnterName { .. } => "Invite",
-                InvitePrompt::Incoming { .. } => "Accept",
-            },
-        );
-        draw_button(
-            &mut pixels,
-            width,
-            height,
-            font,
-            (center_x + 8.0) as i32,
-            button_y as i32,
-            66,
-            20,
-            "Decline",
-        );
+        let accept = button_hit(modal.buttons[0]);
+        let decline = button_hit(modal.buttons[1]);
         actions.push(ActionHit {
             bounds: accept,
             action: match prompt {
@@ -589,79 +549,30 @@ fn draw_text(
     baseline_y: f32,
     color: [u8; 3],
 ) {
-    let mut cursor_x = x;
-    for character in text.chars() {
-        let (metrics, coverage) = font.rasterize(character, FONT_SIZE);
-        let left = cursor_x.round() as i32 + metrics.xmin;
-        let top = (baseline_y + FONT_SIZE).round() as i32 - metrics.height as i32 - metrics.ymin;
-        for row in 0..metrics.height {
-            for column in 0..metrics.width {
-                let target_x = left + column as i32;
-                let target_y = top + row as i32;
-                if !(0..width as i32).contains(&target_x) || !(0..height as i32).contains(&target_y)
-                {
-                    continue;
-                }
-                let alpha = coverage[row * metrics.width + column];
-                if alpha == 0 {
-                    continue;
-                }
-                let index = (target_y as usize * width + target_x as usize) * 4;
-                blend_bgra(
-                    &mut canvas[index..index + 4],
-                    &[color[2], color[1], color[0], alpha],
-                );
-            }
-        }
-        cursor_x += metrics.advance_width;
-    }
-}
-
-fn draw_button(
-    pixels: &mut [u8],
-    canvas_width: usize,
-    canvas_height: usize,
-    font: &Font,
-    x: i32,
-    y: i32,
-    width: i32,
-    height: i32,
-    label: &str,
-) {
-    fill_rect(
-        pixels,
-        canvas_width,
-        canvas_height,
-        x,
-        y,
-        width,
-        height,
-        [92, 65, 38, 245],
-    );
-    stroke_rect(
-        pixels,
-        canvas_width,
-        canvas_height,
-        x,
-        y,
-        width,
-        height,
-        [207, 167, 104, 255],
-    );
-    let label_width = measure_text(font, label);
-    draw_text(
-        pixels,
-        canvas_width,
-        canvas_height,
+    let x = x.round() as i32;
+    super::draw_dialogue_text(
         font,
-        label,
-        x as f32 + ((width as f32 - label_width) / 2.0).max(2.0),
-        y as f32 + (height as f32 - FONT_SIZE) / 2.0,
-        [255, 245, 220],
+        canvas,
+        width,
+        height,
+        text,
+        x,
+        baseline_y.round() as i32,
+        FONT_SIZE,
+        width.saturating_sub(x.max(0) as usize),
+        FONT_SIZE.ceil() as usize + 4,
+        color,
     );
 }
 
-fn draw_modal(pixels: &mut [u8], width: usize, height: usize, font: &Font, prompt: &InvitePrompt) {
+fn draw_modal(
+    pixels: &mut [u8],
+    width: usize,
+    height: usize,
+    ui_archive: &NxArchive,
+    font: &Font,
+    prompt: &InvitePrompt,
+) -> Result<super::NxUiModalLayout, String> {
     fill_rect(
         pixels,
         width,
@@ -672,30 +583,20 @@ fn draw_modal(pixels: &mut [u8], width: usize, height: usize, font: &Font, promp
         height as i32,
         [0, 0, 0, 132],
     );
-    let modal_width = 190_i32.min(width as i32 - 12).max(1);
-    let modal_height = 98_i32.min(height as i32 - 12).max(1);
-    let x = (width as i32 - modal_width) / 2;
-    let y = (height as i32 - modal_height) / 2;
-    fill_rect(
+    let buttons = match prompt {
+        InvitePrompt::EnterName { .. } => {
+            ["Basic.img/BtOK/normal/0", "Basic.img/BtCancel/normal/0"]
+        }
+        InvitePrompt::Incoming { .. } => ["Basic.img/BtYes/normal/0", "Basic.img/BtNo/normal/0"],
+    };
+    let modal = super::composite_nx_ui_modal(
         pixels,
         width,
         height,
-        x,
-        y,
-        modal_width,
-        modal_height,
-        [38, 31, 24, 250],
-    );
-    stroke_rect(
-        pixels,
-        width,
-        height,
-        x,
-        y,
-        modal_width,
-        modal_height,
-        [209, 170, 111, 255],
-    );
+        ui_archive,
+        "Basic.img/YesNo/backgrnd",
+        &buttons,
+    )?;
     let message = match prompt {
         InvitePrompt::EnterName { .. } => "Invite which player?",
         InvitePrompt::Incoming { .. } => "Messenger invitation",
@@ -707,34 +608,24 @@ fn draw_modal(pixels: &mut [u8], width: usize, height: usize, font: &Font, promp
         font,
         message,
         width as f32 / 2.0,
-        y as f32 + 10.0,
-        [255, 239, 204],
+        modal.bounds.y + 15.0,
+        [35, 35, 35],
     );
     let body = match prompt {
         InvitePrompt::EnterName { draft } => draft.as_str(),
         InvitePrompt::Incoming { inviter } => inviter.as_str(),
     };
-    let input_y = y + 36;
-    fill_rect(
-        pixels,
-        width,
-        height,
-        x + 10,
-        input_y,
-        modal_width - 20,
-        22,
-        [241, 231, 210, 255],
-    );
     draw_text(
         pixels,
         width,
         height,
         font,
         body,
-        (x + 15) as f32,
-        (input_y + 3) as f32,
-        [30, 25, 20],
+        modal.bounds.x + 28.0,
+        modal.bounds.y + 56.0,
+        [35, 35, 35],
     );
+    Ok(modal)
 }
 
 fn draw_centered_text(
@@ -760,9 +651,7 @@ fn draw_centered_text(
 }
 
 fn measure_text(font: &Font, text: &str) -> f32 {
-    text.chars()
-        .map(|character| font.metrics(character, FONT_SIZE).advance_width)
-        .sum()
+    super::ui_foundation::measure_text(font, text, FONT_SIZE)
 }
 
 fn truncate_to_width(font: &Font, text: &str, maximum_width: f32) -> String {
@@ -800,40 +689,6 @@ fn fill_rect(
             );
         }
     }
-}
-
-fn stroke_rect(
-    canvas: &mut [u8],
-    canvas_width: usize,
-    canvas_height: usize,
-    x: i32,
-    y: i32,
-    width: i32,
-    height: i32,
-    color: [u8; 4],
-) {
-    fill_rect(canvas, canvas_width, canvas_height, x, y, width, 1, color);
-    fill_rect(
-        canvas,
-        canvas_width,
-        canvas_height,
-        x,
-        y + height - 1,
-        width,
-        1,
-        color,
-    );
-    fill_rect(canvas, canvas_width, canvas_height, x, y, 1, height, color);
-    fill_rect(
-        canvas,
-        canvas_width,
-        canvas_height,
-        x + width - 1,
-        y,
-        1,
-        height,
-        color,
-    );
 }
 
 fn blend_bgra(destination: &mut [u8], source: &[u8]) {

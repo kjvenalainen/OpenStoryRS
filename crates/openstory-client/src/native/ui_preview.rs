@@ -208,6 +208,10 @@ pub(super) fn run(
             build_merchant_panel_scene(name, map, legacy_ui, characters, items, strings, font)?
         } else if name.starts_with("panel-trade-room") {
             build_trade_panel_scene(name, map, legacy_ui, characters, items, strings, font)?
+        } else if name.starts_with("panel-npc-shop") {
+            build_npc_shop_panel_scene(
+                name, map, legacy_ui, npcs, characters, items, strings, font,
+            )?
         } else if *name == "panel-npc-storage" {
             build_storage_panel_scene(map, legacy_ui, npcs, characters, items, strings, font)?
         } else if *name == "panel-item-tooltip" {
@@ -808,6 +812,55 @@ pub(super) fn run(
                     );
                 }
             }
+            if matches!(
+                *name,
+                "panel-skill-inventory"
+                    | "panel-stats"
+                    | "panel-stats-detail"
+                    | "panel-equipment-inventory"
+            ) {
+                let (x, y, regions) = if *name == "panel-skill-inventory" {
+                    let mut regions = (0..3).map(ui_foundation::skill_tab).collect::<Vec<_>>();
+                    regions
+                        .extend((0..SKILL_BOOK_VISIBLE_ROWS).map(ui_foundation::skill_sp_button));
+                    regions.push(ui_foundation::SKILL_MACRO_BUTTON);
+                    (SKILL_BOOK_PANEL_X, SKILL_BOOK_PANEL_Y, regions)
+                } else if *name == "panel-equipment-inventory" {
+                    let regions = (1..=59)
+                        .filter_map(equipment_inventory_slot_position)
+                        .map(|(x, y)| ui_foundation::UiRect::new(x as f32, y as f32, 33.0, 33.0))
+                        .collect();
+                    (
+                        EQUIPMENT_INVENTORY_PANEL_X,
+                        EQUIPMENT_INVENTORY_PANEL_Y,
+                        regions,
+                    )
+                } else {
+                    let mut regions = ui_foundation::status_ap_buttons()
+                        .map(|(_, rect)| rect)
+                        .to_vec();
+                    regions.extend([
+                        ui_foundation::STATUS_AUTO_BUTTON,
+                        ui_foundation::STATUS_DETAIL_BUTTON,
+                    ]);
+                    (STATUS_PANEL_X, STATUS_PANEL_Y, regions)
+                };
+                for (index, rect) in regions.into_iter().enumerate() {
+                    draw_rect_outline(
+                        &mut image,
+                        CANVAS_WIDTH,
+                        CANVAS_HEIGHT,
+                        SpriteRect {
+                            x: x + rect.x,
+                            y: y + rect.y,
+                            width: rect.width,
+                            height: rect.height,
+                            blend_mode: BlendMode::Alpha,
+                        },
+                        hitbox_color(index),
+                    );
+                }
+            }
             if *name == "panel-item-inventory" {
                 for tab in 0..5 {
                     draw_rect_outline(
@@ -1365,7 +1418,6 @@ fn build_scene(
                 None,
             )
         }
-        "page-character-create-class" => load_character_class_scene(map, legacy_ui, font),
         "page-character-create-explorer" => {
             let pools = load_character_creation_options(etc, 1, false)?;
             let creation = CharacterCreationState::customize(1, pools);
@@ -1401,11 +1453,13 @@ fn build_scene(
         | "panel-keyboard-settings-capture"
         | "panel-keyboard-settings-scroll"
         | "panel-keyboard-settings-quickslots"
+        | "panel-keyboard-settings-large-values"
         | "hud-quickslot"
         | "panel-skill-macros"
         | "panel-skill-macros-drag"
         | "panel-skill-macros-book"
         | "panel-item-inventory"
+        | "panel-inventory-drop"
         | "panel-equipment-inventory"
         | "panel-skill-inventory"
         | "page-cash-shop"
@@ -1415,11 +1469,16 @@ fn build_scene(
         | "panel-quests"
         | "hud-chat"
         | "panel-whisper"
+        | "panel-owl"
+        | "panel-owl-results"
         | "panel-party"
         | "panel-buddy"
         | "panel-guild"
         | "panel-guild-populated"
         | "panel-guild-scrolled"
+        | "panel-guild-bbs"
+        | "panel-guild-bbs-draft"
+        | "panel-guild-bbs-confirm-delete"
         | "panel-alliance"
         | "panel-alliance-populated"
         | "panel-alliance-scrolled" => build_native_window_scene(
@@ -1430,6 +1489,7 @@ fn build_scene(
             character_archive,
             item_archive,
             skill_archive,
+            strings,
             font,
         ),
         "panel-character-info" | "panel-character-info-long" => build_character_info_scene(
@@ -2059,9 +2119,21 @@ fn build_inventory_panel_scene(
             item.inventory_type == openstory_protocol::InventoryType::Equip && item.slot <= 2
         });
         openstory_protocol::InventoryType::Equip
+    } else if variant.ends_with("-stacks") {
+        openstory_protocol::InventoryType::Use
     } else {
         openstory_protocol::InventoryType::Etc
     };
+    if variant.ends_with("-stacks") {
+        for (index, item) in inventory
+            .items
+            .iter_mut()
+            .filter(|i| i.inventory_type == active_tab)
+            .enumerate()
+        {
+            item.count = [1, 9, 10, 99, 100, 999, 1000, 9999, 10000, 65535, 8888, 11][index % 12];
+        }
+    }
     if variant.ends_with("-empty") {
         inventory.items.clear();
     }
@@ -2111,7 +2183,6 @@ fn build_inventory_panel_scene(
         })
     {
         let drag_pixels = render_inventory_item_cell(
-            font,
             item,
             legacy_ui_archive,
             item_archive,
@@ -2444,6 +2515,122 @@ fn build_pet_equipment_scene(
     })
 }
 
+fn build_npc_shop_panel_scene(
+    variant: &str,
+    map: &NxArchive,
+    ui: &NxArchive,
+    npcs: &NxArchive,
+    characters: &NxArchive,
+    items: &NxArchive,
+    strings: &NxArchive,
+    font: &fontdue::Font,
+) -> Result<LoginSceneAssets, String> {
+    let empty = variant == "panel-npc-shop-empty";
+    let mut state = NpcShopUi::new(openstory_protocol::NpcShop {
+        npc_id: fixture_named_id(strings, "Npc.img", "Lina", 1011100),
+        currency_item_id: 0,
+        items: if empty {
+            Vec::new()
+        } else {
+            [
+                2_000_000, 2_000_001, 2_000_002, 2_000_003, 2_000_006, 2_000_004, 2_020_001,
+                2_020_002, 2_030_000, 2_050_000, 2_050_001, 2_050_002,
+            ]
+            .into_iter()
+            .enumerate()
+            .map(|(index, id)| openstory_protocol::NpcShopItem {
+                item_id: id,
+                price: [50, 160, 320, 200, 620][index % 5],
+                pitch: 0,
+                time: 0,
+                charge_price: 0,
+                buyable: 100,
+                rechargeable: false,
+                slot: index as i16,
+            })
+            .collect()
+        },
+    });
+    let mut inventory = if empty {
+        openstory_protocol::InventorySnapshot::default()
+    } else {
+        preview_inventory()
+    };
+    state.tab = openstory_protocol::InventoryType::Use;
+    if !empty {
+        inventory.items = (0..12)
+            .map(|i| openstory_protocol::InventoryItem {
+                inventory_type: state.tab,
+                slot: i + 1,
+                item_id: 2_000_000 + i32::from(i % 4),
+                count: 100 - i * 3,
+                ..Default::default()
+            })
+            .collect();
+        state.buy_selection = Some(1);
+        state.sell_selection = Some(2);
+    }
+    if variant == "panel-npc-shop-scrolled" {
+        state.buy_scroll = 5;
+        state.sell_scroll = 5;
+        state.buy_selection = Some(6);
+        state.sell_selection = Some(7);
+    }
+    if variant == "panel-npc-shop-stacks" {
+        for (index, item) in inventory.items.iter_mut().enumerate() {
+            item.count = [1, 99, 100, 8888, 65535][index % 5];
+        }
+    }
+    if variant == "panel-npc-shop-quantity" {
+        state.quantity = Some(NpcShopQuantity {
+            buy: true,
+            slot: 1,
+            item_id: 2_000_001,
+            maximum: 100,
+            input: "25".to_owned(),
+        });
+    }
+    if variant == "panel-npc-shop-large-values" {
+        inventory.meso = i64::MAX;
+    }
+    let pixels = render_npc_shop_panel(
+        font,
+        &state,
+        &inventory,
+        Some(&fixture_look()),
+        ui,
+        npcs,
+        items,
+        characters,
+        strings,
+        &mut HashMap::new(),
+        &mut HashMap::new(),
+    )?;
+    let mut sprites = gameplay_backdrop(map, characters, font)?;
+    sprites.push(DecodedSprite {
+        texture_key: "nx-window:live-npc-shop".to_owned(),
+        rect: SpriteRect {
+            x: NPC_SHOP_X,
+            y: NPC_SHOP_Y,
+            width: NPC_SHOP_WIDTH as f32,
+            height: NPC_SHOP_HEIGHT as f32,
+            blend_mode: BlendMode::Alpha,
+        },
+        depth_order: 0,
+        texture_width: NPC_SHOP_WIDTH as u32,
+        texture_height: NPC_SHOP_HEIGHT as u32,
+        pixels: Arc::from(pixels),
+    });
+    Ok(LoginSceneAssets {
+        sprites,
+        actions: Vec::new(),
+        map_scene: None,
+        animated_art: Vec::new(),
+        login_buttons: Vec::new(),
+        save_id_indicator_draws: None,
+    })
+}
+
 fn build_storage_panel_scene(
     map_archive: &NxArchive,
     ui_archive: &NxArchive,
@@ -2576,7 +2763,17 @@ fn build_equipment_panel_scene(
     item_archive: &NxArchive,
     font: &fontdue::Font,
 ) -> Result<LoginSceneAssets, String> {
-    let inventory = preview_equipped_inventory();
+    let mut inventory = preview_equipped_inventory();
+    // Exercise the eye/face/ear cells, which differ from the newer doll layout.
+    for (slot, item_id) in [(2, 1_012_000), (3, 1_022_000), (4, 1_032_000)] {
+        inventory.items.push(openstory_protocol::InventoryItem {
+            inventory_type: openstory_protocol::InventoryType::Equipped,
+            slot,
+            item_id,
+            count: 1,
+            ..Default::default()
+        });
+    }
     let pixels = super::render_equipment_inventory_panel(
         &inventory,
         ui_archive,
@@ -2835,6 +3032,7 @@ fn build_native_window_scene(
     character_archive: &NxArchive,
     item_archive: &NxArchive,
     skill_archive: &NxArchive,
+    string_archive: &NxArchive,
     font: &fontdue::Font,
 ) -> Result<LoginSceneAssets, String> {
     let mut sprites = if name == "page-cash-shop" {
@@ -2851,12 +3049,14 @@ fn build_native_window_scene(
         | "panel-keyboard-settings-empty"
         | "panel-keyboard-settings-capture"
         | "panel-keyboard-settings-scroll"
-        | "panel-keyboard-settings-quickslots" => &[],
+        | "panel-keyboard-settings-quickslots"
+        | "panel-keyboard-settings-large-values" => &[],
         "hud-quickslot"
         | "panel-skill-macros"
         | "panel-skill-macros-drag"
         | "panel-skill-macros-book" => &[],
         "panel-item-inventory" => &[("UIWindow.img/Item/backgrnd", 300.0, 160.0)],
+        "panel-inventory-drop" => &[],
         "panel-equipment-inventory" => &[],
         "panel-skill-inventory" => &[
             // Compose the same scaled v83 Skill window used by the live panel below.
@@ -2871,12 +3071,16 @@ fn build_native_window_scene(
         // The v83 UI archive has StatusBar.img, not the newer StatusBar2
         // chat-bar tree. Preview the live Rust fallback panel below.
         "hud-chat" | "panel-whisper" => &[],
+        "panel-owl" | "panel-owl-results" => &[],
         "panel-party" | "panel-buddy" => &[],
         // The C++ v83 client uses the UserList tree. Newer GuildUI.img art is
         // absent from the installed v83 UI.nx archive.
         "panel-guild"
         | "panel-guild-populated"
         | "panel-guild-scrolled"
+        | "panel-guild-bbs"
+        | "panel-guild-bbs-draft"
+        | "panel-guild-bbs-confirm-delete"
         | "panel-alliance"
         | "panel-alliance-populated"
         | "panel-alliance-scrolled" => &[],
@@ -2985,6 +3189,70 @@ fn build_native_window_scene(
             depth_order: 0,
             texture_width: ALLIANCE_PANEL_WIDTH,
             texture_height: ALLIANCE_PANEL_HEIGHT,
+            pixels: Arc::from(pixels),
+        });
+    } else if matches!(
+        name,
+        "panel-guild-bbs" | "panel-guild-bbs-draft" | "panel-guild-bbs-confirm-delete"
+    ) {
+        let thread = openstory_protocol::BbsThread {
+            id: 101,
+            poster_id: 1,
+            title: "Maple World meetup this weekend".to_owned(),
+            timestamp: 0,
+            icon: 0,
+            reply_count: 1,
+        };
+        let bbs = GuildBbsUi {
+            page: 0,
+            total_threads: 3,
+            notice: Some(openstory_protocol::BbsThread {
+                id: 100,
+                poster_id: 1,
+                title: "Welcome to the guild".to_owned(),
+                timestamp: 0,
+                icon: 0,
+                reply_count: 0,
+            }),
+            threads: vec![thread.clone()],
+            thread: Some(openstory_protocol::BbsThreadView {
+                id: thread.id,
+                poster_id: thread.poster_id,
+                timestamp: thread.timestamp,
+                title: thread.title.clone(),
+                content: "Meet near the Henesys market after the event. Bring your friends and share the drops.".to_owned(),
+                icon: thread.icon,
+                replies: vec![openstory_protocol::BbsReply {
+                    id: 201,
+                    poster_id: 2,
+                    timestamp: 0,
+                    text: "I'll be there!".to_owned(),
+                }],
+            }),
+            draft: (name == "panel-guild-bbs-draft").then(|| GuildBbsDraft {
+                title: "Maple World meetup".to_owned(),
+                content: "Meet near the Henesys market after the event. Bring your friends and share the drops.".to_owned(),
+                is_notice: false,
+                focus: GuildBbsDraftFocus::Content,
+            }),
+            reply_input: String::new(),
+            reply_focused: false,
+            confirm_delete: name == "panel-guild-bbs-confirm-delete",
+            feedback: None,
+        };
+        let pixels = render_guild_bbs_panel(font, ui_archive, &bbs, Some(&preview_guild()));
+        sprites.push(DecodedSprite {
+            texture_key: "nx-window:rendered-v83-guild-bbs".to_owned(),
+            rect: SpriteRect {
+                x: 100.0,
+                y: 100.0,
+                width: GUILD_BBS_PANEL_WIDTH as f32,
+                height: GUILD_BBS_PANEL_HEIGHT as f32,
+                blend_mode: BlendMode::Alpha,
+            },
+            depth_order: 0,
+            texture_width: GUILD_BBS_PANEL_WIDTH,
+            texture_height: GUILD_BBS_PANEL_HEIGHT,
             pixels: Arc::from(pixels),
         });
     } else if name == "panel-party" {
@@ -3176,6 +3444,102 @@ fn build_native_window_scene(
             texture_height: WHISPER_PANEL_HEIGHT,
             pixels: Arc::from(pixels),
         });
+    } else if name == "panel-owl" || name == "panel-owl-results" {
+        let results_mode = name == "panel-owl-results";
+        let mut owl = OwlSearchUi {
+            slot: 1,
+            item_id: 5_022_000,
+            query: "Red Potion".to_owned(),
+            top_item_ids: vec![2_000_000, 2_000_001, 2_000_002, 2_000_003],
+            top_items_loaded: true,
+            results: Vec::new(),
+            result_item_id: results_mode.then_some(2_000_000),
+            selected_result: None,
+            result_offset: 0,
+            notice: None,
+        };
+        if results_mode {
+            owl.results = vec![
+                openstory_protocol::OwlShopResult {
+                    owner: "MapleSeller".to_owned(),
+                    map_id: 100_000_000,
+                    description: "Red Potion x100".to_owned(),
+                    bundles: 4,
+                    per_bundle: 100,
+                    price: 2_000,
+                    owner_id: 1001,
+                    channel: 0,
+                },
+                openstory_protocol::OwlShopResult {
+                    owner: "MushroomMart".to_owned(),
+                    map_id: 101_000_000,
+                    description: "Red Potion x50".to_owned(),
+                    bundles: 6,
+                    per_bundle: 50,
+                    price: 1_500,
+                    owner_id: 1002,
+                    channel: 1,
+                },
+                openstory_protocol::OwlShopResult {
+                    owner: "HenesysShop".to_owned(),
+                    map_id: 100_000_000,
+                    description: "Red Potion x100".to_owned(),
+                    bundles: 2,
+                    per_bundle: 100,
+                    price: 1_800,
+                    owner_id: 1003,
+                    channel: 2,
+                },
+            ];
+            owl.selected_result = Some(1);
+        }
+        let pixels = render_owl_panel(font, ui_archive, &owl, string_archive, &mut HashMap::new());
+        sprites.push(DecodedSprite {
+            texture_key: "nx-window:rendered-v83-owl".to_owned(),
+            rect: SpriteRect {
+                x: OWL_PANEL_X,
+                y: OWL_PANEL_Y,
+                width: OWL_PANEL_WIDTH as f32,
+                height: OWL_PANEL_HEIGHT as f32,
+                blend_mode: BlendMode::Alpha,
+            },
+            depth_order: 0,
+            texture_width: OWL_PANEL_WIDTH,
+            texture_height: OWL_PANEL_HEIGHT,
+            pixels: Arc::from(pixels),
+        });
+    } else if name == "panel-inventory-drop" {
+        let prompt = InventoryDropPrompt {
+            action: InventoryQuantityAction::Drop,
+            inventory_type: openstory_protocol::InventoryType::Use,
+            slot: 1,
+            item_id: 2_000_000,
+            max_quantity: 100,
+            quantity: "12".to_owned(),
+            step: InventoryDropStep::Quantity,
+            notice: None,
+        };
+        let pixels = render_inventory_drop_prompt(
+            ui_archive,
+            font,
+            &prompt,
+            string_archive,
+            &mut HashMap::new(),
+        )?;
+        sprites.push(DecodedSprite {
+            texture_key: "nx-window:rendered-v83-inventory-drop".to_owned(),
+            rect: SpriteRect {
+                x: 0.0,
+                y: 0.0,
+                width: CANVAS_WIDTH as f32,
+                height: CANVAS_HEIGHT as f32,
+                blend_mode: BlendMode::Alpha,
+            },
+            depth_order: 0,
+            texture_width: CANVAS_WIDTH,
+            texture_height: CANVAS_HEIGHT,
+            pixels: Arc::from(pixels),
+        });
     }
 
     if name == "hud-quickslot" {
@@ -3255,7 +3619,11 @@ fn build_native_window_scene(
             fixture.first_row,
             &fixture.actions,
             &mut HashMap::new(),
-            &HashMap::from([(2_000_006, 245), (2_000_002, 251)]),
+            &if name.ends_with("-large-values") {
+                HashMap::from([(2_000_006, 65_535), (2_000_002, 123_456)])
+            } else {
+                HashMap::from([(2_000_006, 245), (2_000_002, 251)])
+            },
         );
         sprites.push(DecodedSprite {
             texture_key: "key-config-preview".to_owned(),
@@ -3662,8 +4030,10 @@ fn geometry_report(name: &str, scene: &LoginSceneAssets, width: u32, height: u32
             | "panel-keyboard-settings-capture"
             | "panel-keyboard-settings-scroll"
             | "panel-keyboard-settings-quickslots"
+            | "panel-keyboard-settings-large-values"
             | "panel-skill-macros"
             | "panel-item-inventory"
+            | "panel-inventory-drop"
             | "panel-equipment-inventory"
             | "panel-skill-inventory"
             | "panel-pet-equipment"
@@ -3677,6 +4047,8 @@ fn geometry_report(name: &str, scene: &LoginSceneAssets, width: u32, height: u32
             | "panel-quests"
             | "panel-quests-detail"
             | "hud-chat"
+            | "panel-owl"
+            | "panel-owl-results"
             | "panel-party"
             | "panel-buddy"
             | "panel-guild"

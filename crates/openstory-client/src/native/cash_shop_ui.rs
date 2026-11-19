@@ -95,7 +95,6 @@ pub(super) fn render(
     const X: usize = 112;
     const Y: usize = 84;
     let mut pixels = vec![0; WIDTH * HEIGHT * 4];
-    fill_layer(&mut pixels, 0, 0, WIDTH, HEIGHT, [25, 31, 42, 255]);
     let mut hit_regions = Vec::new();
     draw_asset(
         &mut pixels,
@@ -165,34 +164,30 @@ pub(super) fn render(
     for (index, label) in super::CASH_SHOP_CATEGORIES.iter().enumerate() {
         let left = X + 278 + index * 55;
         let selected = state.category == index;
-        fill_layer(
+        super::composite_nx_ui_tab(
             &mut pixels,
-            left,
-            Y + 36,
-            53,
-            31,
-            if selected {
-                [80, 160, 115, 255]
-            } else {
-                [145, 145, 145, 255]
-            },
-        );
+            WIDTH,
+            HEIGHT,
+            ui_archive,
+            super::ui_foundation::UiRect::new(left as f32, (Y + 38) as f32, 53.0, 19.0),
+            selected,
+        )?;
         add_text(
             font,
             &mut pixels,
             label,
             left as i32 + 4,
-            (Y + 45) as i32,
+            (Y + 40) as i32,
             9.0,
             48,
-            14,
-            [255, 255, 255],
+            13,
+            [35, 35, 35],
         );
         hit_regions.push(logical_region(
             left as f32,
-            (Y + 36) as f32,
+            (Y + 38) as f32,
             53.0,
-            31.0,
+            19.0,
             HitAction::Category(index),
         ));
     }
@@ -410,7 +405,7 @@ pub(super) fn render(
             HitAction::LockerItem(index)
         };
         hit_regions.push(logical_region(left as f32, top as f32, 200.0, 78.0, action));
-        if let Some(product) = product {
+        if product.is_some() {
             if let Some(bounds) = draw_asset(
                 &mut pixels,
                 ui_archive,
@@ -424,9 +419,6 @@ pub(super) fn render(
                     bounds,
                     action: HitAction::BuyProduct(product_index),
                 });
-            }
-            if state.selected_sn == Some(product.sn) {
-                stroke_rect(&mut pixels, left, top, 200, 79, [70, 220, 245, 255]);
             }
         }
     }
@@ -790,7 +782,6 @@ fn draw_coupon_dialog(
         18,
         [35, 35, 35],
     );
-    blend_rect(pixels, 403, 369, 218, 22, [255, 255, 255, 255]);
     let code = super::ui_foundation::ellipsize(font, &state.coupon_code, 11.0, 206.0);
     add_text(font, pixels, &code, 409, 372, 11.0, 206, 16, [35, 35, 35]);
     if !state.coupon_pending
@@ -920,15 +911,6 @@ fn composite_scaled(
     }
 }
 
-fn fill_layer(pixels: &mut [u8], x: usize, y: usize, width: usize, height: usize, color: [u8; 4]) {
-    for row in y.min(HEIGHT)..y.saturating_add(height).min(HEIGHT) {
-        for column in x.min(WIDTH)..x.saturating_add(width).min(WIDTH) {
-            let index = (row * WIDTH + column) * 4;
-            pixels[index..index + 4].copy_from_slice(&[color[2], color[1], color[0], color[3]]);
-        }
-    }
-}
-
 fn blend_rect(pixels: &mut [u8], x: usize, y: usize, width: usize, height: usize, color: [u8; 4]) {
     for row in y.min(HEIGHT)..y.saturating_add(height).min(HEIGHT) {
         for column in x.min(WIDTH)..x.saturating_add(width).min(WIDTH) {
@@ -939,16 +921,6 @@ fn blend_rect(pixels: &mut [u8], x: usize, y: usize, width: usize, height: usize
             );
         }
     }
-}
-
-fn stroke_rect(pixels: &mut [u8], x: usize, y: usize, width: usize, height: usize, color: [u8; 4]) {
-    if width == 0 || height == 0 {
-        return;
-    }
-    blend_rect(pixels, x, y, width, 1, color);
-    blend_rect(pixels, x, y.saturating_add(height - 1), width, 1, color);
-    blend_rect(pixels, x, y, 1, height, color);
-    blend_rect(pixels, x.saturating_add(width - 1), y, 1, height, color);
 }
 
 fn blend_pixel(destination: &mut [u8], source: &[u8]) {

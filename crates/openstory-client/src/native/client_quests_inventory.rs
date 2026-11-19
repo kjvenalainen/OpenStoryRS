@@ -367,25 +367,25 @@ impl ClientApp {
         }
         let local_x = cursor.x - PANEL_X;
         let local_y = cursor.y - PANEL_Y;
-        if (SKILL_BOOK_PANEL_WIDTH as f32 - 24.0..SKILL_BOOK_PANEL_WIDTH as f32)
-            .contains(&local_x)
+        if (SKILL_BOOK_PANEL_WIDTH as f32 - 24.0..SKILL_BOOK_PANEL_WIDTH as f32).contains(&local_x)
             && (4.0..25.0).contains(&local_y)
         {
             self.show_skill_book = false;
             return true;
         }
-        if (24.0..44.0).contains(&local_y) {
-            let tab = ((local_x - 5.0) / 32.0).floor() as i32;
-            if (0..5).contains(&tab) && local_x >= 5.0 {
-                let tab = tab as u8;
-                if self.active_character.as_ref().is_some_and(|character| {
-                    skill_subjob_for_tab(character.stats.job, tab).is_some()
-                }) {
-                    self.skill_book_tab = tab;
-                    self.skill_book_scroll_row = 0;
-                    self.refresh_skill_book_entries();
-                    self.refresh_skill_book_texture();
-                }
+        if let Some(tab) =
+            (0..5).find(|tab| ui_foundation::skill_tab(*tab).contains(local_x, local_y))
+        {
+            let tab = tab as u8;
+            if self
+                .active_character
+                .as_ref()
+                .is_some_and(|character| skill_subjob_for_tab(character.stats.job, tab).is_some())
+            {
+                self.skill_book_tab = tab;
+                self.skill_book_scroll_row = 0;
+                self.refresh_skill_book_entries();
+                self.refresh_skill_book_texture();
             }
             return true;
         }
@@ -393,8 +393,9 @@ impl ClientApp {
             self.open_skill_macro_editor();
             return true;
         }
-        if (100.0..260.0).contains(&local_y) {
-            let row = ((local_y - 100.0) / 40.0).floor() as usize;
+        if let Some(row) = (0..SKILL_BOOK_VISIBLE_ROWS)
+            .find(|row| ui_foundation::skill_row(*row).contains(local_x, local_y))
+        {
             let Some(entry) = self
                 .skill_book_entries
                 .get(self.skill_book_scroll_row.saturating_add(row))
@@ -402,9 +403,9 @@ impl ClientApp {
             else {
                 return true;
             };
-            if local_x >= SKILL_BOOK_PANEL_WIDTH as f32 - 25.0 {
+            if ui_foundation::skill_sp_button(row).contains(local_x, local_y) {
                 self.spend_skill_point(&entry);
-            } else if (8.0..SKILL_BOOK_PANEL_WIDTH as f32 - 25.0).contains(&local_x) {
+            } else {
                 self.use_skill(&entry);
             }
             return true;
@@ -1502,12 +1503,19 @@ impl ClientApp {
             self.inventory_drop_prompt_texture = None;
             return;
         };
-        let pixels = render_inventory_drop_prompt(
+        let pixels = match render_inventory_drop_prompt(
+            &self.legacy_ui_archive,
             &self.font,
             prompt,
             &self.string_archive,
             &mut self.item_name_cache,
-        );
+        ) {
+            Ok(pixels) => pixels,
+            Err(error) => {
+                eprintln!("OpenStoryRS: could not compose the NX item-drop prompt: {error}");
+                return;
+            }
+        };
         let Some(renderer) = self.renderer.as_ref() else {
             return;
         };

@@ -373,7 +373,7 @@ fn inventory_item_info_node(
     item_id: i32,
 ) -> Option<openstory_assets::NxNode> {
     let (is_character, icon_path) = inventory_icon_path(item_id)?;
-    let info_path = icon_path.strip_suffix("/iconRaw")?;
+    let info_path = icon_path.rsplit_once('/')?.0;
     let archive = if is_character {
         character_archive
     } else {

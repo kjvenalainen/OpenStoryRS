@@ -1387,6 +1387,7 @@ impl ClientApp {
                             self.sync_equipped_look();
                             self.refresh_inventory_texture();
                             self.refresh_storage_texture();
+                            self.refresh_npc_shop_texture();
                             self.refresh_inventory_drop_prompt_texture();
                             self.refresh_pet_equipment_texture();
                             self.refresh_key_config_texture();
@@ -1456,6 +1457,8 @@ impl ClientApp {
                 match openstory_protocol::parse_set_field(packet) {
                     Ok(openstory_protocol::SetField::MapChange(change)) => {
                         self.scriptable_npc_ids.clear();
+                        self.npc_shop = None;
+                        self.npc_shop_texture = None;
                         self.storage = None;
                         self.storage_texture = None;
                         if let Some(character) = self.active_character.as_mut() {
@@ -1475,6 +1478,8 @@ impl ClientApp {
                         monster_book,
                     }) => {
                         self.scriptable_npc_ids.clear();
+                        self.npc_shop = None;
+                        self.npc_shop_texture = None;
                         self.storage = None;
                         self.storage_texture = None;
                         self.character_selection_status = None;
@@ -2146,17 +2151,36 @@ impl ClientApp {
             }
             openstory_protocol::OPCODE_OPEN_NPC_SHOP => {
                 match openstory_protocol::parse_npc_shop(packet) {
-                    Ok(_) => {
+                    Ok(shop) => {
                         self.pending_npc_talk = None;
-                        if let Some(session) = self.session.as_ref() {
-                            if let Err(error) =
-                                session.send_packet(openstory_protocol::npc_shop_leave())
-                            {
-                                eprintln!("OpenStory: could not close NPC shop: {error}");
-                            }
-                        }
+                        self.npc_dialogue = None;
+                        self.npc_shop = Some(NpcShopUi::new(shop));
+                        self.refresh_npc_shop_texture();
                     }
                     Err(error) => eprintln!("OpenStory: invalid NPC shop: {error}"),
+                }
+            }
+            openstory_protocol::OPCODE_CONFIRM_NPC_SHOP_TRANSACTION => {
+                match openstory_protocol::parse_npc_shop_transaction_result(packet) {
+                    Ok(result) => {
+                        if let Some(shop) = self.npc_shop.as_mut() {
+                            shop.pending = false;
+                        }
+                        match result {
+                            0 | 8 => {}
+                            2 => self.show_server_notice_popup("You don't have enough mesos."),
+                            3 => self.show_server_notice_popup("Your inventory is full."),
+                            5 => self.show_server_notice_popup("You can't sell that item."),
+                            9 => self.show_server_notice_popup(
+                                "You don't have enough mesos to recharge.",
+                            ),
+                            _ => self.show_server_notice_popup(&format!(
+                                "Shop transaction failed ({result})."
+                            )),
+                        }
+                        self.refresh_npc_shop_texture();
+                    }
+                    Err(error) => eprintln!("OpenStoryRS: invalid shop result: {error}"),
                 }
             }
             openstory_protocol::OPCODE_NPC_ACTION => {

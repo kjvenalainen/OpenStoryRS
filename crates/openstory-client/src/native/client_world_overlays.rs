@@ -1401,12 +1401,12 @@ impl ClientApp {
             self.show_status_detail = false;
             return;
         }
-        if (323.0..342.0).contains(&y) && (124.0..173.0).contains(&x) {
+        if ui_foundation::STATUS_DETAIL_BUTTON.contains(x, y) {
             self.show_status_detail = !self.show_status_detail;
             self.refresh_status_texture();
             return;
         }
-        if (203.0..238.0).contains(&y) && (98.0..171.0).contains(&x) {
+        if ui_foundation::STATUS_AUTO_BUTTON.contains(x, y) && !self.status_waiting_for_stats {
             if self
                 .active_character
                 .as_ref()
@@ -1420,21 +1420,9 @@ impl ClientApp {
         if self.status_waiting_for_stats {
             return;
         }
-        let stat = if (114.0..132.0).contains(&y) && (56.0..171.0).contains(&x) {
-            Some(openstory_protocol::AbilityStat::Hp)
-        } else if (132.0..150.0).contains(&y) && (56.0..171.0).contains(&x) {
-            Some(openstory_protocol::AbilityStat::Mp)
-        } else if (244.0..262.0).contains(&y) && (56.0..171.0).contains(&x) {
-            Some(openstory_protocol::AbilityStat::Strength)
-        } else if (262.0..280.0).contains(&y) && (56.0..171.0).contains(&x) {
-            Some(openstory_protocol::AbilityStat::Dexterity)
-        } else if (280.0..298.0).contains(&y) && (56.0..171.0).contains(&x) {
-            Some(openstory_protocol::AbilityStat::Intelligence)
-        } else if (298.0..316.0).contains(&y) && (56.0..171.0).contains(&x) {
-            Some(openstory_protocol::AbilityStat::Luck)
-        } else {
-            None
-        };
+        let stat = ui_foundation::status_ap_buttons()
+            .into_iter()
+            .find_map(|(stat, rect)| rect.contains(x, y).then_some(stat));
         if let Some(stat) = stat {
             self.send_ability_point_requests(stat, 1);
         }

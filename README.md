@@ -11,7 +11,9 @@ the client at them with
 
 Core in-game panels use their v83 frames and controls from `UI.nx`, including
 stats, inventory and equipment, skills, quests, chat, map windows, and options.
-Live character and server data is rendered over the NX artwork.
+Live character and server data is rendered over the NX artwork. NPC shops use the
+v83 NX shop frame, item lists, category tabs, quantity dialog, and transaction controls;
+item and meso balances change only when confirmed by server updates.
 
 The native client opens v83 login and world/channel artwork in a resizable GPU-backed
 window, keeps a 1024x768 logical canvas, and scales with letterboxing. The account and
@@ -39,9 +41,11 @@ On macOS, when either override is absent, the client supplies the v83-compatible
 format from the primary network interface and the platform UUID, matching the legacy
 client's character-selection packets. These values are sent only as part of character
 selection and PIC requests to the configured Maple server.
-When a character slot is free, Create Character opens Explorer, Cygnus Knight, and Aran
-class choices. The customization screen reads gender-specific face, hair, color, skin,
-clothing, shoe, and weapon pools from `Etc.nx`, previews the selected avatar, checks
+When a character slot is free, Create Character opens Explorer customization directly;
+Explorer is the only class family supported by this client and server. The customization
+page uses the Maple Island login scenery from `Map.nx` and the character boards and
+controls from `UI.nx`. It reads gender-specific face, hair, color, skin, clothing, shoe,
+and weapon pools from `Etc.nx`, previews the selected avatar on the platform, checks
 forbidden names locally, and uses the v83 name-check/create packets. The server's new
 character entry is added to the current selection list.
 

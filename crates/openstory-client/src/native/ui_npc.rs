@@ -403,9 +403,7 @@ struct NpcDialogueLayout;
 impl NpcDialogueLayout {
     const WIDTH: usize = 529;
     const HEIGHT: usize = 260;
-    const TOP_HEIGHT: usize = 28;
     const BOTTOM_Y: usize = 202;
-    const BODY_HEIGHT: usize = Self::BOTTOM_Y - Self::TOP_HEIGHT;
     const PANEL_X: f32 = (1024.0 - Self::WIDTH as f32) / 2.0;
     const PANEL_Y: f32 = (768.0 - Self::HEIGHT as f32) / 2.0;
 
@@ -593,30 +591,7 @@ fn render_npc_dialogue(
     let (width, height) = (NpcDialogueLayout::WIDTH, NpcDialogueLayout::HEIGHT);
     let (panel_x, panel_y) = (NpcDialogueLayout::PANEL_X, NpcDialogueLayout::PANEL_Y);
     let mut pixels = vec![0_u8; width * height * 4];
-    let nx_frame = composite_npc_dialogue_frame(&mut pixels, width, height, ui_archive);
-    if !nx_frame {
-        // Keep dialogue usable with incomplete custom UI archives.
-        fill_dialogue_rect(
-            &mut pixels,
-            width,
-            height,
-            0,
-            0,
-            width,
-            height,
-            [26, 22, 18, 235],
-        );
-        fill_dialogue_rect(
-            &mut pixels,
-            width,
-            height,
-            0,
-            0,
-            width,
-            36,
-            [92, 70, 42, 255],
-        );
-    }
+    let _ = composite_npc_dialogue_frame(&mut pixels, width, height, ui_archive);
     if speaker == 0 {
         let mut npc_path = format!("{:07}.img", npc_id.max(0));
         for _ in 0..8 {
@@ -665,6 +640,9 @@ fn render_npc_dialogue(
             NpcDialogueLayout::NPC_BAR_Y,
         );
         let name_style = ui_foundation::UiTextRole::Label.style();
+        let name = ui_foundation::ellipsize(
+            font, &name, name_style.size, (NpcDialogueLayout::NPC_BAR_WIDTH - 8) as f32,
+        );
         let name_width = (dialogue_text_width(font, &name, name_style.size).ceil() as i32) + 1;
         ui_foundation::draw_text_role(
             font,
@@ -789,15 +767,16 @@ fn render_npc_dialogue(
                 inline_icons,
             );
             let underline_width = label_width.ceil() as usize;
-            fill_dialogue_rect(
+            let _ = composite_nx_ui_bitmap_scaled_to(
                 &mut pixels,
                 width,
                 height,
-                label_x as usize,
-                (local_y + 20) as usize,
+                ui_archive,
+                "UIWindow.img/UtilDlgEx/line",
+                label_x.max(0) as usize,
+                (local_y + 20).max(0) as usize,
                 underline_width,
                 if hovered { 2 } else { 1 },
-                [link_color[0], link_color[1], link_color[2], 255],
             );
             buttons.push(NpcDialogueButton {
                 rect,
@@ -1076,66 +1055,28 @@ fn push_nx_dialogue_button(
     buttons.push(NpcDialogueButton { rect, action });
 }
 
-fn nx_dialogue_button_geometry(archive: &NxArchive, path: &str) -> Option<(f32, f32, i32, i32)> {
-    let node = resolve_ui_path(&archive.root(), path).ok().flatten()?;
-    let bitmap = node.bitmap().ok().flatten()?;
-    let origin = node
-        .child("origin")
-        .ok()
-        .flatten()
-        .and_then(|origin| origin.value().ok())
-        .and_then(|value| match value {
-            NodeValue::Vector { x, y } => Some((x, y)),
-            _ => None,
-        })
-        .unwrap_or((0, 0));
-    Some((
-        f32::from(bitmap.width()),
-        f32::from(bitmap.height()),
-        origin.0,
-        origin.1,
-    ))
-}
-
 fn composite_npc_dialogue_frame(
     pixels: &mut [u8],
     width: usize,
     height: usize,
     ui_archive: &NxArchive,
 ) -> bool {
-    let mut frame = vec![0_u8; pixels.len()];
     let top = "UIWindow.img/UtilDlgEx/t";
     let fill = "UIWindow.img/UtilDlgEx/c";
     let bottom = "UIWindow.img/UtilDlgEx/s";
-    let result =
-        composite_nx_ui_bitmap(&mut frame, width, height, ui_archive, top, 0, 0).and_then(|_| {
-            let node = resolve_ui_path(&ui_archive.root(), fill)?
-                .ok_or_else(|| format!("missing v83 UI asset {fill:?}"))?;
-            let bitmap = node
-                .bitmap()
-                .map_err(|error| error.to_string())?
-                .ok_or_else(|| format!("v83 UI asset {fill:?} is not a bitmap"))?;
-            let step = usize::from(bitmap.height()).max(1);
-            let body_end = NpcDialogueLayout::TOP_HEIGHT + NpcDialogueLayout::BODY_HEIGHT;
-            for y in (NpcDialogueLayout::TOP_HEIGHT..body_end).step_by(step) {
-                composite_nx_ui_bitmap(&mut frame, width, height, ui_archive, fill, 0, y as i32)?;
-            }
-            composite_nx_ui_bitmap(
-                &mut frame,
-                width,
-                height,
-                ui_archive,
-                bottom,
-                0,
-                NpcDialogueLayout::BOTTOM_Y as i32,
-            )
-        });
-    if result.is_ok() {
-        pixels.copy_from_slice(&frame);
-        true
-    } else {
-        false
-    }
+    composite_nx_ui_vertical_frame(
+        pixels,
+        width,
+        height,
+        ui_archive,
+        top,
+        fill,
+        bottom,
+        0,
+        0,
+        NpcDialogueLayout::BOTTOM_Y as i32,
+    )
+    .is_ok()
 }
 
 pub(super) fn render_npc_dialogue_preview(

@@ -582,30 +582,18 @@ pub(super) fn render(
         if matches!(binding.kind, 2 | 3)
             && let Some(count) = item_counts.get(&binding.action)
         {
-            let count = count.to_string();
-            let mut counter = vec![0; 32 * 12 * 4];
-            let mut digit_x = 0;
-            for digit in count.chars().take(4) {
-                let _ = composite_nx_ui_bitmap(
-                    &mut counter,
-                    32,
-                    12,
-                    ui,
-                    &format!("Basic.img/ItemNo/{digit}"),
-                    digit_x,
-                    0,
-                );
-                digit_x += 8;
-            }
-            composite_bgra_pixels(
+            // Use the same NX glyph widths and fitting as inventory stacks.
+            // Fixed 8px advances truncated five-digit counts and spread short
+            // counts beyond the icon's left edge.
+            let _ = draw_item_stack_count(
                 &mut pixels,
                 width,
                 height,
-                &counter,
-                32,
-                12,
+                ui,
+                *count,
                 x,
                 rect.y as i32 + 20,
+                32,
             );
         }
     }

@@ -1,0 +1,840 @@
+// v83 shop art supplies every frame, control, selection and list background.
+const NPC_SHOP_WIDTH: usize = 463;
+const NPC_SHOP_HEIGHT: usize = 339;
+const NPC_SHOP_X: f32 = 280.0;
+const NPC_SHOP_Y: f32 = 170.0;
+const NPC_SHOP_ROWS: usize = 5;
+const NPC_SHOP_GRID_TOP: usize = 127;
+const NPC_SHOP_ROW_STEP: usize = 40;
+const NPC_SHOP_ROW_HEIGHT: usize = 35;
+const NPC_SHOP_SCROLL_BOTTOM: usize =
+    NPC_SHOP_GRID_TOP + (NPC_SHOP_ROWS - 1) * NPC_SHOP_ROW_STEP + NPC_SHOP_ROW_HEIGHT;
+const NPC_SHOP_SCROLL_X: [usize; 2] = [209, 440];
+const NPC_SHOP_SCROLL_WIDTH: usize = 15;
+const NPC_SHOP_SCROLL_ARROW: usize = 13;
+const NPC_SHOP_SCROLL_THUMB: usize = 25;
+
+// Buy and sell share a baseline; the upper controls share their right edges.
+// Both painting and hit testing use these anchors and the NX bitmap dimensions.
+const NPC_SHOP_BUTTONS: [(&str, i32, i32); 4] = [
+    ("BtExit", 138, 12),
+    ("BtBuy", 138, 34),
+    ("BtSell", 368, 34),
+    ("BtRecharge", 418, 12),
+];
+
+struct NpcShopUi {
+    shop: openstory_protocol::NpcShop,
+    tab: openstory_protocol::InventoryType,
+    buy_scroll: usize,
+    sell_scroll: usize,
+    buy_selection: Option<usize>,
+    sell_selection: Option<u16>,
+    pending: bool,
+    quantity: Option<NpcShopQuantity>,
+    hovered_button: Option<&'static str>,
+}
+
+struct NpcShopQuantity {
+    buy: bool,
+    slot: i16,
+    item_id: i32,
+    maximum: i16,
+    input: String,
+}
+
+fn npc_shop_quantity_art(
+    ui: &NxArchive,
+    font: &fontdue::Font,
+    quantity: &NpcShopQuantity,
+) -> Result<(Vec<u8>, SpriteRect, SpriteRect), String> {
+    let text = format!(
+        "{} quantity: {}\nMaximum: {}\nEnter: OK. Esc: cancel.",
+        if quantity.buy { "Buy" } else { "Sell" },
+        quantity.input,
+        quantity.maximum
+    );
+    let (w, h, pixels, panel, mut button, _) = build_server_notice_art(ui, font, &text, 0)?;
+    let local = SpriteRect {
+        x: ((NPC_SHOP_WIDTH as u32 - w) / 2) as f32,
+        y: ((NPC_SHOP_HEIGHT as u32 - h) / 2) as f32,
+        width: w as f32,
+        height: h as f32,
+        blend_mode: BlendMode::Alpha,
+    };
+    button.x += local.x - panel.x;
+    button.y += local.y - panel.y;
+    Ok((pixels, local, button))
+}
+
+fn composite_npc_shop_sprite(
+    pixels: &mut [u8],
+    source: &[u8],
+    sw: usize,
+    sh: usize,
+    rect: SpriteRect,
+) {
+    let w = rect.width.round().max(1.0) as usize;
+    let h = rect.height.round().max(1.0) as usize;
+    for y in 0..h {
+        for x in 0..w {
+            let dx = rect.x.round() as i32 + x as i32;
+            let dy = rect.y.round() as i32 + y as i32;
+            if dx < 0 || dy < 0 || dx >= NPC_SHOP_WIDTH as i32 || dy >= NPC_SHOP_HEIGHT as i32 {
+                continue;
+            }
+            let src = ((y * sh / h) * sw + x * sw / w) * 4;
+            let dst = (dy as usize * NPC_SHOP_WIDTH + dx as usize) * 4;
+            let alpha = u32::from(source[src + 3]);
+            for c in 0..3 {
+                pixels[dst + c] = ((u32::from(source[src + c]) * alpha
+                    + u32::from(pixels[dst + c]) * (255 - alpha))
+                    / 255) as u8;
+            }
+        }
+    }
+}
+
+fn composite_npc_shop_tab(
+    pixels: &mut [u8],
+    ui: &NxArchive,
+    x: usize,
+    width: usize,
+    selected: bool,
+) -> Result<(), String> {
+    composite_nx_ui_tab(
+        pixels,
+        NPC_SHOP_WIDTH,
+        NPC_SHOP_HEIGHT,
+        ui,
+        ui_foundation::UiRect::new(x as f32, 95.0, width as f32, 21.0),
+        selected,
+    )?;
+    Ok(())
+}
+
+impl NpcShopUi {
+    fn new(shop: openstory_protocol::NpcShop) -> Self {
+        Self {
+            shop,
+            tab: openstory_protocol::InventoryType::Equip,
+            buy_scroll: 0,
+            sell_scroll: 0,
+            buy_selection: None,
+            sell_selection: None,
+            pending: false,
+            quantity: None,
+            hovered_button: None,
+        }
+    }
+}
+
+fn npc_shop_row_at(x: f32, y: f32, sell: bool) -> Option<usize> {
+    let left = if sell { 237.0 } else { 7.0 };
+    if !(left..left + 198.0).contains(&x)
+        || !(NPC_SHOP_GRID_TOP as f32..NPC_SHOP_SCROLL_BOTTOM as f32).contains(&y)
+    {
+        return None;
+    }
+    let offset = (y - NPC_SHOP_GRID_TOP as f32) as usize;
+    (offset % NPC_SHOP_ROW_STEP < NPC_SHOP_ROW_HEIGHT).then_some(offset / NPC_SHOP_ROW_STEP)
+}
+
+fn npc_shop_button_rect(archive: &NxArchive, name: &str, x: f32, y: f32) -> Option<SpriteRect> {
+    let (width, height, ox, oy) =
+        nx_dialogue_button_geometry(archive, &format!("UIWindow.img/Shop/{name}/normal/0"))?;
+    Some(SpriteRect {
+        x: x - ox as f32,
+        y: y - oy as f32,
+        width,
+        height,
+        blend_mode: BlendMode::Alpha,
+    })
+}
+
+fn render_npc_shop_panel(
+    font: &fontdue::Font,
+    state: &NpcShopUi,
+    inventory: &openstory_protocol::InventorySnapshot,
+    look: Option<&openstory_protocol::CharacterLook>,
+    ui: &NxArchive,
+    npcs: &NxArchive,
+    items: &NxArchive,
+    characters: &NxArchive,
+    strings: &NxArchive,
+    icons: &mut HashMap<i32, Option<(u32, u32, Arc<[u8]>)>>,
+    names: &mut HashMap<i32, Option<String>>,
+) -> Result<Vec<u8>, String> {
+    let mut pixels = vec![0; NPC_SHOP_WIDTH * NPC_SHOP_HEIGHT * 4];
+    composite_nx_ui_bitmap(
+        &mut pixels,
+        NPC_SHOP_WIDTH,
+        NPC_SHOP_HEIGHT,
+        ui,
+        "UIWindow.img/Shop/backgrnd",
+        0,
+        0,
+    )?;
+    draw_storage_keeper(
+        &mut pixels,
+        NPC_SHOP_WIDTH,
+        NPC_SHOP_HEIGHT,
+        npcs,
+        state.shop.npc_id,
+        52,
+        76,
+    );
+    if let Some(look) = look {
+        let mut sprites = Vec::new();
+        append_character_preview(
+            &mut sprites,
+            characters,
+            look,
+            288.0,
+            76.0,
+            0.85,
+            false,
+            &mut MapArtCache::default(),
+        )?;
+        for sprite in sprites {
+            composite_npc_shop_sprite(
+                &mut pixels,
+                &sprite.pixels,
+                sprite.texture_width as usize,
+                sprite.texture_height as usize,
+                sprite.rect,
+            );
+        }
+    }
+    for (name, x, y) in NPC_SHOP_BUTTONS {
+        let enabled = match name {
+            "BtBuy" => state.buy_selection.is_some() && !state.pending,
+            "BtSell" => state.sell_selection.is_some() && !state.pending,
+            "BtRecharge" => {
+                state.sell_selection.is_some_and(|slot| {
+                    inventory.items.iter().any(|i| {
+                        i.inventory_type == state.tab
+                            && i.slot == slot
+                            && matches!(i.item_id / 10_000, 207 | 233)
+                    })
+                }) && !state.pending
+            }
+            _ => true,
+        };
+        let variant = if !enabled {
+            "disabled"
+        } else if state.hovered_button == Some(name) {
+            "mouseOver"
+        } else {
+            "normal"
+        };
+        composite_nx_ui_bitmap(
+            &mut pixels,
+            NPC_SHOP_WIDTH,
+            NPC_SHOP_HEIGHT,
+            ui,
+            &format!("UIWindow.img/Shop/{name}/{variant}/0"),
+            x,
+            y,
+        )?;
+    }
+    composite_npc_shop_tab(&mut pixels, ui, 7, 54, true)?;
+    composite_nx_ui_bitmap_centered(
+        &mut pixels, NPC_SHOP_WIDTH, NPC_SHOP_HEIGHT, ui,
+        "UIWindow.img/Shop/TabBuy/enabled/0",
+        ui_foundation::UiRect::new(7.0, 95.0, 54.0, 21.0),
+    )?;
+    for (index, tab) in storage_tabs().into_iter().enumerate() {
+        composite_npc_shop_tab(&mut pixels, ui, 237 + index * 39, 39, state.tab == tab)?;
+        composite_nx_ui_bitmap_centered(
+            &mut pixels,
+            NPC_SHOP_WIDTH,
+            NPC_SHOP_HEIGHT,
+            ui,
+            &format!(
+                "UIWindow.img/Shop/TabSell/{}/{index}",
+                if state.tab == tab {
+                    "enabled"
+                } else {
+                    "disabled"
+                }
+            ),
+            ui_foundation::UiRect::new(237.0 + index as f32 * 39.0, 95.0, 39.0, 21.0),
+        )?;
+    }
+    let sell: Vec<_> = inventory
+        .items
+        .iter()
+        .filter(|i| i.inventory_type == state.tab && i.slot > 0)
+        .collect();
+    for (right, count, offset) in [
+        (false, state.shop.items.len(), state.buy_scroll),
+        (true, sell.len(), state.sell_scroll),
+    ] {
+        let x = NPC_SHOP_SCROLL_X[usize::from(right)];
+        let maximum = count.saturating_sub(NPC_SHOP_ROWS);
+        let mode = if maximum > 0 { "enabled" } else { "disabled" };
+        let track_top = NPC_SHOP_GRID_TOP + NPC_SHOP_SCROLL_ARROW;
+        let track_bottom = NPC_SHOP_SCROLL_BOTTOM - NPC_SHOP_SCROLL_ARROW;
+        // Tile the NX track and keep the last tile inside the arrow bounds.
+        for y in (track_top..track_bottom).step_by(NPC_SHOP_SCROLL_ARROW) {
+            composite_nx_ui_bitmap_scaled_to(
+                &mut pixels,
+                NPC_SHOP_WIDTH,
+                NPC_SHOP_HEIGHT,
+                ui,
+                &format!("Basic.img/VScr4/{mode}/base"),
+                x,
+                y,
+                NPC_SHOP_SCROLL_WIDTH,
+                NPC_SHOP_SCROLL_ARROW.min(track_bottom - y),
+            )?;
+        }
+        for (part, y) in [
+            (
+                if maximum > 0 { "prev0" } else { "prev" },
+                NPC_SHOP_GRID_TOP,
+            ),
+            (if maximum > 0 { "next0" } else { "next" }, track_bottom),
+        ] {
+            composite_nx_ui_bitmap(
+                &mut pixels,
+                NPC_SHOP_WIDTH,
+                NPC_SHOP_HEIGHT,
+                ui,
+                &format!("Basic.img/VScr4/{mode}/{part}"),
+                x as i32,
+                y as i32,
+            )?;
+        }
+        if maximum > 0 {
+            let travel = track_bottom - track_top - NPC_SHOP_SCROLL_THUMB;
+            composite_nx_ui_bitmap(
+                &mut pixels,
+                NPC_SHOP_WIDTH,
+                NPC_SHOP_HEIGHT,
+                ui,
+                "Basic.img/VScr4/enabled/thumb0",
+                x as i32,
+                (track_top + travel * offset.min(maximum) / maximum) as i32,
+            )?;
+        }
+        for row in 0..NPC_SHOP_ROWS {
+            let index = offset + row;
+            let (id, quantity, price, selected) = if right {
+                let Some(item) = sell.get(index) else {
+                    break;
+                };
+                (
+                    item.item_id,
+                    item.count,
+                    None,
+                    state.sell_selection == Some(item.slot),
+                )
+            } else {
+                let Some(item) = state.shop.items.get(index) else {
+                    break;
+                };
+                (
+                    item.item_id,
+                    0,
+                    Some(if state.shop.currency_item_id > 0 {
+                        item.pitch
+                    } else {
+                        item.price
+                    }),
+                    state.buy_selection == Some(index),
+                )
+            };
+            let x = if right { 237 } else { 7 };
+            let y = NPC_SHOP_GRID_TOP + row * NPC_SHOP_ROW_STEP;
+            if selected {
+                // Fit the NX selection to the grey row's right edge (205/435),
+                // preserving its border instead of painting into the gutter.
+                composite_nx_ui_bitmap_scaled_to(
+                    &mut pixels,
+                    NPC_SHOP_WIDTH,
+                    NPC_SHOP_HEIGHT,
+                    ui,
+                    "UIWindow.img/Shop/select",
+                    x + 40,
+                    y,
+                    158,
+                    NPC_SHOP_ROW_HEIGHT,
+                )?;
+            }
+            if let Some((w, h, icon)) = inventory_item_icon(id, items, characters, icons) {
+                composite_inventory_icon(
+                    &mut pixels,
+                    NPC_SHOP_WIDTH,
+                    NPC_SHOP_HEIGHT,
+                    &icon,
+                    w as usize,
+                    h as usize,
+                    x,
+                    y + 2,
+                    32,
+                );
+            }
+            let name = item_name(id, strings, names);
+            let name = ui_foundation::ellipsize(font, &name, 12.0, 155.0);
+            draw_dialogue_text(
+                font,
+                &mut pixels,
+                NPC_SHOP_WIDTH,
+                NPC_SHOP_HEIGHT,
+                &name,
+                (x + 41) as i32,
+                (y + 1) as i32,
+                12.0,
+                155,
+                17,
+                [35, 35, 35],
+            );
+            if let Some(price) = price {
+                if state.shop.currency_item_id > 0 {
+                    if let Some((w, h, icon)) =
+                        inventory_item_icon(state.shop.currency_item_id, items, characters, icons)
+                    {
+                        composite_inventory_icon(
+                            &mut pixels,
+                            NPC_SHOP_WIDTH,
+                            NPC_SHOP_HEIGHT,
+                            &icon,
+                            w as usize,
+                            h as usize,
+                            x + 43,
+                            y + 21,
+                            12,
+                        );
+                    }
+                } else {
+                    composite_nx_ui_bitmap(
+                        &mut pixels,
+                        NPC_SHOP_WIDTH,
+                        NPC_SHOP_HEIGHT,
+                        ui,
+                        "UIWindow.img/Shop/meso",
+                        (x + 43) as i32,
+                        (y + 21) as i32,
+                    )?;
+                }
+                let price_label = if state.shop.currency_item_id > 0 {
+                    price.to_string()
+                } else {
+                    format_meso_amount(i64::from(price))
+                };
+                draw_dialogue_text(
+                    font,
+                    &mut pixels,
+                    NPC_SHOP_WIDTH,
+                    NPC_SHOP_HEIGHT,
+                    &price_label,
+                    (x + 59) as i32,
+                    (y + 19) as i32,
+                    12.0,
+                    135,
+                    17,
+                    [35, 35, 35],
+                );
+            } else {
+                let price = inventory_item_info_node(items, characters, id)
+                    .and_then(|info| info.child("price").ok().flatten())
+                    .and_then(|node| node.value().ok())
+                    .and_then(|value| match value {
+                        NodeValue::Integer(v) => Some(v.max(0)),
+                        NodeValue::Real(v) if v.is_finite() && v >= 0.0 => Some(v.floor() as i64),
+                        _ => None,
+                    });
+                if let Some(price) = price {
+                    composite_nx_ui_bitmap(
+                        &mut pixels,
+                        NPC_SHOP_WIDTH,
+                        NPC_SHOP_HEIGHT,
+                        ui,
+                        "UIWindow.img/Shop/meso",
+                        (x + 43) as i32,
+                        (y + 21) as i32,
+                    )?;
+                    let label = format_meso_amount(price);
+                    draw_dialogue_text(
+                        font,
+                        &mut pixels,
+                        NPC_SHOP_WIDTH,
+                        NPC_SHOP_HEIGHT,
+                        &label,
+                        (x + 59) as i32,
+                        (y + 19) as i32,
+                        12.0,
+                        135,
+                        17,
+                        [35, 35, 35],
+                    );
+                }
+                if state.tab != openstory_protocol::InventoryType::Equip {
+                    draw_item_stack_count(
+                        &mut pixels,
+                        NPC_SHOP_WIDTH,
+                        NPC_SHOP_HEIGHT,
+                        ui,
+                        quantity,
+                        x as i32,
+                        (y + 22) as i32,
+                        34,
+                    )?;
+                }
+            }
+        }
+    }
+    draw_inventory_meso_amount(
+        font,
+        &mut pixels,
+        NPC_SHOP_WIDTH,
+        NPC_SHOP_HEIGHT,
+        inventory.meso,
+        449,
+        64,
+        86,
+    );
+    if let Some(quantity) = state.quantity.as_ref() {
+        let (art, rect, _) = npc_shop_quantity_art(ui, font, quantity)?;
+        composite_npc_shop_sprite(
+            &mut pixels,
+            &art,
+            rect.width as usize,
+            rect.height as usize,
+            rect,
+        );
+    }
+    Ok(pixels)
+}
+
+impl ClientApp {
+    fn update_npc_shop_hover(&mut self) {
+        let Some(state) = self.npc_shop.as_mut() else {
+            return;
+        };
+        let hovered = self.cursor.and_then(|cursor| {
+            NPC_SHOP_BUTTONS
+                .into_iter()
+                .find(|(name, x, y)| {
+                    npc_shop_button_rect(&self.legacy_ui_archive, name, *x as f32, *y as f32)
+                        .is_some_and(|r| {
+                            rect_contains(
+                                r,
+                                Point {
+                                    x: cursor.x - NPC_SHOP_X,
+                                    y: cursor.y - NPC_SHOP_Y,
+                                },
+                            )
+                        })
+                })
+                .map(|(name, _, _)| name)
+        });
+        if hovered != state.hovered_button {
+            state.hovered_button = hovered;
+            self.refresh_npc_shop_texture();
+            if let Some(window) = self.window.as_ref() {
+                window.request_redraw();
+            }
+        }
+    }
+
+    fn refresh_npc_shop_texture(&mut self) {
+        let (Some(state), Some(inventory)) = (self.npc_shop.as_mut(), self.inventory.as_ref())
+        else {
+            self.npc_shop_texture = None;
+            return;
+        };
+        state.buy_scroll = state
+            .buy_scroll
+            .min(state.shop.items.len().saturating_sub(NPC_SHOP_ROWS));
+        let sell: Vec<_> = inventory
+            .items
+            .iter()
+            .filter(|i| i.inventory_type == state.tab && i.slot > 0)
+            .collect();
+        state.sell_scroll = state
+            .sell_scroll
+            .min(sell.len().saturating_sub(NPC_SHOP_ROWS));
+        if state
+            .sell_selection
+            .is_some_and(|slot| !sell.iter().any(|i| i.slot == slot))
+        {
+            state.sell_selection = None;
+        }
+        let pixels = render_npc_shop_panel(
+            &self.font,
+            state,
+            inventory,
+            self.active_character.as_ref().map(|c| &c.look),
+            &self.legacy_ui_archive,
+            &self.npc_archive,
+            &self.item_archive,
+            &self.character_archive,
+            &self.string_archive,
+            &mut self.inventory_icon_cache,
+            &mut self.item_name_cache,
+        );
+        let Some(renderer) = self.renderer.as_ref() else {
+            return;
+        };
+        match pixels.and_then(|p| {
+            renderer
+                .upload_bgra(NPC_SHOP_WIDTH as u32, NPC_SHOP_HEIGHT as u32, &p)
+                .map_err(|e| e.to_string())
+        }) {
+            Ok(texture) => self.npc_shop_texture = Some(texture),
+            Err(error) => eprintln!("OpenStoryRS: could not render NPC shop: {error}"),
+        }
+    }
+
+    fn close_npc_shop(&mut self) {
+        if self.npc_shop.take().is_some()
+            && let Some(session) = self.session.as_ref()
+            && let Err(error) = session.send_packet(openstory_protocol::npc_shop_leave())
+        {
+            eprintln!("OpenStoryRS: could not leave NPC shop: {error}");
+        }
+        self.npc_shop_texture = None;
+    }
+
+    fn click_npc_shop(&mut self, cursor: Point) {
+        let x = cursor.x - NPC_SHOP_X;
+        let y = cursor.y - NPC_SHOP_Y;
+        let Some(state) = self.npc_shop.as_mut() else {
+            return;
+        };
+        if let Some(quantity) = state.quantity.as_ref() {
+            if npc_shop_quantity_art(&self.legacy_ui_archive, &self.font, quantity)
+                .is_ok_and(|(_, _, button)| rect_contains(button, Point { x, y }))
+            {
+                self.confirm_npc_shop_quantity();
+            }
+            return;
+        }
+        for (name, bx, by) in NPC_SHOP_BUTTONS {
+            if !npc_shop_button_rect(&self.legacy_ui_archive, name, bx as f32, by as f32)
+                .is_some_and(|r| rect_contains(r, Point { x, y }))
+            {
+                continue;
+            }
+            if name == "BtExit" {
+                self.close_npc_shop();
+                return;
+            }
+            if state.pending {
+                return;
+            }
+            let packet = if name == "BtRecharge" {
+                self.inventory
+                    .as_ref()
+                    .and_then(|inv| {
+                        inv.items.iter().find(|i| {
+                            i.inventory_type == state.tab && Some(i.slot) == state.sell_selection
+                        })
+                    })
+                    .filter(|i| matches!(i.item_id / 10_000, 207 | 233))
+                    .and_then(|i| i16::try_from(i.slot).ok())
+                    .and_then(|slot| openstory_protocol::npc_shop_recharge(slot).ok())
+            } else {
+                state.quantity = if name == "BtBuy" {
+                    state
+                        .buy_selection
+                        .and_then(|index| state.shop.items.get(index))
+                        .map(|item| NpcShopQuantity {
+                            buy: true,
+                            slot: item.slot,
+                            item_id: item.item_id,
+                            maximum: if item.item_id / 1_000_000 == 1 || item.rechargeable {
+                                1
+                            } else {
+                                item.buyable.max(1)
+                            },
+                            input: "1".to_owned(),
+                        })
+                } else {
+                    self.inventory
+                        .as_ref()
+                        .and_then(|inv| {
+                            inv.items.iter().find(|i| {
+                                i.inventory_type == state.tab
+                                    && Some(i.slot) == state.sell_selection
+                            })
+                        })
+                        .and_then(|item| {
+                            Some(NpcShopQuantity {
+                                buy: false,
+                                slot: i16::try_from(item.slot).ok()?,
+                                item_id: item.item_id,
+                                maximum: i16::try_from(item.count).unwrap_or(i16::MAX).max(1),
+                                input: "1".to_owned(),
+                            })
+                        })
+                };
+                None
+            };
+            if let (Some(packet), Some(session)) = (packet, self.session.as_ref()) {
+                match session.send_packet(packet) {
+                    Ok(()) => state.pending = true,
+                    Err(error) => eprintln!("OpenStoryRS: shop action failed: {error}"),
+                }
+            }
+            self.refresh_npc_shop_texture();
+            return;
+        }
+        if (96.0..115.0).contains(&y) && (237.0..432.0).contains(&x) {
+            let index = ((x - 237.0) / 39.0) as usize;
+            state.tab = storage_tabs()[index.min(4)];
+            state.sell_scroll = 0;
+            state.sell_selection = None;
+        } else if let Some(row) = npc_shop_row_at(x, y, false) {
+            state.buy_selection =
+                (state.buy_scroll + row < state.shop.items.len()).then_some(state.buy_scroll + row);
+        } else if let Some(row) = npc_shop_row_at(x, y, true) {
+            state.sell_selection = self
+                .inventory
+                .as_ref()
+                .and_then(|inv| {
+                    inv.items
+                        .iter()
+                        .filter(|i| i.inventory_type == state.tab && i.slot > 0)
+                        .nth(state.sell_scroll + row)
+                })
+                .map(|i| i.slot);
+        } else if (NPC_SHOP_GRID_TOP as f32..NPC_SHOP_SCROLL_BOTTOM as f32).contains(&y)
+            && NPC_SHOP_SCROLL_X
+                .iter()
+                .any(|&left| (left as f32..(left + NPC_SHOP_SCROLL_WIDTH) as f32).contains(&x))
+        {
+            self.scroll_npc_shop(
+                cursor,
+                if y < (NPC_SHOP_GRID_TOP + NPC_SHOP_SCROLL_BOTTOM) as f32 / 2.0 {
+                    1.0
+                } else {
+                    -1.0
+                },
+            );
+            return;
+        }
+        self.refresh_npc_shop_texture();
+    }
+
+    fn confirm_npc_shop_quantity(&mut self) {
+        let Some(state) = self.npc_shop.as_mut() else {
+            return;
+        };
+        if state.pending {
+            return;
+        }
+        let Some(quantity) = state.quantity.as_ref() else {
+            return;
+        };
+        let Ok(amount) = quantity.input.parse::<i16>() else {
+            return;
+        };
+        if amount < 1 || amount > quantity.maximum {
+            return;
+        }
+        // Validate the selected stack again after any intervening inventory updates.
+        if !quantity.buy
+            && !self.inventory.as_ref().is_some_and(|inv| {
+                inv.items.iter().any(|i| {
+                    i.inventory_type == state.tab
+                        && i.slot == quantity.slot as u16
+                        && i.item_id == quantity.item_id
+                        && i.count >= amount as u16
+                })
+            })
+        {
+            return;
+        }
+        if let (Ok(packet), Some(session)) = (
+            openstory_protocol::npc_shop_item_action(
+                quantity.slot,
+                quantity.item_id,
+                amount,
+                quantity.buy,
+            ),
+            self.session.as_ref(),
+        ) {
+            match session.send_packet(packet) {
+                Ok(()) => {
+                    state.pending = true;
+                    state.quantity = None;
+                }
+                Err(error) => eprintln!("OpenStoryRS: shop action failed: {error}"),
+            }
+        }
+        self.refresh_npc_shop_texture();
+    }
+
+    fn key_npc_shop(&mut self, event: &winit::event::KeyEvent) {
+        if event.state != ElementState::Pressed {
+            return;
+        }
+        let editing = self.npc_shop.as_ref().is_some_and(|s| s.quantity.is_some());
+        match event.physical_key {
+            PhysicalKey::Code(KeyCode::Escape) if editing => {
+                if let Some(s) = self.npc_shop.as_mut() {
+                    s.quantity = None;
+                }
+            }
+            PhysicalKey::Code(KeyCode::Escape) => {
+                self.close_npc_shop();
+                return;
+            }
+            PhysicalKey::Code(KeyCode::Enter) if !event.repeat => self.confirm_npc_shop_quantity(),
+            _ => {
+                if let Some(quantity) = self.npc_shop.as_mut().and_then(|s| s.quantity.as_mut()) {
+                    if event.physical_key == PhysicalKey::Code(KeyCode::Backspace) {
+                        quantity.input.pop();
+                    } else if let Some(text) = event.text.as_ref() {
+                        for ch in text.chars().filter(char::is_ascii_digit) {
+                            if quantity.input.len() < 5 {
+                                quantity.input.push(ch);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        self.refresh_npc_shop_texture();
+    }
+
+    fn scroll_npc_shop(&mut self, cursor: Point, amount: f32) {
+        let x = cursor.x - NPC_SHOP_X;
+        let y = cursor.y - NPC_SHOP_Y;
+        if !(0.0..NPC_SHOP_WIDTH as f32).contains(&x)
+            || !(NPC_SHOP_GRID_TOP as f32..NPC_SHOP_SCROLL_BOTTOM as f32).contains(&y)
+        {
+            return;
+        }
+        if let Some(state) = self.npc_shop.as_mut() {
+            if state.quantity.is_some() {
+                return;
+            }
+            let offset = if x < 230.0 {
+                &mut state.buy_scroll
+            } else {
+                &mut state.sell_scroll
+            };
+            *offset = offset.saturating_add_signed(if amount > 0.0 { -1 } else { 1 });
+        }
+        self.refresh_npc_shop_texture();
+    }
+}
+
+#[cfg(test)]
+mod npc_shop_tests {
+    use super::*;
+    #[test]
+    fn rows_stay_inside_authored_slots() {
+        assert_eq!(npc_shop_row_at(7.0, 127.0, false), Some(0));
+        assert_eq!(npc_shop_row_at(204.0, 321.0, false), Some(4));
+        assert_eq!(npc_shop_row_at(7.0, 162.0, false), None);
+        assert_eq!(npc_shop_row_at(209.0, 127.0, false), None);
+        assert_eq!(npc_shop_row_at(237.0, 287.0, true), Some(4));
+        assert_eq!(npc_shop_row_at(237.0, 322.0, true), None);
+    }
+}

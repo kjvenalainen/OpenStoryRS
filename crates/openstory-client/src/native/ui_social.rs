@@ -11,18 +11,6 @@ fn render_chat_panel(
     let height = CHAT_HEIGHT as usize;
     let mut pixels = vec![0; width * height * 4];
     let history_height = height - 25;
-    if open {
-        fill_dialogue_rect(
-            &mut pixels,
-            width,
-            height,
-            0,
-            0,
-            width,
-            history_height,
-            [20, 20, 20, 112],
-        );
-    }
     let visible_rows = if open { 9 } else { 1 };
     let first = lines.len().saturating_sub(visible_rows);
     for (row, line) in lines.iter().skip(first).enumerate() {
@@ -41,18 +29,8 @@ fn render_chat_panel(
             line.color,
         );
     }
-    // The white input strip and its native v83 target/edge sprites share the
-    // bottom edge with the status bar. History stays transparent over the map.
-    fill_dialogue_rect(
-        &mut pixels,
-        width,
-        height,
-        0,
-        history_height,
-        width,
-        25,
-        [247, 248, 247, 255],
-    );
+    // The original target/edge sprites sit above the status bar. Chat history
+    // stays transparent over the map, as in the v83 client.
     let _ = composite_nx_ui_bitmap(
         &mut pixels,
         width,
@@ -417,6 +395,7 @@ fn render_party_panel(
 
 fn render_owl_panel(
     font: &fontdue::Font,
+    ui_archive: &NxArchive,
     owl: &OwlSearchUi,
     string_archive: &NxArchive,
     name_cache: &mut HashMap<i32, Option<String>>,
@@ -424,136 +403,70 @@ fn render_owl_panel(
     let width = OWL_PANEL_WIDTH as usize;
     let height = OWL_PANEL_HEIGHT as usize;
     let mut pixels = vec![0; width * height * 4];
-    fill_dialogue_rect(
-        &mut pixels,
-        width,
-        height,
-        0,
-        0,
-        width,
-        height,
-        [25, 23, 20, 246],
-    );
-    fill_dialogue_rect(
-        &mut pixels,
-        width,
-        height,
-        0,
-        0,
-        width,
-        36,
-        [88, 68, 42, 255],
-    );
-    fill_dialogue_rect(
-        &mut pixels,
-        width,
-        height,
-        0,
-        0,
-        width,
-        2,
-        [206, 174, 112, 255],
-    );
-    fill_dialogue_rect(
-        &mut pixels,
-        width,
-        height,
-        0,
-        height - 2,
-        width,
-        2,
-        [206, 174, 112, 255],
-    );
-    fill_dialogue_rect(
-        &mut pixels,
-        width,
-        height,
-        0,
-        0,
-        2,
-        height,
-        [206, 174, 112, 255],
-    );
-    fill_dialogue_rect(
-        &mut pixels,
-        width,
-        height,
-        width - 2,
-        0,
-        2,
-        height,
-        [206, 174, 112, 255],
-    );
-    draw_dialogue_text(
-        font,
-        &mut pixels,
-        width,
-        height,
-        "Owl of Minerva",
-        16,
-        8,
-        16.0,
-        width - 72,
-        22,
-        [255, 229, 174],
-    );
-    draw_dialogue_text(
-        font,
-        &mut pixels,
-        width,
-        height,
-        "X",
-        width as i32 - 28,
-        8,
-        15.0,
-        16,
-        20,
-        [255, 238, 218],
-    );
-
     if owl.result_item_id.is_none() {
-        draw_dialogue_text(
-            font,
+        let _ = composite_nx_ui_bitmap(
             &mut pixels,
             width,
             height,
-            "Search by item name or ID. Select a popular item below, or type a query.",
-            16,
-            44,
-            11.5,
-            width - 32,
-            30,
-            [211, 202, 184],
+            ui_archive,
+            "UIWindow.img/itemSearch/backgrnd",
+            0,
+            0,
         );
-        fill_dialogue_rect(
+        if !owl.top_item_ids.is_empty() || owl.top_items_loaded {
+            let _ = composite_nx_ui_bitmap(
+                &mut pixels,
+                width,
+                height,
+                ui_archive,
+                "UIWindow.img/itemSearch/searchback",
+                248,
+                0,
+            );
+            let _ = composite_nx_ui_bitmap(
+                &mut pixels,
+                width,
+                height,
+                ui_archive,
+                "Basic.img/BtHide/normal/0",
+                430,
+                6,
+            );
+            for (path, x) in [
+                ("UIWindow.img/itemSearch/BtLeft/normal/0", 414),
+                ("UIWindow.img/itemSearch/BtRight/normal/0", 430),
+                ("UIWindow.img/itemSearch/BtSearch2/normal/0", 381),
+                ("UIWindow.img/itemSearch/BtGo/normal/0", 196),
+            ] {
+                let y = if x == 196 { 218 } else if x == 381 { 248 } else { 24 };
+                let _ = composite_nx_ui_bitmap(
+                    &mut pixels,
+                    width,
+                    height,
+                    ui_archive,
+                    path,
+                    x,
+                    y,
+                );
+            }
+        }
+        let _ = composite_nx_ui_bitmap(
             &mut pixels,
             width,
             height,
-            16,
-            78,
-            326,
-            32,
-            [10, 10, 10, 255],
+            ui_archive,
+            "Basic.img/BtClose3/normal/0",
+            230,
+            5,
         );
-        fill_dialogue_rect(
+        let _ = composite_nx_ui_bitmap(
             &mut pixels,
             width,
             height,
-            16,
-            78,
-            326,
-            1,
-            [142, 128, 105, 255],
-        );
-        fill_dialogue_rect(
-            &mut pixels,
-            width,
-            height,
-            16,
-            109,
-            326,
-            1,
-            [142, 128, 105, 255],
+            ui_archive,
+            "UIWindow.img/itemSearch/BtSearch/normal/0",
+            178,
+            77,
         );
         draw_dialogue_text(
             font,
@@ -565,39 +478,12 @@ fn render_owl_panel(
             } else {
                 &owl.query
             },
-            25,
-            84,
-            13.0,
-            306,
-            20,
-            if owl.query.is_empty() {
-                [145, 140, 129]
-            } else {
-                [250, 244, 232]
-            },
-        );
-        fill_dialogue_rect(
-            &mut pixels,
-            width,
-            height,
-            354,
-            78,
-            94,
-            32,
-            [103, 75, 37, 255],
-        );
-        draw_dialogue_text(
-            font,
-            &mut pixels,
-            width,
-            height,
-            "Search",
-            374,
-            84,
-            13.0,
-            62,
-            20,
-            [255, 233, 190],
+            22,
+            73,
+            11.0,
+            146,
+            16,
+            [35, 35, 35],
         );
         draw_dialogue_text(
             font,
@@ -605,27 +491,15 @@ fn render_owl_panel(
             width,
             height,
             "Most searched items",
+            260,
+            14,
+            11.0,
+            width - 270,
             16,
-            123,
-            13.0,
-            width - 32,
-            20,
-            [229, 206, 160],
+            [35, 35, 35],
         );
         for (index, item_id) in owl.top_item_ids.iter().take(10).enumerate() {
-            let y = 151 + index as i32 * 24;
-            if index % 2 == 0 {
-                fill_dialogue_rect(
-                    &mut pixels,
-                    width,
-                    height,
-                    12,
-                    y as usize,
-                    width - 24,
-                    23,
-                    [46, 42, 35, 230],
-                );
-            }
+            let y = 38 + index as i32 * 16;
             let name = item_name(*item_id, string_archive, name_cache);
             draw_dialogue_text(
                 font,
@@ -633,12 +507,12 @@ fn render_owl_panel(
                 width,
                 height,
                 &format!("{}. {name}", index + 1),
-                22,
-                y + 3,
-                12.0,
-                width - 44,
-                18,
-                [220, 217, 207],
+                262,
+                y,
+                11.0,
+                width - 274,
+                15,
+                [35, 35, 35],
             );
         }
         if owl.top_item_ids.is_empty() {
@@ -652,15 +526,41 @@ fn render_owl_panel(
                 } else {
                     "Loading popular searches…"
                 },
-                22,
-                158,
-                12.0,
-                width - 44,
-                18,
-                [180, 176, 165],
+                262,
+                38,
+                11.0,
+                width - 274,
+                16,
+                [60, 60, 60],
             );
         }
     } else {
+        let _ = composite_nx_ui_bitmap(
+            &mut pixels,
+            width,
+            height,
+            ui_archive,
+            "UIWindow.img/itemSearch/resultback",
+            0,
+            0,
+        );
+        for (path, x) in [
+            ("Basic.img/BtClose3/normal/0", 230),
+            ("UIWindow.img/itemSearch/BtRetry/normal/0", 160),
+            ("UIWindow.img/itemSearch/BtLink/normal/0", 232),
+            ("UIWindow.img/itemSearch/BtCancel/normal/0", 300),
+        ] {
+            let y = if x == 230 { 5 } else { 403 };
+            let _ = composite_nx_ui_bitmap(
+                &mut pixels,
+                width,
+                height,
+                ui_archive,
+                path,
+                x,
+                y,
+            );
+        }
         let searched_name = item_name(
             owl.result_item_id.unwrap_or_default(),
             string_archive,
@@ -681,12 +581,12 @@ fn render_owl_panel(
                 "Listings for {searched_name} · {start}–{end} / {}",
                 owl.results.len()
             ),
-            16,
-            47,
-            13.0,
-            width - 32,
-            22,
-            [229, 206, 160],
+            26,
+            66,
+            12.0,
+            width - 52,
+            17,
+            [35, 35, 35],
         );
         if owl.results.is_empty() {
             draw_dialogue_text(
@@ -695,12 +595,12 @@ fn render_owl_panel(
                 width,
                 height,
                 "No open shops were found for this item.",
-                20,
-                90,
+                26,
+                100,
                 12.0,
                 width - 40,
                 20,
-                [210, 204, 190],
+                [35, 35, 35],
             );
         }
         for (visible_index, result) in owl
@@ -710,24 +610,7 @@ fn render_owl_panel(
             .skip(owl.result_offset)
             .take(8)
         {
-            let y = 78 + (visible_index - owl.result_offset) as i32 * 39;
-            let selected = owl.selected_result == Some(visible_index);
-            fill_dialogue_rect(
-                &mut pixels,
-                width,
-                height,
-                12,
-                y as usize,
-                width - 24,
-                37,
-                if selected {
-                    [102, 75, 38, 255]
-                } else if visible_index % 2 == 0 {
-                    [45, 42, 36, 238]
-                } else {
-                    [34, 32, 28, 238]
-                },
-            );
+            let y = 174 + (visible_index - owl.result_offset) as i32 * 23;
             let units = i64::from(result.bundles).saturating_mul(i64::from(result.per_bundle));
             draw_dialogue_text(
                 font,
@@ -741,12 +624,12 @@ fn render_owl_panel(
                     result.price.max(0),
                     units.max(0)
                 ),
-                20,
-                y + 3,
-                11.5,
-                width - 40,
-                17,
-                [245, 240, 226],
+                16,
+                y,
+                10.0,
+                width - 32,
+                13,
+                [35, 35, 35],
             );
             draw_dialogue_text(
                 font,
@@ -754,106 +637,14 @@ fn render_owl_panel(
                 width,
                 height,
                 &format!("{} · Map {}", result.description, result.map_id),
-                20,
-                y + 20,
-                10.5,
-                width - 40,
-                15,
-                [181, 177, 167],
+                16,
+                y + 13,
+                9.0,
+                width - 32,
+                12,
+                [80, 80, 80],
             );
         }
-        fill_dialogue_rect(
-            &mut pixels,
-            width,
-            height,
-            12,
-            410,
-            126,
-            30,
-            [69, 62, 49, 255],
-        );
-        draw_dialogue_text(
-            font,
-            &mut pixels,
-            width,
-            height,
-            "Back",
-            58,
-            417,
-            11.5,
-            50,
-            17,
-            [238, 229, 207],
-        );
-        fill_dialogue_rect(
-            &mut pixels,
-            width,
-            height,
-            146,
-            410,
-            74,
-            30,
-            [69, 62, 49, 255],
-        );
-        draw_dialogue_text(
-            font,
-            &mut pixels,
-            width,
-            height,
-            "‹ Prev",
-            157,
-            417,
-            11.5,
-            58,
-            17,
-            [238, 229, 207],
-        );
-        fill_dialogue_rect(
-            &mut pixels,
-            width,
-            height,
-            232,
-            410,
-            74,
-            30,
-            [69, 62, 49, 255],
-        );
-        draw_dialogue_text(
-            font,
-            &mut pixels,
-            width,
-            height,
-            "Next ›",
-            247,
-            417,
-            11.5,
-            58,
-            17,
-            [238, 229, 207],
-        );
-        fill_dialogue_rect(
-            &mut pixels,
-            width,
-            height,
-            318,
-            410,
-            132,
-            30,
-            [103, 75, 37, 255],
-        );
-        draw_dialogue_text(
-            font,
-            &mut pixels,
-            width,
-            height,
-            "Go to shop",
-            342,
-            417,
-            11.5,
-            98,
-            17,
-            [255, 233, 190],
-        );
     }
     if let Some(notice) = owl.notice.as_deref() {
         draw_dialogue_text(

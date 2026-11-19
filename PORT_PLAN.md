@@ -625,9 +625,11 @@ and sends the matching selection index.
   PIC verification, and a bounded result handler. The supplied v83 request and server
   handler have no birthday challenge field or step; result state 18 is surfaced as an
   invalid-birthday failure when a server reports it.
-  Character creation now has Explorer/Cygnus/Aran class selection, gender-specific
-  appearance pools from `Etc.nx`, localized face/hair/equipment labels, an avatar preview,
-  forbidden-name filtering, name availability packets, character creation packets, and
+  Character creation opens Explorer customization directly; this client supports only
+  Explorer creation. The page uses the Maple Island login scenery and v83 boards from
+  `Map.nx` and `UI.nx`, gender-specific appearance pools from `Etc.nx`, localized
+  face/hair/equipment labels, an avatar preview on the platform, forbidden-name filtering,
+  name availability packets, character creation packets, and
   live insertion of the created character into selection. Its bundled Roboto font matches
   the legacy client's font asset. Final UI polish and server-specific failure notices remain.
   The SET_FIELD parser reads the initial character's ID, stats, and inventory prefix or
@@ -761,8 +763,11 @@ and sends the matching selection index.
   skill, and face icon macros now resolve the matching item/QuestIcon/Skill/Face NX assets and
   render inline with dialogue and choice text, including after redraws. Scripted quest state
   transitions still depend on server-provided quest scripts and their supported actions.
-  NPC shop UI is removed pending a future refactor. The client bounded-parses
-  `OPEN_NPC_SHOP` and sends a leave request to release the server-side session.
+  NPC shops now open an NX-backed v83 panel with five-row buy/sell lists, inventory
+  category tabs, scrolling, quantity entry, recharge, and leave controls. Transaction
+  replies unlock the controls and display errors; inventory and meso remain server-owned.
+  Offline previews cover populated, empty, scrolled, quantity, and large-balance states;
+  live server verification remains open.
   Storage NPC responses now use a bounded v83 parser and an NX-backed, resizable-window
   panel with category tabs, scrollable storage and inventory lists, server-backed item
   actions, and typed meso transfers. Stack deposits and withdrawals now open quantity

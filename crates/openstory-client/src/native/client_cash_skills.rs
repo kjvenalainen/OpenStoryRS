@@ -109,6 +109,7 @@ impl ClientApp {
         };
         let pixels = render_owl_panel(
             &self.font,
+            &self.ui_archive,
             owl,
             &self.string_archive,
             &mut self.item_name_cache,
@@ -265,7 +266,9 @@ impl ClientApp {
         {
             return true;
         }
-        if local_y < 36.0 && local_x >= OWL_PANEL_WIDTH as f32 - 48.0 {
+        if local_y < 24.0
+            && ((230.0..252.0).contains(&local_x) || local_x >= OWL_PANEL_WIDTH as f32 - 36.0)
+        {
             self.owl_search = None;
             self.owl_texture = None;
             return true;
@@ -275,8 +278,8 @@ impl ClientApp {
             .as_ref()
             .is_some_and(|owl| owl.result_item_id.is_some());
         if results_mode {
-            if (410.0..442.0).contains(&local_y) {
-                if local_x < 150.0 {
+            if (403.0..428.0).contains(&local_y) {
+                if (150.0..230.0).contains(&local_x) {
                     if let Some(owl) = self.owl_search.as_mut() {
                         owl.result_item_id = None;
                         owl.results.clear();
@@ -284,24 +287,29 @@ impl ClientApp {
                         owl.notice = None;
                     }
                     self.refresh_owl_texture();
-                } else if (146.0..222.0).contains(&local_x) {
+                } else if (230.0..300.0).contains(&local_x) {
+                    self.warp_to_owl_result();
+                } else if (300.0..380.0).contains(&local_x) {
+                    self.owl_search = None;
+                    self.owl_texture = None;
+                }
+            } else if (18.0..44.0).contains(&local_y) && (414.0..448.0).contains(&local_x) {
+                if local_x < 430.0 {
                     if let Some(owl) = self.owl_search.as_mut() {
                         owl.result_offset = owl.result_offset.saturating_sub(8);
                         owl.selected_result = Some(owl.result_offset);
                     }
                     self.refresh_owl_texture();
-                } else if (232.0..306.0).contains(&local_x) {
+                } else {
                     if let Some(owl) = self.owl_search.as_mut() {
                         let maximum = owl.results.len().saturating_sub(8);
                         owl.result_offset = owl.result_offset.saturating_add(8).min(maximum);
                         owl.selected_result = Some(owl.result_offset);
                     }
                     self.refresh_owl_texture();
-                } else if local_x >= 300.0 {
-                    self.warp_to_owl_result();
                 }
-            } else if (78.0..390.0).contains(&local_y) {
-                let row = ((local_y - 78.0) / 39.0) as usize
+            } else if (174.0..358.0).contains(&local_y) {
+                let row = ((local_y - 174.0) / 23.0) as usize
                     + self
                         .owl_search
                         .as_ref()
@@ -316,10 +324,27 @@ impl ClientApp {
                     self.refresh_owl_texture();
                 }
             }
-        } else if (78.0..110.0).contains(&local_y) && local_x >= 340.0 {
+        } else if (76.0..98.0).contains(&local_y) && (178.0..224.0).contains(&local_x) {
             self.submit_owl_search();
-        } else if (151.0..391.0).contains(&local_y) {
-            let row = ((local_y - 151.0) / 24.0) as usize;
+        } else if (248.0..266.0).contains(&local_y) && (381.0..440.0).contains(&local_x) {
+            self.submit_owl_search();
+        } else if (218.0..236.0).contains(&local_y) && (196.0..239.0).contains(&local_x) {
+            let first_top_item = self
+                .owl_search
+                .as_ref()
+                .and_then(|owl| owl.top_item_ids.first().copied());
+            if let Some(item_id) = first_top_item {
+                let name = item_name(item_id, &self.string_archive, &mut self.item_name_cache);
+                if let Some(owl) = self.owl_search.as_mut() {
+                    owl.query = name;
+                    owl.notice = None;
+                }
+                self.submit_owl_search();
+            }
+        } else if (38.0..198.0).contains(&local_y)
+            && (248.0..OWL_PANEL_WIDTH as f32).contains(&local_x)
+        {
+            let row = ((local_y - 38.0) / 16.0) as usize;
             let selected_id = self
                 .owl_search
                 .as_ref()

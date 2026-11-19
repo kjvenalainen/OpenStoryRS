@@ -66,6 +66,289 @@ fn composite_nx_ui_layers(
     Ok(())
 }
 
+/// Returns native bitmap dimensions and its NX anchor origin when a path is a
+/// bitmap. Window composition uses the visible top-left while the compositor
+/// accepts the original NX anchor point.
+fn nx_ui_bitmap_geometry(archive: &NxArchive, path: &str) -> Option<(usize, usize, i32, i32)> {
+    let node = resolve_ui_path(&archive.root(), path).ok().flatten()?;
+    let bitmap = node.bitmap().ok().flatten()?;
+    let origin = node
+        .child("origin")
+        .ok()
+        .flatten()
+        .and_then(|origin| origin.value().ok())
+        .and_then(|value| match value {
+            NodeValue::Vector { x, y } => Some((x, y)),
+            _ => None,
+        })
+        .unwrap_or((0, 0));
+    Some((
+        usize::from(bitmap.width()),
+        usize::from(bitmap.height()),
+        origin.0,
+        origin.1,
+    ))
+}
+
+fn nx_dialogue_button_geometry(archive: &NxArchive, path: &str) -> Option<(f32, f32, i32, i32)> {
+    nx_ui_bitmap_geometry(archive, path).map(|(width, height, origin_x, origin_y)| {
+        (width as f32, height as f32, origin_x, origin_y)
+    })
+}
+
+struct NxUiModalLayout {
+    bounds: ui_foundation::UiRect,
+    buttons: Vec<ui_foundation::UiRect>,
+}
+
+/// Composes an NX modal and centers its authored buttons as a group along the
+/// bottom edge. The returned visible bounds also drive text layout and hits.
+fn composite_nx_ui_modal(
+    pixels: &mut [u8],
+    canvas_width: usize,
+    canvas_height: usize,
+    archive: &NxArchive,
+    background_path: &str,
+    button_paths: &[&str],
+) -> Result<NxUiModalLayout, String> {
+    let (background_width, background_height, origin_x, origin_y) =
+        nx_dialogue_button_geometry(archive, background_path)
+            .ok_or_else(|| format!("missing NX modal bitmap {background_path:?}"))?;
+    let left = ((canvas_width as f32 - background_width) * 0.5).floor();
+    let top = ((canvas_height as f32 - background_height) * 0.5).floor();
+    composite_nx_ui_bitmap(
+        pixels,
+        canvas_width,
+        canvas_height,
+        archive,
+        background_path,
+        left as i32 + origin_x,
+        top as i32 + origin_y,
+    )?;
+
+    let button_geometry = button_paths
+        .iter()
+        .map(|path| {
+            nx_dialogue_button_geometry(archive, path)
+                .ok_or_else(|| format!("missing NX modal button {path:?}"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let gap = if button_geometry.len() > 1 { 18.0 } else { 0.0 };
+    let buttons_width = button_geometry.iter().map(|button| button.0).sum::<f32>()
+        + gap * button_geometry.len().saturating_sub(1) as f32;
+    let mut button_left = left + ((background_width - buttons_width) * 0.5).floor();
+    let mut buttons = Vec::with_capacity(button_geometry.len());
+    for (path, (button_width, button_height, button_origin_x, button_origin_y)) in
+        button_paths.iter().zip(button_geometry)
+    {
+        let button_top = top + background_height - button_height - 14.0;
+        composite_nx_ui_bitmap(
+            pixels,
+            canvas_width,
+            canvas_height,
+            archive,
+            path,
+            button_left.round() as i32 + button_origin_x,
+            button_top.round() as i32 + button_origin_y,
+        )?;
+        buttons.push(ui_foundation::UiRect::new(
+            button_left,
+            button_top,
+            button_width,
+            button_height,
+        ));
+        button_left += button_width + gap;
+    }
+    Ok(NxUiModalLayout {
+        bounds: ui_foundation::UiRect::new(left, top, background_width, background_height),
+        buttons,
+    })
+}
+
+/// Composes a native v83 nine-piece frame by tiling its authored edges and
+/// center. The frame remains crisp at arbitrary window dimensions; no Rust
+/// color blocks are used to imitate missing window art.
+fn composite_nx_ui_nine_slice_frame(
+    pixels: &mut [u8],
+    canvas_width: usize,
+    canvas_height: usize,
+    archive: &NxArchive,
+    base_path: &str,
+    left: usize,
+    top: usize,
+    width: usize,
+    height: usize,
+) -> Result<(), String> {
+    let paths = [
+        ["top/left", "top/center", "top/right"],
+        ["center/left", "center/center", "center/right"],
+        ["bottom/left", "bottom/center", "bottom/right"],
+    ];
+    let mut geometry = [[(0_usize, 0_usize, 0_i32, 0_i32); 3]; 3];
+    for (row, parts) in paths.iter().enumerate() {
+        for (column, part) in parts.iter().enumerate() {
+            let path = format!("{base_path}/{part}");
+            geometry[row][column] = nx_ui_bitmap_geometry(archive, &path)
+                .ok_or_else(|| format!("missing NX frame bitmap {path:?}"))?;
+            if geometry[row][column].0 == 0 || geometry[row][column].1 == 0 {
+                return Err(format!("NX frame bitmap {path:?} has empty dimensions"));
+            }
+        }
+    }
+
+    let tile_width = geometry[1][1].0;
+    let tile_height = geometry[1][1].1;
+    let top_height = geometry[0][1].1;
+    let bottom_y = height.saturating_sub(geometry[2][1].1);
+    let body_start = top_height.min(height);
+    let body_end = bottom_y.max(body_start).min(height);
+    let path_at = |row: usize, column: usize| format!("{base_path}/{}", paths[row][column]);
+    let composite_at = |pixels: &mut [u8], row: usize, column: usize, x: usize, y: usize| {
+        let path = path_at(row, column);
+        let (_, _, origin_x, origin_y) = geometry[row][column];
+        composite_nx_ui_bitmap(
+            pixels,
+            canvas_width,
+            canvas_height,
+            archive,
+            &path,
+            left as i32 + x as i32 + origin_x,
+            top as i32 + y as i32 + origin_y,
+        )
+    };
+
+    for x in (0..width).step_by(tile_width) {
+        let column = if x == 0 {
+            0
+        } else if x + tile_width >= width {
+            2
+        } else {
+            1
+        };
+        composite_at(pixels, 0, column, x, 0)?;
+        composite_at(pixels, 2, column, x, bottom_y)?;
+    }
+    for y in (body_start..body_end).step_by(tile_height) {
+        for x in (0..width).step_by(tile_width) {
+            let column = if x == 0 {
+                0
+            } else if x + tile_width >= width {
+                2
+            } else {
+                1
+            };
+            composite_at(pixels, 1, column, x, y)?;
+        }
+    }
+    Ok(())
+}
+
+/// Composes a window made from a fixed header, repeating center strip and
+/// footer, preserving the three source bitmaps at native pixel size.
+fn composite_nx_ui_vertical_frame(
+    pixels: &mut [u8],
+    canvas_width: usize,
+    canvas_height: usize,
+    archive: &NxArchive,
+    top_path: &str,
+    center_path: &str,
+    bottom_path: &str,
+    left: i32,
+    top: i32,
+    bottom: i32,
+) -> Result<(), String> {
+    let (_, center_height, _, _) = nx_ui_bitmap_geometry(archive, center_path)
+        .ok_or_else(|| format!("missing NX frame bitmap {center_path:?}"))?;
+    if center_height == 0 {
+        return Err(format!("NX frame bitmap {center_path:?} has empty height"));
+    }
+    composite_nx_ui_bitmap(pixels, canvas_width, canvas_height, archive, top_path, left, top)?;
+    let mut y = top.saturating_add(
+        nx_ui_bitmap_geometry(archive, top_path)
+            .ok_or_else(|| format!("missing NX frame bitmap {top_path:?}"))?
+            .1 as i32,
+    );
+    while y < bottom {
+        composite_nx_ui_bitmap(
+            pixels,
+            canvas_width,
+            canvas_height,
+            archive,
+            center_path,
+            left,
+            y,
+        )?;
+        y = y.saturating_add(center_height as i32);
+    }
+    composite_nx_ui_bitmap(
+        pixels,
+        canvas_width,
+        canvas_height,
+        archive,
+        bottom_path,
+        left,
+        bottom,
+    )
+}
+
+/// Draws a standard Basic.img Tab2 composition into a tab cell. Inventory,
+/// NPC shop and other lists share the same v83 cap and fill artwork.
+fn composite_nx_ui_tab(
+    pixels: &mut [u8],
+    canvas_width: usize,
+    canvas_height: usize,
+    archive: &NxArchive,
+    bounds: ui_foundation::UiRect,
+    selected: bool,
+) -> Result<(), String> {
+    let state = usize::from(selected);
+    let x = bounds.x.max(0.0) as usize;
+    let y = bounds.y.max(0.0) as usize;
+    let width = bounds.width.max(0.0) as usize;
+    let height = bounds.height.max(0.0) as usize;
+    if width < 8 || height == 0 {
+        return Ok(());
+    }
+    for (part, left, part_width) in [
+        ("left", x, 4),
+        ("fill", x + 4, width - 8),
+        ("right", x + width - 4, 4),
+    ] {
+        composite_nx_ui_bitmap_scaled_to(
+            pixels,
+            canvas_width,
+            canvas_height,
+            archive,
+            &format!("Basic.img/Tab2/{part}{state}"),
+            left,
+            y,
+            part_width,
+            height,
+        )?;
+    }
+    Ok(())
+}
+
+/// Centers native artwork in a layout cell without stretching its pixels.
+/// Convert the desired bitmap position back to an NX anchor so nonzero origins
+/// (including focused button art) do not shift the visible image.
+fn composite_nx_ui_bitmap_centered(
+    pixels: &mut [u8],
+    width: usize,
+    height: usize,
+    archive: &NxArchive,
+    path: &str,
+    bounds: ui_foundation::UiRect,
+) -> Result<(), String> {
+    let (w, h, ox, oy) = nx_dialogue_button_geometry(archive, path)
+        .ok_or_else(|| format!("missing NX bitmap {path:?}"))?;
+    composite_nx_ui_bitmap(
+        pixels, width, height, archive, path,
+        (bounds.x + (bounds.width - w) * 0.5).floor() as i32 + ox,
+        (bounds.y + (bounds.height - h) * 0.5).floor() as i32 + oy,
+    )
+}
+
 /// Draws a v83 NX bitmap into a panel-sized rectangle using nearest-neighbor
 /// scaling so pixel-art edges remain crisp. The requested position is the
 /// destination's top-left; source NX origins are intentionally ignored because
@@ -556,19 +839,7 @@ fn centered_text_x(font: &fontdue::Font, text: &str, font_size: f32) -> f32 {
 }
 
 fn measured_text_width(font: &fontdue::Font, text: &str, font_size: f32) -> f32 {
-    let mut advance = 0.0_f32;
-    let mut previous = None;
-    for character in text.chars() {
-        if let Some(previous) = previous {
-            advance += font
-                .horizontal_kern(previous, character, font_size)
-                .unwrap_or(0.0);
-        }
-        let (metrics, _) = rasterize_ui_glyph(font, character, font_size);
-        advance += metrics.advance_width;
-        previous = Some(character);
-    }
-    advance
+    ui_foundation::measure_text(font, text, font_size)
 }
 
 fn append_text_sprite(

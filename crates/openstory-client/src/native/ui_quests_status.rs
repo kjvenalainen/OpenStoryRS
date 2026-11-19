@@ -1483,8 +1483,8 @@ fn render_status_panel(
         HEIGHT,
         ui_archive,
         &[
-            (auto_path.as_str(), 98, 203),
-            ("UIWindow.img/Stat/BtDetail/normal/0", 124, 323),
+            (auto_path.as_str(), ui_foundation::STATUS_AUTO_BUTTON.x as i32, ui_foundation::STATUS_AUTO_BUTTON.y as i32),
+            ("UIWindow.img/Stat/BtDetail/normal/0", ui_foundation::STATUS_DETAIL_BUTTON.x as i32, ui_foundation::STATUS_DETAIL_BUTTON.y as i32),
             ("Basic.img/BtClose/normal/0", 155, 6),
         ],
     );
@@ -1526,8 +1526,8 @@ fn render_status_panel(
     if stats.ability_points > 0 {
         let button_state = if waiting_for_stats { "disabled" } else { "normal" };
         let path = format!("UIWindow.img/Stat/BtApUp/{button_state}/0");
-        for y in [114, 132, 244, 262, 280, 298] {
-            let _ = composite_nx_ui_bitmap(&mut pixels, WIDTH, HEIGHT, ui_archive, &path, 155, y);
+        for (_, rect) in ui_foundation::status_ap_buttons() {
+            let _ = composite_nx_ui_bitmap(&mut pixels, WIDTH, HEIGHT, ui_archive, &path, rect.x as i32, rect.y as i32);
         }
     }
     let ability_points = stats.ability_points.to_string();

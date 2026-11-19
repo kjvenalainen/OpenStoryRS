@@ -15,7 +15,6 @@ impl ClientApp {
             return;
         };
         let pixels = render_inventory_item_cell(
-            &self.font,
             item,
             &self.legacy_ui_archive,
             &self.item_archive,

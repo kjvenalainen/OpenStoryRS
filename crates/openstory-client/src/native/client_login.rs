@@ -528,7 +528,6 @@ impl ClientApp {
             | LoginAction::PreviousCharacterPage
             | LoginAction::NextCharacterPage
             | LoginAction::BeginCharacterCreation
-            | LoginAction::ChooseCreationClass(_)
             | LoginAction::CycleCreationOption(_, _)
             | LoginAction::ToggleCreationGender(_)
             | LoginAction::FocusCreationName
