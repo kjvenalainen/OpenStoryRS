@@ -495,7 +495,6 @@ impl ClientApp {
                 self.show_skill_book = false;
                 self.show_quest_log = false;
                 self.npc_dialogue = None;
-                self.npc_shop = None;
                 self.storage = None;
                 self.storage_texture = None;
                 self.trade_room = None;
@@ -537,7 +536,6 @@ impl ClientApp {
                 self.show_skill_book = false;
                 self.show_quest_log = false;
                 self.npc_dialogue = None;
-                self.npc_shop = None;
                 self.storage = None;
                 self.storage_texture = None;
                 self.hired_merchant_room = None;

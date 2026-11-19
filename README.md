@@ -200,11 +200,7 @@ or accept the current choice. On text-entry prompts, Space reveals the prompt fi
 remains available for spaces in the answer; Enter submits it. Up/Down moves the selection
 highlight through long lists, which also scroll with the mouse wheel. Space submits number
 prompts. Outside dialogue, Space requests a conversation with the nearest NPC within
-legacy interaction range; both Option keys jump. When the server opens an NPC shop, its
-Buy and Sell views use NX item names and
-icons; sell rows show the legacy NX unit price and exclude items marked `notSale` or
-cash items using the correct item archive. Quantity controls send v83 buy/sell requests, rechargeable
-stock sends the recharge request, and inventory updates remain server-authoritative. The
+legacy interaction range; both Option keys jump. NPC shop UI is currently unavailable; the client closes the server-side shop session. The
 bottom HUD uses the stock v83 `StatusBar.img` background, gauge, and toolbar sprites, with
 live HP, MP, and EXP fills plus character level, name, job, and resource values. HP updates
 display a two-second bar, and positive HP deltas float the legacy blue healing digits from
@@ -313,9 +309,7 @@ Frozen, poisoned, and stunned mobs receive the legacy blue, green, and yellow ti
 the server authorizes a controlled mob skill, the client sends the action selected from the
 mob's ordered `info/skill` entries and plays its matching NX animation. `SPAWN_MIST` and
 `REMOVE_MIST` render and clear the legacy translucent poison, smoke-screen, and mob-skill
-area effects. NPC shops now show NX item names and icons, support buying, selling, rechargeable stock, and server transaction
-results. Perfect Pitch purchases show their item cost and available balance, and requests
-are blocked when the ETC inventory lacks enough. NPC storage uses a compact five-column All view with native item icons,
+area effects. NPC storage uses a compact five-column All view with native item icons,
 store/take actions, and meso transfers. All stored item categories share its
 selection and scrolling order. Clicking a stack opens a quantity prompt for partial
 deposits and withdrawals; withdrawals retrieve the v83 stack and return the unselected

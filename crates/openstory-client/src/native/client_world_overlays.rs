@@ -1256,7 +1256,6 @@ impl ClientApp {
         if self.current_field.is_none()
             || self.active_character.is_none()
             || self.storage.is_some()
-            || self.npc_shop.is_some()
             || self.npc_dialogue.is_some()
             || self.cash_shop.is_some()
         {

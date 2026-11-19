@@ -784,7 +784,6 @@ impl ClientApp {
         if self.active_whisper.is_none()
             || self.current_field.is_none()
             || self.npc_dialogue.is_some()
-            || self.npc_shop.is_some()
             || self.storage.is_some()
             || self.cash_shop.is_some()
             || !(WHISPER_PANEL_X..WHISPER_PANEL_X + WHISPER_PANEL_WIDTH as f32).contains(&cursor.x)

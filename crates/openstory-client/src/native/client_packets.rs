@@ -1390,7 +1390,6 @@ impl ClientApp {
                             self.refresh_inventory_drop_prompt_texture();
                             self.refresh_pet_equipment_texture();
                             self.refresh_key_config_texture();
-                            self.refresh_npc_shop();
                             if self.show_quest_log {
                                 self.refresh_quest_log_texture();
                             }
@@ -1826,10 +1825,7 @@ impl ClientApp {
                                         mob_hit_sound_events.push((
                                             mob.mob_id,
                                             position,
-                                            hit_delays
-                                                .get(hit_index)
-                                                .copied()
-                                                .unwrap_or_default(),
+                                            hit_delays.get(hit_index).copied().unwrap_or_default(),
                                         ));
                                     }
                                 }
@@ -2150,14 +2146,17 @@ impl ClientApp {
             }
             openstory_protocol::OPCODE_OPEN_NPC_SHOP => {
                 match openstory_protocol::parse_npc_shop(packet) {
-                    Ok(shop) => self.show_npc_shop(shop),
+                    Ok(_) => {
+                        self.pending_npc_talk = None;
+                        if let Some(session) = self.session.as_ref() {
+                            if let Err(error) =
+                                session.send_packet(openstory_protocol::npc_shop_leave())
+                            {
+                                eprintln!("OpenStory: could not close NPC shop: {error}");
+                            }
+                        }
+                    }
                     Err(error) => eprintln!("OpenStory: invalid NPC shop: {error}"),
-                }
-            }
-            openstory_protocol::OPCODE_CONFIRM_NPC_SHOP_TRANSACTION => {
-                match openstory_protocol::parse_npc_shop_transaction_result(packet) {
-                    Ok(code) => self.handle_npc_shop_transaction_result(code),
-                    Err(error) => eprintln!("OpenStory: invalid NPC shop result: {error}"),
                 }
             }
             openstory_protocol::OPCODE_NPC_ACTION => {

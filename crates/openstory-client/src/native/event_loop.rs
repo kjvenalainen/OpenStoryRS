@@ -798,10 +798,6 @@ impl ApplicationHandler for ClientApp {
                     }
                     return;
                 }
-                if self.npc_shop.is_some() {
-                    self.click_npc_shop(cursor);
-                    return;
-                }
                 if self.npc_dialogue.is_some() {
                     self.click_npc_dialogue(cursor);
                     return;
@@ -1397,18 +1393,6 @@ impl ApplicationHandler for ClientApp {
                         };
                     }
                     self.refresh_cash_shop_texture();
-                    if let Some(window) = self.window.as_ref() {
-                        window.request_redraw();
-                    }
-                } else if self.npc_shop.is_some()
-                    && cursor.is_some_and(|cursor| {
-                        (NPC_SHOP_PANEL_X..NPC_SHOP_PANEL_X + NPC_SHOP_PANEL_WIDTH)
-                            .contains(&cursor.x)
-                            && (NPC_SHOP_PANEL_Y..NPC_SHOP_PANEL_Y + NPC_SHOP_PANEL_HEIGHT)
-                                .contains(&cursor.y)
-                    })
-                {
-                    self.scroll_npc_shop(amount);
                     if let Some(window) = self.window.as_ref() {
                         window.request_redraw();
                     }
@@ -2255,7 +2239,6 @@ impl ApplicationHandler for ClientApp {
                 if self.chat_open
                     && self.current_field.is_some()
                     && self.npc_dialogue.is_none()
-                    && self.npc_shop.is_none()
                     && self.cash_shop.is_none()
                 {
                     if event.state == ElementState::Pressed && !event.repeat {
@@ -2576,9 +2559,6 @@ impl ApplicationHandler for ClientApp {
                     self.open_quit_confirmation();
                     return;
                 }
-                if self.npc_shop.is_some() && event.repeat {
-                    return;
-                }
                 if event.state != ElementState::Pressed {
                     return;
                 }
@@ -2599,32 +2579,12 @@ impl ApplicationHandler for ClientApp {
                                 self.inventory_drag_source = None;
                                 self.inventory_hover_slot = None;
                             }
-                        } else if self.npc_shop.is_some() {
-                            if self
-                                .npc_shop
-                                .as_ref()
-                                .is_some_and(|shop| shop.confirmation.is_some())
-                            {
-                                self.resolve_npc_shop_confirmation(false);
-                            } else {
-                                self.close_npc_shop();
-                            }
                         } else {
                             self.open_quit_confirmation();
                         }
                     }
                     PhysicalKey::Code(KeyCode::Enter | KeyCode::NumpadEnter) => {
-                        if self.npc_shop.is_some() {
-                            if self
-                                .npc_shop
-                                .as_ref()
-                                .is_some_and(|shop| shop.confirmation.is_some())
-                            {
-                                self.resolve_npc_shop_confirmation(true);
-                            } else {
-                                self.buy_selected_npc_shop_item();
-                            }
-                        } else if self.current_field.is_some() {
+                        if self.current_field.is_some() {
                             if self.active_whisper.is_some() {
                                 self.whisper_input_focused = true;
                                 self.gameplay_input = GameplayInput::default();
@@ -2930,10 +2890,7 @@ impl ApplicationHandler for ClientApp {
                         }
                     }
                     self.refresh_whisper_texture();
-                } else if self.chat_open
-                    && self.current_field.is_some()
-                    && self.npc_shop.is_none()
-                    && self.cash_shop.is_none()
+                } else if self.chat_open && self.current_field.is_some() && self.cash_shop.is_none()
                 {
                     let max_chars = self
                         .cash_item_compose
@@ -3806,7 +3763,6 @@ impl ApplicationHandler for ClientApp {
                 if self.current_field.is_some()
                     && self.active_whisper.is_some()
                     && self.npc_dialogue.is_none()
-                    && self.npc_shop.is_none()
                     && self.storage.is_none()
                     && self.cash_shop.is_none()
                     && let Some(texture) = self.whisper_texture.as_ref()
@@ -3847,20 +3803,6 @@ impl ApplicationHandler for ClientApp {
                         y: dialogue.panel.y,
                         width: dialogue.panel.width,
                         height: dialogue.panel.height,
-                        uv: [0.0, 0.0, 1.0, 1.0],
-                        tint: [1.0, 1.0, 1.0],
-                        blend_mode: BlendMode::Alpha,
-                        flip_x: false,
-                        opacity: 1.0,
-                    });
-                }
-                if let Some(shop) = self.npc_shop.as_ref() {
-                    draws.push(SpriteDraw {
-                        texture: &shop.texture,
-                        x: 202.0,
-                        y: 124.0,
-                        width: 620.0,
-                        height: 520.0,
                         uv: [0.0, 0.0, 1.0, 1.0],
                         tint: [1.0, 1.0, 1.0],
                         blend_mode: BlendMode::Alpha,

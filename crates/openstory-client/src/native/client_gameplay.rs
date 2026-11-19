@@ -68,7 +68,6 @@ impl ClientApp {
         self.gameplay_input = GameplayInput::default();
         self.npc_dialogue = None;
         self.pending_npc_talk = None;
-        self.npc_shop = None;
         self.inventory_drag_source = None;
         self.inventory_drop_prompt = None;
         self.inventory_drop_prompt_texture = None;
@@ -351,10 +350,7 @@ impl ClientApp {
         }
     }
 
-    pub(super) fn schedule_mob_hit_sounds(
-        &mut self,
-        events: &[(i32, (i16, i16), Duration)],
-    ) {
+    pub(super) fn schedule_mob_hit_sounds(&mut self, events: &[(i32, (i16, i16), Duration)]) {
         let start = Instant::now();
         for (mob_id, position, delay) in events {
             if delay.is_zero() {

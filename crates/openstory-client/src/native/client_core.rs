@@ -369,7 +369,6 @@ impl ClientApp {
             maple_tv_broadcast: None,
             npc_dialogue: None,
             npc_dialogue_scroll_dragging: false,
-            npc_shop: None,
             hired_merchant_room: None,
             trade_room: None,
             character_info: None,
@@ -849,10 +848,8 @@ impl ClientApp {
             }
         } else if let Some(footholds) = scene.footholds.as_ref() {
             for _ in 0..frame.updates {
-                self.gameplay_input.pickup_cooldown_ticks = self
-                    .gameplay_input
-                    .pickup_cooldown_ticks
-                    .saturating_sub(1);
+                self.gameplay_input.pickup_cooldown_ticks =
+                    self.gameplay_input.pickup_cooldown_ticks.saturating_sub(1);
                 if let Some(ladder) = scene.local_ladder {
                     scene.player.mode = PhysicsMode::Fixated;
                     scene.player.x = f64::from(ladder.x);
@@ -3135,7 +3132,8 @@ impl ClientApp {
                     }
                 }
                 202 => {
-                    self.gameplay_input.up = pressed && !self.gameplay_input.suppress_up_until_release;
+                    self.gameplay_input.up =
+                        pressed && !self.gameplay_input.suppress_up_until_release;
                 }
                 203 => self.gameplay_input.down = pressed,
                 _ => {}
@@ -3308,9 +3306,6 @@ impl ClientApp {
             return true;
         }
         if self.npc_dialogue.is_some() {
-            return false;
-        }
-        if self.npc_shop.is_some() {
             return false;
         }
         if self.show_skill_book

@@ -210,10 +210,6 @@ pub(super) fn run(
             build_trade_panel_scene(name, map, legacy_ui, characters, items, strings, font)?
         } else if *name == "panel-npc-storage" {
             build_storage_panel_scene(map, legacy_ui, npcs, characters, items, strings, font)?
-        } else if name.starts_with("panel-npc-store") || *name == "panel-npc-shop" {
-            build_npc_store_panel_scene(
-                name, map, legacy_ui, npcs, characters, items, strings, font,
-            )?
         } else if *name == "panel-item-tooltip" {
             build_item_tooltip_scene(map, characters, items, strings, ui, font)?
         } else if name.starts_with("panel-pet-equipment") {
@@ -1412,10 +1408,6 @@ fn build_scene(
         | "panel-item-inventory"
         | "panel-equipment-inventory"
         | "panel-skill-inventory"
-        | "panel-npc-store"
-        | "panel-npc-store-sell"
-        | "panel-npc-store-confirmation"
-        | "panel-npc-shop"
         | "page-cash-shop"
         | "panel-monster-book"
         | "panel-stats"
@@ -2348,124 +2340,6 @@ fn build_trade_panel_scene(
     })
 }
 
-fn build_npc_store_panel_scene(
-    variant: &str,
-    map_archive: &NxArchive,
-    ui_archive: &NxArchive,
-    npc_archive: &NxArchive,
-    character_archive: &NxArchive,
-    item_archive: &NxArchive,
-    string_archive: &NxArchive,
-    font: &fontdue::Font,
-) -> Result<LoginSceneAssets, String> {
-    const REFERENCE_SHOP_ITEMS: [i32; 12] = [
-        1_072_168, 1_072_169, 1_072_170, 1_072_171, 1_002_023, 1_002_004, 1_072_238, 1_072_239,
-        1_072_216, 1_072_217, 1_002_047, 1_002_048,
-    ];
-    const REFERENCE_SHOP_PRICES: [i32; 12] = [
-        3_600, 3_600, 3_600, 3_600, 7_200, 12_000, 4_200, 4_200, 4_200, 4_200, 15_000, 18_000,
-    ];
-    let shop = openstory_protocol::NpcShop {
-        npc_id: if variant == "panel-npc-shop" {
-            9_201_060
-        } else {
-            fixture_named_id(string_archive, "Npc.img", "Mr. Wang", 1022005)
-        },
-        currency_item_id: 0,
-        items: (0..12)
-            .map(|index| openstory_protocol::NpcShopItem {
-                item_id: if variant == "panel-npc-shop" {
-                    REFERENCE_SHOP_ITEMS[index as usize]
-                } else if variant == "panel-npc-store-recharge" && index == 0 {
-                    2_070_000
-                } else {
-                    2_000_000 + index
-                },
-                price: if variant == "panel-npc-shop" {
-                    REFERENCE_SHOP_PRICES[index as usize]
-                } else {
-                    50 * (index + 1)
-                },
-                pitch: 0,
-                time: 0,
-                charge_price: if variant == "panel-npc-store-recharge" && index == 0 {
-                    500
-                } else {
-                    0
-                },
-                buyable: if variant == "panel-npc-shop" { 1 } else { 100 },
-                rechargeable: variant == "panel-npc-store-recharge" && index == 0,
-                slot: index as i16,
-            })
-            .collect(),
-    };
-    let mut inventory = preview_inventory();
-    let mut player_look = preview_character().look;
-    if variant == "panel-npc-shop" {
-        inventory.meso = 45_215;
-        if let Some(item) = inventory.items.get_mut(4) {
-            item.item_id = 1_072_171;
-        }
-        player_look.hair_id = 30_020;
-        player_look.equips.push((-2, 1_022_082));
-    }
-    let (pixels, rect) = super::render_npc_shop_panel(
-        font,
-        &shop,
-        if variant == "panel-npc-store-sell" {
-            super::NpcShopMode::Sell
-        } else {
-            super::NpcShopMode::Buy
-        },
-        0,
-        0,
-        Some(&inventory),
-        Some(&player_look),
-        if variant == "panel-npc-shop" {
-            Some("The vendor doesn't have enough in stock.")
-        } else if variant == "panel-npc-store-notice" {
-            Some("Not enough mesos for this transaction.")
-        } else {
-            None
-        },
-        (variant == "panel-npc-store-confirmation").then_some(super::NpcShopConfirmation {
-            mode: super::NpcShopMode::Buy,
-            slot: 0,
-            item_id: 2_000_000,
-            quantity: 1,
-            recharge: false,
-        }),
-        ui_archive,
-        npc_archive,
-        item_archive,
-        string_archive,
-        character_archive,
-        &mut HashMap::new(),
-        &mut HashMap::new(),
-    );
-    let mut sprites = if variant == "panel-npc-shop" {
-        gameplay_backdrop_for_map(map_archive, character_archive, font, 910_000_001)?
-    } else {
-        gameplay_backdrop(map_archive, character_archive, font)?
-    };
-    sprites.push(DecodedSprite {
-        texture_key: "nx-window:live-npc-store".to_owned(),
-        rect,
-        depth_order: 0,
-        texture_width: super::NPC_SHOP_TEXTURE_WIDTH as u32,
-        texture_height: super::NPC_SHOP_TEXTURE_HEIGHT as u32,
-        pixels: Arc::from(pixels),
-    });
-    Ok(LoginSceneAssets {
-        sprites,
-        actions: Vec::new(),
-        map_scene: None,
-        animated_art: Vec::new(),
-        login_buttons: Vec::new(),
-        save_id_indicator_draws: None,
-    })
-}
-
 fn build_pet_equipment_scene(
     name: &str,
     map_archive: &NxArchive,
@@ -2986,11 +2860,6 @@ fn build_native_window_scene(
         "panel-equipment-inventory" => &[],
         "panel-skill-inventory" => &[
             // Compose the same scaled v83 Skill window used by the live panel below.
-        ],
-        "panel-npc-store" => &[
-            ("UIWindow2.img/Shop2/backgrnd", 400.0, 20.0),
-            ("UIWindow2.img/Shop2/backgrnd2", 400.0, 20.0),
-            ("UIWindow2.img/Shop2/backgrnd3", 400.0, 20.0),
         ],
         "page-cash-shop" => &[("CashShop.img/Base/backgrnd", 0.0, 0.0)],
         "panel-monster-book" => &[("UIWindow2.img/MonsterBook/backgrnd", 276.5, 20.0)],
@@ -3800,10 +3669,6 @@ fn geometry_report(name: &str, scene: &LoginSceneAssets, width: u32, height: u32
             | "panel-pet-equipment"
             | "panel-pet-equipment-empty"
             | "panel-pet-equipment-scroll"
-            | "panel-npc-store"
-            | "panel-npc-store-sell"
-            | "panel-npc-store-confirmation"
-            | "panel-npc-shop"
             | "page-cash-shop"
             | "panel-monster-book"
             | "panel-stats"

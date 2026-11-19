@@ -761,23 +761,8 @@ and sends the matching selection index.
   skill, and face icon macros now resolve the matching item/QuestIcon/Skill/Face NX assets and
   render inline with dialogue and choice text, including after redraws. Scripted quest state
   transitions still depend on server-provided quest scripts and their supported actions.
-  `OPEN_NPC_SHOP` is bounded-parsed into original server slots and supports NX-named/icon
-  buy and inventory sell views, quantity selection, rechargeable stock, `NPC_SHOP_ACTION`
-  buy/sell/recharge/leave requests, and transaction-result feedback. Inventory changes
-  refresh the sell view and map transitions clear shop state. The sell view omits items
-  whose NX `info/notSale` flag is set, resolving equipment metadata from `Character.nx`
-  and consumables from `Item.nx`; the transaction path rechecks that filtered inventory
-  selection before sending a request. Sell rows display the item's legacy NX unit price
-  with grouped meso digits. Perfect Pitch prices display the proper
-  item cost and current ETC balance, and the client checks the required amount again when
-  a confirmed purchase is sent. Items with neither meso nor Perfect Pitch pricing now show
-  an in-game unsupported-currency notice instead of only logging to stderr. The separate
-  token-for-mesos branch remains unsupported: Cosmic's `Shop.buy` path does not remove the
-  token item when calculating the converted balance, so sending that transaction could
-  produce an inconsistent result. Remaining item restrictions and richer server-error
-  feedback are still open.
-  Single-unit buys and sells plus rechargeable stock show a confirmation modal with mouse
-  and Enter/Escape controls; stack quantities remain adjustable in the shop panel.
+  NPC shop UI is removed pending a future refactor. The client bounded-parses
+  `OPEN_NPC_SHOP` and sends a leave request to release the server-side session.
   Storage NPC responses now use a bounded v83 parser and an NX-backed, resizable-window
   panel with category tabs, scrollable storage and inventory lists, server-backed item
   actions, and typed meso transfers. Stack deposits and withdrawals now open quantity
@@ -863,7 +848,7 @@ and sends the matching selection index.
   layout. Other disease skills have no authored NX effect frames in this v83 asset set.
   Mob status drawing follows the C++ frozen double-pass blue overlay while preserving the
   NX-authored mob pose and other status tints.
-  NPC shop sell lists now reject `notSale` and cash items. Personal-shop and hired-merchant
+  Personal-shop and hired-merchant
   stock selection and submission reject cash items and NX `tradeBlock` items, including a
   second check against the current inventory slot before sending. Remaining disease-specific
   visuals and other shop restrictions remain open work.

@@ -74,12 +74,6 @@ impl ClientApp {
                 let panel = self.npc_dialogue.as_ref()?.panel;
                 (panel.x, panel.y, panel.width, panel.height)
             }
-            DialogWindow::NpcShop if self.npc_shop.is_some() => (
-                NPC_SHOP_PANEL_X,
-                NPC_SHOP_PANEL_Y,
-                NPC_SHOP_PANEL_WIDTH,
-                NPC_SHOP_PANEL_HEIGHT,
-            ),
             DialogWindow::Storage if self.storage.is_some() => (
                 182.0,
                 105.0,
@@ -212,7 +206,7 @@ impl ClientApp {
         })
     }
 
-    fn dialog_window_order(&self) -> [DialogWindow; 31] {
+    fn dialog_window_order(&self) -> [DialogWindow; 30] {
         [
             DialogWindow::EventList,
             DialogWindow::Wedding,
@@ -231,7 +225,6 @@ impl ClientApp {
             DialogWindow::TradeRoom,
             DialogWindow::HiredMerchant,
             DialogWindow::Storage,
-            DialogWindow::NpcShop,
             DialogWindow::NpcDialogue,
             DialogWindow::Whisper,
             DialogWindow::OwlSearch,
@@ -378,17 +371,6 @@ impl ClientApp {
                 self.owl_texture = None;
             }
             DialogWindow::NpcDialogue => self.cancel_npc_dialogue(),
-            DialogWindow::NpcShop => {
-                if self
-                    .npc_shop
-                    .as_ref()
-                    .is_some_and(|shop| shop.confirmation.is_some())
-                {
-                    self.resolve_npc_shop_confirmation(false);
-                } else {
-                    self.close_npc_shop();
-                }
-            }
             DialogWindow::Storage => self.close_storage(),
             DialogWindow::HiredMerchant => {
                 if let Some(room) = self.hired_merchant_room.as_mut()
@@ -657,10 +639,6 @@ impl ClientApp {
             (
                 DialogWindow::NpcDialogue,
                 self.npc_dialogue.as_ref().map(|ui| &ui.texture),
-            ),
-            (
-                DialogWindow::NpcShop,
-                self.npc_shop.as_ref().map(|ui| &ui.texture),
             ),
             (DialogWindow::Storage, self.storage_texture.as_ref()),
             (

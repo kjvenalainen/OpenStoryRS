@@ -2299,17 +2299,6 @@ impl LocalQuestConversation {
     }
 }
 
-struct NpcShopUi {
-    state: openstory_protocol::NpcShop,
-    mode: NpcShopMode,
-    selected: usize,
-    first_visible: usize,
-    quantity: i16,
-    notice: Option<String>,
-    confirmation: Option<NpcShopConfirmation>,
-    texture: GpuTexture,
-}
-
 struct StorageUi {
     state: openstory_protocol::StorageSnapshot,
     tab: openstory_protocol::InventoryType,
@@ -2436,15 +2425,6 @@ struct PendingStorageRestore {
     before_counts: HashMap<u16, u16>,
 }
 
-#[derive(Clone, Copy)]
-struct NpcShopConfirmation {
-    mode: NpcShopMode,
-    slot: i16,
-    item_id: i32,
-    quantity: i16,
-    recharge: bool,
-}
-
 #[derive(Clone, Debug)]
 struct CashShopProduct {
     sn: i32,
@@ -2561,12 +2541,6 @@ impl CashShopUi {
             notice: Some("Connecting to the Cash Shop…".to_owned()),
         }
     }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum NpcShopMode {
-    Buy,
-    Sell,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

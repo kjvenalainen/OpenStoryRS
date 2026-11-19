@@ -112,7 +112,7 @@ impl ClientApp {
             return;
         }
         self.pending_npc_talk = None;
-        if self.npc_dialogue.is_some() || self.npc_shop.is_some() || self.storage.is_some() {
+        if self.npc_dialogue.is_some() || self.storage.is_some() {
             return;
         }
         let Some(npc_id) = self
@@ -260,9 +260,8 @@ impl ClientApp {
                 .filter_map(|(id, npc)| {
                     let dx = (npc.x - scene.player.x).abs();
                     let dy = (npc.y - scene.player.y).abs();
-                    (dx <= Self::NPC_CHAT_HORIZONTAL_RANGE
-                        && dy <= Self::NPC_CHAT_VERTICAL_RANGE)
-                    .then_some((*id, dx * dx + dy * dy))
+                    (dx <= Self::NPC_CHAT_HORIZONTAL_RANGE && dy <= Self::NPC_CHAT_VERTICAL_RANGE)
+                        .then_some((*id, dx * dx + dy * dy))
                 })
                 .min_by(|left, right| {
                     left.1

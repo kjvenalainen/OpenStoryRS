@@ -101,7 +101,6 @@ impl ClientApp {
                 self.refresh_chat_texture();
                 self.npc_dialogue = None;
                 self.pending_npc_talk = None;
-                self.npc_shop = None;
                 self.character_info = None;
                 self.character_info_texture = None;
                 self.cash_shop = None;
