@@ -20,11 +20,14 @@ const NPC_SHOP_BUTTONS: [(&str, i32, i32); 4] = [
     ("BtExit", 138, 12),
     ("BtBuy", 138, 34),
     ("BtSell", 368, 34),
-    ("BtRecharge", 418, 12),
+    ("BtRecharge", 368, 12),
 ];
 
 struct NpcShopUi {
     shop: openstory_protocol::NpcShop,
+    // Indices into the full server list. Zero-price / zero-pitch projectile
+    // entries remain available to Recharge but are not buy offers.
+    buy_item_indices: Vec<usize>,
     tab: openstory_protocol::InventoryType,
     buy_scroll: usize,
     sell_scroll: usize,
@@ -32,10 +35,14 @@ struct NpcShopUi {
     sell_selection: Option<u16>,
     pending: bool,
     quantity: Option<NpcShopQuantity>,
+    quantity_texture: Option<GpuTexture>,
     hovered_button: Option<&'static str>,
     hovered_item: Option<NpcShopItemHover>,
     last_buy_click: Option<(usize, Instant)>,
     last_sell_click: Option<(u16, Instant)>,
+    auto_recharge_slots: VecDeque<i16>,
+    auto_recharge_in_flight: bool,
+    auto_recharge_notice_sent: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -101,8 +108,15 @@ fn composite_npc_shop_tab(
 
 impl NpcShopUi {
     fn new(shop: openstory_protocol::NpcShop) -> Self {
+        let buy_item_indices = shop
+            .items
+            .iter()
+            .enumerate()
+            .filter_map(|(index, item)| (item.price > 0 || item.pitch > 0).then_some(index))
+            .collect();
         Self {
             shop,
+            buy_item_indices,
             tab: openstory_protocol::InventoryType::Equip,
             buy_scroll: 0,
             sell_scroll: 0,
@@ -110,10 +124,14 @@ impl NpcShopUi {
             sell_selection: None,
             pending: false,
             quantity: None,
+            quantity_texture: None,
             hovered_button: None,
             hovered_item: None,
             last_buy_click: None,
             last_sell_click: None,
+            auto_recharge_slots: VecDeque::new(),
+            auto_recharge_in_flight: false,
+            auto_recharge_notice_sent: false,
         }
     }
 }
@@ -123,7 +141,9 @@ fn npc_shop_buy_quantity(item: &openstory_protocol::NpcShopItem) -> NpcShopQuant
         buy: true,
         slot: item.slot,
         item_id: item.item_id,
-        maximum: if item.buyable == 0 {
+        maximum: if item.item_id / 1_000_000 == 1 {
+            1
+        } else if item.buyable == 0 {
             100
         } else {
             item.buyable.max(1)
@@ -137,14 +157,66 @@ fn npc_shop_sell_quantity(item: &openstory_protocol::InventoryItem) -> Option<Np
     if item.count == 0 {
         return None;
     }
+    let maximum = npc_shop_sell_maximum(item);
     Some(NpcShopQuantity {
         buy: false,
         slot: i16::try_from(item.slot).ok()?,
         item_id: item.item_id,
-        maximum: i16::try_from(item.count).unwrap_or(i16::MAX),
-        input: QuantityInput::new(Some(1)),
+        // Rechargeable projectiles are stored as a stack of charges, but a
+        // shop transaction sells one complete set at a time.
+        maximum,
+        input: QuantityInput::new(Some(maximum as u16)),
         invalid: false,
     })
+}
+
+fn npc_shop_sell_maximum(item: &openstory_protocol::InventoryItem) -> i16 {
+    if matches!(item.item_id / 10_000, 207 | 233) {
+        1
+    } else {
+        i16::try_from(item.count).unwrap_or(i16::MAX)
+    }
+}
+
+fn npc_shop_recharge_slot(
+    state: &NpcShopUi,
+    inventory: &openstory_protocol::InventorySnapshot,
+) -> Option<i16> {
+    let slot = state.sell_selection?;
+    let item = inventory
+        .items
+        .iter()
+        .find(|item| item.inventory_type == state.tab && item.slot == slot && item.slot > 0)?;
+    if !matches!(item.item_id / 10_000, 207 | 233)
+        || !state
+            .shop
+            .items
+            .iter()
+            .any(|shop_item| shop_item.item_id == item.item_id && shop_item.rechargeable)
+    {
+        return None;
+    }
+    i16::try_from(item.slot).ok()
+}
+
+fn npc_shop_auto_recharge_slots(
+    shop: &openstory_protocol::NpcShop,
+    inventory: &openstory_protocol::InventorySnapshot,
+) -> Vec<i16> {
+    inventory
+        .items
+        .iter()
+        .filter(|item| {
+            item.inventory_type == openstory_protocol::InventoryType::Use
+                && item.slot > 0
+                && item.item_id / 10_000 == 207
+                && shop
+                    .items
+                    .iter()
+                    .any(|shop_item| shop_item.item_id == item.item_id && shop_item.rechargeable)
+        })
+        .filter_map(|item| i16::try_from(item.slot).ok())
+        .collect()
 }
 
 fn npc_shop_tooltip_item(
@@ -155,22 +227,26 @@ fn npc_shop_tooltip_item(
         return None;
     }
     match state.hovered_item? {
-        NpcShopItemHover::Buy(index) => state.shop.items.get(index).map(|item| {
-            let inventory_type = match item.item_id / 1_000_000 {
-                1 => openstory_protocol::InventoryType::Equip,
-                2 => openstory_protocol::InventoryType::Use,
-                3 => openstory_protocol::InventoryType::Setup,
-                4 => openstory_protocol::InventoryType::Etc,
-                5 => openstory_protocol::InventoryType::Cash,
-                _ => openstory_protocol::InventoryType::Equip,
-            };
-            openstory_protocol::InventoryItem {
-                inventory_type,
-                item_id: item.item_id,
-                count: 1,
-                ..Default::default()
-            }
-        }),
+        NpcShopItemHover::Buy(index) => state
+            .buy_item_indices
+            .get(index)
+            .and_then(|shop_index| state.shop.items.get(*shop_index))
+            .map(|item| {
+                let inventory_type = match item.item_id / 1_000_000 {
+                    1 => openstory_protocol::InventoryType::Equip,
+                    2 => openstory_protocol::InventoryType::Use,
+                    3 => openstory_protocol::InventoryType::Setup,
+                    4 => openstory_protocol::InventoryType::Etc,
+                    5 => openstory_protocol::InventoryType::Cash,
+                    _ => openstory_protocol::InventoryType::Equip,
+                };
+                openstory_protocol::InventoryItem {
+                    inventory_type,
+                    item_id: item.item_id,
+                    count: 1,
+                    ..Default::default()
+                }
+            }),
         NpcShopItemHover::Sell(slot) => inventory
             .items
             .iter()
@@ -191,8 +267,9 @@ fn npc_shop_row_at(x: f32, y: f32, sell: bool) -> Option<usize> {
 }
 
 fn npc_shop_button_rect(archive: &NxArchive, name: &str, x: f32, y: f32) -> Option<SpriteRect> {
+    let art_name = if name == "BtRecharge" { "BtExit" } else { name };
     let (width, height, ox, oy) =
-        nx_dialogue_button_geometry(archive, &format!("UIWindow.img/Shop/{name}/normal/0"))?;
+        nx_dialogue_button_geometry(archive, &format!("UIWindow.img/Shop/{art_name}/normal/0"))?;
     Some(SpriteRect {
         x: x - ox as f32,
         y: y - oy as f32,
@@ -200,6 +277,83 @@ fn npc_shop_button_rect(archive: &NxArchive, name: &str, x: f32, y: f32) -> Opti
         height,
         blend_mode: BlendMode::Alpha,
     })
+}
+
+fn erase_npc_shop_button_label(pixels: &mut [u8], rect: ui_foundation::UiRect) {
+    let x = rect.x.round() as usize;
+    let y = rect.y.round() as usize;
+    let width = rect.width.round() as usize;
+    let height = rect.height.round() as usize;
+    let left = x + 8;
+    let right = x + width.saturating_sub(8);
+    if right <= left + 1 || y + height > NPC_SHOP_HEIGHT || right >= NPC_SHOP_WIDTH {
+        return;
+    }
+    for row in 3..height.saturating_sub(3) {
+        let pixel_y = y + row;
+        let left_index = (pixel_y * NPC_SHOP_WIDTH + left) * 4;
+        let right_index = (pixel_y * NPC_SHOP_WIDTH + right) * 4;
+        for pixel_x in left + 1..right {
+            let distance = pixel_x - left;
+            let span = right - left;
+            let index = (pixel_y * NPC_SHOP_WIDTH + pixel_x) * 4;
+            for channel in 0..3 {
+                pixels[index + channel] = ((usize::from(pixels[left_index + channel])
+                    * (span - distance)
+                    + usize::from(pixels[right_index + channel]) * distance)
+                    / span) as u8;
+            }
+        }
+    }
+}
+
+fn draw_npc_shop_button_label(
+    font: &fontdue::Font,
+    pixels: &mut [u8],
+    label: &str,
+    x: i32,
+    y: i32,
+    width: usize,
+    color: [u8; 3],
+) {
+    let outline = [62, 54, 47];
+    for (offset_x, offset_y) in [
+        (-1, -1),
+        (0, -1),
+        (1, -1),
+        (-1, 0),
+        (1, 0),
+        (-1, 1),
+        (0, 1),
+        (1, 1),
+    ] {
+        draw_dialogue_text(
+            font,
+            pixels,
+            NPC_SHOP_WIDTH,
+            NPC_SHOP_HEIGHT,
+            label,
+            x + offset_x,
+            y + offset_y,
+            10.0,
+            width,
+            12,
+            outline,
+        );
+    }
+    draw_dialogue_text(
+        font,
+        pixels,
+        NPC_SHOP_WIDTH,
+        NPC_SHOP_HEIGHT,
+        label,
+        x,
+        y,
+        10.0,
+        width,
+        12,
+        color,
+    );
 }
 
 fn render_npc_shop_panel(
@@ -253,19 +407,12 @@ fn render_npc_shop_panel(
         }
     }
     let mut dialog = NxDialog::new(&mut pixels, NPC_SHOP_WIDTH, NPC_SHOP_HEIGHT, ui);
+    let mut recharge_button = None;
     for (name, x, y) in NPC_SHOP_BUTTONS {
         let enabled = match name {
             "BtBuy" => state.buy_selection.is_some() && !state.pending,
             "BtSell" => state.sell_selection.is_some() && !state.pending,
-            "BtRecharge" => {
-                state.sell_selection.is_some_and(|slot| {
-                    inventory.items.iter().any(|i| {
-                        i.inventory_type == state.tab
-                            && i.slot == slot
-                            && matches!(i.item_id / 10_000, 207 | 233)
-                    })
-                }) && !state.pending
-            }
+            "BtRecharge" => !state.pending && npc_shop_recharge_slot(state, inventory).is_some(),
             _ => true,
         };
         let variant = if !enabled {
@@ -275,7 +422,33 @@ fn render_npc_shop_panel(
         } else {
             "normal"
         };
-        dialog.anchored_button(&format!("UIWindow.img/Shop/{name}/{variant}/0"), x, y)?;
+        let art_name = if name == "BtRecharge" { "BtExit" } else { name };
+        let rect =
+            dialog.anchored_button(&format!("UIWindow.img/Shop/{art_name}/{variant}/0"), x, y)?;
+        if name == "BtRecharge" {
+            recharge_button = Some((rect, enabled));
+        }
+    }
+    drop(dialog);
+    if let Some((rect, enabled)) = recharge_button {
+        erase_npc_shop_button_label(&mut pixels, rect);
+        let label = "RECHARGE";
+        let label_font = ui_foundation::bold_font().unwrap_or(font);
+        let label_width = ui_foundation::measure_text(label_font, label, 10.0);
+        let label_x = (rect.x + (rect.width - label_width) / 2.0).round() as i32;
+        draw_npc_shop_button_label(
+            label_font,
+            &mut pixels,
+            label,
+            label_x,
+            rect.y.round() as i32 + 3,
+            rect.width.round() as usize,
+            if enabled {
+                [255, 255, 255]
+            } else {
+                [110, 110, 110]
+            },
+        );
     }
     composite_npc_shop_tab(&mut pixels, ui, 7, 54, true)?;
     composite_nx_ui_bitmap_centered(
@@ -310,7 +483,7 @@ fn render_npc_shop_panel(
         .filter(|i| i.inventory_type == state.tab && i.slot > 0)
         .collect();
     for (right, count, offset) in [
-        (false, state.shop.items.len(), state.buy_scroll),
+        (false, state.buy_item_indices.len(), state.buy_scroll),
         (true, sell.len(), state.sell_scroll),
     ] {
         let x = NPC_SHOP_SCROLL_X[usize::from(right)];
@@ -374,7 +547,10 @@ fn render_npc_shop_panel(
                     state.sell_selection == Some(item.slot),
                 )
             } else {
-                let Some(item) = state.shop.items.get(index) else {
+                let Some(shop_index) = state.buy_item_indices.get(index) else {
+                    break;
+                };
+                let Some(item) = state.shop.items.get(*shop_index) else {
                     break;
                 };
                 (
@@ -573,44 +749,86 @@ fn render_npc_shop_panel(
         64,
         86,
     );
-    if let Some(quantity) = state.quantity.as_ref() {
-        let icon = inventory_item_icon(quantity.item_id, items, characters, icons);
-        let title = if quantity.buy { "BUY ITEM" } else { "SELL ITEM" };
-        let message = if icon.is_some() {
-            String::new()
-        } else {
-            let name = item_name(quantity.item_id, strings, names);
-            ui_foundation::ellipsize(font, &name, 10.0, 273.0)
-        };
-        let notice = quantity
-            .invalid
-            .then(|| format!("Enter a quantity from 1 to {}.", quantity.maximum));
-        let art = render_quantity_window(
-            ui,
-            font,
-            title,
-            &message,
-            icon.as_ref().map(QuantityIcon::Item),
-            Some((&quantity.input, 1, quantity.maximum as u16)),
-            notice.as_deref(),
-            InventoryDropStep::Quantity,
-        )?;
-        let (x, y) = quantity_window_origin(NPC_SHOP_WIDTH, NPC_SHOP_HEIGHT);
-        composite_bgra_pixels(
-            &mut pixels,
-            NPC_SHOP_WIDTH,
-            NPC_SHOP_HEIGHT,
-            &art,
-            QUANTITY_WINDOW_WIDTH,
-            QUANTITY_WINDOW_HEIGHT,
-            x,
-            y,
-        );
-    }
     Ok(pixels)
 }
 
+fn render_npc_shop_quantity(
+    font: &fontdue::Font,
+    quantity: &NpcShopQuantity,
+    ui: &NxArchive,
+    items: &NxArchive,
+    characters: &NxArchive,
+    strings: &NxArchive,
+    icons: &mut HashMap<i32, Option<(u32, u32, Arc<[u8]>)>>,
+    names: &mut HashMap<i32, Option<String>>,
+) -> Result<Vec<u8>, String> {
+    let icon = inventory_item_icon(quantity.item_id, items, characters, icons);
+    let title = if quantity.buy {
+        "BUY ITEM"
+    } else {
+        "SELL ITEM"
+    };
+    let message = if icon.is_some() {
+        String::new()
+    } else {
+        let name = item_name(quantity.item_id, strings, names);
+        ui_foundation::ellipsize(font, &name, 10.0, (QUANTITY_WINDOW_WIDTH - 20) as f32)
+    };
+    let notice = quantity
+        .invalid
+        .then(|| format!("Enter a quantity from 1 to {}.", quantity.maximum));
+    render_quantity_window(
+        ui,
+        font,
+        title,
+        &message,
+        icon.as_ref().map(QuantityIcon::Item),
+        Some((&quantity.input, 1, quantity.maximum as u16)),
+        notice.as_deref(),
+        InventoryDropStep::Quantity,
+    )
+}
+
 impl ClientApp {
+    fn start_next_npc_shop_auto_recharge(&mut self) {
+        let slot = self.npc_shop.as_mut().and_then(|state| {
+            if state.pending || state.auto_recharge_in_flight {
+                return None;
+            }
+            let slot = state.auto_recharge_slots.pop_front()?;
+            state.pending = true;
+            state.auto_recharge_in_flight = true;
+            Some(slot)
+        });
+        let Some(slot) = slot else {
+            return;
+        };
+        let packet = match openstory_protocol::npc_shop_recharge(slot) {
+            Ok(packet) => packet,
+            Err(error) => {
+                self.clear_npc_shop_auto_recharge();
+                eprintln!("OpenStoryRS: could not build automatic shop recharge: {error}");
+                return;
+            }
+        };
+        let Some(session) = self.session.as_ref() else {
+            self.clear_npc_shop_auto_recharge();
+            return;
+        };
+        if let Err(error) = session.send_packet(packet) {
+            self.clear_npc_shop_auto_recharge();
+            eprintln!("OpenStoryRS: automatic shop recharge failed: {error}");
+        }
+    }
+
+    fn clear_npc_shop_auto_recharge(&mut self) {
+        if let Some(state) = self.npc_shop.as_mut() {
+            state.pending = false;
+            state.auto_recharge_in_flight = false;
+            state.auto_recharge_slots.clear();
+        }
+    }
+
     fn update_npc_shop_hover(&mut self) {
         let Some(state) = self.npc_shop.as_ref() else {
             return;
@@ -640,7 +858,7 @@ impl ClientApp {
                 let y = cursor.y - NPC_SHOP_Y;
                 if let Some(row) = npc_shop_row_at(x, y, false) {
                     let index = state.buy_scroll + row;
-                    (index < state.shop.items.len()).then_some(NpcShopItemHover::Buy(index))
+                    (index < state.buy_item_indices.len()).then_some(NpcShopItemHover::Buy(index))
                 } else if let Some(row) = npc_shop_row_at(x, y, true) {
                     self.inventory
                         .as_ref()
@@ -677,7 +895,7 @@ impl ClientApp {
         };
         state.buy_scroll = state
             .buy_scroll
-            .min(state.shop.items.len().saturating_sub(NPC_SHOP_ROWS));
+            .min(state.buy_item_indices.len().saturating_sub(NPC_SHOP_ROWS));
         let sell: Vec<_> = inventory
             .items
             .iter()
@@ -692,13 +910,20 @@ impl ClientApp {
         {
             state.sell_selection = None;
         }
+        if state
+            .buy_selection
+            .is_some_and(|index| index >= state.buy_item_indices.len())
+        {
+            state.buy_selection = None;
+            state.last_buy_click = None;
+        }
         if let Some(quantity) = state.quantity.as_mut().filter(|quantity| !quantity.buy) {
             let current = sell.iter().find(|item| {
                 i16::try_from(item.slot).ok() == Some(quantity.slot)
                     && item.item_id == quantity.item_id
             });
             if let Some(item) = current.filter(|item| item.count > 0) {
-                let maximum = i16::try_from(item.count).unwrap_or(i16::MAX);
+                let maximum = npc_shop_sell_maximum(item);
                 if quantity.maximum != maximum {
                     quantity.maximum = maximum;
                     quantity.input.clamp_to_max(maximum as u16);
@@ -738,6 +963,26 @@ impl ClientApp {
             Ok(None) => {}
             Err(error) => eprintln!("OpenStoryRS: could not render NPC shop: {error}"),
         }
+        if let Some(quantity) = state.quantity.as_ref() {
+            let result = render_npc_shop_quantity(
+                &self.font,
+                quantity,
+                &self.legacy_ui_archive,
+                &self.item_archive,
+                &self.character_archive,
+                &self.string_archive,
+                &mut self.inventory_icon_cache,
+                &mut self.item_name_cache,
+            )
+            .and_then(|pixels| {
+                update_quantity_window_texture(renderer, &mut state.quantity_texture, &pixels)
+            });
+            if let Err(error) = result {
+                eprintln!("OpenStoryRS: could not render NPC shop quantity: {error}");
+            }
+        } else {
+            state.quantity_texture = None;
+        }
         self.refresh_npc_shop_tooltip_texture();
     }
 
@@ -757,7 +1002,9 @@ impl ClientApp {
             &self.item_archive,
             &self.character_archive,
             &self.string_archive,
-            self.active_character.as_ref().map(|character| &character.stats),
+            self.active_character
+                .as_ref()
+                .map(|character| &character.stats),
             self.inventory.as_ref(),
             &mut self.inventory_icon_cache,
             &mut self.item_name_cache,
@@ -798,13 +1045,7 @@ impl ClientApp {
             return;
         };
         if let Some(quantity) = state.quantity.as_mut() {
-            let local = quantity_window_local(
-                cursor,
-                NPC_SHOP_X,
-                NPC_SHOP_Y,
-                NPC_SHOP_WIDTH,
-                NPC_SHOP_HEIGHT,
-            );
+            let local = quantity_window_local(cursor, npc_shop_quantity_rect());
             let (ok, cancel) = quantity_window_buttons(false);
             if ok.contains(local.x, local.y) {
                 self.confirm_npc_shop_quantity();
@@ -834,7 +1075,28 @@ impl ClientApp {
             if state.pending {
                 return;
             }
-            let packet = if name == "BtRecharge" {
+            if name == "BtRecharge" {
+                let packet = self
+                    .inventory
+                    .as_ref()
+                    .and_then(|inventory| npc_shop_recharge_slot(state, inventory))
+                    .and_then(|slot| openstory_protocol::npc_shop_recharge(slot).ok());
+                if let (Some(packet), Some(session)) = (packet, self.session.as_ref()) {
+                    match session.send_packet(packet) {
+                        Ok(()) => state.pending = true,
+                        Err(error) => eprintln!("OpenStoryRS: shop recharge failed: {error}"),
+                    }
+                }
+                self.refresh_npc_shop_texture();
+                return;
+            }
+            state.quantity = if name == "BtBuy" {
+                state
+                    .buy_selection
+                    .and_then(|index| state.buy_item_indices.get(index))
+                    .and_then(|shop_index| state.shop.items.get(*shop_index))
+                    .map(npc_shop_buy_quantity)
+            } else {
                 self.inventory
                     .as_ref()
                     .and_then(|inv| {
@@ -842,34 +1104,16 @@ impl ClientApp {
                             i.inventory_type == state.tab && Some(i.slot) == state.sell_selection
                         })
                     })
-                    .filter(|i| matches!(i.item_id / 10_000, 207 | 233))
-                    .and_then(|i| i16::try_from(i.slot).ok())
-                    .and_then(|slot| openstory_protocol::npc_shop_recharge(slot).ok())
-            } else {
-                state.quantity = if name == "BtBuy" {
-                    state
-                        .buy_selection
-                        .and_then(|index| state.shop.items.get(index))
-                        .map(npc_shop_buy_quantity)
-                } else {
-                    self.inventory
-                        .as_ref()
-                        .and_then(|inv| {
-                            inv.items.iter().find(|i| {
-                                i.inventory_type == state.tab
-                                    && Some(i.slot) == state.sell_selection
-                            })
-                        })
-                        .and_then(npc_shop_sell_quantity)
-                };
-                state.hovered_item = None;
-                None
+                    .and_then(npc_shop_sell_quantity)
             };
-            if let (Some(packet), Some(session)) = (packet, self.session.as_ref()) {
-                match session.send_packet(packet) {
-                    Ok(()) => state.pending = true,
-                    Err(error) => eprintln!("OpenStoryRS: shop action failed: {error}"),
-                }
+            state.hovered_item = None;
+            if state
+                .quantity
+                .as_ref()
+                .is_some_and(|quantity| quantity.maximum == 1)
+            {
+                self.confirm_npc_shop_quantity();
+                return;
             }
             self.refresh_npc_shop_texture();
             return;
@@ -883,7 +1127,7 @@ impl ClientApp {
             state.hovered_item = None;
         } else if let Some(row) = npc_shop_row_at(x, y, false) {
             let index = state.buy_scroll + row;
-            if index < state.shop.items.len() {
+            if index < state.buy_item_indices.len() {
                 let now = Instant::now();
                 let double_click = state.last_buy_click.is_some_and(|(previous, at)| {
                     previous == index
@@ -896,7 +1140,11 @@ impl ClientApp {
                     Some((index, now))
                 };
                 if double_click {
-                    state.quantity = state.shop.items.get(index).map(npc_shop_buy_quantity);
+                    state.quantity = state
+                        .buy_item_indices
+                        .get(index)
+                        .and_then(|shop_index| state.shop.items.get(*shop_index))
+                        .map(npc_shop_buy_quantity);
                     state.hovered_item = None;
                 }
             } else {
@@ -955,6 +1203,13 @@ impl ClientApp {
                 },
             );
             return;
+        }
+        if state
+            .quantity
+            .as_ref()
+            .is_some_and(|quantity| quantity.maximum == 1)
+        {
+            self.confirm_npc_shop_quantity();
         }
         self.refresh_npc_shop_texture();
     }

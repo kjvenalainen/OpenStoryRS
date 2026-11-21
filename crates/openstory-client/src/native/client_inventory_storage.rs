@@ -182,7 +182,9 @@ impl ClientApp {
             &self.item_archive,
             &self.character_archive,
             &self.string_archive,
-            self.active_character.as_ref().map(|character| &character.stats),
+            self.active_character
+                .as_ref()
+                .map(|character| &character.stats),
             self.inventory.as_ref(),
             &mut self.inventory_icon_cache,
             &mut self.item_name_cache,

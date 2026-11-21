@@ -443,6 +443,36 @@ impl ApplicationHandler for ClientApp {
                     }
                     return;
                 }
+                if self.status_auto_confirmation {
+                    self.click_status_auto_assign_dialog(cursor);
+                    if let Some(window) = self.window.as_ref() {
+                        window.request_redraw();
+                    }
+                    return;
+                }
+                if self.inventory_drop_prompt.is_some() {
+                    self.click_inventory_drop_prompt(cursor);
+                    if let Some(window) = self.window.as_ref() {
+                        window.request_redraw();
+                    }
+                    return;
+                }
+                if self.has_shop_quantity_window() {
+                    self.click_npc_shop(cursor);
+                    if let Some(window) = self.window.as_ref() {
+                        window.request_redraw();
+                    }
+                    return;
+                }
+                // The Cash Shop is drawn over the entire scene, so route its
+                // clicks before any underlying windows can consume them.
+                if self.cash_shop.is_some() {
+                    self.click_cash_shop(cursor);
+                    if let Some(window) = self.window.as_ref() {
+                        window.request_redraw();
+                    }
+                    return;
+                }
                 // The skill window overlaps the collapsed minimap controls. Handle
                 // its close button in screen coordinates before lower layers can
                 // reinterpret the same click as a world-map request.
@@ -468,24 +498,6 @@ impl ApplicationHandler for ClientApp {
                             y: cursor.y - skill_book_offset_y,
                         });
                     }
-                    if let Some(window) = self.window.as_ref() {
-                        window.request_redraw();
-                    }
-                    return;
-                }
-                if self.inventory_drop_prompt.is_some() {
-                    self.click_inventory_drop_prompt(cursor);
-                    if let Some(window) = self.window.as_ref() {
-                        window.request_redraw();
-                    }
-                    return;
-                }
-                if self
-                    .npc_shop
-                    .as_ref()
-                    .is_some_and(|shop| shop.quantity.is_some())
-                {
-                    self.click_npc_shop(cursor);
                     if let Some(window) = self.window.as_ref() {
                         window.request_redraw();
                     }
@@ -894,13 +906,6 @@ impl ApplicationHandler for ClientApp {
                     self.click_npc_dialogue(cursor);
                     return;
                 }
-                if self.cash_shop.is_some() {
-                    self.click_cash_shop(cursor);
-                    if let Some(window) = self.window.as_ref() {
-                        window.request_redraw();
-                    }
-                    return;
-                }
                 if self.show_equipment_inventory
                     && self.dialog_window_hit_test(DialogWindow::EquipmentInventory, screen_cursor)
                     && self.begin_equipment_inventory_pointer(cursor)
@@ -927,6 +932,36 @@ impl ApplicationHandler for ClientApp {
                 }
                 if self.topmost_dialog_window_at(screen_cursor).is_some() {
                     return;
+                }
+                if self.current_field.is_some() {
+                    let x = screen_cursor.x - CHAT_X;
+                    let y = screen_cursor.y - CHAT_Y;
+                    let max_scroll = self.chat_lines.len().saturating_sub(CHAT_ROWS);
+                    if (CHAT_TOGGLE_X as f32..(CHAT_TOGGLE_X + 12) as f32).contains(&x)
+                        && (CHAT_TOGGLE_Y as f32..(CHAT_TOGGLE_Y + 12) as f32).contains(&y)
+                    {
+                        self.chat_open = !self.chat_open;
+                        self.chat_input_focused = false;
+                        self.chat_scroll = 0;
+                        self.refresh_chat_texture();
+                        return;
+                    }
+                    if self.chat_open
+                        && (CHAT_WIDTH as f32 - 16.0..CHAT_WIDTH as f32).contains(&x)
+                        && (0.0..CHAT_HISTORY_HEIGHT as f32).contains(&y)
+                    {
+                        self.chat_scroll = if y < 13.0 {
+                            (self.chat_scroll + 1).min(max_scroll)
+                        } else if y >= CHAT_HISTORY_HEIGHT as f32 - 13.0 {
+                            self.chat_scroll.saturating_sub(1)
+                        } else {
+                            ((1.0 - (y - 13.0) / (CHAT_HISTORY_HEIGHT as f32 - 26.0))
+                                * max_scroll as f32)
+                                .round() as usize
+                        };
+                        self.refresh_chat_texture();
+                        return;
+                    }
                 }
                 if self.click_native_status_bar(cursor) {
                     if let Some(window) = self.window.as_ref() {
@@ -1075,6 +1110,23 @@ impl ApplicationHandler for ClientApp {
                 let cursor = self
                     .cursor
                     .map(|cursor| self.dialog_window_input_cursor(cursor));
+                if self.current_field.is_some()
+                    && self.chat_open
+                    && self.cursor.is_some_and(|p| {
+                        self.topmost_dialog_window_at(p).is_none()
+                            && (CHAT_X..CHAT_X + CHAT_WIDTH as f32).contains(&p.x)
+                            && (CHAT_Y..STATUS_BAR_TOP).contains(&p.y)
+                    })
+                {
+                    let max_scroll = self.chat_lines.len().saturating_sub(CHAT_ROWS);
+                    self.chat_scroll = if amount > 0.0 {
+                        (self.chat_scroll + 1).min(max_scroll)
+                    } else {
+                        self.chat_scroll.saturating_sub(1)
+                    };
+                    self.refresh_chat_texture();
+                    return;
+                }
                 if self.event_list_open
                     && self.cursor.is_some_and(|cursor| {
                         self.dialog_window_hit_test(DialogWindow::EventList, cursor)
@@ -1605,13 +1657,17 @@ impl ApplicationHandler for ClientApp {
                     }
                     return;
                 }
+                if self.quit_confirmation {
+                    self.set_gameplay_key(event.physical_key, event.state, event.repeat);
+                    if self.quit_requested {
+                        event_loop.exit();
+                    } else if let Some(window) = self.window.as_ref() {
+                        window.request_redraw();
+                    }
+                    return;
+                }
                 if self.death_notice {
-                    if self.quit_confirmation {
-                        self.set_gameplay_key(event.physical_key, event.state, event.repeat);
-                        if self.quit_requested {
-                            event_loop.exit();
-                        }
-                    } else if event.state == ElementState::Pressed && !event.repeat {
+                    if event.state == ElementState::Pressed && !event.repeat {
                         match event.physical_key {
                             PhysicalKey::Code(KeyCode::Escape) => self.open_quit_confirmation(),
                             PhysicalKey::Code(
@@ -1620,6 +1676,47 @@ impl ApplicationHandler for ClientApp {
                             _ => {}
                         }
                     }
+                    if let Some(window) = self.window.as_ref() {
+                        window.request_redraw();
+                    }
+                    return;
+                }
+                if self.status_auto_confirmation {
+                    self.set_gameplay_key(event.physical_key, event.state, event.repeat);
+                    if let Some(window) = self.window.as_ref() {
+                        window.request_redraw();
+                    }
+                    return;
+                }
+                if self.inventory_drop_prompt.is_some() {
+                    if event.state == ElementState::Pressed {
+                        match event.physical_key {
+                            PhysicalKey::Code(KeyCode::Escape) if !event.repeat => {
+                                self.resolve_inventory_drop_prompt(false);
+                            }
+                            PhysicalKey::Code(KeyCode::Enter | KeyCode::NumpadEnter)
+                                if !event.repeat =>
+                            {
+                                self.resolve_inventory_drop_prompt(true);
+                            }
+                            _ => {
+                                if let Some(prompt) = self.inventory_drop_prompt.as_mut()
+                                    && prompt.step == InventoryDropStep::Quantity
+                                    && prompt.quantity.edit_key(&event, prompt.max_quantity)
+                                {
+                                    prompt.notice = None;
+                                    self.refresh_inventory_drop_prompt_texture();
+                                }
+                            }
+                        }
+                    }
+                    if let Some(window) = self.window.as_ref() {
+                        window.request_redraw();
+                    }
+                    return;
+                }
+                if self.has_shop_quantity_window() {
+                    self.key_npc_shop(&event);
                     if let Some(window) = self.window.as_ref() {
                         window.request_redraw();
                     }
@@ -2177,33 +2274,6 @@ impl ApplicationHandler for ClientApp {
                         }
                     }
                     self.refresh_guild_bbs_texture();
-                    if let Some(window) = self.window.as_ref() {
-                        window.request_redraw();
-                    }
-                    return;
-                }
-                if self.inventory_drop_prompt.is_some() {
-                    if event.state == ElementState::Pressed {
-                        match event.physical_key {
-                            PhysicalKey::Code(KeyCode::Escape) if !event.repeat => {
-                                self.resolve_inventory_drop_prompt(false);
-                            }
-                            PhysicalKey::Code(KeyCode::Enter | KeyCode::NumpadEnter)
-                                if !event.repeat =>
-                            {
-                                self.resolve_inventory_drop_prompt(true);
-                            }
-                            _ => {
-                                if let Some(prompt) = self.inventory_drop_prompt.as_mut()
-                                    && prompt.step == InventoryDropStep::Quantity
-                                    && prompt.quantity.edit_key(&event, prompt.max_quantity)
-                                {
-                                    prompt.notice = None;
-                                    self.refresh_inventory_drop_prompt_texture();
-                                }
-                            }
-                        }
-                    }
                     if let Some(window) = self.window.as_ref() {
                         window.request_redraw();
                     }
@@ -2829,13 +2899,39 @@ impl ApplicationHandler for ClientApp {
                 }
             }
             WindowEvent::Ime(Ime::Commit(text)) => {
-                if self.map_loading_started_at.is_some() {
+                if self.quantity_window_blocked() {
                     return;
                 }
-                if self.show_key_config
-                    || self.server_notice_popup.is_some()
-                    || self.character_delete_confirmation.is_some()
+                if self.status_auto_confirmation {
+                    return;
+                }
+                if let Some(prompt) = self.inventory_drop_prompt.as_mut() {
+                    if prompt.step == InventoryDropStep::Quantity
+                        && prompt.quantity.commit_text(&text, prompt.max_quantity)
+                    {
+                        prompt.notice = None;
+                        self.refresh_inventory_drop_prompt_texture();
+                        if let Some(window) = self.window.as_ref() {
+                            window.request_redraw();
+                        }
+                    }
+                    return;
+                }
+                if let Some(quantity) = self
+                    .npc_shop
+                    .as_mut()
+                    .and_then(|shop| shop.quantity.as_mut())
                 {
+                    if quantity.input.commit_text(&text, quantity.maximum as u16) {
+                        quantity.invalid = false;
+                        self.refresh_npc_shop_texture();
+                        if let Some(window) = self.window.as_ref() {
+                            window.request_redraw();
+                        }
+                    }
+                    return;
+                }
+                if self.show_key_config {
                     return;
                 }
                 if self.family_ui.input.is_some() {
@@ -3028,29 +3124,8 @@ impl ApplicationHandler for ClientApp {
                     if let Some(window) = self.window.as_ref() {
                         window.request_redraw();
                     }
-                } else if let Some(prompt) = self.inventory_drop_prompt.as_mut() {
-                    if prompt.step == InventoryDropStep::Quantity
-                        && prompt.quantity.commit_text(&text, prompt.max_quantity)
-                    {
-                        prompt.notice = None;
-                        self.refresh_inventory_drop_prompt_texture();
-                        if let Some(window) = self.window.as_ref() {
-                            window.request_redraw();
-                        }
-                    }
                 } else if self.npc_shop.is_some() {
-                    if let Some(quantity) = self
-                        .npc_shop
-                        .as_mut()
-                        .and_then(|shop| shop.quantity.as_mut())
-                        && quantity.input.commit_text(&text, quantity.maximum as u16)
-                    {
-                        quantity.invalid = false;
-                        self.refresh_npc_shop_texture();
-                        if let Some(window) = self.window.as_ref() {
-                            window.request_redraw();
-                        }
-                    }
+                    return;
                 } else if self.pic_entry.is_some() {
                     self.edit_pic_entry(&text);
                 } else if self.character_creation.is_some() {
@@ -3283,6 +3358,7 @@ impl ApplicationHandler for ClientApp {
                             (scene.map_art_animation_draw_indices.contains(&draw_index)
                                 && !scene.active_map_art_draw_indices.contains(&draw_index))
                                 || scene.avatar_indices.contains(&draw_index)
+                                || scene.local_name_label_draw_index == Some(draw_index)
                                 || scene.portal_frame_indices.contains(&draw_index)
                                 || scene
                                     .inactive_environment_draw_indices
@@ -3665,7 +3741,6 @@ impl ApplicationHandler for ClientApp {
                     });
                 }
                 if self.current_field.is_some()
-                    && self.chat_open
                     && let Some(texture) = self.chat_texture.as_ref()
                 {
                     draws.push(SpriteDraw {
@@ -3906,6 +3981,7 @@ impl ApplicationHandler for ClientApp {
                     }
                 }
                 if self.current_field.is_some()
+                    && self.cash_shop.is_none()
                     && !self.quest_helper_dismissed
                     && let Some(texture) = self.quest_helper_texture.as_ref()
                     && let Some((_, height)) = self.quest_helper_texture_size
@@ -4226,20 +4302,6 @@ impl ApplicationHandler for ClientApp {
                         });
                     }
                 }
-                if let Some(texture) = self.inventory_drop_prompt_texture.as_ref() {
-                    draws.push(SpriteDraw {
-                        texture,
-                        x: 0.0,
-                        y: 0.0,
-                        width: 1024.0,
-                        height: 768.0,
-                        uv: [0.0, 0.0, 1.0, 1.0],
-                        tint: [1.0, 1.0, 1.0],
-                        blend_mode: BlendMode::Alpha,
-                        flip_x: false,
-                        opacity: 1.0,
-                    });
-                }
                 if self.show_settings {
                     if let Some(black) = self.solid_textures.first() {
                         draws.push(SpriteDraw {
@@ -4380,8 +4442,9 @@ impl ApplicationHandler for ClientApp {
                         opacity: sprite.opacity,
                     });
                 }
-                if let (Some(texture), Some(bounds)) =
-                    (self.minimap_texture.as_ref(), self.minimap_bounds)
+                if self.cash_shop.is_none()
+                    && let (Some(texture), Some(bounds)) =
+                        (self.minimap_texture.as_ref(), self.minimap_bounds)
                 {
                     draws.push(SpriteDraw {
                         texture,
@@ -4827,6 +4890,35 @@ impl ApplicationHandler for ClientApp {
                         opacity: 0.9,
                     });
                 }
+                // Keep quantity prompts above the raised window stack and tooltips.
+                if !self.quantity_window_blocked() {
+                    let quantity = if self.inventory_drop_prompt.is_some() {
+                        self.inventory_drop_prompt_texture
+                            .as_ref()
+                            .map(|texture| (texture, inventory_quantity_rect()))
+                    } else {
+                        self.npc_shop.as_ref().and_then(|shop| {
+                            shop.quantity.as_ref()?;
+                            shop.quantity_texture
+                                .as_ref()
+                                .map(|texture| (texture, npc_shop_quantity_rect()))
+                        })
+                    };
+                    if let Some((texture, rect)) = quantity {
+                        draws.push(SpriteDraw {
+                            texture,
+                            x: rect.x,
+                            y: rect.y,
+                            width: rect.width,
+                            height: rect.height,
+                            uv: [0.0, 0.0, 1.0, 1.0],
+                            tint: [1.0; 3],
+                            blend_mode: rect.blend_mode,
+                            flip_x: false,
+                            opacity: 1.0,
+                        });
+                    }
+                }
                 if let Some(started_at) = self.map_loading_started_at {
                     if let Some(black) = self.solid_textures.first() {
                         draws.push(SpriteDraw {
@@ -4884,6 +4976,23 @@ impl ApplicationHandler for ClientApp {
                         });
                     }
                 }
+                if self.status_auto_confirmation
+                    && let Some(texture) = self.status_auto_assign_texture.as_ref()
+                {
+                    let rect = status_auto_assign_dialog_rect();
+                    draws.push(SpriteDraw {
+                        texture,
+                        x: rect.x,
+                        y: rect.y,
+                        width: rect.width,
+                        height: rect.height,
+                        uv: [0.0, 0.0, 1.0, 1.0],
+                        tint: [1.0; 3],
+                        blend_mode: rect.blend_mode,
+                        flip_x: false,
+                        opacity: 1.0,
+                    });
+                }
                 if let Some(renderer) = self.renderer.as_mut() {
                     let result = renderer.render_sprites(&draws);
                     if let Err(error) = result {
@@ -4908,6 +5017,7 @@ impl ApplicationHandler for ClientApp {
         }
         self.process_map_prefetch_results();
         self.process_network_events();
+        self.finish_initial_npc_loading_if_idle(Instant::now());
         self.process_map_load_completion();
         self.advance_pending_map_scene_finalize();
         self.advance_pending_map_scene_upload();
@@ -4957,8 +5067,6 @@ impl ApplicationHandler for ClientApp {
         self.expire_character_buffs(now);
         if self.map_loading_started_at.is_none() {
             self.expire_maple_tv_broadcast(now);
-            self.play_due_skill_hit_sounds(now);
-            self.play_due_mob_hit_sounds(now);
         }
         let elapsed = now.saturating_duration_since(self.last_simulation_update);
         self.last_simulation_update = now;
@@ -4980,6 +5088,8 @@ impl ApplicationHandler for ClientApp {
         }
         if self.map_loading_started_at.is_none() {
             self.update_map_simulation(elapsed);
+            self.play_due_mob_hit_sounds(now);
+            self.play_due_skill_hit_sounds(now);
         }
         self.advance_skill_macro();
         if self.map_loading_started_at.is_none()

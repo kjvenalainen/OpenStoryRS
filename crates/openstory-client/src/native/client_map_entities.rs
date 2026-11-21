@@ -575,6 +575,14 @@ impl ClientApp {
     }
 
     pub(super) fn spawn_npc(&mut self, spawn: openstory_protocol::MapNpcSpawn) {
+        self.spawn_npc_inner(spawn);
+        if self.map_initial_npc_loading_until.is_some() {
+            self.map_initial_npc_loading_until =
+                Some(Instant::now() + INITIAL_NPC_LOADING_QUIET_WINDOW);
+        }
+    }
+
+    fn spawn_npc_inner(&mut self, spawn: openstory_protocol::MapNpcSpawn) {
         let flipped = !spawn.flipped;
         let maple_tv_anchors = maple_tv_screen_anchors(&self.npc_archive, spawn.npc_id);
         if maple_tv_anchors.is_some() {
@@ -1263,10 +1271,26 @@ impl ClientApp {
         match openstory_protocol::parse_cash_balances(packet) {
             Ok(balances) => {
                 if let Some(state) = self.cash_shop.as_mut() {
+                    let previous_nx = state.balances[0];
+                    let charge_pending = state.pending_nx_charge;
+                    let cash_query_pending = state.pending_cash_query;
+                    let withdrawal_failed = state.pending_withdrawal.take().is_some();
                     state.balances = balances;
-                    if state.pending_nx_charge || state.pending_cash_query {
-                        state.pending_nx_charge = false;
-                        state.pending_cash_query = false;
+                    state.pending_nx_charge = false;
+                    state.pending_cash_query = false;
+                    if charge_pending {
+                        state.notice = Some(if balances[0] > previous_nx {
+                            "NX Credit added.".to_owned()
+                        } else {
+                            "No NX Credit was added. Check the server's free NX charge setting."
+                                .to_owned()
+                        });
+                    } else if withdrawal_failed {
+                        state.notice = Some(
+                            "The item could not be transferred. Check inventory space and try again."
+                                .to_owned(),
+                        );
+                    } else if cash_query_pending {
                         state.notice = Some("Cash balance updated.".to_owned());
                     }
                     self.refresh_cash_shop_texture();
@@ -1398,10 +1422,17 @@ impl ClientApp {
         {
             return;
         }
+        let Some(cash_id) = i32::try_from(instance_id).ok().filter(|id| *id > 0) else {
+            if let Some(state) = self.cash_shop.as_mut() {
+                state.notice = Some("This locker item has an invalid server ID.".to_owned());
+            }
+            self.refresh_cash_shop_texture();
+            return;
+        };
         let Some(session) = self.session.as_ref() else {
             return;
         };
-        match session.send_packet(openstory_protocol::withdraw_cash_item_packet(instance_id)) {
+        match session.send_packet(openstory_protocol::withdraw_cash_item_packet(cash_id)) {
             Ok(()) => {
                 if let Some(state) = self.cash_shop.as_mut() {
                     state.pending_withdrawal = Some(instance_id);

@@ -25,6 +25,24 @@ pub(super) fn skill_points_for_book(
         .map_or(stats.skill_points, |(_, points)| u16::from(*points))
 }
 
+pub(super) fn can_spend_skill_point(
+    skill: &SkillUiEntry,
+    points: u16,
+    skills: &HashMap<i32, openstory_protocol::SkillEntry>,
+) -> bool {
+    let cap = if skill.master_level > 0 {
+        skill.max_level.min(skill.master_level)
+    } else {
+        skill.max_level
+    };
+    points > 0
+        && skill.level < cap
+        && skill
+            .requirements
+            .iter()
+            .all(|(id, required)| skills.get(id).map_or(0, |learned| learned.level) >= *required)
+}
+
 impl ClientApp {
     pub(super) fn refresh_pet_equipment_texture(&mut self) {
         if !self.show_pet_equipment {
@@ -888,10 +906,6 @@ impl ClientApp {
                 let required_weapon = integer_property(&node, "weapon")
                     .and_then(|value| i32::try_from(value.saturating_add(100)).ok())
                     .filter(|weapon_type| is_valid_weapon_type(*weapon_type));
-                let element = string_property(&node, "elemAttr")
-                    .and_then(|value| value.chars().next())
-                    .map(|element| element.to_ascii_lowercase())
-                    .filter(|element| matches!(element, 'f' | 'i' | 'l' | 's' | 'h' | 'p'));
                 let level_node_name = skill_level.max(1).to_string();
                 let stats = levels
                     .child(&level_node_name)
@@ -907,24 +921,18 @@ impl ClientApp {
                     damage_multiplier,
                     horizontal_range_multiplier,
                     attack_range,
-                    magic_damage_multiplier,
-                    magic_mastery,
                     fixed_damage,
                     mp_cost,
                     hp_cost,
                     bullet_cost,
                 ) = stats.map_or(
-                    (
-                        false, false, 1, 1, 1, 0.0, 1.0, None, 0.0, 0.1, None, 0, 0, 0,
-                    ),
+                    (false, false, 1, 1, 1, 0.0, 1.0, None, None, 0, 0, 0),
                     |stats| {
                         let damage = integer_property(&stats, "damage").unwrap_or(0);
                         let mad = integer_property(&stats, "mad").unwrap_or(0);
-                        let mastery = integer_property(&stats, "mastery").unwrap_or(0);
-                        // Mage skill NX stores mastery as a rank: 1 means 15%,
-                        // 10 means 60%, matching the localized level descriptions.
-                        let magic_mastery = (10 + mastery.clamp(0, 18) * 5) as f64 / 100.0;
                         let fixed = integer_property(&stats, "fixdamage").unwrap_or(0);
+                        let attack =
+                            is_known_attack_skill(id) || damage > 0 || mad > 0 || fixed > 0;
                         let bounded_count = |key| {
                             integer_property(&stats, key)
                                 .and_then(|value| u8::try_from(value).ok())
@@ -935,9 +943,13 @@ impl ClientApp {
                         let attack_count = bounded_count("attackCount");
                         let bullet_count = bounded_count("bulletCount");
                         let mob_count = bounded_count("mobCount");
-                        let horizontal_range_multiplier = number_property(&stats, "range")
-                            .filter(|range| range.is_finite())
-                            .map_or(1.0, |range| (f64::from(range) / 100.0).clamp(0.0, 10.0));
+                        let horizontal_range_multiplier = if attack {
+                            number_property(&stats, "range")
+                                .filter(|range| range.is_finite())
+                                .map_or(1.0, |range| (f64::from(range) / 100.0).clamp(0.0, 10.0))
+                        } else {
+                            1.0
+                        };
                         let read_point = |name: &str| {
                             let node = stats.child(name).ok().flatten()?;
                             match node.value().ok()? {
@@ -965,7 +977,7 @@ impl ClientApp {
                             .map(|value| value.clamp(0, i64::from(u16::MAX)) as u16)
                             .unwrap_or_else(|| u16::from(bullet_count));
                         (
-                            is_known_attack_skill(id) || damage > 0 || mad > 0 || fixed > 0,
+                            attack || fixed > 0,
                             mad > 0,
                             attack_count,
                             bullet_count,
@@ -973,8 +985,6 @@ impl ClientApp {
                             damage as f64 / 100.0,
                             horizontal_range_multiplier,
                             attack_range,
-                            mad.max(0) as f64,
-                            magic_mastery,
                             (fixed > 0).then(|| i32::try_from(fixed).unwrap_or(i32::MAX)),
                             mp_cost,
                             hp_cost,
@@ -1011,9 +1021,6 @@ impl ClientApp {
                         passive,
                         attack,
                         magic_damage,
-                        magic_damage_multiplier,
-                        magic_mastery,
-                        element,
                         attack_count,
                         bullet_count,
                         mob_count,
@@ -1048,9 +1055,6 @@ impl ClientApp {
                 passive: (skill.id % 10_000) / 1_000 == 0,
                 attack: false,
                 magic_damage: false,
-                magic_damage_multiplier: 0.0,
-                magic_mastery: 0.1,
-                element: None,
                 attack_count: 1,
                 bullet_count: 1,
                 mob_count: 1,
@@ -1107,6 +1111,7 @@ impl ClientApp {
             &book_title,
             book_icon,
             skill_points,
+            &self.skills,
             self.skill_book_tab,
             visible_tabs,
             self.skill_book_scroll_row,
@@ -1234,6 +1239,7 @@ impl ClientApp {
             &self.quest_log,
             &self.quest_archive,
             &self.string_archive,
+            &self.font,
             self.inventory.as_ref(),
             &mut self.item_name_cache,
         );

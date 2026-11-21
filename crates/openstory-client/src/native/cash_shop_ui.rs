@@ -333,6 +333,13 @@ pub(super) fn render(
                 32,
             );
         }
+        hit_regions.push(logical_region(
+            (X + 22 + index % 6 * 34) as f32,
+            (Y + 348 + index / 6 * 34) as f32,
+            32.0,
+            32.0,
+            HitAction::LockerItem(index),
+        ));
     }
     if let Some(inventory) = inventory {
         for (index, item) in inventory
@@ -946,15 +953,59 @@ fn draw_asset(
     let source = bitmap
         .decode_bgra_shared()
         .map_err(|error| error.to_string())?;
+    // Keep the authored 800x600 footprint; the GPU's linear sampler filters
+    // the full scene as the window is resized, while this restores backdrop detail.
+    let sharpened_source = (path == "CashShop.img/Base/backgrnd")
+        .then(|| sharpen_cash_shop_background(&source, width, height));
+    let source = sharpened_source.as_deref().unwrap_or(&source);
     let x = anchor_x - origin.0 * scale;
     let y = anchor_y - origin.1 * scale;
-    composite_scaled(pixels, x, y, scale, width, height, &source);
+    composite_scaled(pixels, x, y, scale, width, height, source);
     Ok(Some(Rect {
         x,
         y,
         width: width as f32 * scale,
         height: height as f32 * scale,
     }))
+}
+
+fn sharpen_cash_shop_background(source: &[u8], width: usize, height: usize) -> Vec<u8> {
+    const STRENGTH: f32 = 0.2;
+    let Some(expected_len) = width
+        .checked_mul(height)
+        .and_then(|pixels| pixels.checked_mul(4))
+    else {
+        return source.to_vec();
+    };
+    if source.len() != expected_len || width < 3 || height < 3 {
+        return source.to_vec();
+    }
+
+    let mut sharpened = source.to_vec();
+    for y in 1..height - 1 {
+        for x in 1..width - 1 {
+            let center = (y * width + x) * 4;
+            if source[center + 3] == 0 {
+                continue;
+            }
+            for channel in 0..3 {
+                let blur = (source[((y - 1) * width + x - 1) * 4 + channel] as f32
+                    + 2.0 * source[((y - 1) * width + x) * 4 + channel] as f32
+                    + source[((y - 1) * width + x + 1) * 4 + channel] as f32
+                    + 2.0 * source[(y * width + x - 1) * 4 + channel] as f32
+                    + 4.0 * source[center + channel] as f32
+                    + 2.0 * source[(y * width + x + 1) * 4 + channel] as f32
+                    + source[((y + 1) * width + x - 1) * 4 + channel] as f32
+                    + 2.0 * source[((y + 1) * width + x) * 4 + channel] as f32
+                    + source[((y + 1) * width + x + 1) * 4 + channel] as f32)
+                    / 16.0;
+                let value = source[center + channel] as f32
+                    + STRENGTH * (source[center + channel] as f32 - blur);
+                sharpened[center + channel] = value.round().clamp(0.0, 255.0) as u8;
+            }
+        }
+    }
+    sharpened
 }
 
 fn region(bounds: Rect, action: HitAction) -> HitRegion {

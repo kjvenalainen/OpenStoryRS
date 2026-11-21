@@ -40,6 +40,28 @@ fn skill_use_block_reason(
     }
 }
 
+fn attack_horizontal_bounds(
+    player_x: f64,
+    facing_right: bool,
+    range: [i16; 4],
+    horizontal_range_multiplier: f64,
+    horizontal_range_bonus: i16,
+) -> (f64, f64) {
+    let horizontal_edge = (f64::from(range[0]) - f64::from(horizontal_range_bonus))
+        * horizontal_range_multiplier;
+    if facing_right {
+        (
+            player_x - f64::from(range[1]),
+            player_x - horizontal_edge,
+        )
+    } else {
+        (
+            player_x + horizontal_edge,
+            player_x + f64::from(range[1]),
+        )
+    }
+}
+
 fn character_buff_value(
     active_buffs: &CharacterBuffs,
     group: openstory_protocol::BuffMaskGroup,
@@ -55,6 +77,14 @@ fn character_has_buff(
     flag: u64,
 ) -> bool {
     character_buff_value(active_buffs, group, flag) != 0
+}
+
+fn character_can_use_skill(job_id: u16, skill_id: i32) -> bool {
+    let Ok(required_job) = u16::try_from(skill_id / 10_000) else {
+        return false;
+    };
+    required_job == 0
+        || (0..=4).any(|tab| skill_subjob_for_tab(job_id, tab) == Some(required_job))
 }
 
 fn character_has_mob_skill_buff(
@@ -165,11 +195,13 @@ fn calculate_player_touch_damage(
         }
     }
 
-    weapon_defense = weapon_defense.saturating_add(i64::from(character_buff_value(
-        active_buffs,
-        openstory_protocol::BuffMaskGroup::Second,
-        0x0000_0002_0000_0000,
-    )));
+    weapon_defense = weapon_defense
+        .saturating_add(i64::from(character_buff_value(
+            active_buffs,
+            openstory_protocol::BuffMaskGroup::Second,
+            0x0000_0002_0000_0000,
+        )))
+        .min(999);
     if let Some(value) = forced_stats.weapon_defense {
         weapon_defense = i64::from(value);
     }
@@ -177,7 +209,9 @@ fn calculate_player_touch_damage(
     let achilles = [1_120_004, 1_220_005, 1_320_005]
         .into_iter()
         .find_map(|skill_id| {
-            learned_skill_level(skill_archive, skills, skill_id)
+            character_can_use_skill(character.stats.job, skill_id)
+                .then(|| learned_skill_level(skill_archive, skills, skill_id))
+                .flatten()
                 .and_then(|level| integer_property(&level, "x"))
         })
         .unwrap_or(0)
@@ -186,7 +220,7 @@ fn calculate_player_touch_damage(
 
     // Keep the v83 reference order: no defense means no reduction; otherwise
     // use half the mob's attack plus attack divided by total weapon defense.
-    let damage_before_achilles = if weapon_defense <= 0 {
+    let damage_before_achilles = if weapon_defense == 0 {
         attack
     } else {
         attack / 2 + i32::try_from(i64::from(attack) / weapon_defense).unwrap_or(0)
@@ -260,35 +294,72 @@ fn basic_attack_stats(
     let mut magic_attack = 0_i64;
     let mut accuracy_bonus = 0_i64;
     let mut maximum_hp = i64::from(character.stats.max_hp);
-    let mut item_ids = character
-        .look
-        .equips
-        .iter()
-        .map(|(_, item_id)| *item_id)
-        .collect::<HashSet<_>>();
-    item_ids.insert(weapon_id);
-    for item_id in item_ids {
-        let Some(category) = character_equip_category(item_id) else {
-            continue;
-        };
-        let info_path = format!("{category}/0{item_id}.img/info");
-        let Some(info) = archive
-            .root()
-            .resolve(&info_path)
-            .map_err(|error| error.to_string())?
-        else {
-            continue;
-        };
-        strength = strength.saturating_add(integer_property(&info, "incSTR").unwrap_or(0));
-        dexterity = dexterity.saturating_add(integer_property(&info, "incDEX").unwrap_or(0));
-        intelligence = intelligence.saturating_add(integer_property(&info, "incINT").unwrap_or(0));
-        luck = luck.saturating_add(integer_property(&info, "incLUK").unwrap_or(0));
-        weapon_attack =
-            weapon_attack.saturating_add(integer_property(&info, "incPAD").unwrap_or(0));
-        magic_attack = magic_attack.saturating_add(integer_property(&info, "incMAD").unwrap_or(0));
-        accuracy_bonus =
-            accuracy_bonus.saturating_add(integer_property(&info, "incACC").unwrap_or(0));
-        maximum_hp = maximum_hp.saturating_add(integer_property(&info, "incMHP").unwrap_or(0));
+    let equipped_stats = inventory.and_then(|inventory| {
+        let mut totals = [0_i64; 15];
+        let mut found = false;
+        for item in inventory.equipped() {
+            let Some(equip) = item.equip.as_ref() else {
+                continue;
+            };
+            found = true;
+            for (total, value) in totals.iter_mut().zip(equip.stats) {
+                *total = total.saturating_add(i64::from(value));
+            }
+        }
+        found.then_some(totals)
+    });
+    if let Some(equipped_stats) = equipped_stats {
+        // Upstream totals equipped-item stats from the inventory records. Those
+        // values include scrolls and upgrades, while NX `info` only describes
+        // the base item.
+        strength = strength.saturating_add(equipped_stats[0]).min(999);
+        dexterity = dexterity.saturating_add(equipped_stats[1]).min(999);
+        intelligence = intelligence.saturating_add(equipped_stats[2]).min(999);
+        luck = luck.saturating_add(equipped_stats[3]).min(999);
+        maximum_hp = maximum_hp.saturating_add(equipped_stats[4]).min(500_000);
+        weapon_attack = equipped_stats[6].min(999);
+        magic_attack = equipped_stats[7].min(2_000);
+        accuracy_bonus = equipped_stats[10];
+    } else {
+        let mut item_ids = character
+            .look
+            .equips
+            .iter()
+            .map(|(_, item_id)| *item_id)
+            .collect::<HashSet<_>>();
+        item_ids.insert(weapon_id);
+        for item_id in item_ids {
+            let Some(category) = character_equip_category(item_id) else {
+                continue;
+            };
+            let info_path = format!("{category}/0{item_id}.img/info");
+            let Some(info) = archive
+                .root()
+                .resolve(&info_path)
+                .map_err(|error| error.to_string())?
+            else {
+                continue;
+            };
+            strength = strength.saturating_add(integer_property(&info, "incSTR").unwrap_or(0));
+            dexterity = dexterity.saturating_add(integer_property(&info, "incDEX").unwrap_or(0));
+            intelligence =
+                intelligence.saturating_add(integer_property(&info, "incINT").unwrap_or(0));
+            luck = luck.saturating_add(integer_property(&info, "incLUK").unwrap_or(0));
+            weapon_attack =
+                weapon_attack.saturating_add(integer_property(&info, "incPAD").unwrap_or(0));
+            magic_attack =
+                magic_attack.saturating_add(integer_property(&info, "incMAD").unwrap_or(0));
+            accuracy_bonus =
+                accuracy_bonus.saturating_add(integer_property(&info, "incACC").unwrap_or(0));
+            maximum_hp = maximum_hp.saturating_add(integer_property(&info, "incMHP").unwrap_or(0));
+        }
+        strength = strength.min(999);
+        dexterity = dexterity.min(999);
+        intelligence = intelligence.min(999);
+        luck = luck.min(999);
+        maximum_hp = maximum_hp.min(500_000);
+        weapon_attack = weapon_attack.min(999);
+        magic_attack = magic_attack.min(2_000);
     }
     // Cosmic caps the pre-buff total (base INT + equipment INT/MATK) at
     // 2,000. Maple Warrior changes total INT but intentionally does not
@@ -311,6 +382,7 @@ fn basic_attack_stats(
                 weapon_attack.saturating_add(integer_property(&info, "incPAD").unwrap_or(0));
         }
     }
+    weapon_attack = weapon_attack.min(999);
 
     let now = Instant::now();
     let buff_value = |group, flag| {
@@ -318,34 +390,32 @@ fn basic_attack_stats(
             .get_active(&character_buff_key(group, flag), now)
             .map_or(0_i64, |buff| i64::from(buff.value))
     };
+    // CharStats adds accuracy derived from the unmodified DEX/LUK totals before
+    // applying percentage buffs such as Maple Warrior.
+    let accuracy_dexterity = dexterity;
+    let accuracy_luck = luck;
     let maple_warrior = buff_value(openstory_protocol::BuffMaskGroup::Second, 0x8);
     if maple_warrior != 0 {
-        let multiplier = 1.0 + maple_warrior as f64 / 100.0;
-        strength = (strength as f64 * multiplier) as i64;
-        dexterity = (dexterity as f64 * multiplier) as i64;
-        intelligence = (intelligence as f64 * multiplier) as i64;
-        luck = (luck as f64 * multiplier) as i64;
+        let apply_percent = |value: i64| {
+            value.saturating_add(value.saturating_mul(maple_warrior) / 100)
+                .min(999)
+        };
+        strength = apply_percent(strength);
+        dexterity = apply_percent(dexterity);
+        intelligence = apply_percent(intelligence);
+        luck = apply_percent(luck);
     }
-    weapon_attack = weapon_attack.saturating_add(buff_value(
-        openstory_protocol::BuffMaskGroup::Second,
-        0x0000_0001_0000_0000,
-    ));
+    weapon_attack = weapon_attack
+        .saturating_add(buff_value(
+            openstory_protocol::BuffMaskGroup::Second,
+            0x0000_0001_0000_0000,
+        ))
+        .min(999);
     let magic_attack_buff = buff_value(
         openstory_protocol::BuffMaskGroup::Second,
         0x0000_0004_0000_0000,
     );
     magic_total = magic_total.saturating_add(magic_attack_buff);
-    accuracy_bonus = accuracy_bonus.saturating_add(buff_value(
-        openstory_protocol::BuffMaskGroup::Second,
-        0x0000_0010_0000_0000,
-    ));
-    let hyperbody_hp = buff_value(
-        openstory_protocol::BuffMaskGroup::Second,
-        0x0000_2000_0000_0000,
-    );
-    if hyperbody_hp > 0 {
-        maximum_hp = maximum_hp.saturating_add(maximum_hp.saturating_mul(hyperbody_hp) / 100);
-    }
 
     let job_group = character.stats.job / 100;
     let (primary, secondary) = match job_group {
@@ -367,6 +437,7 @@ fn basic_attack_stats(
         _ => None,
     };
     if let Some(skill_id) = mastery_skill
+        && character_can_use_skill(character.stats.job, skill_id)
         && let Some(level) = learned_skill_level(skill_archive, skills, skill_id)
     {
         mastery = 0.5 + integer_property(&level, "mastery").unwrap_or(0) as f64 / 100.0;
@@ -375,11 +446,14 @@ fn basic_attack_stats(
 
     // Angel's Blessing contributes weapon/magic attack and accuracy.
     if let Some(level) = learned_skill_level(skill_archive, skills, 12) {
-        weapon_attack = weapon_attack.saturating_add(integer_property(&level, "x").unwrap_or(0));
+        weapon_attack = weapon_attack
+            .saturating_add(integer_property(&level, "x").unwrap_or(0))
+            .min(999);
         let blessing_magic = integer_property(&level, "y").unwrap_or(0);
         magic_total = magic_total.saturating_add(blessing_magic);
         accuracy_bonus = accuracy_bonus.saturating_add(integer_property(&level, "z").unwrap_or(0));
     }
+    accuracy_bonus = accuracy_bonus.min(999);
     if let Some(value) = forced_stats.weapon_attack {
         weapon_attack = i64::from(value);
     }
@@ -390,7 +464,9 @@ fn basic_attack_stats(
     }
 
     // Berserk's damage bonus is active only below its per-level HP threshold.
-    let damage_percent = learned_skill_level(skill_archive, skills, 1_320_006)
+    let damage_percent = character_can_use_skill(character.stats.job, 1_320_006)
+        .then(|| learned_skill_level(skill_archive, skills, 1_320_006))
+        .flatten()
         .filter(|level| {
             let threshold = integer_property(level, "x").unwrap_or(0).max(0);
             i64::from(character.stats.hp) * 100 <= maximum_hp.saturating_mul(threshold)
@@ -398,24 +474,16 @@ fn basic_attack_stats(
         .map_or(0.0, |level| {
             integer_property(&level, "damage").unwrap_or(0) as f64 / 100.0
         });
-    let damage_factor = weapon_attack.max(0) as f64 / 100.0 + damage_percent;
-    let mut minimum_damage =
-        ((primary as f64 * 0.9 * mastery) + secondary as f64) * multiplier * damage_factor;
-    let mut maximum_damage = (primary as f64 + secondary as f64) * multiplier * damage_factor;
-    // Bow, crossbow, claw, and gun attacks use the legacy close-range fallback
-    // when the matching projectile stack is empty.
-    if matches!(weapon_type, 145 | 146 | 147 | 149) && projectile.is_none() {
-        minimum_damage /= 10.0;
-        maximum_damage /= 10.0;
-    }
-
+    let primary = (primary as f32 * multiplier as f32) as i64;
+    let damage_factor = weapon_attack as f32 / 100.0 + damage_percent as f32;
+    let minimum_damage = (((primary as f32 * 0.9 * mastery as f32) + secondary as f32)
+        * damage_factor) as i32 as f64;
+    let maximum_damage =
+        ((primary as f32 + secondary as f32) * damage_factor) as i32 as f64;
     let accuracy = forced_stats.accuracy.map_or_else(
         || {
-            let mut accuracy = ((dexterity as f64 * 0.8 + luck as f64 * 0.5) as i32)
+            let accuracy = ((accuracy_dexterity as f32 * 0.8 + accuracy_luck as f32 * 0.5) as i32)
                 .saturating_add(i32::try_from(accuracy_bonus).unwrap_or(0));
-            if buff_value(openstory_protocol::BuffMaskGroup::Second, STATUS_DARKNESS) != 0 {
-                accuracy /= 2;
-            }
             accuracy
         },
         i32::from,
@@ -430,11 +498,8 @@ fn basic_attack_stats(
         level: i32::from(character.stats.level),
         minimum_damage,
         maximum_damage,
-        intelligence,
-        luck,
         magic_total,
         magic_damage: false,
-        element: None,
         fixed_damage: None,
         accuracy,
         critical: 0.05,
@@ -522,39 +587,13 @@ fn status_detail_combat_values(
     }
 }
 
-fn element_index(element: char) -> Option<usize> {
-    match element.to_ascii_lowercase() {
-        'f' => Some(0),
-        'i' => Some(1),
-        'l' => Some(2),
-        's' => Some(3),
-        'h' => Some(4),
-        'p' => Some(5),
-        _ => None,
-    }
-}
-
-fn parse_elemental_attributes(value: &str) -> [u8; 6] {
-    let mut attributes = [1; 6];
-    let mut pairs = value.chars();
-    while let Some(element) = pairs.next() {
-        let Some(attribute) = pairs.next().and_then(|value| value.to_digit(10)) else {
-            break;
-        };
-        if let Some(index) = element_index(element) {
-            attributes[index] = attribute as u8;
-        }
-    }
-    attributes
-}
-
 fn basic_attack_damage(
     scene: &mut MapSceneRuntime,
     attack: BasicAttackStats,
     mob: MobTraits,
 ) -> (i32, bool) {
     if let Some(damage) = attack.fixed_damage {
-        return (damage, false);
+        return (damage.clamp(1, 999_999), false);
     }
     let level_delta = (mob.level - attack.level).max(0) as f64;
     let (min_damage, max_damage) = if attack.magic_damage {
@@ -570,21 +609,10 @@ fn basic_attack_damage(
                 .max(1.0),
         )
     };
-    // v83 elemAttr values are immune, neutral, strong, and weak at 0, 1, 2, and 3.
-    let elemental_multiplier = attack
-        .element
-        .and_then(|element| element_index(element).map(|index| mob.elemental_attributes[index]))
-        .map_or(1.0, |attribute| match attribute {
-            0 => 0.0,
-            2 => 0.5,
-            3 => 1.5,
-            _ => 1.0,
-        });
-    let min_damage = (min_damage * elemental_multiplier).max(1.0);
-    let max_damage = (max_damage * elemental_multiplier).max(1.0);
-    let hit_chance =
-        (f64::from(attack.accuracy) / ((1.84 + 0.07 * level_delta) * mob.avoid + 1.0)).max(0.01);
-    if scene.next_attack_random() >= hit_chance {
+    let hit_chance = (attack.accuracy as f32
+        / ((1.84_f32 + 0.07_f32 * level_delta as f32) * mob.avoid as f32 + 1.0))
+        .max(0.01);
+    if scene.next_attack_random() >= f64::from(hit_chance) {
         return (0, false);
     }
     let mut damage = min_damage + (max_damage - min_damage) * scene.next_attack_random();

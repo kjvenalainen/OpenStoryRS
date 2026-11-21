@@ -13,7 +13,7 @@ fn reference_crop(
             CHAT_X as u32,
             CHAT_Y as u32,
             CHAT_WIDTH,
-            CHAT_HEIGHT,
+            142,
             575,
             142,
         ),
@@ -67,7 +67,9 @@ fn reference_crop(
             INVENTORY_TOOLTIP_WIDTH,
             INVENTORY_TOOLTIP_HEIGHT,
         ),
-        "panel-skill-inventory" | "panel-skill-inventory-beginner" => (
+        "panel-skill-inventory"
+        | "panel-skill-inventory-disabled"
+        | "panel-skill-inventory-beginner" => (
             SKILL_BOOK_PANEL_X as u32,
             SKILL_BOOK_PANEL_Y as u32,
             SKILL_BOOK_PANEL_WIDTH,
@@ -75,7 +77,7 @@ fn reference_crop(
             177,
             292,
         ),
-        "panel-stats" => (
+        "panel-stats" | "panel-stats-auto-assign" => (
             STATUS_PANEL_X as u32,
             STATUS_PANEL_Y as u32,
             348,

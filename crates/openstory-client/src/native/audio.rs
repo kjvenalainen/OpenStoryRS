@@ -3,7 +3,7 @@ use std::io::Cursor;
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 
-use openstory_assets::{NxArchive, NxNode};
+use openstory_assets::{NodeValue, NxArchive, NxNode};
 use rodio::{Decoder, DeviceSinkBuilder, MixerDeviceSink, Player, SpatialPlayer};
 
 const NX_AUDIO_HEADER_LENGTH: usize = 82;
@@ -306,6 +306,44 @@ impl AudioEngine {
         self.play_world_sound(archive, &format!("Skill.img/{skill_name}/Hit"), position);
     }
 
+    pub(super) fn play_weapon_attack(
+        &mut self,
+        character_archive: &NxArchive,
+        sound_archive: &NxArchive,
+        weapon_id: i32,
+        degenerate: bool,
+        position: (i16, i16),
+    ) {
+        if weapon_id <= 0 {
+            return;
+        }
+        let weapon_type = weapon_id / 10_000;
+        let sfx = character_archive
+            .root()
+            .resolve(&format!("Weapon/0{weapon_id}.img/info/sfx"))
+            .ok()
+            .flatten()
+            .and_then(|node| match node.value().ok()? {
+                NodeValue::String(value) if !value.trim().is_empty() => Some(value),
+                _ => None,
+            })
+            .unwrap_or_else(|| default_weapon_sfx(weapon_type).to_owned());
+        let base_path = format!("Weapon.img/{sfx}");
+        let attack2_path = format!("{base_path}/Attack2");
+        let has_attack2 = degenerate
+            && resolve_relaxed(sound_archive, &attack2_path)
+                .ok()
+                .flatten()
+                .and_then(|node| node.value().ok())
+                .is_some_and(|value| matches!(value, NodeValue::Audio { .. }));
+        let sound_name = if has_attack2 { "Attack2" } else { "Attack" };
+        self.play_world_sound(
+            sound_archive,
+            &format!("{base_path}/{sound_name}"),
+            position,
+        );
+    }
+
     pub(super) fn play_mob_hit(&mut self, archive: &NxArchive, mob_id: i32, position: (i16, i16)) {
         let Some(path) = mob_sound_path(mob_id, "Damage") else {
             return;
@@ -474,6 +512,23 @@ fn mob_sound_path(mob_id: i32, sound_name: &str) -> Option<String> {
     (mob_id > 0).then(|| format!("Mob.img/{mob_id:07}/{sound_name}"))
 }
 
+fn default_weapon_sfx(weapon_type: i32) -> &'static str {
+    match weapon_type {
+        130 | 140 => "swordL",
+        133 => "swordS",
+        131 | 141 => "axe",
+        132 | 137 | 138 | 142 => "mace",
+        143 => "spear",
+        144 => "poleArm",
+        145 => "bow",
+        146 => "cBow",
+        147 => "tGlove",
+        148 => "knuckle",
+        149 => "gun",
+        _ => "swordL",
+    }
+}
+
 fn reactor_hit_sound_candidates(reactor_id: i32, state: i8) -> Option<[String; 2]> {
     (reactor_id > 0 && state >= 0).then(|| {
         [
@@ -494,7 +549,10 @@ fn reactor_break_sound_candidates(reactor_id: i32, state: i8) -> Option<[String;
 
 #[cfg(test)]
 mod tests {
-    use super::{mob_sound_path, reactor_break_sound_candidates, reactor_hit_sound_candidates};
+    use super::{
+        default_weapon_sfx, mob_sound_path, reactor_break_sound_candidates,
+        reactor_hit_sound_candidates,
+    };
 
     #[test]
     fn mob_sound_paths_use_the_numeric_archive_node() {
@@ -503,6 +561,20 @@ mod tests {
             Some("Mob.img/0100100/Die")
         );
         assert_eq!(mob_sound_path(0, "Die"), None);
+    }
+
+    #[test]
+    fn weapon_sound_defaults_match_legacy_weapon_categories() {
+        for (weapon_type, expected) in [
+            (130, "swordL"),
+            (133, "swordS"),
+            (145, "bow"),
+            (146, "cBow"),
+            (147, "tGlove"),
+            (149, "gun"),
+        ] {
+            assert_eq!(default_weapon_sfx(weapon_type), expected);
+        }
     }
 
     #[test]

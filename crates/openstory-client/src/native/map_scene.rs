@@ -21,6 +21,7 @@ fn load_map_scene(
         .and_then(|info| integer_property(&info, "swim"))
         .unwrap_or(0)
         != 0;
+    let (_, map) = resolve_linked_map_node(archive, map_id)?;
     let minimap = match minimap::MiniMapData::load(archive, map_id) {
         Ok(minimap) => minimap,
         Err(error) => {
@@ -235,22 +236,14 @@ fn load_map_scene(
     })
 }
 
-fn map_portal_id_for_target(
-    archive: &NxArchive,
-    map_id: i32,
-    target_name: &str,
-) -> u8 {
+fn map_portal_id_for_target(archive: &NxArchive, map_id: i32, target_name: &str) -> u8 {
     if map_id < 0 {
         return u8::MAX;
     }
-    let map_path = format!("Map/Map{}/{map_id:09}.img", map_id / 100_000_000);
-    let Some(portals) = archive
-        .root()
-        .resolve(&map_path)
-        .ok()
-        .flatten()
-        .and_then(|map| map.child("portal").ok().flatten())
-    else {
+    let Ok((_, map)) = resolve_linked_map_node(archive, map_id) else {
+        return u8::MAX;
+    };
+    let Some(portals) = map.child("portal").ok().flatten() else {
         return u8::MAX;
     };
     let target_name = if target_name.is_empty() {
@@ -260,11 +253,7 @@ fn map_portal_id_for_target(
     };
     let mut spawn_portal = None;
     for portal in portals.children().unwrap_or_default() {
-        let Some(portal_id) = portal
-            .name()
-            .ok()
-            .and_then(|name| name.parse::<u8>().ok())
-        else {
+        let Some(portal_id) = portal.name().ok().and_then(|name| name.parse::<u8>().ok()) else {
             continue;
         };
         let name = string_property(&portal, "pn").unwrap_or_default();

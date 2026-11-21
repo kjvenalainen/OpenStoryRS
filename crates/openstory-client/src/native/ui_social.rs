@@ -4,6 +4,7 @@ fn render_chat_panel(
     lines: &VecDeque<ChatLine>,
     input: &str,
     open: bool,
+    scroll: usize,
     input_focused: bool,
     target: ChatTarget,
     composer_label: Option<&str>,
@@ -11,11 +12,19 @@ fn render_chat_panel(
     let width = CHAT_WIDTH as usize;
     let height = CHAT_HEIGHT as usize;
     let mut pixels = vec![0; width * height * 4];
-    let history_height = height - 25;
-    let visible_rows = if open { 9 } else { 1 };
-    let first = lines.len().saturating_sub(visible_rows);
-    for (row, line) in lines.iter().skip(first).enumerate() {
-        let text = ui_foundation::ellipsize(font, &line.text, 11.0, (width - 14) as f32);
+    let history_height = CHAT_HISTORY_HEIGHT;
+    let visible_rows = if open { CHAT_ROWS } else { 1 };
+    let max_scroll = lines.len().saturating_sub(visible_rows);
+    let first = if open { max_scroll.saturating_sub(scroll) } else { max_scroll };
+    let panel_top = if open { 0 } else { history_height - 16 };
+    fill_dialogue_rect(&mut pixels, width, height, 0, panel_top, width, history_height - panel_top, [0, 0, 0, 165]);
+    if open {
+        let fraction = if max_scroll == 0 { 1.0 } else { first as f32 / max_scroll as f32 };
+        ui_foundation::draw_scrollbar(&mut pixels, width, height, ui_archive, width as i32 - 16, 0, history_height, fraction);
+    }
+    let first_y = history_height - 2 - visible_rows.min(lines.len()) * 13;
+    for (row, line) in lines.iter().skip(first).take(visible_rows).enumerate() {
+        let text = ui_foundation::ellipsize(font, &line.text, 11.0, (width - 22) as f32);
         draw_dialogue_text(
             font,
             &mut pixels,
@@ -23,24 +32,19 @@ fn render_chat_panel(
             height,
             &text,
             3,
-            row as i32 * 12,
+            (first_y + row * 13) as i32,
             11.0,
             width - 14,
             13,
             line.color,
         );
     }
-    // Keep chat history over the map while aligning the target and composer
-    // with the white chat strip in the status bar.
-    let _ = composite_nx_ui_bitmap(
-        &mut pixels,
-        width,
-        height,
-        ui_archive,
-        "StatusBar.img/base/chat",
-        3,
-        history_height as i32 - 2,
-    );
+    let _ = composite_nx_ui_bitmap(&mut pixels, width, height, ui_archive,
+        "StatusBar.img/base/iconBlue", CHAT_TOGGLE_X as i32, CHAT_TOGGLE_Y as i32);
+    fill_dialogue_rect(&mut pixels, width, height, CHAT_TOGGLE_X + 3, CHAT_TOGGLE_Y + 5, 6, 2, [255; 4]);
+    if !open {
+        fill_dialogue_rect(&mut pixels, width, height, CHAT_TOGGLE_X + 5, CHAT_TOGGLE_Y + 3, 2, 6, [255; 4]);
+    }
     let _ = composite_nx_ui_bitmap(
         &mut pixels,
         width,
@@ -48,7 +52,7 @@ fn render_chat_panel(
         ui_archive,
         "StatusBar.img/base/chatTarget",
         0,
-        history_height as i32 + 3,
+        history_height as i32 + 6,
     );
     let prompt = composer_label.unwrap_or_else(|| target.label());
     draw_dialogue_text(
@@ -58,7 +62,7 @@ fn render_chat_panel(
         height,
         prompt,
         5,
-        history_height as i32 + 5,
+        history_height as i32 + 8,
         10.0,
         70,
         14,
@@ -76,7 +80,7 @@ fn render_chat_panel(
         height,
         text,
         88,
-        history_height as i32 + 5,
+        history_height as i32 + 8,
         11.0,
         width - 110,
         15,
@@ -90,7 +94,7 @@ fn render_chat_panel(
                 width,
                 height,
                 caret_x,
-                history_height + 6,
+                history_height + 9,
                 1,
                 12,
                 [35, 35, 35, 255],

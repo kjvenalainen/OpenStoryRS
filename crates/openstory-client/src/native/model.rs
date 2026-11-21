@@ -211,9 +211,6 @@ struct SkillUiEntry {
     passive: bool,
     attack: bool,
     magic_damage: bool,
-    magic_damage_multiplier: f64,
-    magic_mastery: f64,
-    element: Option<char>,
     attack_count: u8,
     bullet_count: u8,
     mob_count: u8,
@@ -237,15 +234,15 @@ struct KeyConfigAction {
 
 #[derive(Clone, Copy)]
 struct PendingSkillHitSound {
+    object_id: i32,
     skill_id: i32,
-    position: (i16, i16),
     play_at: Instant,
 }
 
 #[derive(Clone, Copy)]
 struct PendingMobHitSound {
+    object_id: i32,
     mob_id: i32,
-    position: (i16, i16),
     play_at: Instant,
 }
 
@@ -898,6 +895,7 @@ struct MapSceneRuntime {
     avatar_frames: Vec<AvatarFrameRuntime>,
     avatar_indices: HashSet<usize>,
     active_avatar_frame: Option<usize>,
+    local_name_label_draw_index: Option<usize>,
     local_name_label: Option<(usize, SpriteRect)>,
     local_death_art: Option<LocalDeathArtRuntime>,
     local_mount: Option<MountLookRuntime>,
@@ -1071,6 +1069,7 @@ struct MapMobHitEffect {
 struct PendingMobAttackImpact {
     object_id: i32,
     remaining: Duration,
+    cancel_if_target_missing: bool,
     hit_effects: Arc<Vec<SkillHitEffectAnimation>>,
     hit_effect_flip: bool,
     hit_damage: Option<i32>,
@@ -1087,6 +1086,32 @@ struct MapProjectileRuntime {
     target_x: f64,
     target_y: f64,
     facing_left: bool,
+}
+
+fn projectile_horizontal_step(dx: f64) -> f64 {
+    if dx > 0.0 {
+        (dx / 32.0).clamp(3.0, 6.0)
+    } else {
+        (dx / 32.0).clamp(-6.0, -3.0)
+    }
+}
+
+fn projectile_flight_duration(source_x: f64, target_x: f64) -> Duration {
+    if !source_x.is_finite() || !target_x.is_finite() {
+        return Duration::ZERO;
+    }
+    let mut x = source_x + if target_x < source_x { -30.0 } else { 30.0 };
+    let max_updates = ((target_x - x).abs() / 3.0).ceil() as u64 + 1;
+    let mut updates = 0_u64;
+    while updates < max_updates {
+        let dx = target_x - x;
+        if dx.abs() < 10.0 {
+            break;
+        }
+        x += projectile_horizontal_step(dx);
+        updates += 1;
+    }
+    Duration::from_millis(updates.saturating_mul(8))
 }
 
 #[derive(Clone)]
@@ -3064,7 +3089,6 @@ struct MobTraits {
     level: i32,
     physical_defense: f64,
     magic_defense: f64,
-    elemental_attributes: [u8; 6],
     avoid: f64,
 }
 
@@ -3086,11 +3110,8 @@ struct BasicAttackStats {
     level: i32,
     minimum_damage: f64,
     maximum_damage: f64,
-    intelligence: i64,
-    luck: i64,
     magic_total: i64,
     magic_damage: bool,
-    element: Option<char>,
     fixed_damage: Option<i32>,
     accuracy: i32,
     critical: f64,
@@ -3534,6 +3555,7 @@ impl MapSceneRuntime {
             avatar_frames,
             avatar_indices,
             active_avatar_frame,
+            local_name_label_draw_index: None,
             local_name_label: None,
             local_death_art: None,
             local_mount: None,
@@ -4111,41 +4133,67 @@ impl MapSceneRuntime {
                 first_avatar_frame(&player.avatar_frames, player.desired_avatar_motion);
             player.avatar_elapsed = Duration::ZERO;
         }
+        let has_projectile = projectile_frames
+            .as_ref()
+            .is_some_and(|frames| !frames.is_empty())
+            && (attack.attack_type == openstory_protocol::RemoteAttackType::Ranged
+                || attack.bullet_id > 0
+                || attack.skill_id > 0);
         if let (Some(frames), Some((source_x, source_y))) = (projectile_frames, source_position) {
-            let launch_delay = hit_delays.first().copied().unwrap_or_default();
             let targets = attack
                 .targets
                 .iter()
                 .filter_map(|target| {
-                    self.mobs
-                        .get(&target.object_id)
-                        .map(|mob| (mob.x, mob.y - 24.0))
+                    self.mobs.get(&target.object_id).map(|mob| {
+                        (
+                            mob.x,
+                            mob.y - 24.0,
+                            target.damage_lines.len().min(15),
+                        )
+                    })
                 })
                 .take(15)
                 .collect::<Vec<_>>();
             if targets.is_empty() {
-                self.launch_projectile_from(
-                    frames,
-                    source_x,
-                    source_y,
-                    source_x + if attack.to_left { -400.0 } else { 400.0 },
-                    source_y - 26.0,
-                    launch_delay,
-                );
-            } else {
-                for (target_x, target_y) in targets {
+                for hit_index in 0..usize::from(attack.hit_count.max(1)) {
                     self.launch_projectile_from(
                         frames.clone(),
                         source_x,
                         source_y,
-                        target_x,
-                        target_y,
-                        launch_delay,
+                        source_x + if attack.to_left { -400.0 } else { 400.0 },
+                        source_y - 26.0,
+                        hit_delays.get(hit_index).copied().unwrap_or_default(),
                     );
+                }
+            } else {
+                for (target_x, target_y, target_hit_count) in targets {
+                    for hit_index in 0..target_hit_count {
+                        self.launch_projectile_from(
+                            frames.clone(),
+                            source_x,
+                            source_y,
+                            target_x,
+                            target_y,
+                            hit_delays.get(hit_index).copied().unwrap_or_default(),
+                        );
+                    }
                 }
             }
         }
         for target in attack.targets {
+            let projectile_travel = if has_projectile {
+                source_position
+                    .zip(
+                        self.mobs
+                            .get(&target.object_id)
+                            .map(|mob| (mob.x, mob.y)),
+                    )
+                    .map_or(Duration::ZERO, |((source_x, _), (target_x, _))| {
+                        projectile_flight_duration(source_x, target_x)
+                    })
+            } else {
+                Duration::ZERO
+            };
             if source_position.is_some()
                 && target.damage_lines.iter().any(|damage| damage.damage > 0)
             {
@@ -4165,7 +4213,12 @@ impl MapSceneRuntime {
                     Arc::clone(&skill_hit_effects),
                     hit_effect_flip,
                     Some((mob_damage, damage.critical, stack_offset)),
-                    hit_delays.get(hit_index).copied().unwrap_or_default(),
+                    has_projectile,
+                    hit_delays
+                        .get(hit_index)
+                        .copied()
+                        .unwrap_or_default()
+                        .saturating_add(projectile_travel),
                 );
                 stack_offset += if damage.critical { 36.0 } else { 30.0 };
             }
@@ -4736,22 +4789,19 @@ impl MapSceneRuntime {
         maximum_targets: usize,
         range: [i16; 4],
         horizontal_range_multiplier: f64,
+        horizontal_range_bonus: i16,
+        mirror_upward_mob_bounds: bool,
     ) -> Vec<(i32, MobTraits, (f64, f64))> {
         if maximum_targets == 0 {
             return Vec::new();
         }
-        let horizontal_edge = f64::from(range[0]) * horizontal_range_multiplier;
-        let (range_left, range_right) = if self.facing_right {
-            (
-                self.player.x - f64::from(range[1]),
-                self.player.x - horizontal_edge,
-            )
-        } else {
-            (
-                self.player.x + horizontal_edge,
-                self.player.x + f64::from(range[1]),
-            )
-        };
+        let (range_left, range_right) = attack_horizontal_bounds(
+            self.player.x,
+            self.facing_right,
+            range,
+            horizontal_range_multiplier,
+            horizontal_range_bonus,
+        );
         let range_top = self.player.y + f64::from(range[2]);
         let range_bottom = self.player.y + f64::from(range[3]);
         let mut targets = self
@@ -4760,6 +4810,15 @@ impl MapSceneRuntime {
             .filter(|(_, mob)| !mob.dying)
             .filter_map(|(object_id, mob)| {
                 let (mob_left, mob_top, mob_right, mob_bottom) = mob.current_bounds()?;
+                // Mob sprites are usually anchored at their feet, so their
+                // bounds naturally give attacks extra reach downward. Mirror
+                // that offset for elevated mobs to balance ranged reach.
+                let (mob_top, mob_bottom) =
+                    if mirror_upward_mob_bounds && mob.y < self.player.y {
+                        (2.0 * mob.y - mob_bottom, 2.0 * mob.y - mob_top)
+                    } else {
+                        (mob_top, mob_bottom)
+                    };
                 let dx = mob.x - self.player.x;
                 let dy = mob.y - self.player.y;
                 (range_left <= mob_right
@@ -4829,19 +4888,15 @@ impl MapSceneRuntime {
         &self,
         range: [i16; 4],
         horizontal_range_multiplier: f64,
+        horizontal_range_bonus: i16,
     ) -> Option<i32> {
-        let horizontal_edge = f64::from(range[0]) * horizontal_range_multiplier;
-        let (range_left, range_right) = if self.facing_right {
-            (
-                self.player.x - f64::from(range[1]),
-                self.player.x - horizontal_edge,
-            )
-        } else {
-            (
-                self.player.x + horizontal_edge,
-                self.player.x + f64::from(range[1]),
-            )
-        };
+        let (range_left, range_right) = attack_horizontal_bounds(
+            self.player.x,
+            self.facing_right,
+            range,
+            horizontal_range_multiplier,
+            horizontal_range_bonus,
+        );
         let range_top = self.player.y + f64::from(range[2]);
         let range_bottom = self.player.y + f64::from(range[3]);
         self.reactors
@@ -5091,11 +5146,7 @@ impl MapSceneRuntime {
                 if dx.abs() < 10.0 {
                     return false;
                 }
-                let horizontal_speed = if dx > 0.0 {
-                    (dx / 32.0).clamp(3.0, 6.0)
-                } else {
-                    (dx / 32.0).clamp(-6.0, -3.0)
-                };
+                let horizontal_speed = projectile_horizontal_step(dx);
                 projectile.x += horizontal_speed;
                 projectile.y += horizontal_speed * dy / dx;
                 projectile.facing_left = horizontal_speed < 0.0;
@@ -5431,6 +5482,7 @@ impl MapSceneRuntime {
         hit_effects: Arc<Vec<SkillHitEffectAnimation>>,
         hit_effect_flip: bool,
         damage: Option<(openstory_protocol::MobDamage, bool, f32)>,
+        cancel_if_target_missing: bool,
         delay: Duration,
     ) {
         let hit_damage = damage.map(|(damage, _, _)| damage.damage);
@@ -5449,6 +5501,7 @@ impl MapSceneRuntime {
                 hit_effect_flip,
                 hit_damage,
                 damage,
+                cancel_if_target_missing,
             );
             return;
         }
@@ -5459,6 +5512,7 @@ impl MapSceneRuntime {
             .push(PendingMobAttackImpact {
                 object_id,
                 remaining: delay,
+                cancel_if_target_missing,
                 hit_effects,
                 hit_effect_flip,
                 hit_damage,
@@ -5473,14 +5527,18 @@ impl MapSceneRuntime {
         hit_effect_flip: bool,
         hit_damage: Option<i32>,
         damage: Option<MobDamageNumber>,
+        cancel_if_target_missing: bool,
     ) {
+        if cancel_if_target_missing && !self.mobs.contains_key(&object_id) {
+            return;
+        }
+        if let Some(number) = damage {
+            self.push_mob_damage_number(number);
+        }
         if let Some(damage) = hit_damage {
             self.apply_mob_damage_reaction(object_id, damage, hit_effect_flip);
         }
         self.show_mob_hit_effects(object_id, hit_effects, hit_effect_flip);
-        if let Some(number) = damage {
-            self.push_mob_damage_number(number);
-        }
     }
 
     fn advance_mobs(&mut self, updates: u8) -> Vec<Vec<u8>> {
@@ -5503,6 +5561,7 @@ impl MapSceneRuntime {
                 due_impacts.push(PendingMobAttackImpact {
                     object_id: impact.object_id,
                     remaining: impact.remaining,
+                    cancel_if_target_missing: impact.cancel_if_target_missing,
                     hit_effects: Arc::clone(&impact.hit_effects),
                     hit_effect_flip: impact.hit_effect_flip,
                     hit_damage: impact.hit_damage,
@@ -5683,6 +5742,7 @@ impl MapSceneRuntime {
                 impact.hit_effect_flip,
                 impact.hit_damage,
                 impact.damage,
+                impact.cancel_if_target_missing,
             );
         }
         packets
@@ -5795,8 +5855,8 @@ impl MapSceneRuntime {
         }
         // Server-originated damage (DoT, mist, Body Pressure, and similar)
         // follows the reference client's controller-side hit reaction.
-        self.apply_mob_damage_reaction(damage.object_id, damage.damage, false);
         self.show_mob_damage_line(damage, false, 0.0);
+        self.apply_mob_damage_reaction(damage.object_id, damage.damage, false);
     }
 
     fn apply_mob_damage_reaction(&mut self, object_id: i32, damage: i32, to_left: bool) {
@@ -6164,6 +6224,13 @@ impl MapSceneRuntime {
     }
 
     fn kill_mob(&mut self, object_id: i32, animation: i8) {
+        if !self.mobs.contains_key(&object_id) {
+            return;
+        }
+        self.apply_mob_kill_animation(object_id, animation);
+    }
+
+    fn apply_mob_kill_animation(&mut self, object_id: i32, animation: i8) {
         if animation == 0 {
             self.mobs.remove(&object_id);
             return;

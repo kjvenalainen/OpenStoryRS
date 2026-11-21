@@ -312,13 +312,13 @@ impl ClientApp {
     pub(super) fn schedule_skill_hit_sounds(
         &mut self,
         skill_id: i32,
-        events: &[((i16, i16), Duration)],
+        events: &[(i32, (i16, i16), Duration)],
     ) {
         if skill_id <= 0 {
             return;
         }
         let start = Instant::now();
-        for (position, delay) in events {
+        for (object_id, position, delay) in events {
             if delay.is_zero() {
                 self.audio
                     .play_skill_hit(&self.sound_archive, skill_id, *position);
@@ -329,8 +329,8 @@ impl ClientApp {
             }
             if let Some(play_at) = start.checked_add(*delay) {
                 self.pending_skill_hit_sounds.push(PendingSkillHitSound {
+                    object_id: *object_id,
                     skill_id,
-                    position: *position,
                     play_at,
                 });
             }
@@ -348,14 +348,21 @@ impl ClientApp {
             }
         });
         for sound in due {
-            self.audio
-                .play_skill_hit(&self.sound_archive, sound.skill_id, sound.position);
+            let target_position = self
+                .map_scene
+                .as_ref()
+                .and_then(|scene| scene.mobs.get(&sound.object_id))
+                .map(|mob| (rounded_i16(mob.x), rounded_i16(mob.y)));
+            if let Some(position) = target_position {
+                self.audio
+                    .play_skill_hit(&self.sound_archive, sound.skill_id, position);
+            }
         }
     }
 
-    pub(super) fn schedule_mob_hit_sounds(&mut self, events: &[(i32, (i16, i16), Duration)]) {
+    pub(super) fn schedule_mob_hit_sounds(&mut self, events: &[(i32, i32, (i16, i16), Duration)]) {
         let start = Instant::now();
-        for (mob_id, position, delay) in events {
+        for (object_id, mob_id, position, delay) in events {
             if delay.is_zero() {
                 self.audio
                     .play_mob_hit(&self.sound_archive, *mob_id, *position);
@@ -366,8 +373,8 @@ impl ClientApp {
             }
             if let Some(play_at) = start.checked_add(*delay) {
                 self.pending_mob_hit_sounds.push(PendingMobHitSound {
+                    object_id: *object_id,
                     mob_id: *mob_id,
-                    position: *position,
                     play_at,
                 });
             }
@@ -385,8 +392,15 @@ impl ClientApp {
             }
         });
         for sound in due {
-            self.audio
-                .play_mob_hit(&self.sound_archive, sound.mob_id, sound.position);
+            let target_position = self
+                .map_scene
+                .as_ref()
+                .and_then(|scene| scene.mobs.get(&sound.object_id))
+                .map(|mob| (rounded_i16(mob.x), rounded_i16(mob.y)));
+            if let Some(position) = target_position {
+                self.audio
+                    .play_mob_hit(&self.sound_archive, sound.mob_id, position);
+            }
         }
     }
 

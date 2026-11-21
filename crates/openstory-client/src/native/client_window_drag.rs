@@ -29,6 +29,7 @@ impl ClientApp {
             ),
             DialogWindow::QuestHelper
                 if self.current_field.is_some()
+                    && self.cash_shop.is_none()
                     && !self.quest_helper_dismissed
                     && let Some((width, height)) = self.quest_helper_texture_size =>
             {
@@ -204,7 +205,7 @@ impl ClientApp {
                 self.monster_book.width as f32,
                 self.monster_book.height as f32,
             ),
-            DialogWindow::Minimap => {
+            DialogWindow::Minimap if self.cash_shop.is_none() => {
                 let bounds = self.minimap_bounds?;
                 (bounds.x, bounds.y, bounds.width, bounds.height)
             }
@@ -274,11 +275,6 @@ impl ClientApp {
     }
 
     pub(super) fn escape_topmost_dialog(&mut self) -> bool {
-        if self.inventory_drop_prompt.is_some() {
-            self.inventory_drop_prompt = None;
-            self.inventory_drop_prompt_texture = None;
-            return true;
-        }
         if self.cash_shop.is_some() {
             let modal = self.cash_shop.as_ref().map_or(0, |shop| {
                 if shop.confirmation {

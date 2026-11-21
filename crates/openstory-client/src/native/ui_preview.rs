@@ -909,14 +909,26 @@ pub(super) fn run(
             if matches!(
                 *name,
                 "panel-skill-inventory"
+                    | "panel-skill-inventory-disabled"
                     | "panel-skill-inventory-beginner"
                     | "panel-stats"
+                    | "panel-stats-auto-assign"
                     | "panel-stats-detail"
                     | "panel-equipment-inventory"
             ) {
-                let (x, y, regions) = if matches!(
+                let (x, y, regions) = if *name == "panel-stats-auto-assign" {
+                    let dialog = status_auto_assign_dialog_rect();
+                    let (accept, cancel) = status_auto_assign_buttons();
+                    (
+                        dialog.x,
+                        dialog.y,
+                        vec![accept, cancel, STATUS_AUTO_ASSIGN_CLOSE],
+                    )
+                } else if matches!(
                     *name,
-                    "panel-skill-inventory" | "panel-skill-inventory-beginner"
+                    "panel-skill-inventory"
+                        | "panel-skill-inventory-disabled"
+                        | "panel-skill-inventory-beginner"
                 ) {
                     let mut regions = (0..3).map(ui_foundation::skill_tab).collect::<Vec<_>>();
                     regions
@@ -1699,6 +1711,7 @@ fn build_scene(
         | "panel-meso-drop"
         | "panel-equipment-inventory"
         | "panel-skill-inventory"
+        | "panel-skill-inventory-disabled"
         | "panel-skill-inventory-beginner"
         | "panel-skill-tooltip"
         | "panel-skill-tooltip-unlearned"
@@ -1707,6 +1720,7 @@ fn build_scene(
         | "page-cash-shop"
         | "panel-monster-book"
         | "panel-stats"
+        | "panel-stats-auto-assign"
         | "panel-stats-detail"
         | "panel-quests"
         | "panel-quests-available"
@@ -2947,30 +2961,55 @@ fn build_npc_shop_panel_scene(
     font: &fontdue::Font,
 ) -> Result<LoginSceneAssets, String> {
     let empty = variant == "panel-npc-shop-empty";
+    let recharge = variant == "panel-npc-shop-recharge";
+    let no_zero_price_refills = variant == "panel-npc-shop-no-zero-price-refills";
+    let mut shop_items = if empty {
+        Vec::new()
+    } else {
+        [
+            2_000_000, 2_000_001, 2_000_002, 2_000_003, 2_000_006, 2_000_004, 2_020_001, 2_020_002,
+            2_030_000, 2_050_000, 2_050_001, 2_050_002,
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(index, id)| openstory_protocol::NpcShopItem {
+            item_id: if recharge && index == 0 {
+                2_070_000
+            } else {
+                id
+            },
+            price: [50, 160, 320, 200, 620][index % 5],
+            pitch: 0,
+            time: 0,
+            charge_price: if recharge && index == 0 { 20 } else { 0 },
+            buyable: 100,
+            rechargeable: recharge && index == 0,
+            slot: index as i16,
+        })
+        .collect::<Vec<_>>()
+    };
+    if no_zero_price_refills {
+        shop_items.insert(
+            2,
+            openstory_protocol::NpcShopItem {
+                item_id: 2_070_001,
+                price: 0,
+                pitch: 0,
+                time: 0,
+                charge_price: 20,
+                buyable: 1_000,
+                rechargeable: true,
+                slot: 2,
+            },
+        );
+    }
+    for (slot, item) in shop_items.iter_mut().enumerate() {
+        item.slot = slot as i16;
+    }
     let mut state = NpcShopUi::new(openstory_protocol::NpcShop {
         npc_id: fixture_named_id(strings, "Npc.img", "Lina", 1011100),
         currency_item_id: 0,
-        items: if empty {
-            Vec::new()
-        } else {
-            [
-                2_000_000, 2_000_001, 2_000_002, 2_000_003, 2_000_006, 2_000_004, 2_020_001,
-                2_020_002, 2_030_000, 2_050_000, 2_050_001, 2_050_002,
-            ]
-            .into_iter()
-            .enumerate()
-            .map(|(index, id)| openstory_protocol::NpcShopItem {
-                item_id: id,
-                price: [50, 160, 320, 200, 620][index % 5],
-                pitch: 0,
-                time: 0,
-                charge_price: 0,
-                buyable: 100,
-                rechargeable: false,
-                slot: index as i16,
-            })
-            .collect()
-        },
+        items: shop_items,
     });
     let mut inventory = if empty {
         openstory_protocol::InventorySnapshot::default()
@@ -2983,8 +3022,18 @@ fn build_npc_shop_panel_scene(
             .map(|i| openstory_protocol::InventoryItem {
                 inventory_type: state.tab,
                 slot: i + 1,
-                item_id: 2_000_000 + i32::from(i % 4),
-                count: 100 - i * 3,
+                item_id: if no_zero_price_refills && i == 1 {
+                    2_070_001
+                } else if recharge && i == 1 {
+                    2_070_000
+                } else {
+                    2_000_000 + i32::from(i % 4)
+                },
+                count: if (recharge || no_zero_price_refills) && i == 1 {
+                    8_000
+                } else {
+                    100 - i * 3
+                },
                 ..Default::default()
             })
             .collect();
@@ -3021,9 +3070,6 @@ fn build_npc_shop_panel_scene(
         && let Some(item) = inventory.items.get(1)
     {
         state.quantity = npc_shop_sell_quantity(item);
-        if let Some(quantity) = state.quantity.as_mut() {
-            quantity.input = QuantityInput::new(Some(40));
-        }
     }
     if variant == "panel-npc-shop-large-values" {
         inventory.meso = i64::MAX;
@@ -3087,6 +3133,26 @@ fn build_npc_shop_panel_scene(
             texture_width: super::INVENTORY_TOOLTIP_WIDTH,
             texture_height: super::INVENTORY_TOOLTIP_HEIGHT,
             pixels: Arc::from(tooltip_pixels),
+        });
+    }
+    if let Some(quantity) = state.quantity.as_ref() {
+        let pixels = render_npc_shop_quantity(
+            font,
+            quantity,
+            ui,
+            items,
+            characters,
+            strings,
+            &mut HashMap::new(),
+            &mut HashMap::new(),
+        )?;
+        sprites.push(DecodedSprite {
+            texture_key: "nx-window:npc-shop-quantity".to_owned(),
+            rect: npc_shop_quantity_rect(),
+            depth_order: 1,
+            texture_width: QUANTITY_WINDOW_WIDTH as u32,
+            texture_height: QUANTITY_WINDOW_HEIGHT as u32,
+            pixels: Arc::from(pixels),
         });
     }
     Ok(LoginSceneAssets {
@@ -3198,12 +3264,7 @@ fn build_item_tooltip_scene(
                 1_082_000,
             )
         } else if is_bow {
-            fixture_named_id(
-                string_archive,
-                "Eqp.img/Eqp/Weapon",
-                "Ryden",
-                1_452_005,
-            )
+            fixture_named_id(string_archive, "Eqp.img/Eqp/Weapon", "Ryden", 1_452_005)
         } else {
             fixture_named_id(string_archive, "Eqp.img/Eqp/Coat", "Grey T-Shirt", 1040010)
         },
@@ -3637,13 +3698,15 @@ fn build_native_window_scene(
         "panel-inventory-drop" => &[],
         "panel-meso-drop" => &[],
         "panel-equipment-inventory" => &[],
-        "panel-skill-inventory" | "panel-skill-inventory-beginner" => &[
+        "panel-skill-inventory"
+        | "panel-skill-inventory-disabled"
+        | "panel-skill-inventory-beginner" => &[
             // Compose the same scaled v83 Skill window used by the live panel below.
         ],
         name if name.starts_with("panel-skill-tooltip") => &[],
         "page-cash-shop" => &[("CashShop.img/Base/backgrnd", 0.0, 0.0)],
         "panel-monster-book" => &[("UIWindow2.img/MonsterBook/backgrnd", 276.5, 20.0)],
-        "panel-stats" | "panel-stats-detail" => &[
+        "panel-stats" | "panel-stats-auto-assign" | "panel-stats-detail" => &[
             // Render the live v83 status sheets below so preview and gameplay
             // share the same NX art and layout.
         ],
@@ -3930,8 +3993,12 @@ fn build_native_window_scene(
             texture_height: BUDDY_PANEL_HEIGHT,
             pixels: Arc::from(pixels),
         });
-    } else if matches!(name, "panel-stats" | "panel-stats-detail") {
-        let pixels = render_status_panel(font, ui_archive, &preview_character(), false, false);
+    } else if matches!(
+        name,
+        "panel-stats" | "panel-stats-auto-assign" | "panel-stats-detail"
+    ) {
+        let character = preview_character();
+        let pixels = render_status_panel(font, ui_archive, &character, false);
         sprites.push(DecodedSprite {
             texture_key: "rendered-window:status-panel".to_owned(),
             rect: SpriteRect {
@@ -3946,8 +4013,19 @@ fn build_native_window_scene(
             texture_height: STATUS_PANEL_HEIGHT,
             pixels: Arc::from(pixels),
         });
+        if name == "panel-stats-auto-assign" {
+            let pixels = render_status_auto_assign_dialog(font, ui_archive, &character)?;
+            let rect = status_auto_assign_dialog_rect();
+            sprites.push(DecodedSprite {
+                texture_key: "rendered-window:status-auto-assign-dialog".to_owned(),
+                rect,
+                depth_order: 1,
+                texture_width: STATUS_AUTO_ASSIGN_DIALOG_WIDTH as u32,
+                texture_height: STATUS_AUTO_ASSIGN_DIALOG_HEIGHT as u32,
+                pixels: Arc::from(pixels),
+            });
+        }
         if matches!(name, "panel-stats" | "panel-stats-detail") {
-            let character = preview_character();
             let inventory = preview_equipped_inventory();
             let skills = HashMap::new();
             let active_buffs = CharacterBuffs::default();
@@ -3980,16 +4058,18 @@ fn build_native_window_scene(
             });
         }
     } else if name == "hud-chat" {
+        sprites.extend(build_status_bar_sprites(legacy_ui_archive)?.0);
         let lines = (0..9).map(|index| ChatLine {
             text: if index % 3 == 0 { "The fairy's Gifts is now level 2 - 1WATK" } else { "The scroll lights up, and then its mysterious power has been transferred to the item." }.to_owned(),
             color: if index % 3 == 0 { [80, 200, 255] } else { [245, 170, 95] },
         }).collect::<VecDeque<_>>();
         let pixels = render_chat_panel(
-            ui_archive,
+            legacy_ui_archive,
             font,
             &lines,
             "",
             true,
+            0,
             false,
             ChatTarget::Public,
             None,
@@ -4151,16 +4231,10 @@ fn build_native_window_scene(
             } else {
                 "nx-window:rendered-v83-inventory-drop".to_owned()
             },
-            rect: SpriteRect {
-                x: 0.0,
-                y: 0.0,
-                width: CANVAS_WIDTH as f32,
-                height: CANVAS_HEIGHT as f32,
-                blend_mode: BlendMode::Alpha,
-            },
+            rect: inventory_quantity_rect(),
             depth_order: 0,
-            texture_width: CANVAS_WIDTH,
-            texture_height: CANVAS_HEIGHT,
+            texture_width: QUANTITY_WINDOW_WIDTH as u32,
+            texture_height: QUANTITY_WINDOW_HEIGHT as u32,
             pixels: Arc::from(pixels),
         });
     }
@@ -4177,7 +4251,7 @@ fn build_native_window_scene(
                 2
             },
             action: if name == "hud-quickslot-skill-tooltip" {
-                1_001_004
+                1_001
             } else {
                 PREVIEW_ITEM_ID
             },
@@ -4211,7 +4285,7 @@ fn build_native_window_scene(
                 1 => decode_nx_icon(
                     skill_archive,
                     &format!(
-                        "{:03}.img/skill/{}/icon",
+                        "{:03}.img/skill/{:07}/icon",
                         binding.action / 10_000,
                         binding.action
                     ),
@@ -4319,7 +4393,9 @@ fn build_native_window_scene(
                 pixels: Arc::from(pixels),
             });
         } else if name == "hud-quickslot-skill-tooltip" {
-            let skill = preview_skill_entry();
+            let mut skill = preview_skill_entry();
+            skill.id = 1_001;
+            skill.name = "Recovery".to_owned();
             let (height, pixels) =
                 skill_tooltip::render(font, &skill, skill_archive, string_archive);
             let position = skill_tooltip::position(cursor, height);
@@ -4378,13 +4454,32 @@ fn build_native_window_scene(
     }
 
     if name == "panel-skill-inventory"
+        || name == "panel-skill-inventory-disabled"
         || name == "panel-skill-inventory-beginner"
         || name == "panel-skill-macros-book"
         || name.starts_with("panel-skill-tooltip")
     {
         let beginner_preview = name == "panel-skill-inventory-beginner";
+        let disabled_preview = name == "panel-skill-inventory-disabled";
         let mut entries = preview_skill_entries();
-        if beginner_preview {
+        if disabled_preview {
+            for (entry, (id, skill_name)) in entries.iter_mut().zip([
+                (4_000_000, "Nimble Body"),
+                (4_000_001, "Keen Eyes"),
+                (4_001_002, "Disorder"),
+                (4_001_003, "Dark Sight"),
+            ]) {
+                entry.id = id;
+                entry.name = skill_name.to_owned();
+                entry.level = 0;
+                entry.master_level = 0;
+                entry.max_level = 20;
+                entry.passive = matches!(id, 4_000_000 | 4_000_001);
+                entry.requirements.clear();
+            }
+            entries[3].requirements = vec![(4_001_002, 3)];
+            entries.truncate(4);
+        } else if beginner_preview {
             for (entry, (id, skill_name)) in entries.iter_mut().zip([
                 (1_000, "Three Snails"),
                 (1_001, "Recovery"),
@@ -4447,7 +4542,15 @@ fn build_native_window_scene(
                 entries[0].level = 20;
             }
         }
-        let (book_title, book_icon, skill_points, tab, visible_tabs) = if beginner_preview {
+        let (book_title, book_icon, skill_points, tab, visible_tabs) = if disabled_preview {
+            (
+                "Thief Skills",
+                decode_nx_icon(skill_archive, "400.img/info/icon"),
+                3,
+                1,
+                2,
+            )
+        } else if beginner_preview {
             let beginner_stats = openstory_protocol::CharacterStats {
                 level: 3,
                 job: 0,
@@ -4482,6 +4585,18 @@ fn build_native_window_scene(
                 3,
             )
         };
+        let preview_skills: HashMap<i32, openstory_protocol::SkillEntry> = if disabled_preview {
+            [openstory_protocol::SkillEntry {
+                id: 4_001_002,
+                level: 0,
+                ..Default::default()
+            }]
+            .into_iter()
+            .map(|skill| (skill.id, skill))
+            .collect()
+        } else {
+            HashMap::new()
+        };
         let pixels = render_skill_book_panel(
             font,
             ui_archive,
@@ -4490,6 +4605,7 @@ fn build_native_window_scene(
             book_title,
             book_icon,
             skill_points,
+            &preview_skills,
             tab,
             visible_tabs,
             0,
@@ -4668,9 +4784,6 @@ fn preview_skill_entry() -> SkillUiEntry {
         passive: false,
         attack: true,
         magic_damage: false,
-        magic_damage_multiplier: 1.0,
-        magic_mastery: 0.0,
-        element: None,
         attack_count: 1,
         bullet_count: 0,
         mob_count: 1,
@@ -4879,6 +4992,7 @@ fn geometry_report(name: &str, scene: &LoginSceneAssets, width: u32, height: u32
             | "panel-meso-drop"
             | "panel-equipment-inventory"
             | "panel-skill-inventory"
+            | "panel-skill-inventory-disabled"
             | "panel-skill-inventory-beginner"
             | "panel-skill-tooltip"
             | "panel-skill-tooltip-unlearned"
@@ -4890,6 +5004,7 @@ fn geometry_report(name: &str, scene: &LoginSceneAssets, width: u32, height: u32
             | "page-cash-shop"
             | "panel-monster-book"
             | "panel-stats"
+            | "panel-stats-auto-assign"
             | "panel-stats-detail"
             | "panel-quest-helper"
             | "panel-quests"

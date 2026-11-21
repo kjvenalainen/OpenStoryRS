@@ -18,6 +18,13 @@ fn decoded_scene_bytes(scene: &LoginSceneAssets) -> usize {
         })
 }
 
+fn map_scene_is_blank(scene: &LoginSceneAssets) -> bool {
+    scene
+        .map_scene
+        .as_ref()
+        .is_some_and(|map| map.world_draw_indices.is_empty() && map.map_backgrounds.is_empty())
+}
+
 impl ClientApp {
     pub(super) fn respond_to_server_notice(&mut self, accept: bool) {
         if self.server_notice_popup.is_none() {
@@ -99,6 +106,7 @@ impl ClientApp {
 
         self.map_loading_started_at = Some(Instant::now());
         self.map_loading_frame_rendered = false;
+        self.map_initial_npc_loading_until = None;
         let character_look = self
             .active_character
             .as_ref()
@@ -147,6 +155,7 @@ impl ClientApp {
                 self.map_load_receiver = None;
                 self.map_loading_started_at = None;
                 self.map_loading_frame_rendered = false;
+                self.map_initial_npc_loading_until = None;
                 self.map_entry_refresh_pending = false;
                 self.pending_map_transition_ack = None;
                 eprintln!("OpenStoryRS: could not start loading map {map_id}: {error}");
@@ -169,6 +178,7 @@ impl ClientApp {
                 self.map_load_receiver = None;
                 self.map_loading_started_at = None;
                 self.map_loading_frame_rendered = false;
+                self.map_initial_npc_loading_until = None;
                 self.map_entry_refresh_pending = false;
                 if let Some(window) = self.window.as_ref() {
                     window.request_redraw();
@@ -179,9 +189,77 @@ impl ClientApp {
         let (map_id, portal, music_path, scene) = result;
         self.map_load_receiver = None;
         match scene {
-            Ok(scene) => self.begin_map_scene_upload(map_id, portal, music_path, scene),
+            Ok(scene) => {
+                if map_scene_is_blank(&scene)
+                    && self.return_from_unusable_map(map_id, "it contains no background or map art")
+                {
+                    return;
+                }
+                self.begin_map_scene_upload(map_id, portal, music_path, scene);
+            }
             Err(error) => self.finish_map_scene_load(map_id, portal, music_path, Err(error)),
         }
+    }
+
+    fn return_from_unusable_map(&mut self, map_id: i32, reason: &str) -> bool {
+        let Some((old_map_id, old_portal)) = self.current_field else {
+            return false;
+        };
+        if old_map_id == map_id {
+            return false;
+        }
+
+        eprintln!(
+            "OpenStoryRS: map {map_id} is unusable because {reason}; returning to previous map {old_map_id}"
+        );
+        if let Some(character) = self.active_character.as_mut() {
+            character.stats.map_id = old_map_id;
+            character.stats.portal = old_portal;
+        }
+
+        let return_packet = openstory_protocol::return_to_previous_map_packet(old_map_id);
+        match (self.session.as_ref(), return_packet) {
+            (Some(session), Ok(return_packet)) => {
+                let result = session
+                    .send_packet(openstory_protocol::player_map_transfer_packet())
+                    .and_then(|()| session.send_packet(return_packet));
+                if let Err(error) = result {
+                    eprintln!(
+                        "OpenStoryRS: could not return from unusable map {map_id} to map {old_map_id}: {error}"
+                    );
+                    self.channel_connected = false;
+                }
+            }
+            (Some(session), Err(error)) => {
+                if let Err(send_error) =
+                    session.send_packet(openstory_protocol::player_map_transfer_packet())
+                {
+                    eprintln!(
+                        "OpenStoryRS: could not finish unusable map {map_id} transition: {send_error}"
+                    );
+                    self.channel_connected = false;
+                }
+                eprintln!(
+                    "OpenStoryRS: could not encode return from unusable map {map_id}: {error}"
+                );
+            }
+            (None, _) => eprintln!(
+                "OpenStoryRS: no active session to return from unusable map {map_id} to map {old_map_id}"
+            ),
+        }
+
+        self.map_loading_started_at = None;
+        self.map_loading_frame_rendered = false;
+        self.map_initial_npc_loading_until = None;
+        self.map_entry_refresh_pending = false;
+        self.map_entry_refresh_step = 0;
+        self.pending_map_transition_ack = None;
+        self.pending_map_scene_upload = None;
+        self.start_map_prefetch();
+        if let Some(window) = self.window.as_ref() {
+            window.request_redraw();
+        }
+        true
     }
 
     fn begin_map_scene_upload(
@@ -366,13 +444,18 @@ impl ClientApp {
                 self.pending_map_transition_ack = Some((map_id, portal));
             }
             Err(error) => {
-                eprintln!("OpenStory: could not load map {map_id}: {error}");
+                let reason = format!("it could not be loaded or rendered: {error}");
+                if self.return_from_unusable_map(map_id, &reason) {
+                    return;
+                }
+                eprintln!("OpenStory: could not load or render map {map_id}: {error}");
                 self.map_entry_refresh_pending = false;
             }
         }
         if self.pending_map_transition_ack.is_none() {
             self.map_loading_started_at = None;
             self.map_loading_frame_rendered = false;
+            self.map_initial_npc_loading_until = None;
         }
         if let Some(window) = self.window.as_ref() {
             window.request_redraw();
@@ -427,8 +510,10 @@ impl ClientApp {
                 }
                 eprintln!("OpenStory: loaded map {map_id} at portal {portal}");
                 self.map_entry_refresh_pending = false;
-                self.map_loading_started_at = None;
-                self.map_loading_frame_rendered = false;
+                // The v83 field stream has no marker for the end of the initial
+                // NPC batch, so use a short quiet window after the transfer ack.
+                self.map_initial_npc_loading_until =
+                    Some(Instant::now() + INITIAL_NPC_LOADING_QUIET_WINDOW);
                 if let Some(window) = self.window.as_ref() {
                     window.request_redraw();
                 }
@@ -436,6 +521,21 @@ impl ClientApp {
             }
         }
         self.map_entry_refresh_step = self.map_entry_refresh_step.saturating_add(1);
+        if let Some(window) = self.window.as_ref() {
+            window.request_redraw();
+        }
+    }
+
+    pub(super) fn finish_initial_npc_loading_if_idle(&mut self, now: Instant) {
+        if self
+            .map_initial_npc_loading_until
+            .is_none_or(|deadline| now < deadline)
+        {
+            return;
+        }
+        self.map_initial_npc_loading_until = None;
+        self.map_loading_started_at = None;
+        self.map_loading_frame_rendered = false;
         if let Some(window) = self.window.as_ref() {
             window.request_redraw();
         }
@@ -1425,7 +1525,9 @@ impl ClientApp {
     pub(super) fn process_network_events(&mut self) {
         if self.map_load_receiver.is_some()
             || self.pending_map_scene_upload.is_some()
-            || self.map_loading_started_at.is_some()
+            || self.pending_map_transition_ack.is_some()
+            || (self.map_loading_started_at.is_some()
+                && self.map_initial_npc_loading_until.is_none())
         {
             return;
         }
@@ -1508,6 +1610,8 @@ impl ClientApp {
                     eprintln!("OpenStory: server connection closed: {message}");
                 }
             }
+            // During the initial NPC quiet window, return after one packet so
+            // the loading spinner gets a frame between synchronous NPC loads.
             if self.map_load_receiver.is_some()
                 || self.pending_map_scene_upload.is_some()
                 || self.map_loading_started_at.is_some()

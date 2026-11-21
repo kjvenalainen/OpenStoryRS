@@ -169,6 +169,7 @@ impl ClientApp {
             settings_texture: None,
             status_texture: None,
             status_detail_texture: None,
+            status_auto_assign_texture: None,
             key_config_texture: None,
             skill_macro_texture: None,
             skill_macro_drag_texture: None,
@@ -236,7 +237,8 @@ impl ClientApp {
                 color: [255, 255, 0],
             }]),
             chat_input: String::new(),
-            chat_open: false,
+            chat_scroll: 0,
+            chat_open: true,
             chat_input_focused: false,
             chat_target: ChatTarget::Public,
             cash_item_compose: None,
@@ -471,6 +473,7 @@ impl ClientApp {
             map_loading_started_at: None,
             map_loading_frame_rendered: false,
             map_loading_texture: None,
+            map_initial_npc_loading_until: None,
             map_entry_refresh_pending: false,
             map_entry_refresh_step: 0,
             pending_map_transition_ack: None,
@@ -967,7 +970,11 @@ impl ClientApp {
                             scene.player.horizontal_speed = 0.0;
                         }
                         if scene.player.on_ground {
-                            let direction = if is_stunned {
+                            let crouching = movement_down;
+                            if crouching {
+                                scene.player.horizontal_speed = 0.0;
+                            }
+                            let direction = if is_stunned || crouching {
                                 0.0
                             } else {
                                 match (movement_left, movement_right) {
@@ -1407,44 +1414,24 @@ impl ClientApp {
         }
         if let Some(skill) = skill {
             attack_stats.magic_damage = skill.magic_damage;
-            attack_stats.element = skill.element;
             attack_stats.fixed_damage = skill.fixed_damage;
-            if skill.magic_damage && skill.fixed_damage.is_none() {
-                // Match Cosmic's v83 magic upper-bound formula. `mad` in
-                // Skill.nx is already the multiplier (for example 33),
-                // while total magic includes INT and equipment MATK.
-                let magic = attack_stats.magic_total.max(0);
-                let magic_per_thousand = magic.saturating_add(999) / 1000;
-                let numerator = magic
-                    .saturating_mul(magic_per_thousand)
-                    .saturating_add(magic);
-                let mut base_max = numerator.saturating_add(29) / 30;
-                let total_intelligence = attack_stats.intelligence.max(0);
-                base_max = base_max.saturating_add(total_intelligence.saturating_add(199) / 200);
-                if let Some(amplification_skill) = magic_amplification_skill(character.stats.job)
-                    && let Some(level) =
-                        learned_skill_level(&self.skill_archive, &self.skills, amplification_skill)
-                {
-                    let amplification = integer_property(&level, "y").unwrap_or(100).max(0);
-                    base_max = base_max.saturating_mul(amplification) / 100;
-                }
-                let maximum_damage = base_max as f64 * skill.magic_damage_multiplier;
-                let unmastered_minimum =
-                    4.0 * total_intelligence as f64 + attack_stats.luck.max(0) as f64;
-                let mastery_fraction = if unmastered_minimum > 0.0 {
-                    (4.0 * total_intelligence as f64 * skill.magic_mastery
-                        + attack_stats.luck.max(0) as f64)
-                        / unmastered_minimum
-                } else {
-                    skill.magic_mastery
-                }
-                .clamp(0.0, 1.0);
-                attack_stats.minimum_damage = maximum_damage * mastery_fraction;
-                attack_stats.maximum_damage = maximum_damage;
-            } else if !skill.magic_damage && skill.fixed_damage.is_none() {
+            // Upstream selects DMG_MAGIC when the level has `mad`, but its
+            // attack range still comes from CharStats' weapon formula. `mad`
+            // itself is not folded into damage there.
+            if !skill.magic_damage && skill.fixed_damage.is_none() {
                 attack_stats.minimum_damage *= skill.damage_multiplier;
                 attack_stats.maximum_damage *= skill.damage_multiplier;
             }
+        }
+        // Upstream prepare_attack reduces degenerate close-range attacks to
+        // one tenth. Empty-projectile bow/claw/gun attacks always degenerate;
+        // wand/staff regular swings do, while their skills remain magic.
+        let degenerate_ranged = attack_stats.attack_type == openstory_protocol::AttackType::Close
+            && matches!(attack_stats.weapon_type, 145 | 146 | 147 | 149);
+        let degenerate_magic = skill.is_none() && matches!(attack_stats.weapon_type, 137 | 138);
+        if degenerate_ranged || degenerate_magic {
+            attack_stats.minimum_damage /= 10.0;
+            attack_stats.maximum_damage /= 10.0;
         }
         let hit_count = skill.map_or(1, |skill| {
             if attack_stats.attack_type == openstory_protocol::AttackType::Ranged {
@@ -1456,6 +1443,13 @@ impl ClientApp {
         let target_count = skill.map_or(1, |skill| usize::from(skill.mob_count));
         let horizontal_range_multiplier =
             skill.map_or(1.0, |skill| skill.horizontal_range_multiplier);
+        let horizontal_range_bonus = if attack_stats.attack_type
+            == openstory_protocol::AttackType::Ranged
+        {
+            projectile_range_extension(&self.skill_archive, &self.skills, attack_stats.weapon_type)
+        } else {
+            0
+        };
         let skill_level = skill.map_or(0, |skill| skill.level.clamp(0, 255) as u8);
         let skill_projectile_frames = if skill_id > 0 {
             match self.load_skill_projectile_frames(skill_id, skill_level) {
@@ -1552,7 +1546,17 @@ impl ClientApp {
         let attack_range = skill
             .and_then(|skill| skill.attack_range)
             .or_else(|| {
-                (skill.is_none()
+                let regular_action = skill_id == 0
+                    || character_skill_action_name(
+                        &self.skill_archive,
+                        &character.look,
+                        skill_id,
+                        skill_level,
+                    )
+                    .ok()
+                    .flatten()
+                    .is_none();
+                (regular_action
                     && attack_stats.attack_type == openstory_protocol::AttackType::Close)
                     .then(|| {
                         normal_weapon_attack_range(&self.character_archive, &character.look, stance)
@@ -1570,60 +1574,35 @@ impl ClientApp {
             attack_stats.speed,
             usize::from(hit_count.clamp(1, 15)),
         );
-        let target_positions =
-            scene.nearest_attack_targets(target_count, attack_range, horizontal_range_multiplier);
-        let mob_sound_start = Instant::now();
+        let target_positions = scene.nearest_attack_targets(
+            target_count,
+            attack_range,
+            horizontal_range_multiplier,
+            horizontal_range_bonus,
+            attack_stats.attack_type == openstory_protocol::AttackType::Ranged,
+        );
+        let shows_projectile = projectile_frames
+            .as_ref()
+            .is_some_and(|frames| !frames.is_empty())
+            && (attack_stats.attack_type == openstory_protocol::AttackType::Ranged || skill_id > 0);
+        let mut mob_hit_sound_events = Vec::new();
+        let mut skill_hit_sound_events = Vec::new();
         for (object_id, _, (target_x, target_y)) in &target_positions {
             let Some(mob_id) = scene.mobs.get(object_id).map(|mob| mob.mob_id) else {
                 continue;
             };
             let position = (rounded_i16(*target_x), rounded_i16(*target_y));
+            let projectile_travel = if shows_projectile {
+                projectile_flight_duration(scene.player.x, *target_x)
+            } else {
+                Duration::ZERO
+            };
             for hit_index in 0..hit_count.clamp(1, 15) {
-                let delay = skill_hit_delays
-                    .get(usize::from(hit_index))
-                    .copied()
-                    .unwrap_or_default();
-                if delay.is_zero() {
-                    self.audio
-                        .play_mob_hit(&self.sound_archive, mob_id, position);
-                } else {
-                    if self.pending_mob_hit_sounds.len() >= 512 {
-                        self.pending_mob_hit_sounds.remove(0);
-                    }
-                    if let Some(play_at) = mob_sound_start.checked_add(delay) {
-                        self.pending_mob_hit_sounds.push(PendingMobHitSound {
-                            mob_id,
-                            position,
-                            play_at,
-                        });
-                    }
-                }
-            }
-        }
-        if skill_id > 0 {
-            let sound_start = Instant::now();
-            for (_, _, (target_x, target_y)) in &target_positions {
-                for hit_index in 0..hit_count.clamp(1, 15) {
-                    let position = (rounded_i16(*target_x), rounded_i16(*target_y));
-                    let delay = skill_hit_delays
-                        .get(usize::from(hit_index))
-                        .copied()
-                        .unwrap_or_default();
-                    if delay.is_zero() {
-                        self.audio
-                            .play_skill_hit(&self.sound_archive, skill_id, position);
-                    } else {
-                        if self.pending_skill_hit_sounds.len() >= 512 {
-                            self.pending_skill_hit_sounds.remove(0);
-                        }
-                        if let Some(play_at) = sound_start.checked_add(delay) {
-                            self.pending_skill_hit_sounds.push(PendingSkillHitSound {
-                                skill_id,
-                                position,
-                                play_at,
-                            });
-                        }
-                    }
+                let delay =
+                    skill_hit_delays[usize::from(hit_index)].saturating_add(projectile_travel);
+                mob_hit_sound_events.push((*object_id, mob_id, position, delay));
+                if skill_id > 0 {
+                    skill_hit_sound_events.push((*object_id, position, delay));
                 }
             }
         }
@@ -1632,9 +1611,11 @@ impl ClientApp {
             .map(|(_, _, (x, y))| (*x, *y - 24.0))
             .take(15)
             .collect::<Vec<_>>();
-        let projectile_launch_delay = skill_hit_delays.first().copied().unwrap_or_default();
-        let reactor_target =
-            scene.nearest_reactor_target(attack_range, horizontal_range_multiplier);
+        let reactor_target = scene.nearest_reactor_target(
+            attack_range,
+            horizontal_range_multiplier,
+            horizontal_range_bonus,
+        );
         let reactor_target_position = reactor_target.and_then(|object_id| {
             scene
                 .reactors
@@ -1646,7 +1627,12 @@ impl ClientApp {
         let mut impacts = Vec::new();
         let targets = target_positions
             .into_iter()
-            .map(|(object_id, mob, _)| {
+            .map(|(object_id, mob, (target_x, _))| {
+                let projectile_travel = if shows_projectile {
+                    projectile_flight_duration(scene.player.x, target_x)
+                } else {
+                    Duration::ZERO
+                };
                 let mut stack_offset = 0.0;
                 let damage_lines: Vec<i32> = (0..hit_count.clamp(1, 15))
                     .map(|hit_index| {
@@ -1655,7 +1641,8 @@ impl ClientApp {
                             openstory_protocol::MobDamage { object_id, damage },
                             critical,
                             stack_offset,
-                            skill_hit_delays[usize::from(hit_index)],
+                            skill_hit_delays[usize::from(hit_index)]
+                                .saturating_add(projectile_travel),
                         ));
                         stack_offset += if critical { 36.0 } else { 30.0 };
                         damage
@@ -1689,13 +1676,34 @@ impl ClientApp {
                 return;
             }
         };
-        for (damage, critical, stack_offset, delay) in impacts {
-            scene.schedule_mob_attack_impact(
-                damage.object_id,
-                Arc::clone(&skill_hit_effects),
-                !scene.facing_right,
-                Some((damage, critical, stack_offset)),
-                delay,
+        if skill_id > 0 {
+            scene.show_character_skill_effect(None, skill_effects, skill_effect_speed_factor);
+            self.audio.play_skill_use(
+                &self.sound_archive,
+                skill_id,
+                (rounded_i16(scene.player.x), rounded_i16(scene.player.y)),
+            );
+        }
+        scene.start_attack(stance, &mut self.sprite_draws);
+        let regular_action = skill_id == 0
+            || character_skill_action_name(
+                &self.skill_archive,
+                &character.look,
+                skill_id,
+                skill_level,
+            )
+            .ok()
+            .flatten()
+            .is_none();
+        if regular_action && let Some(weapon_id) = character_weapon_id(&character.look) {
+            let degenerate = attack_stats.attack_type == openstory_protocol::AttackType::Close
+                && matches!(attack_stats.weapon_type, 145 | 146 | 147 | 149);
+            self.audio.play_weapon_attack(
+                &self.character_archive,
+                &self.sound_archive,
+                weapon_id,
+                degenerate,
+                (rounded_i16(scene.player.x), rounded_i16(scene.player.y)),
             );
         }
         if let Some(frames) = projectile_frames {
@@ -1707,26 +1715,36 @@ impl ClientApp {
                             scene.player.y - 26.0,
                         )
                     });
-                    scene.launch_projectile(frames, target_x, target_y, projectile_launch_delay);
-                } else {
-                    for (target_x, target_y) in projectile_targets {
+                    for hit_index in 0..hit_count.clamp(1, 15) {
                         scene.launch_projectile(
                             frames.clone(),
                             target_x,
                             target_y,
-                            projectile_launch_delay,
+                            skill_hit_delays[usize::from(hit_index)],
                         );
+                    }
+                } else {
+                    for (target_x, target_y) in projectile_targets {
+                        for hit_index in 0..hit_count.clamp(1, 15) {
+                            scene.launch_projectile(
+                                frames.clone(),
+                                target_x,
+                                target_y,
+                                skill_hit_delays[usize::from(hit_index)],
+                            );
+                        }
                     }
                 }
             }
         }
-        scene.start_attack(stance, &mut self.sprite_draws);
-        if skill_id > 0 {
-            scene.show_character_skill_effect(None, skill_effects, skill_effect_speed_factor);
-            self.audio.play_skill_use(
-                &self.sound_archive,
-                skill_id,
-                (rounded_i16(scene.player.x), rounded_i16(scene.player.y)),
+        for (damage, critical, stack_offset, delay) in impacts {
+            scene.schedule_mob_attack_impact(
+                damage.object_id,
+                Arc::clone(&skill_hit_effects),
+                !scene.facing_right,
+                Some((damage, critical, stack_offset)),
+                shows_projectile,
+                delay,
             );
         }
         if self.channel_connected {
@@ -1761,6 +1779,10 @@ impl ClientApp {
                     }
                 }
             }
+        }
+        self.schedule_mob_hit_sounds(&mob_hit_sound_events);
+        if skill_id > 0 {
+            self.schedule_skill_hit_sounds(skill_id, &skill_hit_sound_events);
         }
     }
 
@@ -2156,7 +2178,7 @@ impl ClientApp {
             1 => decode_nx_icon(
                 &self.skill_archive,
                 &format!(
-                    "{:03}.img/skill/{}/icon",
+                    "{:03}.img/skill/{:07}/icon",
                     binding.action / 10_000,
                     binding.action
                 ),
@@ -3488,6 +3510,20 @@ impl ClientApp {
             }
             return true;
         }
+        if self.status_auto_confirmation {
+            if state == ElementState::Pressed && !repeat {
+                match key {
+                    PhysicalKey::Code(KeyCode::Escape) => {
+                        self.resolve_status_auto_allocate(false);
+                    }
+                    PhysicalKey::Code(KeyCode::Enter | KeyCode::NumpadEnter) => {
+                        self.resolve_status_auto_allocate(true);
+                    }
+                    _ => {}
+                }
+            }
+            return true;
+        }
         if self.current_field.is_none() || self.map_scene.is_none() {
             return false;
         }
@@ -3507,17 +3543,7 @@ impl ClientApp {
             }
             match key {
                 PhysicalKey::Code(KeyCode::Escape) => {
-                    if self.status_auto_confirmation {
-                        self.resolve_status_auto_allocate(false);
-                    } else {
-                        self.show_status = false;
-                    }
-                    return true;
-                }
-                PhysicalKey::Code(KeyCode::Enter | KeyCode::NumpadEnter)
-                    if self.status_auto_confirmation =>
-                {
-                    self.resolve_status_auto_allocate(true);
+                    self.show_status = false;
                     return true;
                 }
                 _ => {}
@@ -3829,6 +3855,7 @@ impl ClientApp {
         } = scene;
         let mut map_scene = map_scene.map(|scene| MapSceneRuntime::new(scene, &mut draws));
         if let Some(scene) = map_scene.as_mut() {
+            scene.local_name_label_draw_index = local_name_label_index;
             scene.local_name_label =
                 local_name_label_index.and_then(|index| draws.get(index).copied());
             scene.energy = self.session_energy;
@@ -3870,6 +3897,8 @@ impl ClientApp {
         self.death_respawn_pending = false;
         self.death_notice_texture = None;
         self.pending_scroll_slot = None;
+        self.pending_skill_hit_sounds.clear();
+        self.pending_mob_hit_sounds.clear();
         self.sprite_draws = draws;
         self.login_actions = actions;
         self.map_scene = map_scene;
@@ -3938,4 +3967,36 @@ impl ClientApp {
         }
         Ok(())
     }
+}
+
+fn projectile_range_extension(
+    skill_archive: &NxArchive,
+    skills: &HashMap<i32, openstory_protocol::SkillEntry>,
+    weapon_type: i32,
+) -> i16 {
+    let skill_ids: &[i32] = match weapon_type {
+        145 | 146 => &[3_000_002, 13_000_001], // Eye of Amazon
+        147 => &[4_000_001, 14_000_001],       // Keen Eyes
+        _ => return 0,
+    };
+    skill_ids
+        .iter()
+        .filter_map(|skill_id| {
+            let level = skills.get(skill_id)?.level;
+            if level <= 0 {
+                return None;
+            }
+            let skill_path = format!("{:03}.img/skill/{skill_id:07}", skill_id / 10_000);
+            let skill = skill_archive.root().resolve(&skill_path).ok()??;
+            let level = skill
+                .child("level")
+                .ok()??
+                .child(&level.to_string())
+                .ok()??;
+            integer_property(&level, "range")
+                .filter(|range| *range > 0)
+                .map(|range| range.clamp(0, i64::from(i16::MAX)) as i16)
+        })
+        .max()
+        .unwrap_or(0)
 }

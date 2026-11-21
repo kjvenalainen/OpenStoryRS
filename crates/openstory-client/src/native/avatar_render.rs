@@ -51,16 +51,10 @@ fn append_character_avatar(
         .root()
         .resolve(&hair_path)
         .map_err(|error| error.to_string())?;
+    let cap_type = character_cap_type(archive, look)?;
 
     if let Some(hair_frame) = hair_frame.as_ref() {
-        for part_name in [
-            "backHair",
-            "backHairBelowCap",
-            "backHairBelowCapNarrow",
-            "backHairBelowCapWide",
-            "backHairOverCape",
-            "hairBelowBody",
-        ] {
+        for part_name in ["backHairOverCape", "hairBelowBody"] {
             let first_sprite = sprites.len();
             append_hair_part(
                 sprites,
@@ -71,17 +65,39 @@ fn append_character_avatar(
                 face_offset,
                 cache,
             )?;
-            set_sprite_depth(
+            let depth = if part_name == "hairBelowBody" { 0 } else { 3 };
+            set_sprite_depth(sprites, first_sprite, depth);
+        }
+
+        let back_hair_candidates: &[&str] = match cap_type {
+            AvatarCapType::None | AvatarCapType::Headband => &["backHair"],
+            AvatarCapType::HalfCover => &[
+                "backHairBelowCap",
+                "backHairBelowCapNarrow",
+                "backHairBelowCapWide",
+            ],
+            AvatarCapType::FullCover => &[],
+        };
+        for part_name in back_hair_candidates {
+            if hair_frame
+                .child(part_name)
+                .map_err(|error| error.to_string())?
+                .is_none()
+            {
+                continue;
+            }
+            let first_sprite = sprites.len();
+            append_hair_part(
                 sprites,
-                first_sprite,
-                match part_name {
-                    "hairBelowBody" => 0,
-                    "backHairOverCape" => 3,
-                    "backHair" => 23,
-                    "backHairBelowCap" | "backHairBelowCapNarrow" | "backHairBelowCapWide" => 23,
-                    _ => 0,
-                },
-            );
+                hair_frame,
+                part_name,
+                &hair_path,
+                (anchor_x, anchor_y),
+                face_offset,
+                cache,
+            )?;
+            set_sprite_depth(sprites, first_sprite, 23);
+            break;
         }
     }
 
@@ -107,7 +123,13 @@ fn append_character_avatar(
     }
 
     if let Some(hair_frame) = hair_frame.as_ref() {
-        for (part_name, depth) in [("hairShade", 17), ("hair", 18)] {
+        // Headband caps render before the front and overhead hair layers.
+        let hair_depth = if cap_type == AvatarCapType::Headband {
+            25
+        } else {
+            18
+        };
+        for (part_name, depth) in [("hairShade", 17), ("hair", hair_depth)] {
             let first_sprite = sprites.len();
             append_hair_part(
                 sprites,
@@ -147,7 +169,9 @@ fn append_character_avatar(
         set_sprite_depth(sprites, first_sprite, 19);
     }
 
-    if let Some(hair_frame) = hair_frame.as_ref() {
+    if let Some(hair_frame) = hair_frame.as_ref()
+        && matches!(cap_type, AvatarCapType::None | AvatarCapType::Headband)
+    {
         let first_sprite = sprites.len();
         append_hair_part(
             sprites,
@@ -158,12 +182,17 @@ fn append_character_avatar(
             face_offset,
             cache,
         )?;
-        set_sprite_depth(sprites, first_sprite, 24);
+        let depth = if cap_type == AvatarCapType::Headband {
+            26
+        } else {
+            24
+        };
+        set_sprite_depth(sprites, first_sprite, depth);
     }
 
     let anchors = avatar_equipment_anchors(&body_frame, body_position, face_offset)?;
     append_character_equipment(
-        sprites, archive, look, stance, frame, anchor_x, anchor_y, anchors, cache,
+        sprites, archive, look, stance, frame, anchor_x, anchor_y, anchors, cap_type, cache,
     )?;
     sprites[avatar_start..].sort_by_key(|sprite| sprite.depth_order);
     let face_texture_key = map_texture_key(&format!("character:{face_path}"), 255, false);
@@ -180,6 +209,52 @@ struct AvatarEquipmentAnchors {
     face: (f32, f32),
     hand: (f32, f32),
     hand_move: (f32, f32),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AvatarCapType {
+    None,
+    Headband,
+    HalfCover,
+    FullCover,
+}
+
+fn character_cap_type(
+    archive: &NxArchive,
+    look: &openstory_protocol::CharacterLook,
+) -> Result<AvatarCapType, String> {
+    let mut equips = look.equips.clone();
+    for &(slot, item_id) in &look.masked_equips {
+        if let Some((_, current_id)) = equips
+            .iter_mut()
+            .find(|(current_slot, _)| *current_slot == slot)
+        {
+            *current_id = item_id;
+        } else {
+            equips.push((slot, item_id));
+        }
+    }
+    let Some((_, item_id)) = equips
+        .iter()
+        .rev()
+        .find(|(_, item_id)| *item_id > 0 && *item_id / 10_000 == 100)
+    else {
+        return Ok(AvatarCapType::None);
+    };
+    let info = archive
+        .root()
+        .resolve(&format!("Cap/0{item_id}.img/info"))
+        .map_err(|error| error.to_string())?;
+    let vslot = info
+        .as_ref()
+        .and_then(|info| string_property(info, "vslot"));
+    // Keep the legacy vslot precedence for caps that advertise multiple covers.
+    Ok(match vslot.as_deref() {
+        Some(vslot) if vslot.contains("As") || vslot.contains("Ay") => AvatarCapType::FullCover,
+        Some(vslot) if vslot.contains("H1") => AvatarCapType::HalfCover,
+        Some(vslot) if vslot.contains("H5") => AvatarCapType::Headband,
+        _ => AvatarCapType::HalfCover,
+    })
 }
 
 fn avatar_equipment_anchors(
@@ -292,6 +367,7 @@ fn append_character_equipment(
     anchor_x: f32,
     anchor_y: f32,
     anchors: AvatarEquipmentAnchors,
+    cap_type: AvatarCapType,
     cache: &mut MapArtCache,
 ) -> Result<(), String> {
     let mut equips = look.equips.clone();
@@ -347,6 +423,13 @@ fn append_character_equipment(
                 continue;
             }
             let part_name = part.name().unwrap_or_else(|_| "part".to_owned());
+            let z = string_property(&part, "z");
+            if prefix == 100
+                && z.as_deref() == Some("capOverHair")
+                && cap_type != AvatarCapType::Headband
+            {
+                continue;
+            }
             let (parent, parent_position) =
                 last_map_vector(&part)?.unwrap_or_else(|| (String::new(), (0.0, 0.0)));
             let attachment = match prefix {
@@ -359,12 +442,7 @@ fn append_character_equipment(
                 },
                 _ => anchors.body,
             };
-            let depth = equipment_depth(
-                prefix,
-                string_property(&part, "z").as_deref(),
-                &part_name,
-                two_handed,
-            );
+            let depth = equipment_depth(prefix, z.as_deref(), &part_name, two_handed, cap_type);
             let sprite_index = sprites.len();
             append_map_art_sprite(
                 sprites,
@@ -441,7 +519,13 @@ fn last_map_vector(
     Ok(result)
 }
 
-fn equipment_depth(prefix: i32, z: Option<&str>, part_name: &str, two_handed: bool) -> i16 {
+fn equipment_depth(
+    prefix: i32,
+    z: Option<&str>,
+    part_name: &str,
+    two_handed: bool,
+    cap_type: AvatarCapType,
+) -> i16 {
     if part_name == "mailArm" {
         return if two_handed { 26 } else { 28 };
     }
@@ -460,7 +544,13 @@ fn equipment_depth(prefix: i32, z: Option<&str>, part_name: &str, two_handed: bo
         "eyeacc" => 21,
         "shield" => 22,
         "cap" => 24,
-        "capOverHair" => 26,
+        "capOverHair" => {
+            if cap_type == AvatarCapType::Headband {
+                27
+            } else {
+                26
+            }
+        }
         "weaponBelowArm" => 25,
         "weapon" => {
             if two_handed {
@@ -477,6 +567,7 @@ fn equipment_depth(prefix: i32, z: Option<&str>, part_name: &str, two_handed: bo
         "gloveOverHair" => 40,
         "gloveWristOverHair" => 39,
         _ => match prefix {
+            // Hats without a part-level z property use their primary cap layer.
             100 => 24,
             101 => 20,
             102 => 21,

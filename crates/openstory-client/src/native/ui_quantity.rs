@@ -1,13 +1,14 @@
 // Shared quantity window for inventory and shop actions. Coordinates inside
 // the frame are the same for painting and pointer input.
-const QUANTITY_WINDOW_WIDTH: usize = 299;
-const QUANTITY_WINDOW_HEIGHT: usize = 118;
-const QUANTITY_TRACK_LEFT: f32 = 73.0;
-const QUANTITY_TRACK_RIGHT: f32 = 205.0;
-const QUANTITY_TRACK_Y: usize = 51;
-const QUANTITY_FIELD: ui_foundation::UiRect = ui_foundation::UiRect::new(228.0, 41.0, 56.0, 20.0);
-const QUANTITY_SLIDER: ui_foundation::UiRect = ui_foundation::UiRect::new(62.0, 41.0, 155.0, 20.0);
-const QUANTITY_CLOSE: ui_foundation::UiRect = ui_dialog::close_button(280.0, 6.0);
+const QUANTITY_WINDOW_WIDTH: usize = 244;
+const QUANTITY_WINDOW_HEIGHT: usize = 103;
+const QUANTITY_TRACK_LEFT: f32 = 61.0;
+const QUANTITY_TRACK_RIGHT: f32 = 165.0;
+const QUANTITY_TRACK_Y: usize = 43;
+const QUANTITY_FIELD: ui_foundation::UiRect = ui_foundation::UiRect::new(183.0, 33.0, 50.0, 20.0);
+const QUANTITY_SLIDER: ui_foundation::UiRect = ui_foundation::UiRect::new(50.0, 33.0, 126.0, 20.0);
+const QUANTITY_CLOSE: ui_foundation::UiRect =
+    ui_dialog::close_button(QUANTITY_WINDOW_WIDTH as f32 - 19.0, 6.0);
 
 enum QuantityIcon<'a> {
     Item(&'a (u32, u32, Arc<[u8]>)),
@@ -109,27 +110,77 @@ impl QuantityInput {
     }
 }
 
-fn quantity_window_origin(canvas_width: usize, canvas_height: usize) -> (i32, i32) {
-    (
-        ((canvas_width - QUANTITY_WINDOW_WIDTH) / 2) as i32,
-        ((canvas_height - QUANTITY_WINDOW_HEIGHT) / 2) as i32,
-    )
+fn quantity_window_rect(left: f32, top: f32, width: usize, height: usize) -> SpriteRect {
+    SpriteRect {
+        x: left + ((width - QUANTITY_WINDOW_WIDTH) / 2) as f32,
+        y: top + ((height - QUANTITY_WINDOW_HEIGHT) / 2) as f32,
+        width: QUANTITY_WINDOW_WIDTH as f32,
+        height: QUANTITY_WINDOW_HEIGHT as f32,
+        blend_mode: BlendMode::Alpha,
+    }
 }
 
-fn quantity_window_local(cursor: Point, left: f32, top: f32, width: usize, height: usize) -> Point {
-    let (x, y) = quantity_window_origin(width, height);
+fn inventory_quantity_rect() -> SpriteRect {
+    quantity_window_rect(0.0, 0.0, 1024, 768)
+}
+
+fn npc_shop_quantity_rect() -> SpriteRect {
+    quantity_window_rect(NPC_SHOP_X, NPC_SHOP_Y, NPC_SHOP_WIDTH, NPC_SHOP_HEIGHT)
+}
+
+fn quantity_window_local(cursor: Point, rect: SpriteRect) -> Point {
     Point {
-        x: cursor.x - left - x as f32,
-        y: cursor.y - top - y as f32,
+        x: cursor.x - rect.x,
+        y: cursor.y - rect.y,
+    }
+}
+
+fn update_quantity_window_texture(
+    renderer: &GpuRenderer,
+    texture: &mut Option<GpuTexture>,
+    pixels: &[u8],
+) -> Result<(), String> {
+    if let Some(texture) = texture {
+        renderer
+            .update_bgra(texture, pixels)
+            .map_err(|error| error.to_string())
+    } else {
+        *texture = Some(
+            renderer
+                .upload_bgra(
+                    QUANTITY_WINDOW_WIDTH as u32,
+                    QUANTITY_WINDOW_HEIGHT as u32,
+                    pixels,
+                )
+                .map_err(|error| error.to_string())?,
+        );
+        Ok(())
     }
 }
 
 impl ClientApp {
+    fn has_shop_quantity_window(&self) -> bool {
+        self.npc_shop
+            .as_ref()
+            .is_some_and(|shop| shop.quantity.is_some())
+    }
+
+    fn quantity_window_blocked(&self) -> bool {
+        self.server_notice_popup.is_some()
+            || self.character_delete_confirmation.is_some()
+            || self.death_notice
+            || self.quit_confirmation
+            || self.map_loading_started_at.is_some()
+    }
+
     fn drag_quantity_slider(&mut self, cursor: Point) -> bool {
+        if self.quantity_window_blocked() {
+            return false;
+        }
         if let Some(prompt) = self.inventory_drop_prompt.as_mut()
             && prompt.quantity.dragging
         {
-            let local = quantity_window_local(cursor, 0.0, 0.0, 1024, 768);
+            let local = quantity_window_local(cursor, inventory_quantity_rect());
             let min = prompt.minimum();
             if prompt.max_quantity >= min {
                 prompt
@@ -146,13 +197,7 @@ impl ClientApp {
             .and_then(|shop| shop.quantity.as_mut())
             && quantity.input.dragging
         {
-            let local = quantity_window_local(
-                cursor,
-                NPC_SHOP_X,
-                NPC_SHOP_Y,
-                NPC_SHOP_WIDTH,
-                NPC_SHOP_HEIGHT,
-            );
+            let local = quantity_window_local(cursor, npc_shop_quantity_rect());
             quantity
                 .input
                 .set_from_slider(local.x, 1, quantity.maximum as u16);
@@ -184,10 +229,10 @@ impl ClientApp {
 }
 
 fn quantity_window_buttons(single: bool) -> (ui_foundation::UiRect, ui_foundation::UiRect) {
-    let ok_x = if single { 126.0 } else { 182.0 };
+    let ok_x = if single { 98.0 } else { 127.0 };
     (
-        ui_foundation::UiRect::new(ok_x, 95.0, 47.0, 18.0),
-        ui_foundation::UiRect::new(237.0, 95.0, 51.0, 18.0),
+        ui_foundation::UiRect::new(ok_x, 80.0, 47.0, 18.0),
+        ui_foundation::UiRect::new(182.0, 80.0, 51.0, 18.0),
     )
 }
 
@@ -208,22 +253,26 @@ fn render_quantity_window(
     const FOOTER: usize = 28;
     const INK: [u8; 3] = [40, 51, 61];
     let mut pixels = vec![0; W * H * 4];
-    let mut dialog = NxDialog::new(&mut pixels, W, H, ui);
+    let dialog = NxDialog::new(&mut pixels, W, H, ui);
     let (source_width, source_height, source) = dialog
         .frame_bitmap(CHROME)
-        .filter(|(width, height, _)| *width == W && *height >= HEADER + FOOTER + 1)
+        .filter(|(width, height, _)| *width >= W && *height > HEADER + FOOTER)
         .ok_or_else(|| format!("missing quantity window frame {CHROME}"))?;
-    dialog.frame_rows(
-        &source,
-        source_width,
-        0,
-        &[
-            (0..HEADER, 0),
-            (source_height - FOOTER..source_height, (H - FOOTER) as i32),
-        ],
-    )?;
-    for y in HEADER..H - FOOTER {
-        dialog.frame_rows(&source, source_width, 0, &[(HEADER..HEADER + 1, y as i32)])?;
+    // Shorten each row through the middle so the authored corners and side
+    // borders keep their native size.
+    let stride = source_width * 4;
+    let split = W / 2 * 4;
+    for (y, row) in pixels.chunks_exact_mut(W * 4).enumerate() {
+        let source_y = if y < HEADER {
+            y
+        } else if y >= H - FOOTER {
+            source_height - (H - y)
+        } else {
+            HEADER
+        };
+        let source_row = &source[source_y * stride..(source_y + 1) * stride];
+        row[..split].copy_from_slice(&source_row[..split]);
+        row[split..].copy_from_slice(&source_row[(source_width - W) * 4 + split..]);
     }
 
     // The panel art includes the settings title and controls. Keep only its
@@ -253,9 +302,9 @@ fn render_quantity_window(
     draw_dialogue_text(font, &mut pixels, W, H, title, 9, 6, 10.0, W - 37, 13, INK);
     let has_icon = icon.is_some();
     if let Some(icon) = icon {
-        const X: usize = 14;
-        const Y: usize = 36;
-        const CELL: usize = 36;
+        const X: usize = 10;
+        const Y: usize = 31;
+        const CELL: usize = 34;
         fill_dialogue_rect(&mut pixels, W, H, X, Y, CELL, CELL, [188, 195, 199, 255]);
         fill_dialogue_rect(
             &mut pixels,
@@ -289,8 +338,8 @@ fn render_quantity_window(
                         pixels_bgra,
                         w,
                         h,
-                        X + 2,
-                        Y + 2,
+                        X + 1,
+                        Y + 1,
                         32,
                     );
                 }
@@ -309,11 +358,11 @@ fn render_quantity_window(
     }
     if !message.is_empty() {
         let (x, y, max_width) = if controls.is_some() {
-            (13, 26, W - 26)
+            (10, 24, W - 20)
         } else if has_icon {
-            (62, 38, W - 75)
+            (52, 32, W - 62)
         } else {
-            (13, 38, W - 26)
+            (10, 32, W - 20)
         };
         let size = if controls.is_some() { 10.0 } else { 12.0 };
         draw_dialogue_text(
@@ -418,7 +467,7 @@ fn render_quantity_window(
             H,
             &min_label,
             track_left as i32,
-            63,
+            53,
             10.0,
             50,
             12,
@@ -432,7 +481,7 @@ fn render_quantity_window(
                 H,
                 &max_label,
                 max_x,
-                63,
+                53,
                 10.0,
                 50,
                 12,
@@ -448,7 +497,7 @@ fn render_quantity_window(
             H,
             notice,
             13,
-            76,
+            64,
             10.0,
             W - 26,
             14,

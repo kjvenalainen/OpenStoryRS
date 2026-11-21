@@ -11,11 +11,25 @@ fn quest_ids_for_tab(
         QuestLogTab::Completed => log.completed.iter().map(|quest| quest.id).collect(),
     };
     ids.into_iter()
-        .filter(|id| {
-            quest_info_text(archive, *id, "name")
-                .is_some_and(|name| quest_name_is_displayable(font, &name))
-        })
+        .filter(|id| quest_is_displayable(archive, *id, font))
         .collect()
+}
+
+fn quest_is_displayable(archive: &NxArchive, quest_id: i16, font: &fontdue::Font) -> bool {
+    if quest_id <= 0 {
+        return false;
+    }
+    let Ok(Some(quest_info)) = archive.root().resolve(&format!("QuestInfo.img/{quest_id}"))
+    else {
+        return false;
+    };
+    if quest_property_truthy(&quest_info, "blocked")
+        || quest_property_truthy(&quest_info, "hidden")
+    {
+        return false;
+    }
+    quest_info_text(archive, quest_id, "name")
+        .is_some_and(|name| quest_name_is_displayable(font, &name))
 }
 
 fn quest_name_is_displayable(font: &fontdue::Font, name: &str) -> bool {
@@ -36,6 +50,14 @@ fn quest_info_text(archive: &NxArchive, quest_id: i16, field: &str) -> Option<St
         NodeValue::String(value) if !value.trim().is_empty() => Some(value),
         _ => None,
     }
+}
+
+fn quest_description_is_displayable(description: &str) -> bool {
+    // Some NX quest descriptions contain embedded control bytes instead of prose.
+    !description.trim().is_empty()
+        && description
+            .chars()
+            .all(|character| !character.is_control() || matches!(character, '\r' | '\n' | '\t'))
 }
 
 fn quest_node_integer(node: &openstory_assets::NxNode, field: &str) -> Option<i32> {
@@ -633,11 +655,13 @@ fn quest_helper_entries(
     log: &openstory_protocol::QuestLog,
     archive: &NxArchive,
     string_archive: &NxArchive,
+    font: &fontdue::Font,
     inventory: Option<&openstory_protocol::InventorySnapshot>,
     item_name_cache: &mut HashMap<i32, Option<String>>,
 ) -> Vec<QuestHelperDisplayEntry> {
     log.started
         .iter()
+        .filter(|quest| quest_is_displayable(archive, quest.id, font))
         .take(5)
         .map(|quest| {
             let mut objectives = Vec::new();
@@ -1231,9 +1255,15 @@ fn render_quest_log_panel(
             }
         }
         let description = if active || completed {
-            quest_info_text(archive, id, "1").or_else(|| quest_info_text(archive, id, "0"))
+            quest_info_text(archive, id, "1")
+                .filter(|description| quest_description_is_displayable(description))
+                .or_else(|| {
+                    quest_info_text(archive, id, "0")
+                        .filter(|description| quest_description_is_displayable(description))
+                })
         } else {
             quest_info_text(archive, id, "0")
+                .filter(|description| quest_description_is_displayable(description))
         };
         if let Some(description) = description {
             draw_dialogue_text(
@@ -1475,7 +1505,6 @@ fn render_status_panel(
     ui_archive: &NxArchive,
     character: &openstory_protocol::CharacterInfo,
     waiting_for_stats: bool,
-    auto_confirmation: bool,
 ) -> Vec<u8> {
     const WIDTH: usize = STATUS_PANEL_WIDTH as usize;
     const HEIGHT: usize = STATUS_PANEL_HEIGHT as usize;
@@ -1554,50 +1583,115 @@ fn render_status_panel(
         Some(color),
     );
 
-    if auto_confirmation {
-        let _ = NxDialog::new(&mut pixels, WIDTH, HEIGHT, ui_archive).layers(
-        &[("UIWindow.img/Quest/backgrnd5", -45, 104)],
-        );
-        draw_dialogue_text(
-            font,
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            "Auto-allocate AP?",
-            22,
-            121,
-            12.0,
-            132,
-            18,
-            color,
-        );
-        let primary = match primary_ability_stat(character) {
-            openstory_protocol::AbilityStat::Hp => "HP",
-            openstory_protocol::AbilityStat::Mp => "MP",
-            openstory_protocol::AbilityStat::Strength => "STR",
-            openstory_protocol::AbilityStat::Dexterity => "DEX",
-            openstory_protocol::AbilityStat::Intelligence => "INT",
-            openstory_protocol::AbilityStat::Luck => "LUK",
-        };
-        draw_dialogue_text(
-            font,
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            &format!("{} points to {primary}.", stats.ability_points),
-            22,
-            148,
-            10.0,
-            132,
-            20,
-            color,
-        );
-        let _ = NxDialog::new(&mut pixels, WIDTH, HEIGHT, ui_archive).layers(&[
-            ("UIWindow.img/Quest/BtOK/normal/0", 20, 185),
-            ("UIWindow.img/Quest/BtNo/normal/0", 93, 185),
-    ]);
-    }
     pixels
+}
+
+const STATUS_AUTO_ASSIGN_DIALOG_WIDTH: usize = 190;
+const STATUS_AUTO_ASSIGN_DIALOG_HEIGHT: usize = 154;
+const STATUS_AUTO_ASSIGN_CLOSE: ui_foundation::UiRect = ui_dialog::close_button(
+    STATUS_AUTO_ASSIGN_DIALOG_WIDTH as f32 - 19.0,
+    6.0,
+);
+
+fn status_auto_assign_buttons() -> (ui_foundation::UiRect, ui_foundation::UiRect) {
+    let y = STATUS_AUTO_ASSIGN_DIALOG_HEIGHT as f32 - 23.0;
+    (
+        ui_foundation::UiRect::new(43.0, y, 47.0, 18.0),
+        ui_foundation::UiRect::new(96.0, y, 51.0, 18.0),
+    )
+}
+
+fn render_status_auto_assign_dialog(
+    font: &fontdue::Font,
+    ui_archive: &NxArchive,
+    character: &openstory_protocol::CharacterInfo,
+) -> Result<Vec<u8>, String> {
+    const HEADER: usize = 25;
+    const FOOTER: usize = 28;
+    const CHROME: &str = "UIWindow.img/SysOpt/backgrnd";
+    const INK: [u8; 3] = [40, 51, 61];
+    let width = STATUS_AUTO_ASSIGN_DIALOG_WIDTH;
+    let height = STATUS_AUTO_ASSIGN_DIALOG_HEIGHT;
+    let mut pixels = vec![0; width * height * 4];
+    let dialog = NxDialog::new(&mut pixels, width, height, ui_archive);
+    let (source_width, source_height, source) = dialog
+        .frame_bitmap(CHROME)
+        .filter(|(source_width, source_height, _)| {
+            *source_width >= width && *source_height > HEADER + FOOTER
+        })
+        .ok_or_else(|| format!("missing auto-assign window frame {CHROME}"))?;
+    let stride = source_width * 4;
+    let split = width / 2 * 4;
+    for (y, row) in pixels.chunks_exact_mut(width * 4).enumerate() {
+        let source_y = if y < HEADER {
+            y
+        } else if y >= height - FOOTER {
+            source_height - (height - y)
+        } else {
+            HEADER
+        };
+        let source_row = &source[source_y * stride..(source_y + 1) * stride];
+        row[..split].copy_from_slice(&source_row[..split]);
+        row[split..].copy_from_slice(&source_row[(source_width - width) * 4 + split..]);
+    }
+
+    fill_dialogue_rect(&mut pixels, width, height, 7, 6, width - 14, 12, [255, 255, 255, 255]);
+    fill_dialogue_rect(
+        &mut pixels,
+        width,
+        height,
+        5,
+        HEADER,
+        width - 10,
+        height - HEADER - FOOTER,
+        [244, 245, 243, 255],
+    );
+    let (accept, cancel) = status_auto_assign_buttons();
+    NxDialog::new(&mut pixels, width, height, ui_archive).buttons(&[
+        (ui_dialog::CLOSE_BUTTON_ART, STATUS_AUTO_ASSIGN_CLOSE),
+        ("Basic.img/BtOK2/normal/0", accept),
+        ("UIWindow.img/ItemMove/BtCancel/normal/0", cancel),
+    ])?;
+    draw_dialogue_text(font, &mut pixels, width, height, "AUTO ASSIGN", 9, 6, 10.0, width - 37, 13, INK);
+
+    let points = character.stats.ability_points;
+    let additions = match primary_ability_stat(character) {
+        openstory_protocol::AbilityStat::Strength => [points, 0, 0, 0],
+        openstory_protocol::AbilityStat::Dexterity => [0, points, 0, 0],
+        openstory_protocol::AbilityStat::Intelligence => [0, 0, points, 0],
+        openstory_protocol::AbilityStat::Luck => [0, 0, 0, points],
+        openstory_protocol::AbilityStat::Hp | openstory_protocol::AbilityStat::Mp => [0; 4],
+    };
+    for (index, (label, amount)) in ["STR", "DEX", "INT", "LUK"]
+        .into_iter()
+        .zip(additions)
+        .enumerate()
+    {
+        draw_dialogue_text(
+            font,
+            &mut pixels,
+            width,
+            height,
+            &format!("{label} +{amount}"),
+            18,
+            36 + index as i32 * 18,
+            12.0,
+            width - 36,
+            16,
+            INK,
+        );
+    }
+    Ok(pixels)
+}
+
+fn status_auto_assign_dialog_rect() -> SpriteRect {
+    SpriteRect {
+        x: (ui_foundation::LOGICAL_WIDTH - STATUS_AUTO_ASSIGN_DIALOG_WIDTH as f32) * 0.5,
+        y: (ui_foundation::LOGICAL_HEIGHT - STATUS_AUTO_ASSIGN_DIALOG_HEIGHT as f32) * 0.5,
+        width: STATUS_AUTO_ASSIGN_DIALOG_WIDTH as f32,
+        height: STATUS_AUTO_ASSIGN_DIALOG_HEIGHT as f32,
+        blend_mode: BlendMode::Alpha,
+    }
 }
 
 fn render_status_detail_panel(

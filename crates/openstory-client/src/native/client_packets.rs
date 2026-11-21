@@ -1797,6 +1797,7 @@ impl ClientApp {
             | openstory_protocol::OPCODE_ATTACKED_MAGIC => {
                 match openstory_protocol::parse_remote_character_attack(packet) {
                     Ok(attack) => {
+                        let attack_skill_id = attack.skill_id;
                         let local_id = self.active_character.as_ref().map(|character| character.id);
                         let remote_actor = self.map_scene.as_ref().and_then(|scene| {
                             scene.remote_players.get(&attack.attacker_id).map(|player| {
@@ -1847,19 +1848,7 @@ impl ClientApp {
                         } else {
                             Vec::new()
                         };
-                        let hit_count = attack
-                            .targets
-                            .iter()
-                            .map(|target| target.damage_lines.len())
-                            .max()
-                            .unwrap_or_else(|| {
-                                usize::from(
-                                    attack.attack_type
-                                        == openstory_protocol::RemoteAttackType::Ranged
-                                        || attack.bullet_id > 0
-                                        || attack.skill_id > 0,
-                                )
-                            });
+                        let hit_count = usize::from(attack.hit_count.max(1));
                         let hit_delays = attacker_look.as_ref().map_or_else(
                             || vec![Duration::ZERO; hit_count],
                             |look| {
@@ -1875,59 +1864,27 @@ impl ClientApp {
                                 )
                             },
                         );
-                        if Some(attack.attacker_id) != local_id {
-                            let mut mob_hit_sound_events = Vec::new();
-                            if let Some(scene) = self.map_scene.as_ref() {
-                                for target in &attack.targets {
-                                    let Some(mob) = scene.mobs.get(&target.object_id) else {
-                                        continue;
-                                    };
-                                    let position = (rounded_i16(mob.x), rounded_i16(mob.y));
-                                    for (hit_index, _) in target.damage_lines.iter().enumerate() {
-                                        mob_hit_sound_events.push((
-                                            mob.mob_id,
-                                            position,
-                                            hit_delays.get(hit_index).copied().unwrap_or_default(),
-                                        ));
-                                    }
-                                }
-                            }
-                            self.schedule_mob_hit_sounds(&mob_hit_sound_events);
-                        }
-                        if Some(attack.attacker_id) != local_id
-                            && let Some(position) = self
-                                .map_scene
-                                .as_ref()
-                                .and_then(|scene| scene.remote_players.get(&attack.attacker_id))
-                                .map(|player| (rounded_i16(player.x), rounded_i16(player.y)))
+                        let skill_use_effects = if attack.skill_id > 0
+                            && Some(attack.attacker_id) != local_id
                         {
-                            self.audio.play_skill_use(
-                                &self.sound_archive,
+                            match self.load_character_skill_effects(
                                 attack.skill_id,
-                                position,
-                            );
-                        }
-                        if attack.skill_id > 0 && Some(attack.attacker_id) != local_id {
-                            let mut hit_sound_events = Vec::new();
-                            if let Some(scene) = self.map_scene.as_ref() {
-                                for target in &attack.targets {
-                                    let Some(position) = scene
-                                        .mobs
-                                        .get(&target.object_id)
-                                        .map(|mob| (rounded_i16(mob.x), rounded_i16(mob.y)))
-                                    else {
-                                        continue;
-                                    };
-                                    for (hit_index, _) in target.damage_lines.iter().enumerate() {
-                                        hit_sound_events.push((
-                                            position,
-                                            hit_delays.get(hit_index).copied().unwrap_or_default(),
-                                        ));
-                                    }
+                                attack.skill_level,
+                                character_level,
+                                two_handed,
+                            ) {
+                                Ok(animations) => animations,
+                                Err(error) => {
+                                    eprintln!(
+                                        "OpenStory: could not load remote skill {} use effect: {error}",
+                                        attack.skill_id
+                                    );
+                                    Vec::new()
                                 }
                             }
-                            self.schedule_skill_hit_sounds(attack.skill_id, &hit_sound_events);
-                        }
+                        } else {
+                            Vec::new()
+                        };
                         let projectile_frames = if Some(attack.attacker_id) != local_id {
                             let skill_ball = if attack.skill_id > 0 {
                                 match self.load_skill_projectile_frames(
@@ -1965,13 +1922,94 @@ impl ClientApp {
                         } else {
                             None
                         };
-                        if let Some(scene) = self.map_scene.as_mut() {
-                            scene.apply_remote_attack(
-                                attack,
-                                projectile_frames,
-                                skill_hit_effects,
-                                hit_delays,
+                        let has_projectile = projectile_frames
+                            .as_ref()
+                            .is_some_and(|frames| !frames.is_empty())
+                            && (attack.attack_type == openstory_protocol::RemoteAttackType::Ranged
+                                || attack.bullet_id > 0
+                                || attack.skill_id > 0);
+                        let attacker_position = self.map_scene.as_ref().and_then(|scene| {
+                            scene
+                                .remote_players
+                                .get(&attack.attacker_id)
+                                .map(|player| (player.x, player.y))
+                        });
+                        let mut mob_hit_sound_events = Vec::new();
+                        let mut skill_hit_sound_events = Vec::new();
+                        if Some(attack.attacker_id) != local_id {
+                            if let Some(scene) = self.map_scene.as_ref() {
+                                for target in &attack.targets {
+                                    let Some(mob) = scene.mobs.get(&target.object_id) else {
+                                        continue;
+                                    };
+                                    let position = (rounded_i16(mob.x), rounded_i16(mob.y));
+                                    let projectile_travel = if has_projectile {
+                                        attacker_position.map_or(Duration::ZERO, |(source_x, _)| {
+                                            projectile_flight_duration(source_x, mob.x)
+                                        })
+                                    } else {
+                                        Duration::ZERO
+                                    };
+                                    for (hit_index, _) in target.damage_lines.iter().enumerate() {
+                                        mob_hit_sound_events.push((
+                                            target.object_id,
+                                            mob.mob_id,
+                                            position,
+                                            hit_delays
+                                                .get(hit_index)
+                                                .copied()
+                                                .unwrap_or_default()
+                                                .saturating_add(projectile_travel),
+                                        ));
+                                        if attack.skill_id > 0 {
+                                            skill_hit_sound_events.push((
+                                                target.object_id,
+                                                position,
+                                                hit_delays
+                                                    .get(hit_index)
+                                                    .copied()
+                                                    .unwrap_or_default()
+                                                    .saturating_add(projectile_travel),
+                                            ));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        if Some(attack.attacker_id) != local_id
+                            && let Some((source_x, source_y)) = attacker_position
+                        {
+                            if attack.skill_id > 0
+                                && let Some(scene) = self.map_scene.as_mut()
+                            {
+                                scene.show_character_skill_effect(
+                                    Some(attack.attacker_id),
+                                    skill_use_effects,
+                                    (1.7_f32 - f32::from(attack.speed) / 10.0).clamp(0.2, 3.0),
+                                );
+                            }
+                            self.audio.play_skill_use(
+                                &self.sound_archive,
+                                attack.skill_id,
+                                (rounded_i16(source_x), rounded_i16(source_y)),
                             );
+                        }
+                        if Some(attack.attacker_id) != local_id {
+                            if let Some(scene) = self.map_scene.as_mut() {
+                                scene.apply_remote_attack(
+                                    attack,
+                                    projectile_frames,
+                                    skill_hit_effects,
+                                    hit_delays,
+                                );
+                            }
+                            self.schedule_mob_hit_sounds(&mob_hit_sound_events);
+                            if attack_skill_id > 0 {
+                                self.schedule_skill_hit_sounds(
+                                    attack_skill_id,
+                                    &skill_hit_sound_events,
+                                );
+                            }
                         }
                     }
                     Err(error) => eprintln!("OpenStory: invalid remote attack: {error}"),
@@ -2211,7 +2249,15 @@ impl ClientApp {
                     Ok(shop) => {
                         self.pending_npc_talk = None;
                         self.npc_dialogue = None;
-                        self.npc_shop = Some(NpcShopUi::new(shop));
+                        let recharge_slots = self
+                            .inventory
+                            .as_ref()
+                            .map(|inventory| npc_shop_auto_recharge_slots(&shop, inventory))
+                            .unwrap_or_default();
+                        let mut shop_ui = NpcShopUi::new(shop);
+                        shop_ui.auto_recharge_slots.extend(recharge_slots);
+                        self.npc_shop = Some(shop_ui);
+                        self.start_next_npc_shop_auto_recharge();
                         self.refresh_npc_shop_texture();
                         self.update_npc_shop_hover();
                     }
@@ -2221,8 +2267,28 @@ impl ClientApp {
             openstory_protocol::OPCODE_CONFIRM_NPC_SHOP_TRANSACTION => {
                 match openstory_protocol::parse_npc_shop_transaction_result(packet) {
                     Ok(result) => {
+                        let mut auto_recharge_next = false;
+                        let mut auto_recharge_notice = false;
                         if let Some(shop) = self.npc_shop.as_mut() {
                             shop.pending = false;
+                            if shop.auto_recharge_in_flight {
+                                shop.auto_recharge_in_flight = false;
+                                if result == 8 {
+                                    if !shop.auto_recharge_notice_sent {
+                                        shop.auto_recharge_notice_sent = true;
+                                        auto_recharge_notice = true;
+                                    }
+                                    auto_recharge_next = !shop.auto_recharge_slots.is_empty();
+                                } else {
+                                    shop.auto_recharge_slots.clear();
+                                }
+                            }
+                        }
+                        if auto_recharge_notice {
+                            self.push_chat_line(
+                                "Throwing stars were automatically recharged.".to_owned(),
+                                [255, 222, 112],
+                            );
                         }
                         match result {
                             0 | 8 => {}
@@ -2235,6 +2301,9 @@ impl ClientApp {
                             _ => self.show_server_notice_popup(&format!(
                                 "Shop transaction failed ({result})."
                             )),
+                        }
+                        if auto_recharge_next {
+                            self.start_next_npc_shop_auto_recharge();
                         }
                         self.refresh_npc_shop_texture();
                     }
@@ -2550,19 +2619,19 @@ impl ClientApp {
                     Ok((object_id, animation)) => {
                         let mob_sound = self.map_scene.as_ref().and_then(|scene| {
                             scene.mobs.get(&object_id).and_then(|mob| {
-                                (animation == 1 && !mob.dying).then_some((
+                                (animation == 1).then_some((
                                     mob.mob_id,
                                     rounded_i16(mob.x),
                                     rounded_i16(mob.y),
                                 ))
                             })
                         });
+                        if let Some(scene) = self.map_scene.as_mut() {
+                            scene.kill_mob(object_id, animation);
+                        }
                         if let Some((mob_id, x, y)) = mob_sound {
                             self.audio
                                 .play_mob_death(&self.sound_archive, mob_id, (x, y));
-                        }
-                        if let Some(scene) = self.map_scene.as_mut() {
-                            scene.kill_mob(object_id, animation);
                         }
                     }
                     Err(error) => eprintln!("OpenStory: invalid mob kill: {error}"),
@@ -2624,17 +2693,20 @@ impl ClientApp {
             openstory_protocol::OPCODE_DAMAGE_MOB => {
                 match openstory_protocol::parse_mob_damage(packet) {
                     Ok(damage) => {
-                        let mob_sound = self.map_scene.as_ref().and_then(|scene| {
-                            scene
-                                .mobs
-                                .get(&damage.object_id)
-                                .map(|mob| (mob.mob_id, rounded_i16(mob.x), rounded_i16(mob.y)))
-                        });
-                        if let Some((mob_id, x, y)) = mob_sound {
-                            self.audio.play_mob_hit(&self.sound_archive, mob_id, (x, y));
-                        }
+                        let mob_sound = (damage.damage > 0)
+                            .then(|| {
+                                self.map_scene.as_ref().and_then(|scene| {
+                                    scene.mobs.get(&damage.object_id).map(|mob| {
+                                        (mob.mob_id, rounded_i16(mob.x), rounded_i16(mob.y))
+                                    })
+                                })
+                            })
+                            .flatten();
                         if let Some(scene) = self.map_scene.as_mut() {
                             scene.show_mob_damage(damage);
+                        }
+                        if let Some((mob_id, x, y)) = mob_sound {
+                            self.audio.play_mob_hit(&self.sound_archive, mob_id, (x, y));
                         }
                     }
                     Err(error) => eprintln!("OpenStory: invalid mob damage packet: {error}"),

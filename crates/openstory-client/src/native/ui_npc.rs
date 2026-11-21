@@ -71,6 +71,35 @@ fn format_npc_dialogue_text(
             index += 1;
             continue;
         }
+        if character == 'M'
+            && characters.get(index + 1) == Some(&'a')
+            && characters.get(index + 2) == Some(&'p')
+            && characters.get(index + 3) == Some(&' ')
+        {
+            let map_id_start = index + 4;
+            let map_id_end = map_id_start
+                + characters[map_id_start..]
+                    .iter()
+                    .take_while(|value| value.is_ascii_digit())
+                    .count();
+            let has_map_id = map_id_end > map_id_start;
+            let has_token_boundary = match characters.get(map_id_end) {
+                Some(next) => !next.is_ascii_alphanumeric() && *next != '_',
+                None => true,
+            };
+            if has_map_id
+                && has_token_boundary
+                && let Ok(map_id) = characters[map_id_start..map_id_end]
+                    .iter()
+                    .collect::<String>()
+                    .parse::<i32>()
+                && let Some(map_name) = map_string_name(string_archive, map_id)
+            {
+                output.push_str(&map_name);
+                index = map_id_end;
+                continue;
+            }
+        }
         if character != '#' {
             output.push(character);
             index += 1;

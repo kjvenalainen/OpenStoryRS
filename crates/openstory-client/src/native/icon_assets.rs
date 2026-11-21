@@ -569,16 +569,6 @@ fn learned_skill_level(
     resolve_ui_path(&archive.root(), &path).ok().flatten()
 }
 
-fn magic_amplification_skill(job: u16) -> Option<i32> {
-    match job {
-        210..=212 => Some(2_110_001),
-        220..=222 => Some(2_210_001),
-        1_111 | 1_112 => Some(12_110_001),
-        2_215..=2_218 => Some(22_150_000),
-        _ => None,
-    }
-}
-
 fn legacy_y_below(footholds: &FootholdTree, x: i16, y: i16) -> i16 {
     footholds
         .find_below(f64::from(x), f64::from(y))

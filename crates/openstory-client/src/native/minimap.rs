@@ -218,9 +218,14 @@ impl MiniMapData {
             return Err(format!("minimap map id {map_id} is outside the v83 range"));
         }
         let map_path = format!("Map/Map{}/{map_id:09}.img", map_id / 100_000_000);
-        let map = required(&map_archive.root(), &map_path)?;
-        let info = required(&map, "info")?;
+        let map_info = required(&map_archive.root(), &map_path)?;
+        let info = required(&map_info, "info")?;
         let hidden = integer_child(&info, "hideMinimap").unwrap_or(0) != 0;
+        let (content_map_id, map) = super::resolve_linked_map_node(map_archive, map_id)?;
+        let content_map_path = format!(
+            "Map/Map{}/{content_map_id:09}.img",
+            content_map_id / 100_000_000
+        );
         let Some(mini_map) = optional_child(&map, "miniMap")? else {
             let empty_image = SpriteImage {
                 pixels: Arc::from(vec![0_u8; 4]),
@@ -245,30 +250,32 @@ impl MiniMapData {
         };
         let _width = integer_child(&mini_map, "width")
             .filter(|value| *value > 0)
-            .ok_or_else(|| format!("{map_path}/miniMap has no positive width"))?;
+            .ok_or_else(|| format!("{content_map_path}/miniMap has no positive width"))?;
         let _height = integer_child(&mini_map, "height")
             .filter(|value| *value > 0)
-            .ok_or_else(|| format!("{map_path}/miniMap has no positive height"))?;
+            .ok_or_else(|| format!("{content_map_path}/miniMap has no positive height"))?;
         let center_x = integer_child(&mini_map, "centerX")
-            .ok_or_else(|| format!("{map_path}/miniMap has no centerX"))?;
+            .ok_or_else(|| format!("{content_map_path}/miniMap has no centerX"))?;
         let center_y = integer_child(&mini_map, "centerY")
-            .ok_or_else(|| format!("{map_path}/miniMap has no centerY"))?;
+            .ok_or_else(|| format!("{content_map_path}/miniMap has no centerY"))?;
         let magnification = integer_child(&mini_map, "mag")
             .filter(|value| (0..=12).contains(value))
-            .ok_or_else(|| format!("{map_path}/miniMap has an invalid magnification"))?
+            .ok_or_else(|| format!("{content_map_path}/miniMap has an invalid magnification"))?
             as u8;
         let canvas_node = required(&mini_map, "canvas")?;
         let canvas = sprite_image(
             map_archive,
             &canvas_node,
-            &format!("{map_path}/miniMap/canvas"),
+            &format!("{content_map_path}/miniMap/canvas"),
             MAX_MAP_BITMAP_SIDE,
         )?;
         if canvas.width == 0 || canvas.height == 0 {
-            return Err(format!("{map_path}/miniMap/canvas has empty dimensions"));
+            return Err(format!(
+                "{content_map_path}/miniMap/canvas has empty dimensions"
+            ));
         }
 
-        let portals = load_portals(&map, &map_path)?;
+        let portals = load_portals(&map, &content_map_path)?;
         let marker_root = required(&map_archive.root(), "MapHelper.img/minimap")?;
         let marker_icons = [
             (MarkerKind::Player, "user"),

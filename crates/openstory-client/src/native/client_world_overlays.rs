@@ -1325,7 +1325,6 @@ impl ClientApp {
             &self.ui_archive,
             character,
             self.status_waiting_for_stats,
-            self.status_auto_confirmation,
         );
         let Some(renderer) = self.renderer.as_ref() else {
             return;
@@ -1341,6 +1340,37 @@ impl ClientApp {
             Ok(Some(texture)) => self.status_texture = Some(texture),
             Ok(None) => {}
             Err(error) => eprintln!("OpenStoryRS: could not update stats panel: {error}"),
+        }
+
+        if self.status_auto_confirmation {
+            match render_status_auto_assign_dialog(&self.font, &self.ui_archive, character) {
+                Ok(pixels) => {
+                    let result = if let Some(texture) = self.status_auto_assign_texture.as_ref() {
+                        renderer.update_bgra(texture, &pixels).map(|()| None)
+                    } else {
+                        renderer
+                            .upload_bgra(
+                                STATUS_AUTO_ASSIGN_DIALOG_WIDTH as u32,
+                                STATUS_AUTO_ASSIGN_DIALOG_HEIGHT as u32,
+                                &pixels,
+                            )
+                            .map(Some)
+                    };
+                    match result {
+                        Ok(Some(texture)) => self.status_auto_assign_texture = Some(texture),
+                        Ok(None) => {}
+                        Err(error) => {
+                            eprintln!("OpenStoryRS: could not update auto-assign dialog: {error}")
+                        }
+                    }
+                }
+                Err(error) => {
+                    self.status_auto_assign_texture = None;
+                    eprintln!("OpenStoryRS: could not render auto-assign dialog: {error}");
+                }
+            }
+        } else {
+            self.status_auto_assign_texture = None;
         }
 
         if self.show_status_detail {
@@ -1419,15 +1449,27 @@ impl ClientApp {
         self.refresh_status_texture();
     }
 
+    pub(super) fn click_status_auto_assign_dialog(&mut self, cursor: Point) {
+        if !self.status_auto_confirmation {
+            return;
+        }
+        let rect = status_auto_assign_dialog_rect();
+        let local_x = cursor.x - rect.x;
+        let local_y = cursor.y - rect.y;
+        let (accept, cancel) = status_auto_assign_buttons();
+        if accept.contains(local_x, local_y) {
+            self.resolve_status_auto_allocate(true);
+        } else if cancel.contains(local_x, local_y)
+            || STATUS_AUTO_ASSIGN_CLOSE.contains(local_x, local_y)
+        {
+            self.resolve_status_auto_allocate(false);
+        }
+    }
+
     pub(super) fn click_status_panel(&mut self, cursor: Point) {
         let x = cursor.x - STATUS_PANEL_X;
         let y = cursor.y - STATUS_PANEL_Y;
         if self.status_auto_confirmation {
-            if (185.0..215.0).contains(&y) && (20.0..80.0).contains(&x) {
-                self.resolve_status_auto_allocate(true);
-            } else if (185.0..215.0).contains(&y) && (93.0..153.0).contains(&x) {
-                self.resolve_status_auto_allocate(false);
-            }
             return;
         }
         if self.show_status_detail

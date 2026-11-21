@@ -87,7 +87,6 @@ pub use feedback::{
     OPCODE_SUE_CHARACTER_RESULT, OPCODE_TRADE_MONEY_LIMIT, OPCODE_VEGA_SCROLL,
     OPCODE_VICIOUS_HAMMER, OPCODE_WEEK_EVENT_MESSAGE, ServerFeedback, parse_server_feedback,
 };
-pub use gameplay::{MAX_MESO_DROP, MIN_MESO_DROP};
 pub use gameplay::{
     AbilityStat, AttackDamageTarget, AttackType, AvatarMegaphone, BlowWeatherUpdate, BuddyEntry,
     BuddyEvent, BuffMaskGroup, BuffStatKey, CharacterBuffCancel, CharacterBuffEntry,
@@ -188,9 +187,11 @@ pub use gameplay::{
     parse_set_traction, parse_show_combo, parse_show_foreign_effect, parse_skill_learn_item_result,
     parse_stop_clock, parse_summon_attack, parse_summon_damage, parse_summon_movement,
     parse_summon_remove, parse_summon_skill, parse_summon_spawn, parse_taming_mob_info,
-    parse_whisper, pet_loot_packet, pickup_item, set_buddy_group_packet,
-    spend_ability_point_packet, take_damage_packet, talk_to_npc, whisper_packet,
+    parse_whisper, pet_loot_packet, pickup_item, return_to_previous_map_packet,
+    set_buddy_group_packet, spend_ability_point_packet, take_damage_packet, talk_to_npc,
+    whisper_packet,
 };
+pub use gameplay::{MAX_MESO_DROP, MIN_MESO_DROP};
 pub use guide::{GuideEvent, OPCODE_SPAWN_GUIDE, OPCODE_TALK_GUIDE, parse_guide_packet};
 pub use guild::{
     GuildEmblem, GuildEvent, GuildInfo, GuildMember, OPCODE_DENY_GUILD_REQUEST,

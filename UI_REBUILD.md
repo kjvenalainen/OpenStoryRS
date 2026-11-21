@@ -83,6 +83,13 @@ resolve the selected item's server slot. Inventory hover descriptions remain in
 the separate tooltip instead of overwriting the meso field. Large numeric values
 are clipped/truncated or use a fitting numeric face within their fields.
 
+NPC shop transactions treat throwing stars and bullets as sets: inventory shows
+their charge counts, while selling uses one set per transaction and buying
+quantities count sets. The Recharge button is enabled for a selected projectile
+only when the open shop marks that same item as rechargeable. Zero-meso,
+zero-pitch projectile refill entries stay available for recharge but are omitted
+from the buy list.
+
 The dialog alignment audit centers inventory, skill and shop tab labels using
 NX bitmap dimensions and origins. Pet equipment preserves the native 177px
 overlay border, and NPC names fit their nameplate before centering. AP and SP

@@ -1,3 +1,42 @@
+const MAX_MAP_LINK_DEPTH: usize = 16;
+
+fn resolve_linked_map_node(archive: &NxArchive, map_id: i32) -> Result<(i32, NxNode), String> {
+    if !(0..=999_999_999).contains(&map_id) {
+        return Err(format!("map id {map_id} is outside the supported range"));
+    }
+
+    let mut current_id = map_id;
+    let mut visited = HashSet::new();
+    for _ in 0..MAX_MAP_LINK_DEPTH {
+        if !visited.insert(current_id) {
+            return Err(format!("map {map_id} has a cyclic info/link reference"));
+        }
+        let map_path = format!("Map/Map{}/{current_id:09}.img", current_id / 100_000_000);
+        let map = archive
+            .root()
+            .resolve(&map_path)
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| format!("map node {map_path:?} was not found"))?;
+        let link = map
+            .child("info")
+            .map_err(|error| error.to_string())?
+            .and_then(|info| string_property(&info, "link"))
+            .filter(|link| !link.is_empty());
+        let Some(link) = link else {
+            return Ok((current_id, map));
+        };
+        current_id = link
+            .parse::<i32>()
+            .ok()
+            .filter(|linked_id| (0..=999_999_999).contains(linked_id))
+            .ok_or_else(|| format!("map {current_id} has invalid info/link value {link:?}"))?;
+    }
+
+    Err(format!(
+        "map {map_id} exceeds the maximum link depth of {MAX_MAP_LINK_DEPTH}"
+    ))
+}
+
 fn load_map_portals(map: &openstory_assets::NxNode) -> Result<Vec<MapPortalAsset>, String> {
     let Some(portal_root) = map.child("portal").map_err(|error| error.to_string())? else {
         return Ok(Vec::new());
@@ -191,15 +230,7 @@ fn append_map_layer(
             let anchor_y = number_property(&object, "y").unwrap_or(0.0) + camera_y;
             let flipped = integer_property(&object, "f").unwrap_or(0) != 0;
             if let Some(animation) = append_map_art_animation(
-                sprites,
-                &art,
-                &path,
-                anchor_x,
-                anchor_y,
-                255,
-                flipped,
-                cache,
-                false,
+                sprites, &art, &path, anchor_x, anchor_y, 255, flipped, cache, false,
             )? {
                 animations.push(animation);
             }

@@ -39,6 +39,7 @@ use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
 const INVENTORY_MOVE_PREVIEW_TIMEOUT: Duration = Duration::from_secs(2);
+const INITIAL_NPC_LOADING_QUIET_WINDOW: Duration = Duration::from_millis(500);
 
 use settings::{
     AudioSettings, DisplaySettings, GameplaySettings, InputSettings, LoginPreferences,

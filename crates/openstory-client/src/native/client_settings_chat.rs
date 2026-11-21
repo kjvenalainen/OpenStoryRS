@@ -322,7 +322,7 @@ impl ClientApp {
             .as_ref()
             .is_some_and(|compose| compose.kind.is_item_megaphone(compose.item_id));
         let pixels = render_chat_panel(
-            &self.ui_archive,
+            &self.legacy_ui_archive,
             &self.font,
             &self.chat_lines,
             if item_megaphone_open {
@@ -331,6 +331,7 @@ impl ClientApp {
                 &self.chat_input
             },
             self.chat_open && !item_megaphone_open,
+            self.chat_scroll,
             self.chat_input_focused && !item_megaphone_open,
             self.chat_target,
             (!item_megaphone_open)

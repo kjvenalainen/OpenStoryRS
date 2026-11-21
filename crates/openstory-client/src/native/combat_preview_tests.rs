@@ -50,7 +50,6 @@ fn scene_with_mob() -> MapSceneRuntime {
                 level: 1,
                 physical_defense: 0.0,
                 magic_defense: 0.0,
-                elemental_attributes: [1; 6],
                 avoid: 0.0,
             },
             motion: MobMotion::Stand,
@@ -90,6 +89,82 @@ fn scene_with_mob() -> MapSceneRuntime {
         },
     );
     scene
+}
+
+#[test]
+fn ranged_skill_bonuses_extend_the_far_edge_of_the_attack_box() {
+    let range = [-400, -5, -50, 50];
+    assert_eq!(
+        attack_horizontal_bounds(100.0, true, range, 1.0, 0),
+        (105.0, 500.0)
+    );
+    assert_eq!(
+        attack_horizontal_bounds(100.0, true, range, 1.0, 200),
+        (105.0, 700.0)
+    );
+    assert_eq!(
+        attack_horizontal_bounds(100.0, false, range, 1.0, 200),
+        (-500.0, 95.0)
+    );
+    assert_eq!(
+        attack_horizontal_bounds(100.0, true, range, 1.5, 200),
+        (105.0, 1000.0)
+    );
+}
+
+#[test]
+fn server_kill_is_applied_immediately_while_hit_effects_remain_timed() {
+    let flight = projectile_flight_duration(0.0, 400.0);
+    assert!(flight > Duration::from_millis(400));
+    assert!(flight < Duration::from_secs(2));
+
+    let mut scene = scene_with_mob();
+    scene.schedule_mob_attack_impact(
+        1,
+        Arc::new(Vec::new()),
+        false,
+        Some((
+            openstory_protocol::MobDamage {
+                object_id: 1,
+                damage: 123,
+            },
+            false,
+            0.0,
+        )),
+        false,
+        Duration::from_millis(80),
+    );
+    scene.kill_mob(1, 1);
+    assert!(scene.mobs[&1].dying);
+    scene.advance_mobs(9);
+    assert!(scene.mobs[&1].dying);
+    scene.advance_mobs(1);
+    assert!(scene.mobs[&1].dying);
+    assert_eq!(scene.damage_numbers.len(), 1);
+
+    let mut scene = scene_with_mob();
+    scene.schedule_mob_attack_impact(
+        1,
+        Arc::new(Vec::new()),
+        false,
+        Some((
+            openstory_protocol::MobDamage {
+                object_id: 1,
+                damage: 123,
+            },
+            false,
+            0.0,
+        )),
+        false,
+        Duration::from_millis(80),
+    );
+    scene.kill_mob(1, 0);
+    assert!(!scene.mobs.contains_key(&1));
+    scene.advance_mobs(9);
+    assert!(!scene.mobs.contains_key(&1));
+    assert!(scene.damage_numbers.is_empty());
+    scene.advance_mobs(1);
+    assert_eq!(scene.damage_numbers.len(), 1);
 }
 
 #[test]
@@ -141,6 +216,7 @@ fn delayed_damage_survives_mob_removal_and_expires() {
                 critical,
                 stack_offset,
             )),
+            false,
             Duration::from_millis(80),
         );
     }
@@ -164,6 +240,39 @@ fn delayed_damage_survives_mob_removal_and_expires() {
 }
 
 #[test]
+fn delayed_projectile_hit_is_canceled_after_target_removal() {
+    let mut scene = scene_with_mob();
+    scene.schedule_mob_attack_impact(
+        1,
+        Arc::new(Vec::new()),
+        false,
+        Some((
+            openstory_protocol::MobDamage {
+                object_id: 1,
+                damage: 123,
+            },
+            false,
+            0.0,
+        )),
+        true,
+        Duration::from_millis(80),
+    );
+    scene.mobs.remove(&1);
+    scene.advance_mobs(10);
+    assert!(scene.damage_numbers.is_empty());
+    assert!(scene.pending_mob_attack_impacts.is_empty());
+}
+
+#[test]
+fn combat_passives_follow_upstream_job_eligibility() {
+    assert!(character_can_use_skill(112, 1_100_000));
+    assert!(character_can_use_skill(132, 1_320_006));
+    assert!(character_can_use_skill(112, 1_004));
+    assert!(!character_can_use_skill(112, 1_200_000));
+    assert!(!character_can_use_skill(112, 1_320_006));
+}
+
+#[test]
 fn damage_roll_preserves_critical_for_local_presentation() {
     let mut scene = scene_with_mob();
     let mob = scene.mobs[&1].traits;
@@ -176,11 +285,8 @@ fn damage_roll_preserves_critical_for_local_presentation() {
         level: 1,
         minimum_damage: 100.0,
         maximum_damage: 100.0,
-        intelligence: 0,
-        luck: 0,
         magic_total: 0,
         magic_damage: false,
-        element: None,
         fixed_damage: None,
         accuracy: 100,
         critical: 0.0,
@@ -190,6 +296,52 @@ fn damage_roll_preserves_critical_for_local_presentation() {
     assert_eq!(basic_attack_damage(&mut scene, attack, mob), (150, true));
     attack.fixed_damage = Some(10);
     assert_eq!(basic_attack_damage(&mut scene, attack, mob), (10, false));
+    attack.fixed_damage = Some(1_000_001);
+    assert_eq!(
+        basic_attack_damage(&mut scene, attack, mob),
+        (999_999, false)
+    );
+}
+
+#[test]
+fn mob_damage_and_hit_rate_use_upstream_v83_formulas() {
+    let mut attack = BasicAttackStats {
+        weapon_type: 130,
+        attack_type: openstory_protocol::AttackType::Close,
+        projectile_id: None,
+        attack_class: 0,
+        speed: 6,
+        level: 1,
+        minimum_damage: 100.0,
+        maximum_damage: 100.0,
+        magic_total: 0,
+        magic_damage: false,
+        fixed_damage: None,
+        accuracy: 100,
+        critical: 0.0,
+    };
+    let mut scene = scene_with_mob();
+    scene.attack_random_state = 1;
+    let mut mob = scene.mobs[&1].traits;
+    mob.level = 5;
+    mob.physical_defense = 10.0;
+    mob.magic_defense = 20.0;
+    assert_eq!(basic_attack_damage(&mut scene, attack, mob), (90, false));
+
+    scene.attack_random_state = 1;
+    attack.magic_damage = true;
+    let magic_damage = basic_attack_damage(&mut scene, attack, mob).0;
+    assert!((87..=89).contains(&magic_damage));
+
+    scene.attack_random_state = 0x1234_5678;
+    attack.magic_damage = false;
+    attack.accuracy = 1;
+    mob.avoid = 100.0;
+    assert_eq!(basic_attack_damage(&mut scene, attack, mob), (0, false));
+
+    scene.attack_random_state = 0x1234_5678;
+    attack.accuracy = 10_000;
+    assert!(basic_attack_damage(&mut scene, attack, mob).0 > 0);
 }
 
 #[test]
@@ -240,6 +392,7 @@ fn render_combat_damage_preview() {
                 critical,
                 stack_offset,
             )),
+            false,
             Duration::ZERO,
         );
     }

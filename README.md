@@ -343,7 +343,13 @@ character-level, skill-level, and weapon-hand variants and attach to each mob in
 broadcast. Local casts also play the selected NX use effect and skill action, including
 level and weapon-hand variants. Projectile skills load their root or per-level `ball` frames
 from `Skill.nx` for local and remote attacks, and fly toward each reported target; ordinary
-ranged attacks continue to use the equipped ammo art. Teleport uses its learned NX range and stops at
+ranged attacks continue to use the equipped ammo art. Learned Eye of Amazon and Keen Eyes
+extend matching bow, crossbow, and claw attack ranges from their NX level values. Close skills
+that use the regular weapon action and lack a custom hit rectangle use the equipped weapon's
+afterimage range. Hit effects and hit sounds follow each attack delay and projectile flight;
+server mob-death animations and sounds apply immediately when `KILL_MOB` arrives. Attack skills
+play their Use sound before the attack action, and play a weapon sound only when they use the
+regular weapon action. Teleport uses its learned NX range and stops at
 foothold walls or large floor changes; Flash Jump applies its aerial movement locally.
 Using a skill or mastery book now parses the v83 result and shows a success or failure
 message; learned skill levels still come from the server's skill update.
@@ -364,7 +370,8 @@ decoding, retain timed statuses, and apply Maple Warrior, Weapon Attack, Accurac
 Hyper Body HP/MP effects to local combat and HUD values. Booster combines with equipped
 weapon speed for local attacks and remote attack animations. Player ailments now show in the
 HUD; stun blocks movement and attacks, confusion reverses horizontal input, slow reduces
-movement acceleration, seal blocks skill use, and Darkness halves local attack accuracy.
+movement acceleration, and seal blocks skill use. Darkness does not reduce hit chance in the
+upstream attack formula.
 Poison HP changes remain server-driven.
 Other active-buff effects and combat mitigation, special projectile variants and skill
 damage formula cases, character-creation
@@ -459,11 +466,13 @@ rebuilt Cash Shop. Its resizable catalog reads only
 on-sale products with a valid commodity SN from `Etc.nx/Commodity.img`; it supports search,
 category filters, item icons, and avatar try-on previews for equipment, plus currency balance
 refresh, purchase confirmation, and the server-backed cash inventory, locker, and withdrawal
-flow. Single-item and package purchase results appear in the cash inventory. Server responses
-show reason-specific notices for purchase failures and stock availability. The catalog's coupon
-field sends the legacy v83 coupon request and reports invalid, expired, used, and wrong-server responses.
-Resizing the window
-recomputes the logical pointer position so clicks stay aligned with the 1024×768 canvas.
+flow. Click an item in either the cash inventory strip or locker list to move it into the
+character inventory. Charge feedback confirms when NX increases and explains when the server
+does not grant it. Single-item and package purchase results appear in the cash inventory. Server
+responses show reason-specific notices for purchase failures and stock availability. The
+catalog's coupon field sends the legacy v83 coupon request and reports invalid, expired, used,
+and wrong-server responses. Resizing the window recomputes the logical pointer position so clicks
+stay aligned with the 1024×768 canvas.
 
 To inspect a decoded field without connecting to a server, run
 `OpenStoryRS --data-dir /path/to/wz --inspect-map 100000000`. The renderer culls

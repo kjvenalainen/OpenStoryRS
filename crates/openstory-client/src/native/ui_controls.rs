@@ -361,6 +361,7 @@ fn render_skill_book_panel(
     book_title: &str,
     book_icon: Option<(u32, u32, Arc<[u8]>)>,
     skill_points: u16,
+    skills: &HashMap<i32, openstory_protocol::SkillEntry>,
     selected_tab: u8,
     visible_tabs: u8,
     scroll_row: usize,
@@ -471,7 +472,7 @@ fn render_skill_book_panel(
             WIDTH,
             HEIGHT,
             ui_archive,
-            if skill.max_level == 0 {
+            if skill.level <= 0 || skill.max_level == 0 {
                 "UIWindow.img/Skill/skill0"
             } else {
                 "UIWindow.img/Skill/skill1"
@@ -479,30 +480,61 @@ fn render_skill_book_panel(
             6,
             y as i32,
         );
-        let path = format!(
-            "{:03}.img/skill/{:07}/{}",
-            skill.id / 10_000,
-            skill.id,
-            if skill.max_level == 0 {
-                "iconDisabled"
+        let skill_disabled = skill.level <= 0 || skill.max_level == 0;
+        let icon_path = |variant| format!("{:03}.img/skill/{:07}/{variant}", skill.id / 10_000, skill.id);
+        let (icon, grayscale_fallback) = if skill_disabled {
+            decode_nx_icon(skill_archive, &icon_path("iconDisabled"))
+                .map(|icon| (Some(icon), false))
+                .unwrap_or_else(|| {
+                    (
+                        decode_nx_icon(skill_archive, &icon_path("icon")),
+                        true,
+                    )
+                })
+        } else {
+            (decode_nx_icon(skill_archive, &icon_path("icon")), false)
+        };
+        if let Some((w, h, icon)) = icon {
+            if grayscale_fallback {
+                let mut grayscale = icon.to_vec();
+                for pixel in grayscale.chunks_exact_mut(4) {
+                    let gray = ((u16::from(pixel[0])
+                        + u16::from(pixel[1])
+                        + u16::from(pixel[2]))
+                        / 3) as u8;
+                    pixel[..3].fill(gray);
+                }
+                composite_inventory_icon(
+                    &mut pixels,
+                    WIDTH,
+                    HEIGHT,
+                    &grayscale,
+                    w as usize,
+                    h as usize,
+                    11,
+                    y + 3,
+                    30,
+                );
             } else {
-                "icon"
+                composite_inventory_icon(
+                    &mut pixels,
+                    WIDTH,
+                    HEIGHT,
+                    &icon,
+                    w as usize,
+                    h as usize,
+                    11,
+                    y + 3,
+                    30,
+                );
             }
-        );
-        if let Some((w, h, icon)) = decode_nx_icon(skill_archive, &path) {
-            composite_inventory_icon(
-                &mut pixels,
-                WIDTH,
-                HEIGHT,
-                &icon,
-                w as usize,
-                h as usize,
-                11,
-                y + 3,
-                30,
-            );
         }
         let name = ui_foundation::ellipsize(font, &skill.name, 11.0, 99.0);
+        let text_color = if skill_disabled {
+            [110, 110, 110]
+        } else {
+            [40, 40, 40]
+        };
         draw_dialogue_text(
             font,
             &mut pixels,
@@ -514,7 +546,7 @@ fn render_skill_book_panel(
             11.0,
             99,
             14,
-            [40, 40, 40],
+            text_color,
         );
         draw_dialogue_text(
             font,
@@ -527,14 +559,9 @@ fn render_skill_book_panel(
             11.0,
             72,
             14,
-            [20, 20, 20],
+            text_color,
         );
-        let cap = if skill.master_level > 0 {
-            skill.max_level.min(skill.master_level)
-        } else {
-            skill.max_level
-        };
-        let state = if skill.level < cap && skill_points > 0 {
+        let state = if client_cash_skills::can_spend_skill_point(skill, skill_points, skills) {
             "normal"
         } else {
             "disabled"

@@ -269,8 +269,8 @@ and sends the matching selection index.
   and login-start packet complete.
 - Recent parity fixes preserve ASCII login-rank movement markers, signed guild
   capacity/rank and alliance count bytes, and the server's boolean semantics. Guild
-  disband clears local guild state; foothold physics extrapolates ground lines through
-  linked segment endpoints, and attacks combine signed Booster speed with NX weapon speed.
+  disband clears local guild state, and attacks combine signed Booster speed with NX
+  weapon speed.
   Resizing refreshes the pointer transform immediately, and the renderer retries frame
   acquisition after recovering from a lost or outdated surface. Missing audio settings
   now default to the legacy 50 percent.
@@ -380,7 +380,11 @@ and sends the matching selection index.
   changes; initial entry uses the selected character's map and portal from the login
   character list. The map loader reads foothold groups to place the initial view at
   ground level. The first map scene loads NX backgrounds, object frames, and tiles in
-  legacy depth order, with viewport culling and GPU texture reuse. Background parallax,
+  legacy depth order, with viewport culling and GPU texture reuse. Bounded `info/link`
+  chains supply shared map art and minimap content. Unusable destinations with no map art
+  or a load/render error acknowledge the field transition and request a return to the immediately
+  previous map; Cosmic accepts that marked request only for the previous map in visit history.
+  Background parallax,
   independent horizontal/vertical motion, and tiled wrapping follow each entry's type;
   server obstacle packets now control map environment visibility and animation resets.
   The v83 `SET_TRACTION` double updates local foothold friction on slippery fields, while
@@ -522,12 +526,13 @@ and sends the matching selection index.
   Footholds are indexed in 64-pixel buckets rather than one entry per covered pixel;
   duplicate/reserved IDs and empty or degenerate bounds are handled safely. Normal,
   flying, and swimming physics now have a fixed-tick body model with slope traversal,
-  gravity, traction, linked foothold walls/edges, and interpolated positions. The old
-  left-walk slope comparison bug is corrected. Map footholds drive initial spawn
-  height and local movement/camera tracking. The client now emits v83 absolute player
-  movement fragments when its rounded position, previous position, foothold, or stance
-  changes. Map `ladderRope` geometry now supports directional Up/Down grabs, x snapping,
-  fixed-step ladder/rope movement, native ladder and rope stances/animations, bounds drop-off,
+  gravity, traction, linked foothold walls/edges, and interpolated positions. Grounded
+  movement follows every stair seam it crosses within the tick. Airborne movement
+  lands on the first floor crossed within that floor's actual span. Map footholds
+  drive initial spawn height and local movement/camera tracking. The client now emits
+  v83 absolute player movement fragments when its rounded position, previous position,
+  foothold, or stance changes. Map `ladderRope` geometry now supports directional Up/Down
+  grabs, x snapping, fixed-step ladder/rope movement, native ladder and rope stances/animations, bounds drop-off,
   jump dismounts with the legacy climb cooldown, and synchronized v83 movement fragments.
   Initial inventory snapshots and deltas are supported. `INVENTORY_GROW` updates all six
   capacity classes, including equipped slots, and refreshes the inventory grid from the
@@ -663,9 +668,9 @@ and sends the matching selection index.
   signed speed value combines with weapon attack speed for local
   attacks and remote attack animations. Player ailment statuses now appear in the HUD, stun blocks movement and
   attacks, confusion reverses horizontal controls, slow reduces acceleration, seal blocks
-  skill use, and Darkness halves local attack accuracy. Timed active buffs now show their
-  Skill.nx or item NX icon in the upper-right HUD, with the legacy bottom-up duration cover
-  and final-three-second flashing. Poison HP changes remain
+  skill use. Darkness does not reduce hit chance in the upstream attack formula. Timed active
+  buffs now show their Skill.nx or item NX icon in the upper-right HUD, with the legacy
+  bottom-up duration cover and final-three-second flashing. Poison HP changes remain
   server-authoritative. Achilles reduction
   applies to local mob-touch damage; other active-buff effects and combat mitigation
   remain open work.
@@ -793,12 +798,12 @@ and sends the matching selection index.
   each level's NX hit rectangle and horizontal range multiplier for mob and reactor hits,
   including the legacy magic-skill range. Mob hit animations now resolve their NX variants
   by character level, skill level, and weapon hand, then follow local and broadcast target
-  lists with mob head anchors and z ordering. Magic skill damage now derives
-  its local range from INT/LUK, equipped and buffed MATK, and the NX `mad`/`mastery`
-  values. The compact mastery rank maps to the localized skill-description percentage
-  (for example, rank 1 → 15%, rank 10 → 60%); this fixes the legacy path that parsed
-  `mad` but never applied it to damage. Skill and mob `elemAttr` values now apply the
-  v83 neutral, resistance, weakness, and immunity multipliers to local attack damage.
+  lists with mob head anchors and z ordering. Damage range, level scaling, physical/magic
+  defense, accuracy/avoid hit chance, critical rolls, fixed damage, and caps now follow the
+  upstream `CharStats` and `Mob` formulas, including equipped stats, weapon mastery, Maple
+  Warrior, Angel's Blessing, and Berserk. Upstream treats `mad` as the magic-defense selector
+  without folding MATK into the weapon-derived range; it parses `prop` and `elemAttr` but does
+  not apply either to mob damage.
   Other active skills emit `USE_SKILL`; teleport uses the learned NX range with foothold
   collision checks, and Flash Jump applies its aerial movement locally. Fourth-job master
   levels, skill prerequisites,
@@ -808,13 +813,19 @@ and sends the matching selection index.
   per-level projectile art and launch toward each mob target for local and remote attacks;
   basic ranged attacks retain their equipped-ammo projectiles. Incoming v83 character
   attack broadcasts are decoded with bounded damage lines. They
-  play weapon-appropriate NX attack stances for remote characters and show normal and
-  critical damage plus the legacy normal miss glyph above affected mobs. Damage lines
+  play weapon-appropriate NX attack stances for remote characters and show normal and critical
+  damage plus the legacy normal miss glyph above affected mobs. Attack skills play their
+  skill-specific Use sound; weapon attack sounds are local-action sounds and are not replayed
+  for remote broadcasts. Each hit's damage, reaction, mob sound, hit effect, and skill Hit sound
+  follow its authored hit frame and projectile travel. Server mob death/removal presentation
+  applies immediately when `KILL_MOB` arrives. Damage lines
   keep their legacy spacing and stacking. Left Control sends a one-hit regular attack
   packet and plays its weapon-appropriate local stance, using equipped NX stat data and
   the nearest mob in the facing arc when one is available. Compatible arrow, bolt, star,
   and bullet stacks select ranged attack packets, add any projectile NX attack bonus,
-  target the legacy ranged arc, and animate local and remote projectile sprites; ammo counts remain
+  target the legacy ranged arc with learned Eye of Amazon or Keen Eyes bonuses, and animate
+  local and remote projectile sprites; close skills that use the regular weapon action and
+  lack an authored range use the weapon afterimage range. Ammo counts remain
   server-authoritative. Reactor spawn, hit, and removal packets use `Reactor.nx` art,
   place reactors on map footholds, and play state-specific hit/removal animations. Hittable
   reactors are discovered by scanning every numeric state for an `event` node, fixing the
@@ -880,20 +891,22 @@ and sends the matching selection index.
   files, and cancel restores the saved values. Mute is session-only like the C++ client;
   Windows applies its system mouse-speed mapping, while other platforms preserve the C++
   no-op. Supported whisper, group-chat, invite, family, and trade receive paths honor their
-  permissions; expedition and follow request flows are not yet implemented. Skill hit sounds
-  resolve `Sound.nx/Skill.img/<skill>/Hit` at local or remote targets using the v83 action
-  timeline's signed frame delays, the weapon afterimage first-frame fallback, and the legacy
-  attack-speed factor. The same timeline schedules each target's hit effect and damage line;
-  a missing action frame retains the C++ zero-delay behavior. Live timing comparison and
-  the remaining sound coverage still need a gameplay run.
+  permissions; expedition and follow request flows are not yet implemented. Skill Use and Hit
+  sounds resolve `Sound.nx/Skill.img/<skill>` at local or remote actors and targets. Hit sounds
+  use the v83 action timeline's signed frame delays, the weapon afterimage first-frame fallback,
+  and the legacy attack-speed factor; projectile hits also wait for flight. A missing action
+  frame retains the C++ zero-delay behavior. Combat formulas and event ordering were checked
+  against the adjacent C++ sources; live timing comparison and remaining sound coverage still
+  need a gameplay run.
   The C++ client stores the screen-shake preference but has no shake trigger path;
   simple-minimap mode, the unsupported legacy menu actions, broader legacy sound coverage,
   and a browser audio backend remain open work.
-- The mage damage formula and equipment/buff stat path compile for native macOS. The
-  C++ client does not apply parsed `mad` to the damage range, so matching the corrected
-  local damage display against server-authoritative combat remains to be confirmed in a
-  mage combat session. Element parsing was checked against Fire Arrow's localized
-  weakness/resistance description and mob `elemAttr` examples in the installed NX files.
+- Combat formulas were checked against upstream `CharStats::close_totalstats`,
+  `Player::prepare_attack`, `Skill::apply_stats`, and `Mob::calculate_damage`. Local attack
+  ranges use the upstream weapon/stat formula; `mad` selects magic defense without adding MATK
+  to that range, while parsed `prop` and `elemAttr` remain unused as they are upstream. A live
+  mage combat session is still needed to compare the displayed result with server-authoritative
+  combat.
 - The executable can list archive statistics, inspect/decode an NX node, summarize a map
   with `--inspect-map`, and resolve character base animation with `--inspect-avatar`.
   The 100000000 map currently resolves to 324 visible sprite instances across 90 unique

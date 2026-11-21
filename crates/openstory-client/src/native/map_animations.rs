@@ -1837,12 +1837,6 @@ fn append_mob_animations(
             .and_then(|node| integer_property(node, "MDDamage"))
             .unwrap_or(0)
             .max(0) as f64,
-        elemental_attributes: info
-            .as_ref()
-            .and_then(|node| string_property(node, "elemAttr"))
-            .as_deref()
-            .map(parse_elemental_attributes)
-            .unwrap_or([1; 6]),
         avoid: info
             .as_ref()
             .and_then(|node| integer_property(node, "eva"))

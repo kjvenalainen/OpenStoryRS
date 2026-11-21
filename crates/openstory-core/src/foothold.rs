@@ -10,6 +10,8 @@ use std::error::Error;
 use std::fmt;
 
 const BUCKET_WIDTH: i32 = 64;
+const MAX_STAIR_STEP_DOWN: f64 = 24.0;
+const CONTACT_EPSILON: f64 = 1e-7;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MapBounds {
@@ -83,14 +85,20 @@ impl Foothold {
         Some(self.ground_y_extrapolated(x))
     }
 
-    /// Evaluates the foothold's line without checking its horizontal extent.
-    /// Legacy physics calls `Foothold::ground_below` directly, which extrapolates
-    /// the segment at both endpoints during movement and foothold transitions.
-    pub(crate) fn ground_y_extrapolated(self, x: f64) -> f64 {
-        if self.is_floor() {
-            return f64::from(self.y1);
+    fn ground_y_extrapolated(self, x: f64) -> f64 {
+        if x == f64::from(self.x2) {
+            return f64::from(self.y2);
         }
         self.slope() * (x - f64::from(self.x1)) + f64::from(self.y1)
+    }
+
+    pub(crate) fn edge(self, left: bool) -> (f64, f64) {
+        let x = f64::from(if left { self.left() } else { self.right() });
+        (x, self.ground_y_extrapolated(x))
+    }
+
+    fn neighbor(self, left: bool) -> u16 {
+        if left { self.previous } else { self.next }
     }
 
     fn blocks_vertical_range(self, top: i16, bottom: i16) -> bool {
@@ -114,6 +122,12 @@ impl fmt::Display for FootholdError {
 }
 
 impl Error for FootholdError {}
+
+pub(crate) struct GroundContact {
+    pub floor: Foothold,
+    pub x: f64,
+    pub y: f64,
+}
 
 #[derive(Clone, Debug)]
 pub struct FootholdTree {
@@ -190,8 +204,8 @@ impl FootholdTree {
     }
 
     /// Finds the closest floor at or below a point in Maple's downward-positive
-    /// coordinate system. Equal-height matches select the last source candidate,
-    /// matching the legacy lookup's overwrite-on-equal behavior.
+    /// coordinate system. Equal-height matches prefer a flat floor over a ramp;
+    /// ties between floors of the same type select the last source candidate.
     pub fn find_below(&self, x: f64, y: f64) -> Option<(u16, f64)> {
         if !x.is_finite() || !y.is_finite() || x < f64::from(i16::MIN) || x > f64::from(i16::MAX) {
             return None;
@@ -204,7 +218,14 @@ impl FootholdTree {
             let Some(ground_y) = foothold.ground_y(x) else {
                 continue;
             };
-            if ground_y >= y && nearest.is_none_or(|(_, best_ground_y)| ground_y <= best_ground_y) {
+            if ground_y >= y
+                && nearest.is_none_or(|(best_id, best_ground_y)| {
+                    ground_y < best_ground_y
+                        || ground_y == best_ground_y
+                            && (foothold.is_floor()
+                                || !self.get(best_id).is_some_and(|best| best.is_floor()))
+                })
+            {
                 nearest = Some((foothold.id, ground_y));
             }
         }
@@ -232,16 +253,84 @@ impl FootholdTree {
         nearest
     }
 
+    pub(crate) fn has_wall_at_edge(&self, floor: Foothold, left: bool) -> bool {
+        let (x, y) = floor.edge(left);
+        self.get(floor.neighbor(left)).is_some_and(|wall| {
+            f64::from(wall.x1) == x
+                && wall.blocks_vertical_range(vertical_top(y), vertical_bottom(y))
+        })
+    }
+
+    /// Follows a linked stair seam or an unlinked, continuous endpoint,
+    /// preferring a flat continuation when a ramp branches from the same seam.
+    pub(crate) fn floor_across_edge(
+        &self,
+        floor: Foothold,
+        left: bool,
+        target_x: f64,
+    ) -> Option<Foothold> {
+        let (edge_x, edge_y) = floor.edge(left);
+        let direction = if left { -1.0 } else { 1.0 };
+        let linked_id = floor.neighbor(left);
+        // Some maps omit links at ramp endpoints. Compare linked and unlinked
+        // candidates together so a linked ramp cannot hide a flat continuation.
+        let bucket = self
+            .floor_buckets
+            .get(bucket_index(edge_x as i32, self.bucket_origin))?;
+        let target_distance = (target_x - edge_x) * direction;
+        std::iter::once(self.get(linked_id).copied())
+            .flatten()
+            .chain(bucket.iter().map(|&index| self.footholds[index]))
+            .filter_map(|next| {
+                let is_linked = next.id == linked_id;
+                if next.is_wall() || (!is_linked && next.layer != floor.layer) {
+                    return None;
+                }
+                let (entry_x, _) = next.edge(!left);
+                let (exit_x, _) = next.edge(left);
+                let entry_gap = (entry_x - edge_x) * direction;
+                let seam_x = if entry_gap > 0.0 { entry_x } else { edge_x };
+                let height = next.ground_y_extrapolated(seam_x) - edge_y;
+                let continues_in_direction = (exit_x - edge_x) * direction > 0.0;
+                let valid = if is_linked {
+                    entry_gap.abs() <= 1.0
+                        && entry_gap <= target_distance
+                        && continues_in_direction
+                        && (-1.0..=MAX_STAIR_STEP_DOWN).contains(&height)
+                } else {
+                    entry_x == edge_x && height.abs() <= 1.0
+                };
+                valid.then_some((
+                    next,
+                    height.abs(),
+                    next.slope().abs(),
+                    entry_gap.abs(),
+                    is_linked,
+                ))
+            })
+            .min_by(|left, right| {
+                left.1
+                    .total_cmp(&right.1)
+                    .then(left.2.total_cmp(&right.2))
+                    .then(left.3.total_cmp(&right.3))
+                    .then(right.4.cmp(&left.4))
+            })
+            .map(|(next, _, _, _, _)| next)
+    }
+
     /// Finds the first floor crossed while moving between two points. This
     /// sweeps every floor bucket touched by the path, so a fast diagonal step
     /// cannot pass through a neighboring foothold between simulation ticks.
     pub(crate) fn find_swept_ground_contact(
         &self,
-        start_x: f64,
-        start_y: f64,
-        end_x: f64,
-        end_y: f64,
-    ) -> Option<(u16, f64)> {
+        start: (f64, f64),
+        end: (f64, f64),
+    ) -> Option<GroundContact> {
+        let (start_x, start_y) = start;
+        let (end_x, end_y) = end;
+        if start == end {
+            return None;
+        }
         if !start_x.is_finite() || !start_y.is_finite() || !end_x.is_finite() || !end_y.is_finite()
         {
             return None;
@@ -258,26 +347,36 @@ impl FootholdTree {
             bucket_index(min_x, self.bucket_origin)
         };
         let last_bucket = bucket_index(max_x, self.bucket_origin).min(self.floor_buckets.len() - 1);
-        let mut first_contact: Option<(f64, u16, f64)> = None;
+        let mut first_contact: Option<(f64, GroundContact)> = None;
 
-        for bucket_index in first_bucket..=last_bucket {
-            let Some(bucket) = self.floor_buckets.get(bucket_index) else {
-                continue;
-            };
-            for foothold_index in bucket.iter().copied() {
-                let foothold = self.footholds[foothold_index];
-                let Some((time, contact_y)) =
-                    floor_path_contact(foothold, start_x, start_y, end_x, end_y)
-                else {
+        for bucket in first_bucket..=last_bucket {
+            for &index in &self.floor_buckets[bucket] {
+                let floor = self.footholds[index];
+                let floor_bucket = bucket_index(i32::from(floor.left()), self.bucket_origin);
+                if bucket != floor_bucket.max(first_bucket) {
                     continue;
-                };
-                if first_contact.is_none_or(|(first_time, _, _)| time < first_time) {
-                    first_contact = Some((time, foothold.id, contact_y));
+                }
+                if let Some(time) = floor_path_contact(floor, start, end)
+                    && first_contact.as_ref().is_none_or(|(first_time, first)| {
+                        time + CONTACT_EPSILON < *first_time
+                            || (time - *first_time).abs() <= CONTACT_EPSILON
+                                && floor.is_floor()
+                                && !first.floor.is_floor()
+                    })
+                {
+                    let x = if time == 1.0 {
+                        end_x
+                    } else {
+                        start_x + (end_x - start_x) * time
+                    };
+                    let x = x.clamp(f64::from(floor.left()), f64::from(floor.right()));
+                    let y = floor.ground_y_extrapolated(x);
+                    first_contact = Some((time, GroundContact { floor, x, y }));
                 }
             }
         }
 
-        first_contact.map(|(_, foothold_id, contact_y)| (foothold_id, contact_y))
+        first_contact.map(|(_, contact)| contact)
     }
 
     /// Returns the legacy spawn height: one pixel above the nearest floor,
@@ -363,19 +462,18 @@ fn bucket_index(x: i32, origin: i32) -> usize {
     (x - origin).div_euclid(BUCKET_WIDTH) as usize
 }
 
-/// Returns the first point where a downward crossing meets this floor segment.
-fn floor_path_contact(
-    foothold: Foothold,
-    start_x: f64,
-    start_y: f64,
-    end_x: f64,
-    end_y: f64,
-) -> Option<(f64, f64)> {
+/// Returns the time where the motion crosses the floor from its upper side.
+fn floor_path_contact(foothold: Foothold, start: (f64, f64), end: (f64, f64)) -> Option<f64> {
+    let (start_x, start_y) = start;
+    let (end_x, end_y) = end;
     let delta_x = end_x - start_x;
+    let approach = end_y - start_y - foothold.slope() * delta_x;
+    if approach <= 0.0 {
+        return None;
+    }
+
     let (entry, exit) = if delta_x == 0.0 {
-        if start_x < f64::from(foothold.left()) || start_x > f64::from(foothold.right()) {
-            return None;
-        }
+        foothold.ground_y(start_x)?;
         (0.0, 1.0)
     } else {
         let left_time = (f64::from(foothold.left()) - start_x) / delta_x;
@@ -389,35 +487,14 @@ fn floor_path_contact(
         return None;
     }
 
-    const CONTACT_EPSILON: f64 = 1e-7;
-    let separation_at = |time: f64| {
-        let x = start_x + delta_x * time;
-        let y = start_y + (end_y - start_y) * time;
-        y - foothold.ground_y_extrapolated(x)
-    };
-    let separation_at_entry = separation_at(entry);
-    let separation_at_exit = separation_at(exit);
-    if exit - entry <= f64::EPSILON {
-        if separation_at_entry.abs() <= CONTACT_EPSILON {
-            let contact_x = start_x + delta_x * entry;
-            return Some((entry, foothold.ground_y_extrapolated(contact_x)));
-        }
+    let entry_x = start_x + delta_x * entry;
+    let entry_y = start_y + (end_y - start_y) * entry;
+    let separation = entry_y - foothold.ground_y_extrapolated(entry_x);
+    let exit_separation = separation + approach * (exit - entry);
+    if separation > CONTACT_EPSILON || exit_separation < -CONTACT_EPSILON {
         return None;
     }
-    if separation_at_entry > CONTACT_EPSILON
-        || separation_at_exit < -CONTACT_EPSILON
-        || separation_at_exit <= separation_at_entry + CONTACT_EPSILON
-    {
-        return None;
-    }
-
-    let time = if separation_at_entry.abs() <= CONTACT_EPSILON {
-        entry
-    } else {
-        entry + (-separation_at_entry / (separation_at_exit - separation_at_entry)) * (exit - entry)
-    };
-    let contact_x = start_x + delta_x * time;
-    Some((time, foothold.ground_y_extrapolated(contact_x)))
+    Some((entry - separation / approach).clamp(entry, exit))
 }
 
 fn make_bounds(min_x: i32, max_x: i32, min_y: i32, max_y: i32) -> MapBounds {

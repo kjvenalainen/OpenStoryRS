@@ -1189,6 +1189,7 @@ pub struct RemoteCharacterAttack {
     pub stance: u8,
     pub speed: i8,
     pub bullet_id: i32,
+    pub hit_count: u8,
     pub targets: Vec<RemoteAttackTarget>,
 }
 
@@ -2404,11 +2405,27 @@ pub fn change_map_packet(
     target_portal: &str,
     use_wheel: bool,
 ) -> Result<Vec<u8>, PacketError> {
+    change_map_packet_with_marker(died, target_id, target_portal, use_wheel, 0)
+}
+
+/// Requests a return to a previously visited map after loading an unusable field.
+/// The marker uses the reserved byte in CHANGE_MAP; ordinary warp packets remain unchanged.
+pub fn return_to_previous_map_packet(target_map_id: i32) -> Result<Vec<u8>, PacketError> {
+    change_map_packet_with_marker(false, target_map_id, "", false, 1)
+}
+
+fn change_map_packet_with_marker(
+    died: bool,
+    target_id: i32,
+    target_portal: &str,
+    use_wheel: bool,
+    marker: u8,
+) -> Result<Vec<u8>, PacketError> {
     let mut packet = PacketWriter::new(OPCODE_CHANGE_MAP);
     packet.write_bool(died);
     packet.write_i32(target_id);
     packet.write_string(target_portal)?;
-    packet.write_u8(0);
+    packet.write_u8(marker);
     packet.write_i16(if use_wheel { 1 } else { 0 });
     Ok(packet.into_bytes())
 }
@@ -4280,8 +4297,40 @@ pub fn parse_remote_character_attack(bytes: &[u8]) -> Result<RemoteCharacterAtta
         stance,
         speed,
         bullet_id,
+        hit_count: hit_count as u8,
         targets,
     })
+}
+
+#[cfg(test)]
+mod remote_character_attack_tests {
+    use super::*;
+
+    #[test]
+    fn parses_hit_count_from_the_attack_count_nibble() {
+        let mut packet = PacketWriter::new(OPCODE_ATTACKED_CLOSE);
+        packet.write_i32(17);
+        packet.write_u8(0x12); // one mob, two hits
+        packet.write_u8(0);
+        packet.write_u8(0); // no skill
+        packet.write_u8(1);
+        packet.write_bool(false);
+        packet.write_u8(3);
+        packet.write_i8(6);
+        packet.write_u8(0);
+        packet.write_i32(0);
+        packet.write_i32(31);
+        packet.write_u8(0);
+        packet.write_u32(123);
+        packet.write_u32(0x8000_0020);
+
+        let attack = parse_remote_character_attack(&packet.into_bytes()).unwrap();
+        assert_eq!(attack.hit_count, 2);
+        assert_eq!(attack.targets.len(), 1);
+        assert_eq!(attack.targets[0].damage_lines[0].damage, 123);
+        assert_eq!(attack.targets[0].damage_lines[1].damage, 32);
+        assert!(attack.targets[0].damage_lines[1].critical);
+    }
 }
 
 pub fn parse_remote_character_look(bytes: &[u8]) -> Result<RemoteCharacterLookUpdate, PacketError> {

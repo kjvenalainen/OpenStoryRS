@@ -169,10 +169,12 @@ pub fn buy_cash_item_packet(currency: u8, commodity_sn: i32) -> Vec<u8> {
     packet.into_bytes()
 }
 
-pub fn withdraw_cash_item_packet(instance_id: i64) -> Vec<u8> {
+/// Withdraws a locker item. Cosmic reports this identifier as a 64-bit field in
+/// locker snapshots, but reads the withdrawal request as a 32-bit cash ID.
+pub fn withdraw_cash_item_packet(instance_id: i32) -> Vec<u8> {
     let mut packet = PacketWriter::new(OPCODE_BUY_CASH_ITEM);
     packet.write_u8(0x0D);
-    packet.write_i64(instance_id);
+    packet.write_i32(instance_id);
     packet.into_bytes()
 }
 

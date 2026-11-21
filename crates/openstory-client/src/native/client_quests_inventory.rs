@@ -290,7 +290,9 @@ impl ClientApp {
             };
             if ui_foundation::skill_sp_button(row).contains(local_x, local_y) {
                 self.spend_skill_point(&entry);
-            } else if entry.level > 0 && !entry.passive {
+            } else if entry.level <= 0 {
+                return true;
+            } else if !entry.passive {
                 self.skill_book_last_click = pending_skill_click;
                 let (offset_x, offset_y) = self.dialog_window_offset(DialogWindow::SkillBook);
                 self.skill_book_drag = Some(SkillBookDrag {
@@ -327,17 +329,7 @@ impl ClientApp {
             self.skill_book_tab,
             &self.skills,
         );
-        let cap = if skill.master_level > 0 {
-            skill.max_level.min(skill.master_level)
-        } else {
-            skill.max_level
-        };
-        if points == 0
-            || skill.level >= cap
-            || skill.requirements.iter().any(|(id, required)| {
-                self.skills.get(id).map_or(0, |learned| learned.level) < *required
-            })
-        {
+        if !super::client_cash_skills::can_spend_skill_point(skill, points, &self.skills) {
             return;
         }
         let tick = self.client_started_at.elapsed().as_millis() as i32;
@@ -1311,7 +1303,10 @@ impl ClientApp {
                     .filter(|quantity| *quantity >= minimum && *quantity <= prompt.max_quantity)
                 else {
                     prompt.notice = Some(if prompt.action == InventoryQuantityAction::DropMesos {
-                        format!("Enter an amount from {minimum} to {} mesos.", prompt.max_quantity)
+                        format!(
+                            "Enter an amount from {minimum} to {} mesos.",
+                            prompt.max_quantity
+                        )
                     } else {
                         format!("Enter a quantity from 1 to {}.", prompt.max_quantity)
                     });
@@ -1449,9 +1444,7 @@ impl ClientApp {
         let Some(prompt) = self.inventory_drop_prompt.as_mut() else {
             return;
         };
-        let (left, top) = quantity_window_origin(1024, 768);
-        let x = cursor.x - left as f32;
-        let y = cursor.y - top as f32;
+        let Point { x, y } = quantity_window_local(cursor, inventory_quantity_rect());
         let blocked = prompt.step == InventoryDropStep::Blocked;
         let (ok, cancel) = quantity_window_buttons(blocked);
         if ok.contains(x, y) {
@@ -1550,17 +1543,12 @@ impl ClientApp {
         let Some(renderer) = self.renderer.as_ref() else {
             return;
         };
-        let result = if let Some(texture) = self.inventory_drop_prompt_texture.as_ref() {
-            renderer.update_bgra(texture, &pixels).map(|()| None)
-        } else {
-            renderer.upload_bgra(1024, 768, &pixels).map(Some)
-        };
-        match result {
-            Ok(Some(texture)) => self.inventory_drop_prompt_texture = Some(texture),
-            Ok(None) => {}
-            Err(error) => {
-                eprintln!("OpenStoryRS: could not render the inventory quantity prompt: {error}")
-            }
+        if let Err(error) = update_quantity_window_texture(
+            renderer,
+            &mut self.inventory_drop_prompt_texture,
+            &pixels,
+        ) {
+            eprintln!("OpenStoryRS: could not render the inventory quantity prompt: {error}");
         }
     }
 

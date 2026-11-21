@@ -1134,19 +1134,6 @@ fn render_inventory_drop_prompt(
     string_archive: &NxArchive,
     name_cache: &mut HashMap<i32, Option<String>>,
 ) -> Result<Vec<u8>, String> {
-    const WIDTH: usize = 1024;
-    const HEIGHT: usize = 768;
-    let mut pixels = vec![0_u8; WIDTH * HEIGHT * 4];
-    fill_dialogue_rect(
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        0,
-        0,
-        WIDTH,
-        HEIGHT,
-        [0, 0, 0, 140],
-    );
     let icon = if prompt.action == InventoryQuantityAction::DropMesos {
         Some(QuantityIcon::Mesos)
     } else {
@@ -1164,7 +1151,7 @@ fn render_inventory_drop_prompt(
                 String::new()
             } else {
                 let name = item_name(prompt.item_id, string_archive, name_cache);
-                ui_foundation::ellipsize(font, &name, 10.0, 273.0)
+                ui_foundation::ellipsize(font, &name, 10.0, (QUANTITY_WINDOW_WIDTH - 20) as f32)
             };
             (title, message)
         }
@@ -1182,7 +1169,7 @@ fn render_inventory_drop_prompt(
             "Cash items cannot be dropped.".to_owned(),
         ),
     };
-    let art = render_quantity_window(
+    render_quantity_window(
         ui_archive,
         font,
         title,
@@ -1195,19 +1182,7 @@ fn render_inventory_drop_prompt(
         )),
         prompt.notice.as_deref(),
         prompt.step,
-    )?;
-    let (x, y) = quantity_window_origin(WIDTH, HEIGHT);
-    composite_bgra_pixels(
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        &art,
-        QUANTITY_WINDOW_WIDTH,
-        QUANTITY_WINDOW_HEIGHT,
-        x,
-        y,
-    );
-    Ok(pixels)
+    )
 }
 
 fn render_death_notice(font: &fontdue::Font, ui: &NxArchive, respawn_pending: bool) -> Vec<u8> {
