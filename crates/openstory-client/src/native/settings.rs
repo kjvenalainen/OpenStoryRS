@@ -460,8 +460,22 @@ pub(super) fn load_skill_book_position() -> Option<(f32, f32)> {
     (x.is_finite() && y.is_finite()).then_some((x, y))
 }
 
-pub(super) fn save_skill_book_position(x: f32, y: f32) -> Result<PathBuf, String> {
-    update_settings_file(&[("SkillBookPosition", format!("{x:.1},{y:.1}"))], &[])
+pub(super) fn load_dialog_window_offset(name: &str) -> Option<(f32, f32)> {
+    let path = settings_path()?;
+    let contents = fs::read_to_string(path).ok()?;
+    let key = format!("DialogOffset.{name}");
+    let value = contents.lines().find_map(|line| {
+        let (candidate, value) = line.split_once('=')?;
+        (candidate.trim() == key).then_some(value.trim())
+    })?;
+    let (x, y) = value.split_once(',')?;
+    let (x, y) = (x.trim().parse::<f32>().ok()?, y.trim().parse::<f32>().ok()?);
+    (x.is_finite() && y.is_finite()).then_some((x, y))
+}
+
+pub(super) fn save_dialog_window_offset(name: &str, x: f32, y: f32) -> Result<PathBuf, String> {
+    let key = format!("DialogOffset.{name}");
+    update_settings_file(&[(&key, format!("{x:.1},{y:.1}"))], &[])
 }
 
 fn update_settings_file(

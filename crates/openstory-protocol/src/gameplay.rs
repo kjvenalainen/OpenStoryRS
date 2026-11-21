@@ -16,6 +16,8 @@ pub const OPCODE_SHOW_ITEM_GAIN_INCHAT: u16 = 206;
 pub const OPCODE_GENERAL_CHAT: u16 = 49;
 pub const OPCODE_SPEND_ABILITY_POINT: u16 = 87;
 pub const OPCODE_HEAL_OVER_TIME: u16 = 89;
+/// Requests a v83 character to drop mesos onto the field.
+pub const OPCODE_DROP_MESO: u16 = 94;
 pub const OPCODE_MULTI_CHAT_SEND: u16 = 119;
 pub const OPCODE_WHISPER_SEND: u16 = 120;
 pub const OPCODE_PARTY_OPERATION: u16 = 62;
@@ -2453,6 +2455,21 @@ pub fn heal_over_time_packet(heal_hp: i16, heal_mp: i16) -> Vec<u8> {
     packet.write_i16(heal_hp);
     packet.write_i16(heal_mp);
     packet.into_bytes()
+}
+
+pub const MIN_MESO_DROP: u16 = 10;
+pub const MAX_MESO_DROP: u16 = 50_000;
+
+/// Builds the legacy v83 meso-drop request. The server accepts drops from 10
+/// through 50,000 mesos, limited by the character's current balance.
+pub fn drop_meso_packet(client_tick: i32, amount: i32) -> Option<Vec<u8>> {
+    if !(i32::from(MIN_MESO_DROP)..=i32::from(MAX_MESO_DROP)).contains(&amount) {
+        return None;
+    }
+    let mut packet = PacketWriter::new(OPCODE_DROP_MESO);
+    packet.write_i32(client_tick);
+    packet.write_i32(amount);
+    Some(packet.into_bytes())
 }
 
 pub fn parse_mob_damage(bytes: &[u8]) -> Result<MobDamage, PacketError> {

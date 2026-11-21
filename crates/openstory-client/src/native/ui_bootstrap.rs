@@ -61,7 +61,7 @@ fn load_system_font() -> Result<fontdue::Font, String> {
 
 fn rasterize_field(font: &fontdue::Font, text: &str, draw_caret: bool) -> Vec<u8> {
     const FONT_SIZE: f32 = 13.0;
-    const BASELINE: i32 = 21;
+    const BASELINE: i32 = 18;
     let mut pixels = vec![0; FIELD_WIDTH as usize * FIELD_HEIGHT as usize * 4];
     let mut pen_x = 2.0_f32;
     let mut previous = None;
@@ -98,7 +98,7 @@ fn rasterize_field(font: &fontdue::Font, text: &str, draw_caret: bool) -> Vec<u8
 
     if draw_caret {
         let x = pen_x.round().clamp(1.0, FIELD_WIDTH as f32 - 2.0) as usize;
-        for y in 10..24 {
+        for y in 7..21 {
             let offset = (y * FIELD_WIDTH as usize + x) * 4;
             pixels[offset..offset + 4].copy_from_slice(&[255, 255, 255, 255]);
         }
@@ -553,76 +553,53 @@ fn render_buff_list_pixels(
     pixels
 }
 
-fn render_status_menu(font: &fontdue::Font) -> Vec<u8> {
-    let width = STATUS_MENU_WIDTH as usize;
-    let height = STATUS_MENU_HEIGHT as usize;
+const GAME_MENU_CLOSE: ui_foundation::UiRect =
+    ui_foundation::UiRect::new(GAME_MENU_WIDTH as f32 - 18.0, 6.0, 12.0, 12.0);
+
+fn game_menu_row(index: usize) -> ui_foundation::UiRect {
+    ui_foundation::UiRect::new(10.0, 30.0 + index as f32 * 22.0, 154.0, 19.0)
+}
+
+fn render_game_menu(archive: &NxArchive, font: &fontdue::Font) -> Result<Vec<u8>, String> {
+    let width = GAME_MENU_WIDTH as usize;
+    let height = GAME_MENU_HEIGHT as usize;
     let mut pixels = vec![0_u8; width * height * 4];
-    fill_dialogue_rect(
+
+    let mut dialog = NxDialog::new(&mut pixels, width, height, archive);
+    dialog.resizable_frame()?;
+    dialog.buttons(&[(ui_dialog::CLOSE_BUTTON_ART, GAME_MENU_CLOSE)])?;
+    draw_dialogue_text(
+        font,
         &mut pixels,
         width,
         height,
-        0,
-        0,
-        width,
-        height,
-        [18, 17, 15, 224],
+        "GAME MENU",
+        10,
+        6,
+        10.0,
+        width - 36,
+        16,
+        [35, 35, 35],
     );
-    fill_dialogue_rect(
-        &mut pixels,
-        width,
-        height,
-        0,
-        0,
-        width,
-        1,
-        [181, 137, 56, 255],
-    );
-    fill_dialogue_rect(
-        &mut pixels,
-        width,
-        height,
-        0,
-        height - 1,
-        width,
-        1,
-        [181, 137, 56, 255],
-    );
-    fill_dialogue_rect(
-        &mut pixels,
-        width,
-        height,
-        0,
-        0,
-        1,
-        height,
-        [181, 137, 56, 255],
-    );
-    fill_dialogue_rect(
-        &mut pixels,
-        width,
-        height,
-        width - 1,
-        0,
-        1,
-        height,
-        [181, 137, 56, 255],
-    );
-    for (index, label) in STATUS_MENU_ROWS.iter().enumerate() {
+
+    for (index, label) in GAME_MENU_ROWS.iter().enumerate() {
+        let bounds = game_menu_row(index);
+        composite_nx_ui_tab(&mut pixels, width, height, archive, bounds, true)?;
         draw_dialogue_text(
             font,
             &mut pixels,
             width,
             height,
             label,
-            7,
-            5 + index as i32 * STATUS_MENU_ROW_HEIGHT as i32,
+            bounds.x as i32 + 9,
+            bounds.y as i32 + 3,
             11.0,
-            width - 14,
-            STATUS_MENU_ROW_HEIGHT,
-            [245, 237, 213],
+            bounds.width as usize - 18,
+            16,
+            [255, 255, 255],
         );
     }
-    pixels
+    Ok(pixels)
 }
 
 fn is_known_attack_skill(skill_id: i32) -> bool {

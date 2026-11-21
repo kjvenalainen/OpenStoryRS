@@ -28,10 +28,8 @@ impl ClientApp {
         self.selected_world
             .and_then(|world_id| self.worlds.iter().find(|world| world.id == world_id))
             .map(|world| world.channels.len())
-            .filter(|count| *count > 0)
-            .unwrap_or(channel_switch::MAX_VISIBLE_CHANNELS)
+            .unwrap_or(0)
             .min(channel_switch::MAX_VISIBLE_CHANNELS)
-            .max(1)
     }
 
     pub(super) fn open_channel_switch(&mut self) {
@@ -41,8 +39,12 @@ impl ClientApp {
         {
             return;
         }
+        if self.channel_switch_channel_count() == 0 {
+            return;
+        }
         let maximum = self.channel_switch_channel_count().saturating_sub(1) as u8;
         self.channel_switch_selected = self.selected_channel.min(maximum);
+        self.channel_switch_last_click = None;
         self.channel_switch_open = true;
         self.refresh_channel_switch_texture();
         if let Some(window) = self.window.as_ref() {
@@ -54,6 +56,7 @@ impl ClientApp {
         self.channel_switch_open = false;
         self.channel_switch_texture = None;
         self.channel_switch_actions.clear();
+        self.channel_switch_last_click = None;
     }
 
     pub(super) fn refresh_channel_switch_texture(&mut self) {
@@ -66,21 +69,30 @@ impl ClientApp {
         self.channel_switch_selected = self
             .channel_switch_selected
             .min(channel_count.saturating_sub(1) as u8);
+        let channels = self
+            .selected_world
+            .and_then(|id| self.worlds.iter().find(|world| world.id == id))
+            .map(|world| world.channels.as_slice())
+            .unwrap_or(&[]);
         let panel = match channel_switch::render(
             &self.ui_archive,
-            &self.font,
+            &self.legacy_ui_archive,
             self.selected_world.unwrap_or(0),
-            channel_count,
+            channels,
             self.selected_channel,
             self.channel_switch_selected,
         ) {
             Ok(panel) => panel,
             Err(error) => {
                 eprintln!("OpenStoryRS: could not build channel selector: {error}");
+                // A failed render must not leave an invisible modal consuming
+                // keyboard input until the user presses Escape.
+                self.close_channel_switch();
                 return;
             }
         };
         let Some(renderer) = self.renderer.as_ref() else {
+            self.close_channel_switch();
             return;
         };
         match renderer.upload_bgra(panel.width, panel.height, &panel.pixels) {
@@ -88,12 +100,20 @@ impl ClientApp {
                 self.channel_switch_texture = Some(texture);
                 self.channel_switch_actions = panel.actions;
             }
-            Err(error) => eprintln!("OpenStoryRS: could not upload channel selector: {error}"),
+            Err(error) => {
+                eprintln!("OpenStoryRS: could not upload channel selector: {error}");
+                self.close_channel_switch();
+            }
         }
     }
 
     pub(super) fn move_channel_switch_selection(&mut self, dx: i8, dy: i8) {
+        self.channel_switch_last_click = None;
         let count = self.channel_switch_channel_count();
+        if count == 0 {
+            self.close_channel_switch();
+            return;
+        }
         let current = usize::from(self.channel_switch_selected).min(count - 1);
         let current_channel = usize::from(self.selected_channel).min(count - 1);
         let next = if dx < 0 {
@@ -101,10 +121,10 @@ impl ClientApp {
         } else if dx > 0 {
             if current + 1 < count { current + 1 } else { 0 }
         } else if dy < 0 {
-            let candidate = if current >= 5 {
-                current - 5
+            let candidate = if current >= 4 {
+                current - 4
             } else {
-                current + 15
+                current + 16
             };
             if candidate >= count {
                 current_channel
@@ -112,9 +132,9 @@ impl ClientApp {
                 candidate
             }
         } else if dy > 0 {
-            let candidate = current + 5;
+            let candidate = current + 4;
             if candidate >= count {
-                current % 5
+                current % 4
             } else {
                 candidate
             }
@@ -162,6 +182,8 @@ impl ClientApp {
         if !self.channel_switch_open {
             return false;
         }
+        const DOUBLE_CLICK_INTERVAL: Duration = Duration::from_millis(500);
+
         let local_x = cursor.x - channel_switch::DEFAULT_X;
         let local_y = cursor.y - channel_switch::DEFAULT_Y;
         let action = self
@@ -171,12 +193,32 @@ impl ClientApp {
             .map(|hit| hit.action);
         match action {
             Some(channel_switch::Action::Close) => self.close_channel_switch(),
-            Some(channel_switch::Action::Change) => self.request_channel_switch(),
+            Some(channel_switch::Action::Change) => {
+                self.channel_switch_last_click = None;
+                self.request_channel_switch();
+            }
             Some(channel_switch::Action::Select(channel)) => {
                 self.channel_switch_selected = channel;
-                self.refresh_channel_switch_texture();
+                let now = Instant::now();
+                let is_double_click =
+                    self.channel_switch_last_click
+                        .is_some_and(|(previous, at)| {
+                            previous == channel
+                                && now.saturating_duration_since(at) <= DOUBLE_CLICK_INTERVAL
+                        });
+                if is_double_click {
+                    self.channel_switch_last_click = None;
+                    if channel != self.selected_channel {
+                        self.request_channel_switch();
+                    } else {
+                        self.refresh_channel_switch_texture();
+                    }
+                } else {
+                    self.channel_switch_last_click = Some((channel, now));
+                    self.refresh_channel_switch_texture();
+                }
             }
-            None => {}
+            None => self.channel_switch_last_click = None,
         }
         true
     }

@@ -506,16 +506,17 @@ fn render_storage_reference_panel(
     const WIDTH: usize = STORAGE_PANEL_WIDTH;
     const HEIGHT: usize = STORAGE_PANEL_HEIGHT;
     let mut pixels = vec![0_u8; WIDTH * HEIGHT * 4];
-    let _ = composite_nx_ui_bitmap(&mut pixels, WIDTH, HEIGHT, ui_archive, "UIWindow.img/Trunk/backgrnd", 0, 0);
+    let _ = NxDialog::new(&mut pixels, WIDTH, HEIGHT, ui_archive)
+        .frame("UIWindow.img/Trunk/backgrnd", 0, 0);
     draw_storage_keeper(&mut pixels, WIDTH, HEIGHT, npc_archive, storage.npc_id, 53, 73);
-    for (path, x, y) in [
+    NxDialog::new(&mut pixels, WIDTH, HEIGHT, ui_archive).anchored_buttons(&[
         ("UIWindow.img/Trunk/BtGet/normal/0", 151, 12),
         ("UIWindow.img/Trunk/BtSort/disabled/0", 186, 43),
         ("UIWindow.img/Trunk/BtPut/normal/0", 383, 12),
         ("UIWindow.img/Trunk/BtExit/normal/0", 383, 56),
         ("UIWindow.img/Trunk/BtInCoin/normal/0", 3, 293),
         ("UIWindow.img/Trunk/BtOutCoin/normal/0", 424, 293),
-    ] { let _ = composite_nx_ui_bitmap(&mut pixels, WIDTH, HEIGHT, ui_archive, path, x, y); }
+    ]);
     let tabs = [openstory_protocol::InventoryType::Equip, openstory_protocol::InventoryType::Use, openstory_protocol::InventoryType::Setup, openstory_protocol::InventoryType::Etc, openstory_protocol::InventoryType::Cash];
     for (index, tab) in tabs.into_iter().enumerate() {
         let variant = if tab == active_tab { "enabled" } else { "disabled" };

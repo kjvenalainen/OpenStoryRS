@@ -232,6 +232,54 @@ impl FootholdTree {
         nearest
     }
 
+    /// Finds the first floor crossed while moving between two points. This
+    /// sweeps every floor bucket touched by the path, so a fast diagonal step
+    /// cannot pass through a neighboring foothold between simulation ticks.
+    pub(crate) fn find_swept_ground_contact(
+        &self,
+        start_x: f64,
+        start_y: f64,
+        end_x: f64,
+        end_y: f64,
+    ) -> Option<(u16, f64)> {
+        if !start_x.is_finite() || !start_y.is_finite() || !end_x.is_finite() || !end_y.is_finite()
+        {
+            return None;
+        }
+
+        let min_x = start_x.min(end_x).max(f64::from(i16::MIN)).floor() as i32;
+        let max_x = start_x.max(end_x).min(f64::from(i16::MAX)).ceil() as i32;
+        if min_x > max_x || max_x < self.bucket_origin {
+            return None;
+        }
+        let first_bucket = if min_x <= self.bucket_origin {
+            0
+        } else {
+            bucket_index(min_x, self.bucket_origin)
+        };
+        let last_bucket = bucket_index(max_x, self.bucket_origin).min(self.floor_buckets.len() - 1);
+        let mut first_contact: Option<(f64, u16, f64)> = None;
+
+        for bucket_index in first_bucket..=last_bucket {
+            let Some(bucket) = self.floor_buckets.get(bucket_index) else {
+                continue;
+            };
+            for foothold_index in bucket.iter().copied() {
+                let foothold = self.footholds[foothold_index];
+                let Some((time, contact_y)) =
+                    floor_path_contact(foothold, start_x, start_y, end_x, end_y)
+                else {
+                    continue;
+                };
+                if first_contact.is_none_or(|(first_time, _, _)| time < first_time) {
+                    first_contact = Some((time, foothold.id, contact_y));
+                }
+            }
+        }
+
+        first_contact.map(|(_, foothold_id, contact_y)| (foothold_id, contact_y))
+    }
+
     /// Returns the legacy spawn height: one pixel above the nearest floor,
     /// or one pixel above the map's lower border when no floor is below.
     pub fn y_below(&self, x: i16, y: i16) -> i16 {
@@ -313,6 +361,63 @@ impl FootholdTree {
 
 fn bucket_index(x: i32, origin: i32) -> usize {
     (x - origin).div_euclid(BUCKET_WIDTH) as usize
+}
+
+/// Returns the first point where a downward crossing meets this floor segment.
+fn floor_path_contact(
+    foothold: Foothold,
+    start_x: f64,
+    start_y: f64,
+    end_x: f64,
+    end_y: f64,
+) -> Option<(f64, f64)> {
+    let delta_x = end_x - start_x;
+    let (entry, exit) = if delta_x == 0.0 {
+        if start_x < f64::from(foothold.left()) || start_x > f64::from(foothold.right()) {
+            return None;
+        }
+        (0.0, 1.0)
+    } else {
+        let left_time = (f64::from(foothold.left()) - start_x) / delta_x;
+        let right_time = (f64::from(foothold.right()) - start_x) / delta_x;
+        (
+            left_time.min(right_time).max(0.0),
+            left_time.max(right_time).min(1.0),
+        )
+    };
+    if entry > exit {
+        return None;
+    }
+
+    const CONTACT_EPSILON: f64 = 1e-7;
+    let separation_at = |time: f64| {
+        let x = start_x + delta_x * time;
+        let y = start_y + (end_y - start_y) * time;
+        y - foothold.ground_y_extrapolated(x)
+    };
+    let separation_at_entry = separation_at(entry);
+    let separation_at_exit = separation_at(exit);
+    if exit - entry <= f64::EPSILON {
+        if separation_at_entry.abs() <= CONTACT_EPSILON {
+            let contact_x = start_x + delta_x * entry;
+            return Some((entry, foothold.ground_y_extrapolated(contact_x)));
+        }
+        return None;
+    }
+    if separation_at_entry > CONTACT_EPSILON
+        || separation_at_exit < -CONTACT_EPSILON
+        || separation_at_exit <= separation_at_entry + CONTACT_EPSILON
+    {
+        return None;
+    }
+
+    let time = if separation_at_entry.abs() <= CONTACT_EPSILON {
+        entry
+    } else {
+        entry + (-separation_at_entry / (separation_at_exit - separation_at_entry)) * (exit - entry)
+    };
+    let contact_x = start_x + delta_x * time;
+    Some((time, foothold.ground_y_extrapolated(contact_x)))
 }
 
 fn make_bounds(min_x: i32, max_x: i32, min_y: i32, max_y: i32) -> MapBounds {

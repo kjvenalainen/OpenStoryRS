@@ -153,6 +153,37 @@ pub(super) fn unbound_action_cell(kind: u8, action: i32) -> Option<(i32, i32)> {
     Some(slot)
 }
 
+fn draw_nx_slider(
+    pixels: &mut [u8],
+    width: usize,
+    height: usize,
+    ui: &NxArchive,
+    (left, center_y, track_width): (usize, usize, usize),
+    thumb_offset: usize,
+    thumb_state: &str,
+) -> Result<(), String> {
+    composite_nx_ui_bitmap_scaled_to(
+        pixels,
+        width,
+        height,
+        ui,
+        "Basic.img/Slider/mid",
+        left,
+        center_y.saturating_sub(3),
+        track_width,
+        6,
+    )?;
+    composite_nx_ui_bitmap(
+        pixels,
+        width,
+        height,
+        ui,
+        &format!("Basic.img/Slider/{thumb_state}"),
+        (left + thumb_offset).saturating_sub(11) as i32,
+        center_y.saturating_sub(7) as i32,
+    )
+}
+
 fn draw_option_checkbox(
     pixels: &mut [u8],
     width: usize,
@@ -337,24 +368,13 @@ fn render_skill_book_panel(
     const WIDTH: usize = SKILL_BOOK_PANEL_WIDTH as usize;
     const HEIGHT: usize = SKILL_BOOK_PANEL_HEIGHT as usize;
     let mut pixels = vec![0_u8; WIDTH * HEIGHT * 4];
-    let _ = composite_nx_ui_bitmap(
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        ui_archive,
+    let _ = NxDialog::new(&mut pixels, WIDTH, HEIGHT, ui_archive).frame(
         "UIWindow.img/Skill/backgrnd",
         0,
         0,
     );
-    let _ = composite_nx_ui_bitmap(
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        ui_archive,
-        "Basic.img/BtClose/normal/0",
-        156,
-        6,
-    );
+    let _ = NxDialog::new(&mut pixels, WIDTH, HEIGHT, ui_archive)
+        .anchored_button("Basic.img/BtClose/normal/0", 156, 6);
     for tab in 0..visible_tabs.min(5) {
         let active = tab == selected_tab;
         let bounds = ui_foundation::skill_tab(usize::from(tab));
@@ -460,7 +480,7 @@ fn render_skill_book_panel(
             y as i32,
         );
         let path = format!(
-            "{:03}.img/skill/{}/{}",
+            "{:03}.img/skill/{:07}/{}",
             skill.id / 10_000,
             skill.id,
             if skill.max_level == 0 {
@@ -565,7 +585,7 @@ fn render_skill_book_panel(
         HEIGHT,
         &value,
         108 - value_width,
-        263,
+        266,
         11.0,
         28,
         16,
@@ -588,7 +608,6 @@ fn render_options_panel(
     font: &fontdue::Font,
     ui_archive: &NxArchive,
     settings: AudioSettings,
-    display_settings: DisplaySettings,
     input_settings: InputSettings,
     gameplay_settings: GameplaySettings,
     social_settings: SocialSettings,
@@ -601,21 +620,30 @@ fn render_options_panel(
     const GAME_Y: usize = 0;
     let mut pixels = vec![0_u8; WIDTH * HEIGHT * 4];
 
-    // These are the two stock v83 settings windows at their authored sizes.
-    let _ = composite_nx_ui_bitmap(
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        ui_archive,
-        "UIWindow.img/SysOpt/backgrnd",
-        0,
-        0,
-    );
-    let _ = composite_nx_ui_bitmap(
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        ui_archive,
+    // Keep the rows above Monster Info and join the original footer below them.
+    let mut dialog = NxDialog::new(&mut pixels, WIDTH, HEIGHT, ui_archive);
+    if let Some((source_width, _, source)) = dialog.frame_bitmap("UIWindow.img/SysOpt/backgrnd") {
+        let _ = dialog.frame_rows(
+            &source,
+            source_width,
+            0,
+            &[
+                (0..SYSTEM_OPTIONS_FOOTER_Y, 0),
+                (330..366, SYSTEM_OPTIONS_FOOTER_Y as i32),
+            ],
+        );
+    }
+    // Move the baked Mute labels and Scroll Lock badge inward. The blank
+    // pixels to their left wrap around to fill the space along the row edge.
+    for (x, first_y, end_y, inset) in [
+        (SYSTEM_OPTIONS_MUTE_CELL_X, 63, 117, 12),
+        (248, 121, 150, 8),
+    ] {
+        for row in pixels.chunks_exact_mut(WIDTH * 4).take(end_y).skip(first_y) {
+            row[x * 4..SYSTEM_OPTIONS_ROW_RIGHT * 4].rotate_left(inset * 4);
+        }
+    }
+    let _ = NxDialog::new(&mut pixels, WIDTH, HEIGHT, ui_archive).frame(
         "UIWindow.img/GameOpt/backgrnd",
         GAME_X as i32,
         GAME_Y as i32,
@@ -639,134 +667,41 @@ fn render_options_panel(
         (OptionControl::MpWarning, gameplay_settings.mp_warning),
     ] {
         let y = slider.track_y().expect("sliders have a track position");
-        let track_left = if slider == OptionControl::EffectsQuality { 359 } else { 104 };
+        let track_left = slider.track_left();
         let track_width = slider.track_width();
-        let _ = composite_nx_ui_bitmap_scaled_to(
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            ui_archive,
-            "Basic.img/Slider/mid",
-            track_left,
-            y.saturating_sub(3),
-            track_width,
-            6,
-        );
         let filled_width = usize::from(value) * track_width / 100;
-        if filled_width > 0 {
-            let _ = composite_nx_ui_bitmap_scaled_to(
-                &mut pixels,
-                WIDTH,
-                HEIGHT,
-                ui_archive,
-                "Basic.img/Slider/mid",
-                track_left,
-                y.saturating_sub(3),
-                filled_width,
-                6,
-            );
-        }
-        let thumb_x = track_left + filled_width;
         let thumb_state = if slider == selected {
             "thumbMouseOver"
         } else {
             "thumbNormal"
         };
-        let _ = composite_nx_ui_bitmap(
+        let _ = draw_nx_slider(
             &mut pixels,
             WIDTH,
             HEIGHT,
             ui_archive,
-            &format!("Basic.img/Slider/{thumb_state}"),
-            thumb_x.saturating_sub(11) as i32,
-            y.saturating_sub(7) as i32,
+            (track_left, y, track_width),
+            filled_width,
+            thumb_state,
         );
     }
 
     draw_dialogue_text(font, &mut pixels, WIDTH, HEIGHT, "Effects", 307, 262, 9.0, 48, 13, [38, 48, 55]);
 
-    for (control, y, muted) in [
-        (
-            OptionControl::MuteMusic,
-            OptionControl::Music.track_y().expect("music has a slider"),
-            settings.mute_music,
-        ),
-        (
-            OptionControl::MuteEffects,
-            OptionControl::SoundEffects
-                .track_y()
-                .expect("sound effects have a slider"),
-            settings.mute_effects,
-        ),
+    for (control, checked) in [
+        (OptionControl::MuteMusic, settings.mute_music),
+        (OptionControl::MuteEffects, settings.mute_effects),
+        (OptionControl::ScreenShake, gameplay_settings.screen_shake_enabled),
     ] {
         draw_option_checkbox(
             &mut pixels,
             WIDTH,
             HEIGHT,
             ui_archive,
-            278,
-            y.saturating_sub(9),
+            SYSTEM_OPTIONS_CHECKBOX_RIGHT - 12 - 4,
+            control.system_checkbox_y() - 10,
             selected == control,
-            muted,
-        );
-    }
-
-    draw_option_checkbox(
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        ui_archive,
-        263,
-        241,
-        selected == OptionControl::ScreenShake,
-        gameplay_settings.screen_shake_enabled,
-    );
-    draw_option_checkbox(
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        ui_archive,
-        258,
-        296,
-        selected == OptionControl::Windowed,
-        !display_settings.fullscreen,
-    );
-    for (control, x, label, active) in [
-        (
-            OptionControl::Resolution800,
-            5,
-            "800 x 600",
-            display_settings.width == 800 && display_settings.height == 600,
-        ),
-        (
-            OptionControl::Resolution1024,
-            103,
-            "1024 x 768",
-            display_settings.width == 1024 && display_settings.height == 768,
-        ),
-    ] {
-        draw_option_checkbox(
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            ui_archive,
-            x,
-            338,
-            selected == control,
-            active,
-        );
-        draw_dialogue_text(
-            font,
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            label,
-            x as i32 + 23,
-            342,
-            8.0,
-            68,
-            12,
-            [37, 47, 54],
+            checked,
         );
     }
 
@@ -830,15 +765,23 @@ fn render_options_panel(
         );
     }
 
-    for (x, path) in [
-        (204, "Basic.img/BtOK2/normal/0"),
-        (251, "Basic.img/BtCancel2/normal/0"),
-    ] {
-        let _ = composite_nx_ui_bitmap(&mut pixels, WIDTH, HEIGHT, ui_archive, path, x, 341);
-    }
+    let _ = NxDialog::new(&mut pixels, WIDTH, HEIGHT, ui_archive).buttons(&[
+        ("Basic.img/BtOK2/normal/0", SYSTEM_OPTIONS_OK_BUTTON),
+        ("Basic.img/BtCancel2/normal/0", SYSTEM_OPTIONS_CANCEL_BUTTON),
+    ]);
     if let Some(notice) = notice {
-        fill_dialogue_rect(&mut pixels, WIDTH, HEIGHT, 4, 339, 194, 22, [189, 204, 215, 255]);
-        let notice = ui_foundation::ellipsize(font, notice, 9.0, 190.0);
+        let notice_width = SYSTEM_OPTIONS_OK_BUTTON.x as usize - 12;
+        fill_dialogue_rect(
+            &mut pixels,
+            WIDTH,
+            HEIGHT,
+            4,
+            SYSTEM_OPTIONS_FOOTER_Y + 9,
+            notice_width + 4,
+            22,
+            [189, 204, 215, 255],
+        );
+        let notice = ui_foundation::ellipsize(font, notice, 9.0, notice_width as f32);
         draw_dialogue_text(
             font,
             &mut pixels,
@@ -846,9 +789,9 @@ fn render_options_panel(
             HEIGHT,
             &notice,
             5,
-            342,
+            SYSTEM_OPTIONS_FOOTER_Y as i32 + 12,
             9.0,
-            190,
+            notice_width,
             18,
             [120, 24, 24],
         );

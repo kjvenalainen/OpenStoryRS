@@ -629,9 +629,12 @@ and sends the matching selection index.
   Explorer creation. The page uses the Maple Island login scenery and v83 boards from
   `Map.nx` and `UI.nx`, gender-specific appearance pools from `Etc.nx`, localized
   face/hair/equipment labels, an avatar preview on the platform, forbidden-name filtering,
-  name availability packets, character creation packets, and
-  live insertion of the created character into selection. Its bundled Roboto font matches
-  the legacy client's font asset. Final UI polish and server-specific failure notices remain.
+  and a single page with the appearance list on the left and name board plus
+  hanging OK/Cancel buttons on the right. Stats and dice are omitted because character
+  stats are generated automatically. The Check button requests name availability before
+  the hanging OK sends character creation; successful characters are inserted into the
+  selection list. Its bundled Roboto font matches the legacy client's font asset. Final
+  UI polish and server-specific failure notices remain.
   The SET_FIELD parser reads the initial character's ID, stats, and inventory prefix or
   the compact map-change form. The bounded inventory parser handles the legacy equip,
   use, setup, etc, and cash item payloads plus `MODIFY_INVENTORY` deltas. The `I` key
@@ -697,11 +700,11 @@ and sends the matching selection index.
   duration. `MAP_TRANSFER_RESULT` refreshes the normal or VIP saved-map list after rock use.
   `SHOW_STATUS_INFO` updates quest progress, forfeits, and completions; `J` opens an
   NX-backed available/active/completed quest log with quest descriptions, live item and monster
-  objective counters, an available-quest tab, server-authoritative quest start and turn-in
-  actions, and a confirmed forfeit action. Map NPCs show NX-animated available,
+  objective counters, a Quest Helper button, turn-in actions, and a confirmed forfeit action.
+  Available quests start through NPC dialogue. Map NPCs show NX-animated available,
   in-progress, and turn-in-ready quest marks using level, job, prerequisite, item, and mob
   progress. Quest-clear packets now play the NX completion sound and light-pillar effect.
-  Quest log actions now select scripted start/end packets when the NX `startscript` or
+  Quest actions select scripted start/end packets when the NX `startscript` or
   `endscript` requirement is set; those actions enter the same server-driven NPC dialogue
   flow. Non-scripted reward-selection items are browsable and their choice index is sent
   on turn-in; scripted reward choices are handled by the server dialogue.
@@ -717,6 +720,9 @@ and sends the matching selection index.
   bounded `MOVE_MONSTER` claims and movement updates. Server-owned movement stays
   authoritative; duplicate spawn packets now reposition/revive an existing mob without
   uploading its art a second time or resetting an already acknowledged control claim.
+  Movable controlled mobs pursue the player responsible for a positive attack hit, using
+  local or remote player positions and stopping within 32 logical pixels; the normal
+  knockback reaction remains.
   Mob stance fallback, direction metadata, death frames,
   and removal are connected to map state. Mob HP percentage and bounded status-mask
   packets update map state. HP bars appear for two seconds; boss mobs also show a four-second
@@ -865,9 +871,8 @@ and sends the matching selection index.
   attack packets through the existing distance-attenuated mixer. The audio payload cache
   evicts older entries at a 64 MiB/4096-entry bound so new sounds can still be cached.
   Escape opens the options panel with graphics/effects quality, BGM/SFX and mute, mouse
-  speed, HP/MP warnings, screen shake, windowed mode, and the legacy 800x600/1024x768 choices.
-  Saved `Width`, `Height`, and `Fullscreen` values configure startup and the Options controls
-  apply display changes live. Graphics quality follows the legacy thresholds for
+  speed, HP/MP warnings, and screen shake. Saved `Width`, `Height`, and `Fullscreen` values
+  configure startup. Graphics quality follows the legacy thresholds for
   foregrounds, environments, mists, and weather; effects quality applies the legacy 2–50
   concurrent-effect budget to rendered skill, projectile, damage, quest-clear, and screen
   effects. A zero warning threshold disables its low-resource overlay. Audio, display, input,

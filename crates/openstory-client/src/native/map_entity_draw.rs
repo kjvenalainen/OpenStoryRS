@@ -309,7 +309,9 @@ fn append_map_entity_draws<'a>(
     }
     if matches!(pass, MapEntityDrawPass::Overlays) {
         for (index, projectile) in scene.projectiles.iter().enumerate() {
-            if projectile.frames.get(projectile.frame_index).is_some() {
+            if projectile.launch_delay.is_zero()
+                && projectile.frames.get(projectile.frame_index).is_some()
+            {
                 actors.push((projectile.y, 8, index as i32, Actor::Projectile(projectile)));
             }
         }
@@ -856,10 +858,10 @@ fn append_map_entity_draws<'a>(
                     (
                         (player.x - scene.player.x + player.recoil_offset_x) as f32,
                         (player.y - scene.player.y) as f32,
-                        !player.facing_left,
+                        effect.flip_with_facing && !player.facing_left,
                     )
                 } else {
-                    (0.0, 0.0, scene.facing_right)
+                    (0.0, 0.0, effect.flip_with_facing && scene.facing_right)
                 };
                 for (texture_index, rect) in &frame.sprites {
                     let Some(texture) = textures.get(*texture_index) else {
@@ -910,22 +912,6 @@ fn append_map_entity_draws<'a>(
                     textures,
                     draws,
                 );
-                if let Some((texture_index, rect)) = player.name_label
-                    && let Some(texture) = textures.get(texture_index)
-                {
-                    draws.push(SpriteDraw {
-                        texture,
-                        x: rect.x + offset_x,
-                        y: rect.y + offset_y,
-                        width: rect.width,
-                        height: rect.height,
-                        uv: [0.0, 0.0, 1.0, 1.0],
-                        tint: [1.0, 1.0, 1.0],
-                        blend_mode: rect.blend_mode,
-                        flip_x: false,
-                        opacity: if player.hidden { 0.5 } else { 1.0 },
-                    });
-                }
                 if let Some((texture_index, rect)) = player.guild_label
                     && let Some(texture) = textures.get(texture_index)
                 {
@@ -1074,22 +1060,6 @@ fn append_map_entity_draws<'a>(
                     textures,
                     draws,
                 );
-                if let Some((texture_index, rect)) = player.name_label {
-                    if let Some(texture) = textures.get(texture_index) {
-                        draws.push(SpriteDraw {
-                            texture,
-                            x: rect.x + rider_offset_x,
-                            y: rect.y + rider_offset_y,
-                            width: rect.width,
-                            height: rect.height,
-                            uv: [0.0, 0.0, 1.0, 1.0],
-                            tint: [1.0, 1.0, 1.0],
-                            blend_mode: rect.blend_mode,
-                            flip_x: false,
-                            opacity: if player.hidden { 0.5 } else { 1.0 },
-                        });
-                    }
-                }
                 if let Some((texture_index, rect)) = player.guild_label {
                     if let Some(texture) = textures.get(texture_index) {
                         draws.push(SpriteDraw {

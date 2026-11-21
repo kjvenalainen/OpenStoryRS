@@ -72,15 +72,14 @@ struct Sprite {
 fn render_base(archive: &NxArchive, side_view: bool) -> Result<Panel, String> {
     let root = archive.root();
     let carnival = resolve(&root, "UIWindow.img/MonsterCarnival")?;
-    let background = sprite(&resolve(&carnival, "backgrnd")?)?;
-    let background2 = sprite(&resolve(&carnival, "backgrnd2")?)?;
     let width = PANEL_WIDTH as usize;
     let height = PANEL_HEIGHT as usize;
     let mut pixels = vec![0; width * height * 4];
 
-    blit(&mut pixels, width, height, &background, 0.0, 0.0);
+    let mut dialog = super::NxDialog::new(&mut pixels, width, height, archive);
+    dialog.frame("UIWindow.img/MonsterCarnival/backgrnd", 0, 0)?;
     if side_view {
-        blit(&mut pixels, width, height, &background2, 0.0, 1.0);
+        dialog.frame("UIWindow.img/MonsterCarnival/backgrnd2", 0, 1)?;
         for (index, y) in [23.0, 42.0, 61.0, 80.0].into_iter().enumerate() {
             let icon = sprite(&resolve(&carnival, &format!("icon{index}"))?)?;
             blit(&mut pixels, width, height, &icon, 10.0, y);
@@ -101,8 +100,11 @@ fn render_base(archive: &NxArchive, side_view: bool) -> Result<Panel, String> {
         height: side_button.height as f32,
     };
     blit(&mut pixels, width, height, &side_button, side.x, side.y);
-    let close_image = sprite(&resolve(&root, "Basic.img/BtClose/normal/0")?)?;
-    blit(&mut pixels, width, height, &close_image, close.x, close.y);
+    super::NxDialog::new(&mut pixels, width, height, archive).anchored_button(
+        super::ui_dialog::CLOSE_BUTTON_ART,
+        close.x as i32,
+        close.y as i32,
+    )?;
 
     Ok(Panel {
         width: PANEL_WIDTH,

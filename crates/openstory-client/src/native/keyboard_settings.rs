@@ -48,7 +48,7 @@ pub(super) fn buttons() -> [(Button, UiRect, &'static str); 6] {
         ),
         (
             Button::Close,
-            UiRect::new(607.0, 9.0, 13.0, 13.0),
+            UiRect::new(607.0, 10.0, 13.0, 13.0),
             "BtClose",
         ),
     ]
@@ -64,11 +64,11 @@ pub(super) fn button_at(x: f32, y: f32) -> Option<Button> {
 /// Wire key numbers follow the existing input translator, including its number-row ordering.
 pub(super) fn key_rect(key: u8) -> Option<UiRect> {
     let (x, y, width) = match key {
-        84 => (11, 28, 32),
-        59..=62 => (79 + (i32::from(key) - 59) * 34, 28, 32),
-        63..=66 => (223 + (i32::from(key) - 63) * 34, 28, 32),
-        67..=70 => (367 + (i32::from(key) - 67) * 34, 28, 32),
-        88 => (545, 28, 32),
+        84 => (11, 29, 32),
+        59..=62 => (79 + (i32::from(key) - 59) * 34, 29, 32),
+        63..=66 => (223 + (i32::from(key) - 63) * 34, 29, 32),
+        67..=70 => (367 + (i32::from(key) - 67) * 34, 29, 32),
+        88 => (545, 29, 32),
         2 => (351, 65, 32),
         3..=11 => (45 + (i32::from(key) - 3) * 34, 65, 32),
         12 => (385, 65, 32),
@@ -103,6 +103,16 @@ pub(super) fn key_rect(key: u8) -> Option<UiRect> {
         width as f32,
         32.0,
     ))
+}
+
+fn key_content_rect(key: u8, rect: UiRect) -> UiRect {
+    let top_row = matches!(key, 59..=70 | 84 | 88);
+    UiRect::new(
+        rect.x + 1.0,
+        rect.y - 2.0 * f32::from(top_row),
+        rect.width,
+        rect.height,
+    )
 }
 
 pub(super) fn key_at(x: f32, y: f32) -> Option<u8> {
@@ -230,42 +240,36 @@ fn blit_crop(
     );
 }
 
-fn blank_key(pixels: &mut [u8], source: &[u8], rect: UiRect) {
-    // Use a native key's bevel and white interior; extend only its blank middle for wide keys.
-    let (w, h) = (
-        KEY_CONFIG_PANEL_WIDTH as usize,
-        KEY_CONFIG_PANEL_HEIGHT as usize,
-    );
-    for column in 0..rect.width as usize {
-        let source_column = if column < 4 {
+fn blank_key(pixels: &mut [u8], source: &[u8], rect: UiRect, scroll_lock: bool) {
+    // Use the bare "2" key, or the neighboring Break cap in the top-right cluster.
+    let (source_x, source_y, left_edge, blank_start, blank_width) = if scroll_lock {
+        (580, 27, 3, 27, 2)
+    } else {
+        (80, 66, 5, 16, 12)
+    };
+    const CAP_WIDTH: usize = 34;
+    const EDGE: usize = 5;
+    let width = rect.width as usize;
+    for column in 0..width {
+        let source_column = if column < left_edge {
             column
-        } else if column >= rect.width as usize - 4 {
-            32 - (rect.width as usize - column)
+        } else if column >= width - EDGE {
+            CAP_WIDTH - (width - column)
         } else {
-            16
+            blank_start + (column - left_edge) % blank_width
         };
         blit_crop(
             pixels,
             source,
             629,
-            79 + source_column,
-            65,
+            source_x + source_column,
+            source_y,
             1,
             32,
             rect.x as i32 + column as i32,
             rect.y as i32,
         );
     }
-    fill_dialogue_rect(
-        pixels,
-        w,
-        h,
-        rect.x as usize + 4,
-        rect.y as usize + 3,
-        rect.width as usize - 8,
-        14,
-        [250, 250, 250, 255],
-    );
 }
 
 fn legend(
@@ -285,7 +289,10 @@ fn legend(
         _ => key,
     };
     let path = format!("UIWindow.img/KeyConfig/key/{asset_key}");
-    if let Some((width, height, image)) = (key != 88).then(|| decode_nx_icon(ui, &path)).flatten() {
+    if let Some((width, height, image)) = (!matches!(key, 84 | 88))
+        .then(|| decode_nx_icon(ui, &path))
+        .flatten()
+    {
         let x = if center {
             rect.x + (rect.width - width as f32) * 0.5
         } else {
@@ -302,18 +309,20 @@ fn legend(
             rect.y as i32 + 2,
         );
     } else {
-        // Escape is deliberately unbound in the reference and has no glyph node.
+        // Use short, readable labels for Escape and Scroll Lock.
+        let label = match key {
+            84 => "Esc".to_owned(),
+            88 => "Slk".to_owned(),
+            _ => super::maple_key_label(key),
+        };
+        let label_x = rect.x as i32 + if key == 88 { 2 } else { 3 };
         draw_dialogue_text(
             font,
             pixels,
             KEY_CONFIG_PANEL_WIDTH as usize,
             KEY_CONFIG_PANEL_HEIGHT as usize,
-            &if key == 88 {
-                "Slk".to_owned()
-            } else {
-                super::maple_key_label(key)
-            },
-            rect.x as i32 + 3,
+            &label,
+            label_x,
             rect.y as i32 + 2,
             10.0,
             rect.width as usize - 6,
@@ -481,38 +490,39 @@ pub(super) fn render(
         KEY_CONFIG_PANEL_HEIGHT as usize,
     );
     let mut pixels = vec![0; width * height * 4];
-    let node = resolve_ui_path(&ui.root(), "UIWindow.img/KeyConfig/backgrnd")
-        .ok()
-        .flatten();
-    let background = node
-        .and_then(|node| node.bitmap().ok().flatten())
-        .filter(|bitmap| bitmap.width() == 629 && bitmap.height() == 373)
-        .and_then(|bitmap| bitmap.decode_bgra_shared().ok());
-    if let Some(source) = background
-        .as_ref()
-        .filter(|pixels| pixels.len() == 629 * 373 * 4)
-    {
-        // Keep native pixels; omit one 34px tray row, then retain the original bottom border.
-        blit_crop(&mut pixels, source, 629, 0, 0, 629, 335, 3, 3);
-        blit_crop(&mut pixels, source, 629, 0, 369, 629, 4, 3, 338);
-        for rect in [
-            key_rect(84).unwrap(),
-            UiRect::new(14.0, 102.0, 48.0, 32.0),
-            key_rect(88).unwrap(),
-            key_rect(42).unwrap(),
-            key_rect(86).unwrap(),
+    let mut dialog = NxDialog::new(&mut pixels, width, height, ui);
+    let background = dialog
+        .frame_bitmap("UIWindow.img/KeyConfig/backgrnd")
+        .filter(|(width, height, _)| (*width, *height) == (629, 373))
+        .map(|(_, _, pixels)| pixels);
+    if let Some(source) = background.as_ref() {
+        // Lower the top key row one pixel, omit a tray row and retain the authored bottom border.
+        let _ = dialog.frame_rows(
+            source,
+            629,
+            3,
+            &[
+                (0..28, 3),
+                (60..335, 63),
+                (27..28, 31),
+                (28..60, 32),
+                (369..373, 338),
+            ],
+        );
+        // Replace the baked shortcut tiles and Shift legends at their actual
+        // bitmap bounds so the old bevel cannot peek through around the edges.
+        for (rect, scroll_lock) in [
+            (UiRect::new(15.0, 31.0, 34.0, 32.0), false),   // Esc
+            (UiRect::new(15.0, 102.0, 49.0, 32.0), false),  // Tab
+            (UiRect::new(549.0, 31.0, 34.0, 32.0), true),   // Slk
+            (UiRect::new(15.0, 168.0, 83.0, 32.0), false),  // Left Shift
+            (UiRect::new(439.0, 168.0, 68.0, 32.0), false), // Right Shift
         ] {
-            blank_key(&mut pixels, source, rect);
+            blank_key(&mut pixels, source, rect, scroll_lock);
         }
         for key in [84, 88, 42, 86] {
-            legend(
-                font,
-                &mut pixels,
-                ui,
-                key,
-                key_rect(key).unwrap(),
-                matches!(key, 42 | 86),
-            );
+            let rect = key_content_rect(key, key_rect(key).unwrap());
+            legend(font, &mut pixels, ui, key, rect, matches!(key, 42 | 86));
         }
         draw_dialogue_text(
             font,
@@ -520,7 +530,7 @@ pub(super) fn render(
             width,
             height,
             "Tab",
-            16,
+            19,
             103,
             10.0,
             38,
@@ -574,11 +584,25 @@ pub(super) fn render(
             continue;
         };
         if let Some(source) = background.as_ref() {
-            blank_key(&mut pixels, source, rect);
+            blank_key(&mut pixels, source, rect, key == 88);
         }
-        let x = (rect.x + (rect.width - 32.0) * 0.5).round() as i32;
-        draw_icon(&mut pixels, binding.kind, binding.action, x, rect.y as i32);
-        legend(font, &mut pixels, ui, key as u8, rect, rect.width > 32.0);
+        let content_rect = key_content_rect(key as u8, rect);
+        let x = (content_rect.x + (content_rect.width - 32.0) * 0.5).round() as i32;
+        draw_icon(
+            &mut pixels,
+            binding.kind,
+            binding.action,
+            x,
+            content_rect.y as i32,
+        );
+        legend(
+            font,
+            &mut pixels,
+            ui,
+            key as u8,
+            content_rect,
+            rect.width > 32.0,
+        );
         if matches!(binding.kind, 2 | 3)
             && let Some(count) = item_counts.get(&binding.action)
         {
@@ -592,21 +616,15 @@ pub(super) fn render(
                 ui,
                 *count,
                 x,
-                rect.y as i32 + 20,
+                content_rect.y as i32 + 20,
                 32,
             );
         }
     }
+    let mut dialog = NxDialog::new(&mut pixels, width, height, ui);
     for (_button, rect, path) in buttons() {
-        let _ = composite_nx_ui_bitmap(
-            &mut pixels,
-            width,
-            height,
-            ui,
-            &format!("UIWindow.img/KeyConfig/{path}/normal/0"),
-            rect.x as i32,
-            rect.y as i32,
-        );
+        let path = format!("UIWindow.img/KeyConfig/{path}/normal/0");
+        let _ = dialog.buttons(&[(&path, rect)]);
     }
     if let Some(slot) = quickslot_capture {
         let _ = composite_nx_ui_bitmap(

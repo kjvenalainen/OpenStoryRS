@@ -6,27 +6,13 @@ fn render_family_panel(
     let width = FAMILY_PANEL_WIDTH as usize;
     let height = FAMILY_PANEL_HEIGHT as usize;
     let mut pixels = vec![0; width * height * 4];
-    let _ = composite_nx_ui_bitmap_scaled_to(
-        &mut pixels,
-        width,
-        height,
-        ui_archive,
+    let _ = NxDialog::new(&mut pixels, width, height, ui_archive).scaled_frame(
         "UIWindow.img/Family/backgrnd",
-        0,
-        0,
-        width,
-        height,
+        0, 0, width, height,
     );
 
-    let _ = composite_nx_ui_bitmap(
-        &mut pixels,
-        width,
-        height,
-        ui_archive,
-        "UIWindow.img/Family/BtClose/normal/0",
-        250,
-        10,
-    );
+    let _ = NxDialog::new(&mut pixels, width, height, ui_archive)
+        .anchored_button("UIWindow.img/Family/BtClose/normal/0", 250, 10);
 
     if let Some(info) = state.info.as_ref() {
         let name = if info.name.trim().is_empty() { "No family" } else { info.name.as_str() };
@@ -104,7 +90,8 @@ fn render_family_panel(
         for pixel in pixels.chunks_exact_mut(4) {
             for channel in &mut pixel[..3] { *channel = (u16::from(*channel) * 105 / 255) as u8; }
         }
-        let _ = composite_nx_ui_bitmap(&mut pixels, width, height, ui_archive, "Basic.img/YesNo/backgrnd", 5, 145);
+        let _ = NxDialog::new(&mut pixels, width, height, ui_archive)
+            .frame("Basic.img/YesNo/backgrnd", 5, 145);
         if let Some(input) = state.input.as_ref() {
             let heading = match input.kind {
                 FamilyInputKind::InviteJunior => "Enter the junior's name:",
@@ -122,9 +109,8 @@ fn render_family_panel(
             draw_dialogue_text(font, &mut pixels, width, height, "Your family relationship will end.", 30, 193, 10.0, 214, 24, [55, 55, 55]);
         }
         let (accept, cancel) = if state.input.is_some() { ("Basic.img/BtOK/normal/0", "Basic.img/BtCancel/normal/0") } else { ("Basic.img/BtYes/normal/0", "Basic.img/BtNo/normal/0") };
-        for (path, x) in [(accept, 64), (cancel, 145)] {
-            let _ = composite_nx_ui_bitmap(&mut pixels, width, height, ui_archive, path, x, 239);
-        }
+        NxDialog::new(&mut pixels, width, height, ui_archive)
+            .anchored_buttons(&[(accept, 64, 239), (cancel, 145, 239)]);
     }
 
     pixels
@@ -385,17 +371,8 @@ fn draw_family_nx_background(
     };
     let dest_width = ((source_width as f32 * scale).round() as usize).min(width);
     let dest_height = ((source_height as f32 * scale).round() as usize).min(height);
-    let _ = composite_nx_ui_bitmap_scaled_to(
-        pixels,
-        width,
-        height,
-        archive,
-        path,
-        0,
-        0,
-        dest_width,
-        dest_height,
-    );
+    let _ = NxDialog::new(pixels, width, height, archive)
+        .scaled_frame(path, 0, 0, dest_width, dest_height);
 }
 
 const GUILD_VISIBLE_ROWS: usize = 10;
@@ -1017,14 +994,10 @@ fn draw_guild_button(
         _ => None,
     };
     if let Some(path) = path {
-        let _ = composite_nx_ui_bitmap_centered(
-            pixels,
-            width,
-            height,
-            ui_archive,
-            path,
-            ui_foundation::UiRect::new(x as f32, y as f32, button_width as f32, button_height as f32),
+        let bounds = ui_foundation::UiRect::new(
+            x as f32, y as f32, button_width as f32, button_height as f32,
         );
+        let _ = NxDialog::new(pixels, width, height, ui_archive).buttons(&[(path, bounds)]);
         return;
     }
     let text_width = dialogue_text_width(font, label, 9.0);
@@ -1362,16 +1335,9 @@ fn render_guild_bbs_panel(
     let width = GUILD_BBS_PANEL_WIDTH as usize;
     let height = GUILD_BBS_PANEL_HEIGHT as usize;
     let mut pixels = vec![0; width * height * 4];
-    let _ = composite_nx_ui_bitmap_scaled_to(
-        &mut pixels,
-        width,
-        height,
-        ui_archive,
+    let _ = NxDialog::new(&mut pixels, width, height, ui_archive).scaled_frame(
         "UIWindow.img/UserList/Guild/GuildBoard/backgrnd",
-        0,
-        0,
-        width,
-        height,
+        0, 0, width, height,
     );
     for (x, button_width, path) in [
         (604, 54, "UIWindow.img/UserList/Guild/GuildBoard/BtList/normal/0"),
@@ -1734,16 +1700,9 @@ fn render_guild_bbs_panel(
             height,
             [0, 0, 0, 176],
         );
-        let _ = composite_nx_ui_bitmap_scaled_to(
-            &mut pixels,
-            width,
-            height,
-            ui_archive,
+        let _ = NxDialog::new(&mut pixels, width, height, ui_archive).scaled_frame(
             "UIWindow.img/UserList/Guild/GuildBoard/backgrnd1",
-            192,
-            124,
-            440,
-            350,
+            192, 124, 440, 350,
         );
         draw_dialogue_text(
             font,
@@ -1866,11 +1825,7 @@ fn render_guild_bbs_panel(
             height,
             [0, 0, 0, 176],
         );
-        let _ = composite_nx_ui_bitmap(
-            &mut pixels,
-            width,
-            height,
-            ui_archive,
+        let _ = NxDialog::new(&mut pixels, width, height, ui_archive).frame(
             "Basic.img/YesNo/backgrnd",
             260,
             220,

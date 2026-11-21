@@ -45,8 +45,11 @@ When a character slot is free, Create Character opens Explorer customization dir
 Explorer is the only class family supported by this client and server. The customization
 page uses the Maple Island login scenery from `Map.nx` and the character boards and
 controls from `UI.nx`. It reads gender-specific face, hair, color, skin, clothing, shoe,
-and weapon pools from `Etc.nx`, previews the selected avatar on the platform, checks
-forbidden names locally, and uses the v83 name-check/create packets. The server's new
+and weapon pools from `Etc.nx`, previews the selected avatar on the platform, and checks
+forbidden names locally. The page opens with appearance choices on the left and the NX
+name board on the right. The Check button requests name
+availability, then the hanging OK button sends the v83 creation request. Stats and dice
+are omitted because character stats are generated automatically. The server's new
 character entry is added to the current selection list.
 
 Set `OPENSTORY_FONT_PATH` to select a TrueType font and optionally
@@ -126,7 +129,8 @@ editor opens from the Skills window. It edits the three server-backed macros, th
 setting, and ordered learned-skill slots; a bound macro key shouts its name when enabled and
 queues its skills through the normal skill-use path. The Quick Slots action opens the
 eight-slot bar above the HUD; it shows bound skill, item, cash, macro, and action icons with
-the configured key labels. Click a filled slot to run its binding, or drag a Use, Setup, or
+the configured key labels. Bound stackable items show their total quantity across matching
+inventory stacks. Click a filled slot to run its binding, or drag a Use, Setup, or
 Cash inventory item onto a slot to update that key on the server. The minimap
 loads its map bitmap and portals from `Map.nx`, shows the player,
 NPCs, mobs, and other characters, and cycles through collapsed, normal, and expanded views.
@@ -204,7 +208,11 @@ or accept the current choice. On text-entry prompts, Space reveals the prompt fi
 remains available for spaces in the answer; Enter submits it. Up/Down moves the selection
 highlight through long lists, which also scroll with the mouse wheel. Space submits number
 prompts. Outside dialogue, Space requests a conversation with the nearest NPC within
-legacy interaction range; both Option keys jump. NPC shop UI is currently unavailable; the client closes the server-side shop session. The
+legacy interaction range; both Option keys jump. NPC shops show server-provided buy and sell
+lists, inventory category tabs, scrolling, and item details when hovering either list. Double-click
+a row to open its buy or sell prompt, or select an item and use the matching button. Quantity
+prompts, recharge, and leave actions send v83 shop requests; item and currency changes remain
+server-authoritative, and transaction replies unlock the controls and show failures. The
 bottom HUD uses the stock v83 `StatusBar.img` background, gauge, and toolbar sprites, with
 live HP, MP, and EXP fills plus character level, name, job, and resource values. HP updates
 display a two-second bar, and positive HP deltas float the legacy blue healing digits from
@@ -215,10 +223,14 @@ and shadow-web hold mobs in their stand animation until the server
 cancels those statuses. `DAMAGE_MONSTER` packets float the legacy digits
 from `Effect.nx` above the mob with a 1.5-second rise and fade. Controlled mobs use the
 shared foothold physics and v83 `MOVE_MONSTER` updates, while remote movement remains
-server-authoritative. In a field, press Enter to open public chat, type a message, and
-press Enter to send; Escape closes the composer. Server chat broadcasts appear in a
-scrolling HUD panel, with GM messages highlighted. Server popup notices and Fake GM notices
-use the v83 login notice panel and can be dismissed with Enter, Escape, or its OK button.
+server-authoritative. Movable controlled mobs pursue the player who lands a positive hit,
+then stop nearby while preserving their normal hit reaction. In a field, press Enter to open
+the public chat composer, type a message, and press Enter to send. After sending, gameplay
+keys control the character again while the chat panel may remain open; press Enter to type
+another message. Escape closes the panel. Server chat broadcasts appear in a scrolling HUD
+panel, with GM messages highlighted. Server popup
+notices and Fake GM notices use the v83 login notice panel and can be dismissed with Enter,
+Escape, or its OK button.
 Visible speakers show four-second
 speech balloons drawn
 from the v83 `ChatBalloon.img` frame assets. While the composer is open, Tab cycles public,
@@ -231,11 +243,10 @@ members, channels, and server-reported HP.
 
 When no dialog or panel is open, press Escape to open Options. The panel exposes graphics
 and effects quality, music and sound volume with mute controls, mouse speed, HP/MP warning
-thresholds, screen shake, windowed mode, 800×600/1024×768 resolution, and the v83 social
-permissions for whispers, messenger/party/guild/alliance/family invitations, buddy/guild/
-alliance chat, trade and expedition requests, and follow requests. Drag a slider or use Tab
-and the arrow keys; Space toggles the selected checkbox. Save or Enter persists the settings
-and applies display changes, while Cancel or Escape restores the saved values. Incoming
+thresholds, screen shake, and the v83 social permissions for whispers, messenger/party/guild/
+alliance/family invitations, buddy/guild/alliance chat, trade and expedition requests, and
+follow requests. Drag a slider or use Tab and the arrow keys. Space toggles the selected
+checkbox. Click OK or press Enter to save. Cancel or Escape restores the saved values. Incoming
 whispers, group chat, and the implemented party, guild, alliance, messenger, family, and trade
 request flows honor their corresponding setting. On Windows, mouse speed uses the legacy
 system pointer-speed mapping; other platforms follow the C++ no-op behavior. On macOS,
@@ -318,8 +329,10 @@ store/take actions, and meso transfers. All stored item categories share its
 selection and scrolling order. Clicking a stack opens a quantity prompt for partial
 deposits and withdrawals; withdrawals retrieve the v83 stack and return the unselected
 remainder to storage after the inventory update. Inventory and storage contents remain
-server-authoritative. Press K to open a class-tabbed skill book built from `Skill.nx` and `String.nx`;
-learned levels update from server packets, skill points can be spent, active skills can be
+server-authoritative. Press K to open a class-tabbed skill book built from `Skill.nx` and `String.nx`.
+Hover a skill to see its description, current-level costs and effects, and next-level
+effects when below its mastery cap. Tooltips follow the pointer and stay inside the logical canvas.
+Learned levels update from server packets, skill points can be spent, active skills can be
 used, and attack skills use their NX damage type, scaling, hit count, and target count in the
 attack request path. Skill use checks the legacy job, weapon, HP, MP, and ammunition costs
 before sending a request; v83 `ADD_COOLDOWN` updates block casts until the server-provided
@@ -336,10 +349,11 @@ Using a skill or mastery book now parses the v83 result and shows a success or f
 message; learned skill levels still come from the server's skill update.
 Press J to open the available/active/completed quest log; its state
 comes from the initial character packet and server quest updates, while names, eligibility,
-and descriptions come from `Quest.nx`. The available tab can start quests and ready active
-quests can be turned in through v83 quest actions. Objective rows show held item counts and
+and descriptions come from `Quest.nx`. Talk to the quest NPC to start an available quest.
+Ready active quests can be turned in through v83 quest actions. Objective rows show held item counts and
 server-reported monster progress, and nearby NPCs show available, active, or ready markers.
 The field Quest Helper shows up to five active quests with their current item and monster counts.
+Click **Quest Helper** in the quest log footer to reopen it.
 A quest with non-scripted selectable rewards displays an item chooser in its detail panel; use
 its arrows or Left/Right to pick the item, and the chosen v83 selection index is sent when
 turning in the quest. Quests marked with `startscript` or `endscript` use the corresponding
@@ -371,14 +385,19 @@ updates the server-authoritative capacity and the inventory grid immediately;
 `SET_EXTRA_PENDANT_SLOT` records the pendant-slot entitlement and reports activation changes.
 Press `I` in the
 field to open a letterbox-scaled inventory with five category tabs, a scrollable four-column
-slot grid, cached NX icons, stack counts, meso, and slot capacity. Ordinary Use items send
+slot grid, cached NX icons, stack counts, meso, and slot capacity. Dropping a stack opens a
+quantity selector with a slider and numeric field. Click the coin icon to use the same
+selector for mesos. The slider follows the current stack count or meso balance.
+Each meso drop is limited to 10–50,000 mesos.
+Ordinary Use items send
 the legacy `USE_ITEM` request and play their one-shot `Effect.nx/ItemEff.img` animation when
 one exists; item consumption and effects on character stats remain server-authoritative.
 Pet food sends the v83 `PET_FOOD` request so the server feeds the hungriest summoned pet.
 Key-bound Use, Setup, and Cash items share the inventory activation path, including
 pet-food handling, chair sit/stand, and special cash actions. Activating a Cash pet sends
 the v83 `SPAWN_PET` toggle request. Pet spawn/removal and movement packets update map pets
-using their NX stance art and name labels; server pet-name changes refresh the visible label.
+using their NX stance art and distinct name labels; a pet label is hidden when it repeats
+its owner's character name, and server pet-name changes refresh the visible label.
 Local pets follow with foothold physics, report movement to the server, and send `PET_LOOT`
 requests for nearby settled drops. Pets choose separate targets and briefly defer retries after
 a pickup request; the server remains authoritative over pickup eligibility. Server pet-chat
@@ -438,10 +457,11 @@ apply to combat and movement totals, appear in the stats panel, and are cleared 
 server's `RECALCULATE_STATS` packet. Use the Cash Shop binding or the HUD Cash Shop button to enter the
 rebuilt Cash Shop. Its resizable catalog reads only
 on-sale products with a valid commodity SN from `Etc.nx/Commodity.img`; it supports search,
-category filters, item details and icon preview, currency balances, purchase confirmation,
-and the server-backed locker and withdrawal flow. Server responses show reason-specific
-notices for purchase failures and stock availability. The catalog's coupon field sends the
-legacy v83 coupon request and reports invalid, expired, used, and wrong-server responses.
+category filters, item icons, and avatar try-on previews for equipment, plus currency balance
+refresh, purchase confirmation, and the server-backed cash inventory, locker, and withdrawal
+flow. Single-item and package purchase results appear in the cash inventory. Server responses
+show reason-specific notices for purchase failures and stock availability. The catalog's coupon
+field sends the legacy v83 coupon request and reports invalid, expired, used, and wrong-server responses.
 Resizing the window
 recomputes the logical pointer position so clicks stay aligned with the 1024×768 canvas.
 

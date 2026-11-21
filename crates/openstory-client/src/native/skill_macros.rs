@@ -1,6 +1,6 @@
 //! Native editor for the three v83 skill macros.
 
-use super::{NxArchive, composite_nx_ui_bitmap, draw_dialogue_text};
+use super::{NxArchive, NxDialog, composite_nx_ui_bitmap, draw_dialogue_text};
 use openstory_protocol::{MAX_SKILL_MACRO_NAME_CHARS, SKILL_MACRO_COUNT, SkillMacro};
 
 pub(super) const PANEL_X: f32 = 408.0;
@@ -301,16 +301,9 @@ pub(super) fn render(
     let width = PANEL_WIDTH as usize;
     let height = PANEL_HEIGHT as usize;
     let mut pixels = vec![0; width * height * 4];
-    let native = composite_nx_ui_bitmap(
-        &mut pixels,
-        width,
-        height,
-        ui_archive,
-        "UIWindow2.img/Skill/macro/backgrnd",
-        1,
-        0,
-    )
-    .is_ok();
+    let native = NxDialog::new(&mut pixels, width, height, ui_archive)
+        .frame("UIWindow2.img/Skill/macro/backgrnd", 1, 0)
+        .is_ok();
     if native {
         for layer in ["backgrnd2", "backgrnd3"] {
             let _ = composite_nx_ui_bitmap(
@@ -324,11 +317,7 @@ pub(super) fn render(
             );
         }
     } else {
-        let _ = composite_nx_ui_bitmap(
-            &mut pixels,
-            width,
-            height,
-            ui_archive,
+        let _ = NxDialog::new(&mut pixels, width, height, ui_archive).frame(
             "UIWindow.img/SkillMacro/backgrnd",
             0,
             0,
@@ -414,7 +403,7 @@ pub(super) fn render(
                     width,
                     height,
                     skill_archive,
-                    &format!("{:03}.img/skill/{skill_id}/icon", skill_id / 10_000),
+                    &format!("{:03}.img/skill/{skill_id:07}/icon", skill_id / 10_000),
                     x + 1,
                     y + 30,
                 )
@@ -537,7 +526,7 @@ pub(super) fn render(
             width,
             height,
             skill_archive,
-            &format!("{:03}.img/skill/{skill_id}/icon", skill_id / 10_000),
+            &format!("{:03}.img/skill/{skill_id:07}/icon", skill_id / 10_000),
             8,
             y + 1,
             16,
@@ -558,12 +547,10 @@ pub(super) fn render(
             [70, 48, 33],
         );
     }
-    for (path, x) in [
-        ("Basic.img/BtCancel/normal/0", 6),
-        ("Basic.img/BtOK/normal/0", 108),
-    ] {
-        let _ = composite_nx_ui_bitmap(&mut pixels, width, height, ui_archive, path, x, 351);
-    }
+    NxDialog::new(&mut pixels, width, height, ui_archive).anchored_buttons(&[
+        ("Basic.img/BtCancel/normal/0", 6, 351),
+        ("Basic.img/BtOK/normal/0", 108, 351),
+    ]);
     if let Some(drag) = state.drag {
         let (x, y) = drag.current;
         if drag.moved && (0.0..width as f32).contains(&x) && (0.0..height as f32).contains(&y) {

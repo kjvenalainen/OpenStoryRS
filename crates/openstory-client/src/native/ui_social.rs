@@ -4,6 +4,7 @@ fn render_chat_panel(
     lines: &VecDeque<ChatLine>,
     input: &str,
     open: bool,
+    input_focused: bool,
     target: ChatTarget,
     composer_label: Option<&str>,
 ) -> Vec<u8> {
@@ -29,8 +30,8 @@ fn render_chat_panel(
             line.color,
         );
     }
-    // The original target/edge sprites sit above the status bar. Chat history
-    // stays transparent over the map, as in the v83 client.
+    // Keep chat history over the map while aligning the target and composer
+    // with the white chat strip in the status bar.
     let _ = composite_nx_ui_bitmap(
         &mut pixels,
         width,
@@ -63,7 +64,11 @@ fn render_chat_panel(
         14,
         [255, 255, 255],
     );
-    let text = if open { input } else { "Press Enter to chat" };
+    let text = if input_focused {
+        input
+    } else {
+        "Press Enter to chat"
+    };
     draw_dialogue_text(
         font,
         &mut pixels,
@@ -77,7 +82,7 @@ fn render_chat_panel(
         15,
         [35, 35, 35],
     );
-    if open {
+    if input_focused {
         let caret_x = 88 + dialogue_text_width(font, input, 11.0).ceil() as usize;
         if caret_x < width - 20 {
             fill_dialogue_rect(
@@ -115,16 +120,10 @@ fn render_whisper_panel(
     let width = WHISPER_PANEL_WIDTH as usize;
     let height = WHISPER_PANEL_HEIGHT as usize;
     let mut pixels = vec![0; width * height * 4];
-    let _ = composite_nx_ui_layers(
-        &mut pixels,
-        width,
-        height,
-        ui_archive,
-        &[
-            ("UIWindow.img/Messenger/backgrnd", 0, 0),
-            ("UIWindow.img/Messenger/BtEnter/normal/0", 225, 315),
-        ],
-    );
+    let _ = NxDialog::new(&mut pixels, width, height, ui_archive).layers(&[
+        ("UIWindow.img/Messenger/backgrnd", 0, 0),
+        ("UIWindow.img/Messenger/BtEnter/normal/0", 225, 315),
+    ]);
     let recipient = if conversation.target.is_empty() {
         "To: enter a character name".to_owned()
     } else {
@@ -206,20 +205,14 @@ fn render_party_panel(
     let width = PARTY_PANEL_WIDTH as usize;
     let height = PARTY_PANEL_HEIGHT as usize;
     let mut pixels = vec![0; width * height * 4];
-    let _ = composite_nx_ui_layers(
-        &mut pixels,
-        width,
-        height,
-        ui_archive,
-        &[
-            ("UIWindow.img/UserList/backgrnd", 0, 0),
-            ("UIWindow.img/UserList/Tab/disabled/0", 15, 32),
-            ("UIWindow.img/UserList/Tab/enabled/1", 65, 32),
-            ("UIWindow.img/UserList/Tab/disabled/2", 112, 32),
-            ("UIWindow.img/UserList/Tab/disabled/3", 160, 32),
-            ("UIWindow.img/UserList/Party/party0", 10, 115),
-        ],
-    );
+    let _ = NxDialog::new(&mut pixels, width, height, ui_archive).layers(&[
+        ("UIWindow.img/UserList/backgrnd", 0, 0),
+        ("UIWindow.img/UserList/Tab/disabled/0", 15, 32),
+        ("UIWindow.img/UserList/Tab/enabled/1", 65, 32),
+        ("UIWindow.img/UserList/Tab/disabled/2", 112, 32),
+        ("UIWindow.img/UserList/Tab/disabled/3", 160, 32),
+        ("UIWindow.img/UserList/Party/party0", 10, 115),
+    ]);
     draw_dialogue_text(
         font,
         &mut pixels,
@@ -404,21 +397,13 @@ fn render_owl_panel(
     let height = OWL_PANEL_HEIGHT as usize;
     let mut pixels = vec![0; width * height * 4];
     if owl.result_item_id.is_none() {
-        let _ = composite_nx_ui_bitmap(
-            &mut pixels,
-            width,
-            height,
-            ui_archive,
+        let _ = NxDialog::new(&mut pixels, width, height, ui_archive).frame(
             "UIWindow.img/itemSearch/backgrnd",
             0,
             0,
         );
         if !owl.top_item_ids.is_empty() || owl.top_items_loaded {
-            let _ = composite_nx_ui_bitmap(
-                &mut pixels,
-                width,
-                height,
-                ui_archive,
+            let _ = NxDialog::new(&mut pixels, width, height, ui_archive).frame(
                 "UIWindow.img/itemSearch/searchback",
                 248,
                 0,
@@ -450,15 +435,8 @@ fn render_owl_panel(
                 );
             }
         }
-        let _ = composite_nx_ui_bitmap(
-            &mut pixels,
-            width,
-            height,
-            ui_archive,
-            "Basic.img/BtClose3/normal/0",
-            230,
-            5,
-        );
+        let _ = NxDialog::new(&mut pixels, width, height, ui_archive)
+        .anchored_button("Basic.img/BtClose3/normal/0", 230, 5);
         let _ = composite_nx_ui_bitmap(
             &mut pixels,
             width,
@@ -535,11 +513,7 @@ fn render_owl_panel(
             );
         }
     } else {
-        let _ = composite_nx_ui_bitmap(
-            &mut pixels,
-            width,
-            height,
-            ui_archive,
+        let _ = NxDialog::new(&mut pixels, width, height, ui_archive).frame(
             "UIWindow.img/itemSearch/resultback",
             0,
             0,
@@ -677,22 +651,16 @@ fn render_buddy_panel(
     let width = BUDDY_PANEL_WIDTH as usize;
     let height = BUDDY_PANEL_HEIGHT as usize;
     let mut pixels = vec![0; width * height * 4];
-    let _ = composite_nx_ui_layers(
-        &mut pixels,
-        width,
-        height,
-        ui_archive,
-        &[
-            ("UIWindow.img/UserList/backgrnd", 0, 0),
-            ("UIWindow.img/UserList/backgrnd2", 0, 0),
-            ("UIWindow.img/UserList/Tab/enabled/0", 15, 32),
-            ("UIWindow.img/UserList/Tab/disabled/1", 65, 32),
-            ("UIWindow.img/UserList/Tab/disabled/2", 112, 32),
-            ("UIWindow.img/UserList/Tab/disabled/3", 160, 32),
-            ("UIWindow.img/UserList/Friend/friend0", 10, 115),
-            ("UIWindow.img/UserList/Friend/line", 132, 142),
-        ],
-    );
+    let _ = NxDialog::new(&mut pixels, width, height, ui_archive).layers(&[
+        ("UIWindow.img/UserList/backgrnd", 0, 0),
+        ("UIWindow.img/UserList/backgrnd2", 0, 0),
+        ("UIWindow.img/UserList/Tab/enabled/0", 15, 32),
+        ("UIWindow.img/UserList/Tab/disabled/1", 65, 32),
+        ("UIWindow.img/UserList/Tab/disabled/2", 112, 32),
+        ("UIWindow.img/UserList/Tab/disabled/3", 160, 32),
+        ("UIWindow.img/UserList/Friend/friend0", 10, 115),
+        ("UIWindow.img/UserList/Friend/line", 132, 142),
+    ]);
     let online = buddies.iter().filter(|buddy| buddy.channel >= 0).count();
     let title = if let Some(group) = group_filter {
         format!("Buddy List · {group}  {online}/{} online", buddies.len())

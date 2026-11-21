@@ -2,12 +2,29 @@ fn quest_ids_for_tab(
     log: &openstory_protocol::QuestLog,
     available: &[(i16, i32)],
     tab: QuestLogTab,
+    archive: &NxArchive,
+    font: &fontdue::Font,
 ) -> Vec<i16> {
-    match tab {
+    let ids: Vec<i16> = match tab {
         QuestLogTab::Active => log.started.iter().map(|quest| quest.id).collect(),
         QuestLogTab::Available => available.iter().map(|(id, _)| *id).collect(),
         QuestLogTab::Completed => log.completed.iter().map(|quest| quest.id).collect(),
-    }
+    };
+    ids.into_iter()
+        .filter(|id| {
+            quest_info_text(archive, *id, "name")
+                .is_some_and(|name| quest_name_is_displayable(font, &name))
+        })
+        .collect()
+}
+
+fn quest_name_is_displayable(font: &fontdue::Font, name: &str) -> bool {
+    name.chars().any(char::is_alphanumeric)
+        && name.chars().all(|character| {
+            !matches!(character, '\u{fffd}' | '\u{25a0}' | '\u{25a1}')
+                && (character.is_whitespace()
+                    || (!character.is_control() && font.has_glyph(character)))
+        })
 }
 
 fn quest_info_text(archive: &NxArchive, quest_id: i16, field: &str) -> Option<String> {
@@ -81,7 +98,6 @@ fn quest_start_items_met(
 
 #[derive(Clone, Debug)]
 struct QuestRewardChoice {
-    selection: i16,
     count: i32,
     name: String,
 }
@@ -150,7 +166,6 @@ fn quest_reward_choices(
 
     let player_job = i32::from(character.stats.job);
     let player_gender = i32::from(character.stats.female);
-    let mut selection = 0_i16;
     let mut choices = Vec::new();
     for item in items {
         if quest_node_integer(&item, "prop") != Some(-1) {
@@ -168,12 +183,9 @@ fn quest_reward_choices(
         {
             continue;
         }
-        let current_selection = selection;
-        selection = selection.saturating_add(1);
         let item_id = quest_node_integer(&item, "id").unwrap_or(0);
         let count = quest_node_integer(&item, "count").unwrap_or(1).max(1);
         choices.push(QuestRewardChoice {
-            selection: current_selection,
             count,
             name: if item_id > 0 {
                 item_name(item_id, string_archive, item_name_cache)
@@ -842,6 +854,10 @@ fn render_quest_helper_panel(
     (WIDTH as u32, height as u32, pixels)
 }
 
+const QUEST_SCROLLBAR_WIDTH: usize = 15;
+const QUEST_SCROLLBAR_ARROW_HEIGHT: usize = 13;
+const QUEST_SCROLLBAR_THUMB_HEIGHT: usize = 25;
+
 fn draw_quest_panel_scrollbar(
     pixels: &mut [u8],
     width: usize,
@@ -852,9 +868,9 @@ fn draw_quest_panel_scrollbar(
     track_height: usize,
     thumb_offset: usize,
 ) {
-    const BAR_WIDTH: usize = 15;
-    const ARROW_HEIGHT: usize = 13;
-    if track_height <= ARROW_HEIGHT * 2 {
+    let arrow_height = QUEST_SCROLLBAR_ARROW_HEIGHT;
+    let fixed_height = 2 * arrow_height + QUEST_SCROLLBAR_THUMB_HEIGHT;
+    if track_height < fixed_height {
         return;
     }
     let _ = composite_nx_ui_bitmap_scaled_to(
@@ -864,9 +880,9 @@ fn draw_quest_panel_scrollbar(
         ui_archive,
         "Basic.img/VScr4/enabled/base",
         x,
-        y + ARROW_HEIGHT,
-        BAR_WIDTH,
-        track_height - ARROW_HEIGHT * 2,
+        y + arrow_height,
+        QUEST_SCROLLBAR_WIDTH,
+        track_height - arrow_height * 2,
     );
     let _ = composite_nx_ui_bitmap(
         pixels,
@@ -884,12 +900,9 @@ fn draw_quest_panel_scrollbar(
         ui_archive,
         "Basic.img/VScr4/enabled/next0",
         x as i32,
-        (y + track_height - ARROW_HEIGHT) as i32,
+        (y + track_height - arrow_height) as i32,
     );
-    let thumb_y = y
-        .saturating_add(ARROW_HEIGHT)
-        .saturating_add(thumb_offset)
-        .min(y + track_height - 25);
+    let thumb_y = y + arrow_height + thumb_offset.min(track_height - fixed_height);
     let _ = composite_nx_ui_bitmap(
         pixels,
         width,
@@ -899,6 +912,61 @@ fn draw_quest_panel_scrollbar(
         x as i32,
         thumb_y as i32,
     );
+}
+
+fn fit_quest_portrait(
+    node: &openstory_assets::NxNode,
+    max_width: usize,
+    max_height: usize,
+) -> Option<(usize, usize, Vec<u8>)> {
+    let bitmap = node.bitmap().ok().flatten()?;
+    let source_width = usize::from(bitmap.width());
+    let source_height = usize::from(bitmap.height());
+    if source_width == 0 || source_height == 0 || max_width == 0 || max_height == 0 {
+        return None;
+    }
+    let source = bitmap.decode_bgra_shared().ok()?;
+    if source.len() < source_width.saturating_mul(source_height).saturating_mul(4) {
+        return None;
+    }
+
+    let mut min_x = source_width;
+    let mut min_y = source_height;
+    let mut max_x = 0;
+    let mut max_y = 0;
+    for y in 0..source_height {
+        for x in 0..source_width {
+            if source[(y * source_width + x) * 4 + 3] != 0 {
+                min_x = min_x.min(x);
+                min_y = min_y.min(y);
+                max_x = max_x.max(x);
+                max_y = max_y.max(y);
+            }
+        }
+    }
+    if min_x > max_x || min_y > max_y {
+        return None;
+    }
+
+    let visible_width = max_x - min_x + 1;
+    let visible_height = max_y - min_y + 1;
+    let scale = (max_width as f32 / visible_width as f32)
+        .min(max_height as f32 / visible_height as f32)
+        .min(1.0);
+    let target_width = ((visible_width as f32 * scale).round() as usize).clamp(1, max_width);
+    let target_height = ((visible_height as f32 * scale).round() as usize).clamp(1, max_height);
+    let mut target = vec![0; target_width * target_height * 4];
+    for y in 0..target_height {
+        let source_y = min_y + y * visible_height / target_height;
+        for x in 0..target_width {
+            let source_x = min_x + x * visible_width / target_width;
+            let source_index = (source_y * source_width + source_x) * 4;
+            let target_index = (y * target_width + x) * 4;
+            target[target_index..target_index + 4]
+                .copy_from_slice(&source[source_index..source_index + 4]);
+        }
+    }
+    Some((target_width, target_height, target))
 }
 
 fn render_quest_log_panel(
@@ -911,6 +979,7 @@ fn render_quest_log_panel(
     item_name_cache: &mut HashMap<i32, Option<String>>,
     tab: QuestLogTab,
     selected: usize,
+    detail_open: bool,
     scroll: usize,
     selected_reward: usize,
     character: Option<&openstory_protocol::CharacterInfo>,
@@ -921,35 +990,28 @@ fn render_quest_log_panel(
     const WIDTH: usize = QUEST_LOG_PANEL_WIDTH as usize;
     const HEIGHT: usize = QUEST_LOG_PANEL_HEIGHT as usize;
     const LIST_WIDTH: usize = QUEST_LOG_LIST_WIDTH as usize;
+    const LIST_TEXT_WIDTH: usize = LIST_WIDTH.saturating_sub(18) - 31;
     const DETAIL_X: usize = QUEST_LOG_DETAIL_X;
     const VISIBLE_ROWS: usize = QUEST_LOG_VISIBLE_ROWS;
+    const SCROLLBAR_INSET: usize = 3;
+    const LIST_SCROLLBAR_Y: usize = 50;
+    const LIST_SCROLLBAR_HEIGHT: usize = 319;
+    const DETAIL_BODY_BOTTOM: usize = 360;
+    const DETAIL_CONTENT_RIGHT: usize =
+        DETAIL_X + QUEST_LOG_DETAIL_WIDTH as usize - 18;
     let mut pixels = vec![0_u8; WIDTH * HEIGHT * 4];
-    let ids = quest_ids_for_tab(log, available_quests, tab);
-    let selected_quest = ids.get(selected).copied();
-    let _ = composite_nx_ui_layers(
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        ui_archive,
-        &[("UIWindow.img/Quest/backgrnd", 0, 0)],
-    );
+    let ids = quest_ids_for_tab(log, available_quests, tab, archive, font);
+    let selected_quest = detail_open.then(|| ids.get(selected).copied()).flatten();
+    let mut dialog = NxDialog::new(&mut pixels, WIDTH, HEIGHT, ui_archive);
     if selected_quest.is_some() {
-        // The v83 detail pane is an authored single backdrop beside the list.
-        let _ = composite_nx_ui_layers(
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            ui_archive,
-            &[
-                ("UIWindow.img/Quest/backgrnd2", DETAIL_X as i32, 0),
-                (
-                    "Basic.img/BtClose/normal/0",
-                    (DETAIL_X + QUEST_LOG_DETAIL_WIDTH as usize - 13) as i32,
-                    5,
-                ),
-            ],
-        );
+        let _ = dialog.frame("UIWindow.img/Quest/backgrnd2", DETAIL_X as i32, 0);
+        let _ = dialog.buttons(&[(
+            ui_dialog::CLOSE_BUTTON_ART,
+            ui_foundation::QUEST_DETAIL_CLOSE_BUTTON,
+        )]);
     }
+    // Paint the list after the detail backdrop so its right bevel stays in front.
+    let _ = dialog.frame("UIWindow.img/Quest/backgrnd", 0, 0);
     let active = tab == QuestLogTab::Active;
     let available = tab == QuestLogTab::Available;
     let completed = tab == QuestLogTab::Completed;
@@ -1013,15 +1075,10 @@ fn render_quest_log_panel(
         10,
         [30, 30, 30],
     );
-    let _ = composite_nx_ui_bitmap(
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        ui_archive,
-        "Basic.img/BtClose/normal/0",
-        (LIST_WIDTH - 18) as i32,
-        5,
-    );
+    let _ = NxDialog::new(&mut pixels, WIDTH, HEIGHT, ui_archive).buttons(&[(
+        ui_dialog::CLOSE_BUTTON_ART,
+        ui_foundation::QUEST_LIST_CLOSE_BUTTON,
+    )]);
 
     if ids.is_empty() {
         let notice_index = if available {
@@ -1065,7 +1122,7 @@ fn render_quest_log_panel(
             );
             let name =
                 quest_info_text(archive, id, "name").unwrap_or_else(|| "Unknown quest".to_owned());
-            let name = ui_foundation::ellipsize(font, &name, 11.0, (LIST_WIDTH - 42) as f32);
+            let name = ui_foundation::ellipsize(font, &name, 11.0, LIST_TEXT_WIDTH as f32);
             let name_font = if index == selected {
                 ui_foundation::bold_font().unwrap_or(font)
             } else {
@@ -1080,28 +1137,37 @@ fn render_quest_log_panel(
                 31,
                 y as i32 + 1,
                 11.0,
-                LIST_WIDTH - 42,
+                LIST_TEXT_WIDTH,
                 18,
                 if index == selected { [34, 72, 112] } else { [28, 28, 28] },
             );
         }
     }
     if ids.len() > VISIBLE_ROWS {
+        let max_scroll = ids.len().saturating_sub(VISIBLE_ROWS);
+        let max_thumb_offset = LIST_SCROLLBAR_HEIGHT
+            - (QUEST_SCROLLBAR_ARROW_HEIGHT * 2 + QUEST_SCROLLBAR_THUMB_HEIGHT);
+        let thumb_offset = if max_scroll == 0 {
+            0
+        } else {
+            (max_thumb_offset as f32 * scroll.min(max_scroll) as f32 / max_scroll as f32).round()
+                as usize
+        };
         draw_quest_panel_scrollbar(
             &mut pixels,
             WIDTH,
             HEIGHT,
             ui_archive,
-            LIST_WIDTH - 15,
-            50,
-            327,
-            176,
+            LIST_WIDTH - QUEST_SCROLLBAR_WIDTH - SCROLLBAR_INSET,
+            LIST_SCROLLBAR_Y,
+            LIST_SCROLLBAR_HEIGHT,
+            thumb_offset,
         );
     }
 
     if let Some(id) = selected_quest {
         let text_x = DETAIL_X as i32 + 18;
-        let text_width = QUEST_LOG_DETAIL_WIDTH as usize - 36;
+        let text_width = DETAIL_CONTENT_RIGHT - text_x as usize - 5;
         let name =
             quest_info_text(archive, id, "name").unwrap_or_else(|| "Unknown quest".to_owned());
         let name = ui_foundation::ellipsize(font, &name, 11.0, 150.0);
@@ -1114,7 +1180,7 @@ fn render_quest_log_panel(
             DETAIL_X as i32 + 39,
             41,
             11.0,
-            176,
+            150,
             26,
             [255, 255, 255],
         );
@@ -1132,7 +1198,7 @@ fn render_quest_log_panel(
             DETAIL_X as i32 + 39,
             63,
             10.0,
-            176,
+            150,
             15,
             [225, 235, 244],
         );
@@ -1145,18 +1211,23 @@ fn render_quest_log_panel(
         {
             let path = format!("{npc_id:07}.img/stand/0");
             if let Ok(Some(npc)) = npc_archive.root().resolve(&path) {
-                let mut portrait = vec![0; 60 * 60 * 4];
-                let _ = composite_nx_node_bitmap(&mut portrait, 60, 60, &npc, 30, 59);
-                composite_bgra_pixels(
-                    &mut pixels,
-                    WIDTH,
-                    HEIGHT,
-                    &portrait,
-                    60,
-                    60,
-                    (DETAIL_X + 200) as i32,
-                    32,
-                );
+                const PORTRAIT_BOX: usize = 60;
+                if let Some((portrait_width, portrait_height, portrait)) =
+                    fit_quest_portrait(&npc, PORTRAIT_BOX, PORTRAIT_BOX)
+                {
+                    let x = DETAIL_X + 200 + (PORTRAIT_BOX - portrait_width) / 2;
+                    let y = 32 + (PORTRAIT_BOX - portrait_height) / 2;
+                    composite_bgra_pixels(
+                        &mut pixels,
+                        WIDTH,
+                        HEIGHT,
+                        &portrait,
+                        portrait_width,
+                        portrait_height,
+                        x as i32,
+                        y as i32,
+                    );
+                }
             }
         }
         let description = if active || completed {
@@ -1191,7 +1262,7 @@ fn render_quest_log_panel(
                     220,
                     10.0,
                     text_width,
-                    48,
+                    DETAIL_BODY_BOTTOM - 220,
                     [73, 69, 61],
                 );
             }
@@ -1293,74 +1364,19 @@ fn render_quest_log_panel(
                 );
             }
         }
-        if available {
-            let _ = composite_nx_ui_bitmap(
-                &mut pixels,
-                WIDTH,
-                HEIGHT,
-                ui_archive,
-                "UIWindow.img/Quest/BtOK/normal/0",
-                DETAIL_X as i32 + 42,
-                367,
-            );
-        } else if completed {
-            let _ = composite_nx_ui_bitmap(
-                &mut pixels,
-                WIDTH,
-                HEIGHT,
-                ui_archive,
-                "UIWindow.img/Quest/BtAlert/disabled/0",
-                DETAIL_X as i32 + 151,
-                367,
-            );
-            let _ = composite_nx_ui_bitmap(
-                &mut pixels,
-                WIDTH,
-                HEIGHT,
-                ui_archive,
-                "UIWindow.img/Quest/BtGiveup/disabled/0",
-                DETAIL_X as i32 + 243,
-                367,
-            );
-        } else if active {
-            let can_complete = log
-                .started
-                .iter()
-                .find(|quest| quest.id == id)
-                .is_some_and(|quest| quest_is_completable(quest, archive, inventory, log));
-            if can_complete {
-                let _ = composite_nx_ui_bitmap(
-                    &mut pixels,
-                    WIDTH,
-                    HEIGHT,
-                    ui_archive,
-                    "UIWindow.img/Quest/BtOK/normal/0",
-                    DETAIL_X as i32 + 42,
-                    367,
-                );
-            }
-            let _ = composite_nx_ui_bitmap(
-                &mut pixels,
-                WIDTH,
-                HEIGHT,
-                ui_archive,
-                "UIWindow.img/Quest/BtGiveup/normal/0",
-                DETAIL_X as i32 + 126,
-                367,
-            );
-        }
-    }
-    if selected_quest.is_some() {
-        draw_quest_panel_scrollbar(
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            ui_archive,
-            WIDTH - 15,
-            117,
-            250,
-            36,
-        );
+        let forfeit_path = if active {
+            "UIWindow.img/Quest/BtGiveup/normal/0"
+        } else {
+            "UIWindow.img/Quest/BtGiveup/disabled/0"
+        };
+        let buttons = [
+            (
+                "UIWindow.img/Quest/BtAlert/normal/0",
+                ui_foundation::QUEST_HELPER_BUTTON,
+            ),
+            (forfeit_path, ui_foundation::QUEST_FORFEIT_BUTTON),
+        ];
+        let _ = NxDialog::new(&mut pixels, WIDTH, HEIGHT, ui_archive).buttons(&buttons);
     }
     if let Some(id) = confirmation {
         let overlay_x = ((WIDTH - 266) / 2) as i32;
@@ -1464,11 +1480,7 @@ fn render_status_panel(
     const WIDTH: usize = STATUS_PANEL_WIDTH as usize;
     const HEIGHT: usize = STATUS_PANEL_HEIGHT as usize;
     let mut pixels = vec![0_u8; WIDTH * HEIGHT * 4];
-    let _ = composite_nx_ui_layers(
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        ui_archive,
+    let _ = NxDialog::new(&mut pixels, WIDTH, HEIGHT, ui_archive).layers(
         &[("UIWindow.img/Stat/backgrnd", 0, 0)],
     );
     let auto_state = if character.stats.ability_points > 0 && !waiting_for_stats {
@@ -1477,17 +1489,11 @@ fn render_status_panel(
         "disabled"
     };
     let auto_path = format!("UIWindow.img/Stat/BtAuto/{auto_state}/0");
-    let _ = composite_nx_ui_layers(
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        ui_archive,
-        &[
-            (auto_path.as_str(), ui_foundation::STATUS_AUTO_BUTTON.x as i32, ui_foundation::STATUS_AUTO_BUTTON.y as i32),
-            ("UIWindow.img/Stat/BtDetail/normal/0", ui_foundation::STATUS_DETAIL_BUTTON.x as i32, ui_foundation::STATUS_DETAIL_BUTTON.y as i32),
-            ("Basic.img/BtClose/normal/0", 155, 6),
-        ],
-    );
+    let _ = NxDialog::new(&mut pixels, WIDTH, HEIGHT, ui_archive).layers(&[
+        (auto_path.as_str(), ui_foundation::STATUS_AUTO_BUTTON.x as i32, ui_foundation::STATUS_AUTO_BUTTON.y as i32),
+        ("UIWindow.img/Stat/BtDetail/normal/0", ui_foundation::STATUS_DETAIL_BUTTON.x as i32, ui_foundation::STATUS_DETAIL_BUTTON.y as i32),
+        ("Basic.img/BtClose/normal/0", 155, 6),
+    ]);
 
     let stats = &character.stats;
     let color = [56, 42, 31];
@@ -1549,12 +1555,8 @@ fn render_status_panel(
     );
 
     if auto_confirmation {
-        let _ = composite_nx_ui_layers(
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            ui_archive,
-            &[("UIWindow.img/Quest/backgrnd5", -45, 104)],
+        let _ = NxDialog::new(&mut pixels, WIDTH, HEIGHT, ui_archive).layers(
+        &[("UIWindow.img/Quest/backgrnd5", -45, 104)],
         );
         draw_dialogue_text(
             font,
@@ -1590,16 +1592,10 @@ fn render_status_panel(
             20,
             color,
         );
-        let _ = composite_nx_ui_layers(
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            ui_archive,
-            &[
-                ("UIWindow.img/Quest/BtOK/normal/0", 20, 185),
-                ("UIWindow.img/Quest/BtNo/normal/0", 93, 185),
-            ],
-        );
+        let _ = NxDialog::new(&mut pixels, WIDTH, HEIGHT, ui_archive).layers(&[
+            ("UIWindow.img/Quest/BtOK/normal/0", 20, 185),
+            ("UIWindow.img/Quest/BtNo/normal/0", 93, 185),
+    ]);
     }
     pixels
 }
@@ -1619,11 +1615,7 @@ fn render_status_detail_panel(
     const WIDTH: usize = STATUS_DETAIL_WIDTH as usize;
     const HEIGHT: usize = STATUS_DETAIL_HEIGHT as usize;
     let mut pixels = vec![0_u8; WIDTH * HEIGHT * 4];
-    let _ = composite_nx_ui_bitmap(
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        ui_archive,
+    let _ = NxDialog::new(&mut pixels, WIDTH, HEIGHT, ui_archive).frame(
         "UIWindow.img/Stat/backgrnd2",
         0,
         0,

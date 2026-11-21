@@ -1,6 +1,22 @@
 use super::*;
 
 impl ClientApp {
+    fn pet_name_matches_owner(&self, character_id: i32, pet_name: &str) -> bool {
+        let pet_name = pet_name.trim();
+        if pet_name.is_empty() {
+            return false;
+        }
+        self.active_character
+            .as_ref()
+            .filter(|character| character.id == character_id)
+            .is_some_and(|character| character.stats.name.trim() == pet_name)
+            || self
+                .map_scene
+                .as_ref()
+                .and_then(|scene| scene.remote_players.get(&character_id))
+                .is_some_and(|character| character.name.trim() == pet_name)
+    }
+
     pub(super) fn spawn_map_door(&mut self, spawn: openstory_protocol::MapDoorSpawn) {
         if let Some(scene) = self.map_scene.as_mut() {
             scene.spawn_door(spawn.owner_id, spawn.x, spawn.y);
@@ -145,6 +161,7 @@ impl ClientApp {
             })
             .unwrap_or((f64::from(spawn.y), 0));
         let reactor = MapReactorRuntime {
+            reactor_id: spawn.reactor_id,
             state: spawn.state,
             x,
             y,
@@ -563,6 +580,69 @@ impl ClientApp {
         if maple_tv_anchors.is_some() {
             self.ensure_maple_tv_assets();
         }
+        let npc_id = spawn.npc_id.max(0);
+        let info_path = format!("{:07}.img/info", npc_id);
+        let hide_name = self
+            .npc_archive
+            .root()
+            .resolve(&info_path)
+            .ok()
+            .flatten()
+            .and_then(|info| integer_property(&info, "hideName"))
+            .is_some_and(|value| value != 0);
+        let mut name_tag_sprites = Vec::with_capacity(2);
+        let name_label_index = if hide_name {
+            None
+        } else {
+            nx_string_value(&self.string_archive, &format!("Npc.img/{npc_id}/name")).and_then(
+                |name| {
+                    append_map_name_tag_sprite(
+                        &mut name_tag_sprites,
+                        &self.font,
+                        &self.ui_archive,
+                        None,
+                        None,
+                        &name,
+                        512.0,
+                        GAMEPLAY_CAMERA_CENTER_Y,
+                        MapNameTagKind::Npc,
+                    )
+                },
+            )
+        };
+        let function_label_index = if hide_name {
+            None
+        } else {
+            nx_string_value(&self.string_archive, &format!("Npc.img/{npc_id}/func")).and_then(
+                |function| {
+                    append_map_name_tag_sprite(
+                        &mut name_tag_sprites,
+                        &self.font,
+                        &self.ui_archive,
+                        None,
+                        None,
+                        &function,
+                        512.0,
+                        GAMEPLAY_CAMERA_CENTER_Y + 19.0,
+                        MapNameTagKind::Npc,
+                    )
+                },
+            )
+        };
+        let name_tag_draws = if name_tag_sprites.is_empty() {
+            Vec::new()
+        } else {
+            match self.upload_dynamic_sprites(name_tag_sprites) {
+                Ok(draws) => draws,
+                Err(error) => {
+                    eprintln!("OpenStoryRS: could not load NPC name tags: {error}");
+                    Vec::new()
+                }
+            }
+        };
+        let name_label = name_label_index.and_then(|index| name_tag_draws.get(index).copied());
+        let function_label =
+            function_label_index.and_then(|index| name_tag_draws.get(index).copied());
         let mut sprites = Vec::new();
         let (assets, traits) = match append_npc_animations(
             &mut sprites,
@@ -636,6 +716,8 @@ impl ClientApp {
                     quest_mark_frames: Vec::new(),
                     quest_mark_frame_index: 0,
                     quest_mark_elapsed: Duration::ZERO,
+                    name_label,
+                    function_label,
                 },
             );
         }
@@ -1057,6 +1139,21 @@ impl ClientApp {
                 state.notice = Some("Item purchased successfully.".to_owned());
                 state.confirmation = false;
             }
+            openstory_protocol::CashShopOperation::ItemsPurchased(items) => {
+                let purchased_count = items.len();
+                for item in items {
+                    state
+                        .locker
+                        .retain(|existing| existing.instance_id != item.instance_id);
+                    state.locker.push(item);
+                }
+                state.notice = Some(if purchased_count == 1 {
+                    "Item purchased successfully.".to_owned()
+                } else {
+                    format!("{purchased_count} package items purchased successfully.")
+                });
+                state.confirmation = false;
+            }
             openstory_protocol::CashShopOperation::ItemWithdrawn {
                 inventory_slot,
                 item_record,
@@ -1123,7 +1220,19 @@ impl ClientApp {
                 });
                 state.confirmation = false;
             }
-            openstory_protocol::CashShopOperation::CouponRedeemed => {
+            openstory_protocol::CashShopOperation::CouponRedeemed {
+                items,
+                maple_points,
+            } => {
+                for item in items {
+                    state
+                        .locker
+                        .retain(|existing| existing.instance_id != item.instance_id);
+                    state.locker.push(item);
+                }
+                if maple_points > 0 {
+                    state.balances[1] = state.balances[1].saturating_add(maple_points);
+                }
                 state.notice = Some("Coupon redeemed successfully.".to_owned());
                 state.coupon_code.clear();
                 state.coupon_pending = false;
@@ -1155,8 +1264,9 @@ impl ClientApp {
             Ok(balances) => {
                 if let Some(state) = self.cash_shop.as_mut() {
                     state.balances = balances;
-                    if state.pending_nx_charge {
+                    if state.pending_nx_charge || state.pending_cash_query {
                         state.pending_nx_charge = false;
+                        state.pending_cash_query = false;
                         state.notice = Some("Cash balance updated.".to_owned());
                     }
                     self.refresh_cash_shop_texture();
@@ -1348,9 +1458,30 @@ impl ClientApp {
                 self.refresh_cash_shop_texture();
                 return;
             }
-            cash_shop_ui::HitAction::Help => {
+            cash_shop_ui::HitAction::BuyPreviewedItem => {
                 if let Some(state) = self.cash_shop.as_mut() {
-                    state.notice = Some("Cash Shop help is not available yet.".to_owned());
+                    if state.selected_sn.is_some() && state.entered {
+                        state.confirmation = true;
+                        state.search_focused = false;
+                    } else if state.selected_sn.is_some() {
+                        state.notice = Some("Waiting for the server to open the shop.".to_owned());
+                    } else {
+                        state.notice = Some("Select an item to preview first.".to_owned());
+                    }
+                }
+            }
+            cash_shop_ui::HitAction::DefaultAvatarPreview => {
+                if let Some(state) = self.cash_shop.as_mut() {
+                    state.preview_remove_all = false;
+                    state.selected_sn = None;
+                    state.search_focused = false;
+                }
+            }
+            cash_shop_ui::HitAction::RemoveAvatarEquipment => {
+                if let Some(state) = self.cash_shop.as_mut() {
+                    state.preview_remove_all = true;
+                    state.selected_sn = None;
+                    state.search_focused = false;
                 }
             }
             cash_shop_ui::HitAction::Charge => {
@@ -1381,9 +1512,28 @@ impl ClientApp {
                 }
             }
             cash_shop_ui::HitAction::CheckCash => {
-                if let Some(state) = self.cash_shop.as_mut() {
-                    state.notice =
-                        Some("Cash charging and balance checking are unavailable here.".to_owned());
+                let result = self.session.as_ref().map(|session| {
+                    session.send_packet(openstory_protocol::query_cash_balance_packet())
+                });
+                match result {
+                    Some(Ok(())) => {
+                        if let Some(state) = self.cash_shop.as_mut() {
+                            state.pending_cash_query = true;
+                            state.notice = Some("Cash balance request sent.".to_owned());
+                        }
+                    }
+                    Some(Err(error)) => {
+                        eprintln!("OpenStoryRS: could not request cash balances: {error}");
+                        self.channel_connected = false;
+                        if let Some(state) = self.cash_shop.as_mut() {
+                            state.notice = Some("Could not request cash balances.".to_owned());
+                        }
+                    }
+                    None => {
+                        if let Some(state) = self.cash_shop.as_mut() {
+                            state.notice = Some("Not connected to the server.".to_owned());
+                        }
+                    }
                 }
             }
             cash_shop_ui::HitAction::Coupon => {
@@ -1419,6 +1569,7 @@ impl ClientApp {
                     state.category = category;
                     state.page = 0;
                     state.selected_sn = None;
+                    state.preview_remove_all = false;
                     state.search_focused = false;
                 }
             }
@@ -1427,6 +1578,7 @@ impl ClientApp {
                     (self.cash_shop.as_mut(), self.cash_products.get(index))
                 {
                     state.selected_sn = Some(product.sn);
+                    state.preview_remove_all = false;
                     state.search_focused = false;
                 }
             }
@@ -1435,6 +1587,7 @@ impl ClientApp {
                     (self.cash_shop.as_mut(), self.cash_products.get(index))
                 {
                     state.selected_sn = Some(product.sn);
+                    state.preview_remove_all = false;
                     state.search_focused = false;
                     if state.entered {
                         state.confirmation = true;
@@ -1463,11 +1616,10 @@ impl ClientApp {
                 }
             }
             cash_shop_ui::HitAction::LockerItem(index) => {
-                withdrawal = self.cash_shop.as_ref().and_then(|state| {
-                    let mut items = state.locker.iter().collect::<Vec<_>>();
-                    items.sort_by_key(|item| item.instance_id);
-                    items.get(index).map(|item| item.instance_id)
-                });
+                withdrawal = self
+                    .cash_shop
+                    .as_ref()
+                    .and_then(|state| state.locker.get(index).map(|item| item.instance_id));
                 if let Some(state) = self.cash_shop.as_mut() {
                     state.search_focused = false;
                 }
@@ -1522,15 +1674,19 @@ impl ClientApp {
         let Some(state) = self.cash_shop.as_ref() else {
             return 0;
         };
-        cash_filtered_indices(
-            &self.cash_products,
-            state,
-            &self.string_archive,
-            &mut self.item_name_cache,
-        )
-        .len()
-        .saturating_sub(1)
-            / cash_shop_ui::CATALOG_PAGE_SIZE
+        if state.view == CashShopView::Locker {
+            state.locker.len().saturating_sub(1) / cash_shop_ui::LOCKER_PAGE_SIZE
+        } else {
+            cash_filtered_indices(
+                &self.cash_products,
+                state,
+                &self.string_archive,
+                &mut self.item_name_cache,
+            )
+            .len()
+            .saturating_sub(1)
+                / cash_shop_ui::CATALOG_PAGE_SIZE
+        }
     }
 
     pub(super) fn rebuild_npc_dialogue(&mut self) {
@@ -1857,6 +2013,12 @@ impl ClientApp {
         if dialogue.state.message_type != 4 || dialogue.selections.is_empty() {
             return;
         }
+        let visible_selection_count = dialogue
+            .buttons
+            .iter()
+            .filter(|button| matches!(button.action, NpcDialogueAction::Select(_)))
+            .count()
+            .max(1);
         let last_selection = dialogue.selections.len().saturating_sub(1);
         dialogue.selected_selection = dialogue
             .selected_selection
@@ -1864,8 +2026,11 @@ impl ClientApp {
             .min(last_selection);
         if dialogue.selected_selection < dialogue.first_visible_selection {
             dialogue.first_visible_selection = dialogue.selected_selection;
-        } else if dialogue.selected_selection >= dialogue.first_visible_selection + 5 {
-            dialogue.first_visible_selection = dialogue.selected_selection + 1 - 5;
+        } else if dialogue.selected_selection
+            >= dialogue.first_visible_selection + visible_selection_count
+        {
+            dialogue.first_visible_selection =
+                dialogue.selected_selection + 1 - visible_selection_count;
         }
         self.rebuild_npc_dialogue();
     }
@@ -2002,12 +2167,14 @@ impl ClientApp {
             hp_bar_remaining: Duration::ZERO,
             statuses: HashSet::new(),
             control_acked: false,
+            movement_dirty: false,
             ai_counter: 0,
             random_state: ((spawn.object_id as u32).wrapping_mul(0x9E37_79B9)
                 ^ spawn.mob_id as u32
                 ^ 0xA341_316C)
                 .max(1),
             fly_direction: 0,
+            aggro_target: None,
         };
         if spawn.control_mode > 0 && mob.motion == MobMotion::Stand {
             mob.choose_next_move();
@@ -2115,7 +2282,9 @@ impl ClientApp {
             );
             return;
         }
-        let name_label = if spawn.name.is_empty() {
+        let name_label = if spawn.name.is_empty()
+            || self.pet_name_matches_owner(spawn.character_id, &spawn.name)
+        {
             None
         } else {
             let mut sprites = Vec::with_capacity(1);
@@ -2174,7 +2343,7 @@ impl ClientApp {
         {
             return;
         }
-        let name_label = if name.is_empty() {
+        let name_label = if name.is_empty() || self.pet_name_matches_owner(character_id, name) {
             None
         } else {
             let mut sprites = Vec::with_capacity(1);
@@ -2832,7 +3001,11 @@ impl ClientApp {
         let animations = if frames.is_empty() {
             Vec::new()
         } else {
-            vec![CharacterSkillEffectAnimation { z, frames }]
+            vec![CharacterSkillEffectAnimation {
+                z,
+                flip_with_facing: false,
+                frames,
+            }]
         };
         if self.character_effect_cache.len() >= 16 {
             self.character_effect_cache.clear();
@@ -2919,7 +3092,11 @@ impl ClientApp {
         let animations = if teleport {
             match self.load_teleport_effect_frames() {
                 Ok(frames) if !frames.is_empty() => {
-                    vec![CharacterSkillEffectAnimation { z: 0, frames }]
+                    vec![CharacterSkillEffectAnimation {
+                        z: 0,
+                        flip_with_facing: true,
+                        frames,
+                    }]
                 }
                 Ok(_) => Vec::new(),
                 Err(error) => {

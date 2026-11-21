@@ -1,6 +1,16 @@
 use super::*;
 
 impl ClientApp {
+    fn inventory_pending_move_for_display(
+        &self,
+    ) -> Option<(openstory_protocol::InventoryType, u16, u16)> {
+        self.inventory_pending_move
+            .filter(|(_, _, _, started)| started.elapsed() < INVENTORY_MOVE_PREVIEW_TIMEOUT)
+            .map(|(inventory_type, source, destination, _)| (inventory_type, source, destination))
+    }
+}
+
+impl ClientApp {
     pub(super) fn refresh_inventory_drag_texture(&mut self) {
         self.inventory_drag_texture = None;
         let Some((inventory_type, slot, _)) = self.inventory_drag_source else {
@@ -24,25 +34,31 @@ impl ClientApp {
         let Some(renderer) = self.renderer.as_ref() else {
             return;
         };
-        match renderer.upload_bgra(34, 33, &pixels) {
+        match renderer.upload_bgra(
+            INVENTORY_SLOT_CELL_WIDTH as u32,
+            INVENTORY_SLOT_CELL_HEIGHT as u32,
+            &pixels,
+        ) {
             Ok(texture) => self.inventory_drag_texture = Some(texture),
             Err(error) => eprintln!("OpenStoryRS: could not create inventory drag icon: {error}"),
         }
     }
 
     pub(super) fn refresh_inventory_texture(&mut self) {
+        self.refresh_quickslot_counts_if_changed();
         self.refresh_quest_helper_texture();
         if self.show_equipment_inventory {
             self.refresh_equipment_inventory_texture();
         }
+        self.update_inventory_hover();
         if !self.show_inventory {
-            self.inventory_tooltip_texture = None;
+            self.inventory_texture = None;
+            self.refresh_inventory_tooltip_texture();
             return;
         }
-        self.update_inventory_hover();
         let Some(inventory) = self.inventory.as_ref() else {
             self.inventory_texture = None;
-            self.inventory_tooltip_texture = None;
+            self.refresh_inventory_tooltip_texture();
             return;
         };
         if self.pending_scroll_slot.is_some_and(|slot| {
@@ -66,6 +82,7 @@ impl ClientApp {
             self.inventory_hover_slot,
             self.inventory_drag_source
                 .map(|(inventory_type, slot, _)| (inventory_type, slot)),
+            self.inventory_pending_move_for_display(),
             self.pending_scroll_slot,
             &self.legacy_ui_archive,
             &self.item_archive,
@@ -124,18 +141,37 @@ impl ClientApp {
         }
     }
 
-    fn refresh_inventory_tooltip_texture(&mut self) {
-        let Some(slot) = self.inventory_hover_slot else {
-            self.inventory_tooltip_texture = None;
+    pub(super) fn refresh_inventory_tooltip_texture(&mut self) {
+        if self.npc_shop.is_some() {
+            self.refresh_npc_shop_tooltip_texture();
             return;
-        };
-        let Some(item) = self.inventory.as_ref().and_then(|inventory| {
-            inventory
-                .items
-                .iter()
-                .find(|item| item.inventory_type == self.inventory_tab && item.slot == slot)
+        }
+        let item = if let Some(slot) = self.inventory_hover_slot.filter(|_| self.show_inventory) {
+            self.inventory.as_ref().and_then(|inventory| {
+                inventory_display_item(
+                    inventory,
+                    self.inventory_tab,
+                    slot,
+                    self.inventory_pending_move_for_display(),
+                )
                 .cloned()
-        }) else {
+            })
+        } else {
+            self.quickslot_hover_slot
+                .filter(|_| self.current_field.is_some() && self.show_quickslots)
+                .and_then(|slot| self.current_quickslot_binding(slot))
+                .filter(|binding| matches!(binding.kind, 2 | 3))
+                .and_then(|binding| {
+                    self.inventory.as_ref().and_then(|inventory| {
+                        inventory
+                            .items
+                            .iter()
+                            .find(|item| item.slot > 0 && item.item_id == binding.action)
+                            .cloned()
+                    })
+                })
+        };
+        let Some(item) = item else {
             self.inventory_tooltip_texture = None;
             return;
         };
@@ -146,6 +182,8 @@ impl ClientApp {
             &self.item_archive,
             &self.character_archive,
             &self.string_archive,
+            self.active_character.as_ref().map(|character| &character.stats),
+            self.inventory.as_ref(),
             &mut self.inventory_icon_cache,
             &mut self.item_name_cache,
         );
@@ -175,16 +213,38 @@ impl ClientApp {
                 .and_then(|cursor| inventory_slot_at(cursor, self.inventory_scroll_row))
                 .filter(|slot| {
                     self.inventory.as_ref().is_some_and(|inventory| {
-                        inventory.items.iter().any(|item| {
-                            item.inventory_type == self.inventory_tab && item.slot == *slot
-                        })
+                        inventory_display_item(
+                            inventory,
+                            self.inventory_tab,
+                            *slot,
+                            self.inventory_pending_move_for_display(),
+                        )
+                        .is_some()
                     })
                 })
         } else {
             None
         };
-        let changed = self.inventory_hover_slot != hovered_slot;
+        let quickslot_hovered_slot = self
+            .cursor
+            .filter(|_| {
+                self.current_field.is_some()
+                    && self.show_quickslots
+                    && self.inventory_drag_source.is_none()
+                    && self.dialog_window_drag.is_none()
+                    && !self.skill_macro_editor.has_skill_drag()
+                    && self.inventory_drop_prompt.is_none()
+                    && !self.quit_confirmation
+                    && !self.wedding_panel_open
+                    && self.server_notice_popup.is_none()
+                    && self.rps_game.is_none()
+            })
+            .filter(|cursor| self.topmost_dialog_window_at(*cursor).is_none())
+            .and_then(|cursor| self.quickslot_at(cursor));
+        let changed = self.inventory_hover_slot != hovered_slot
+            || self.quickslot_hover_slot != quickslot_hovered_slot;
         self.inventory_hover_slot = hovered_slot;
+        self.quickslot_hover_slot = quickslot_hovered_slot;
         changed
     }
 
@@ -1137,7 +1197,7 @@ impl ClientApp {
             slot: item.slot,
             item_id: item.item_id,
             max_quantity,
-            quantity: initial_quantity.clamp(1, max_quantity).to_string(),
+            quantity: QuantityInput::new(Some(initial_quantity.clamp(1, max_quantity))),
             step: InventoryDropStep::Quantity,
             notice: None,
         });

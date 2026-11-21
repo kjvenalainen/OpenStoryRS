@@ -1,6 +1,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::io::Cursor;
 use std::sync::Arc;
+use std::sync::mpsc::{self, Receiver, TryRecvError};
 
 use openstory_assets::{NxArchive, NxNode};
 use rodio::{Decoder, DeviceSinkBuilder, MixerDeviceSink, Player, SpatialPlayer};
@@ -19,6 +20,7 @@ pub(super) struct AudioEngine {
     output: Option<MixerDeviceSink>,
     music: Option<Player>,
     music_path: Option<String>,
+    pending_music: Option<(String, Receiver<Result<Option<Arc<[u8]>>, String>>)>,
     music_volume: f32,
     sound_volume: f32,
     listener: (i16, i16),
@@ -46,6 +48,7 @@ impl AudioEngine {
             output,
             music: None,
             music_path: None,
+            pending_music: None,
             music_volume: 1.0,
             sound_volume: 1.0,
             listener: (0, 0),
@@ -61,21 +64,71 @@ impl AudioEngine {
 
     pub(super) fn play_music(&mut self, archive: &NxArchive, path: &str) {
         let cache_key = path.to_lowercase();
+        if self
+            .pending_music
+            .as_ref()
+            .is_some_and(|(pending_path, _)| pending_path != &cache_key)
+        {
+            self.pending_music = None;
+        }
         if self.music_path.as_deref() == Some(cache_key.as_str()) {
             return;
         }
-        let payload = match self.audio_payload(archive, path) {
-            Ok(Some(payload)) => payload,
-            Ok(None) => return,
-            Err(error) => {
-                eprintln!("OpenStory audio: could not load music {path:?}: {error}");
-                return;
-            }
+        if self
+            .pending_music
+            .as_ref()
+            .is_some_and(|(pending_path, _)| pending_path == &cache_key)
+        {
+            return;
+        }
+        if let Some(payload) = self.cached_audio_payload(&cache_key) {
+            self.start_music_with_payload(cache_key, payload);
+            return;
+        }
+        let archive = archive.clone();
+        let path = path.to_owned();
+        let (sender, receiver) = mpsc::channel();
+        match std::thread::Builder::new()
+            .name("map-music-load".to_owned())
+            .spawn(move || {
+                let _ = sender.send(read_audio_payload(&archive, &path));
+            }) {
+            Ok(_) => self.pending_music = Some((cache_key, receiver)),
+            Err(error) => eprintln!("OpenStory audio: could not start music load: {error}"),
+        }
+    }
+
+    pub(super) fn process_pending_music(&mut self) {
+        let ready =
+            self.pending_music
+                .as_ref()
+                .and_then(|(path, receiver)| match receiver.try_recv() {
+                    Ok(result) => Some((path.clone(), result)),
+                    Err(TryRecvError::Empty) => None,
+                    Err(TryRecvError::Disconnected) => Some((
+                        path.clone(),
+                        Err("music loading worker stopped unexpectedly".to_owned()),
+                    )),
+                });
+        let Some((path, result)) = ready else {
+            return;
         };
+        self.pending_music = None;
+        match result {
+            Ok(Some(payload)) => {
+                self.cache_audio_payload(path.clone(), payload.clone());
+                self.start_music_with_payload(path, payload);
+            }
+            Ok(None) => {}
+            Err(error) => eprintln!("OpenStory audio: could not load music {path:?}: {error}"),
+        }
+    }
+
+    fn start_music_with_payload(&mut self, cache_key: String, payload: Arc<[u8]>) {
         let source = match Decoder::new_looped(Cursor::new(payload)) {
             Ok(source) => source,
             Err(error) => {
-                eprintln!("OpenStory audio: could not decode music {path:?}: {error}");
+                eprintln!("OpenStory audio: could not decode music {cache_key:?}: {error}");
                 return;
             }
         };
@@ -253,16 +306,37 @@ impl AudioEngine {
         self.play_world_sound(archive, &format!("Skill.img/{skill_name}/Hit"), position);
     }
 
-    pub(super) fn play_mob_hit(
+    pub(super) fn play_mob_hit(&mut self, archive: &NxArchive, mob_id: i32, position: (i16, i16)) {
+        let Some(path) = mob_sound_path(mob_id, "Damage") else {
+            return;
+        };
+        self.play_world_sound(archive, &path, position);
+    }
+
+    pub(super) fn play_mob_death(
         &mut self,
         archive: &NxArchive,
         mob_id: i32,
         position: (i16, i16),
     ) {
-        if mob_id <= 0 {
+        let Some(path) = mob_sound_path(mob_id, "Die") else {
             return;
-        }
-        self.play_world_sound(archive, &format!("Mob.img/{mob_id:07}/Damage"), position);
+        };
+        self.play_world_sound(archive, &path, position);
+    }
+
+    pub(super) fn play_reactor_hit(&mut self, archive: &NxArchive, reactor_id: i32, state: i8) {
+        let Some(paths) = reactor_hit_sound_candidates(reactor_id, state) else {
+            return;
+        };
+        self.play_ui_sound_candidates(archive, &paths);
+    }
+
+    pub(super) fn play_reactor_break(&mut self, archive: &NxArchive, reactor_id: i32, state: i8) {
+        let Some(paths) = reactor_break_sound_candidates(reactor_id, state) else {
+            return;
+        };
+        self.play_ui_sound_candidates(archive, &paths);
     }
 
     fn audio_payload(
@@ -271,27 +345,34 @@ impl AudioEngine {
         path: &str,
     ) -> Result<Option<Arc<[u8]>>, String> {
         let key = path.to_lowercase();
-        if self.audio_cache.contains_key(&key) {
-            let last_access = self.next_audio_cache_access();
-            if let Some(cached) = self.audio_cache.get_mut(&key) {
-                cached.last_access = last_access;
-                let payload = cached.payload.clone();
-                self.audio_cache_access_order
-                    .push_back((last_access, key.clone()));
-                self.compact_audio_cache_access_order();
-                return Ok(Some(payload));
-            }
+        if let Some(payload) = self.cached_audio_payload(&key) {
+            return Ok(Some(payload));
         }
-        let Some(node) = resolve_relaxed(archive, path)? else {
+        let Some(payload) = read_audio_payload(archive, path)? else {
             return Ok(None);
         };
-        let Some(bytes) = node.audio_bytes().map_err(|error| error.to_string())? else {
-            return Ok(None);
-        };
-        if bytes.len() <= NX_AUDIO_HEADER_LENGTH {
-            return Ok(None);
+        self.cache_audio_payload(key, payload.clone());
+        Ok(Some(payload))
+    }
+
+    fn cached_audio_payload(&mut self, key: &str) -> Option<Arc<[u8]>> {
+        if !self.audio_cache.contains_key(key) {
+            return None;
         }
-        let payload: Arc<[u8]> = Arc::from(&bytes[NX_AUDIO_HEADER_LENGTH..]);
+        let last_access = self.next_audio_cache_access();
+        let payload = self.audio_cache.get_mut(key).map(|cached| {
+            cached.last_access = last_access;
+            cached.payload.clone()
+        });
+        if payload.is_some() {
+            self.audio_cache_access_order
+                .push_back((last_access, key.to_owned()));
+            self.compact_audio_cache_access_order();
+        }
+        payload
+    }
+
+    fn cache_audio_payload(&mut self, key: String, payload: Arc<[u8]>) {
         if payload.len() <= MAX_AUDIO_CACHE_BYTES {
             while self.audio_cache.len() >= MAX_AUDIO_CACHE_ENTRIES
                 || self.cached_audio_bytes.saturating_add(payload.len()) > MAX_AUDIO_CACHE_BYTES
@@ -329,7 +410,21 @@ impl AudioEngine {
             self.audio_cache_access_order.push_back((last_access, key));
             self.compact_audio_cache_access_order();
         }
-        Ok(Some(payload))
+    }
+
+    fn play_ui_sound_candidates(&mut self, archive: &NxArchive, paths: &[String]) {
+        for path in paths {
+            match self.audio_payload(archive, path) {
+                Ok(Some(_)) => {
+                    self.play_ui_sound(archive, path);
+                    return;
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    eprintln!("OpenStory audio: could not load sound {path:?}: {error}");
+                }
+            }
+        }
     }
 
     fn compact_audio_cache_access_order(&mut self) {
@@ -373,6 +468,80 @@ fn configured_volume(variable: &str) -> u8 {
         .and_then(|value| value.parse::<u8>().ok())
         .filter(|volume| *volume <= 100)
         .unwrap_or(100)
+}
+
+fn mob_sound_path(mob_id: i32, sound_name: &str) -> Option<String> {
+    (mob_id > 0).then(|| format!("Mob.img/{mob_id:07}/{sound_name}"))
+}
+
+fn reactor_hit_sound_candidates(reactor_id: i32, state: i8) -> Option<[String; 2]> {
+    (reactor_id > 0 && state >= 0).then(|| {
+        [
+            format!("Reactor.img/{reactor_id}/{state}/Hit"),
+            format!("Reactor.img/{reactor_id}/hit"),
+        ]
+    })
+}
+
+fn reactor_break_sound_candidates(reactor_id: i32, state: i8) -> Option<[String; 2]> {
+    (reactor_id > 0).then(|| {
+        [
+            format!("Reactor.img/{reactor_id}/break"),
+            format!("Reactor.img/{reactor_id}/{state}/Break"),
+        ]
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{mob_sound_path, reactor_break_sound_candidates, reactor_hit_sound_candidates};
+
+    #[test]
+    fn mob_sound_paths_use_the_numeric_archive_node() {
+        assert_eq!(
+            mob_sound_path(100_100, "Die").as_deref(),
+            Some("Mob.img/0100100/Die")
+        );
+        assert_eq!(mob_sound_path(0, "Die"), None);
+    }
+
+    #[test]
+    fn reactor_hit_paths_match_state_scoped_v83_audio_nodes() {
+        assert_eq!(
+            reactor_hit_sound_candidates(2000, 3),
+            Some([
+                String::from("Reactor.img/2000/3/Hit"),
+                String::from("Reactor.img/2000/hit"),
+            ])
+        );
+        assert_eq!(reactor_hit_sound_candidates(0, 0), None);
+        assert_eq!(reactor_hit_sound_candidates(2000, -1), None);
+    }
+
+    #[test]
+    fn reactor_break_paths_cover_legacy_and_state_scoped_audio_nodes() {
+        assert_eq!(
+            reactor_break_sound_candidates(2000, 3),
+            Some([
+                String::from("Reactor.img/2000/break"),
+                String::from("Reactor.img/2000/3/Break"),
+            ])
+        );
+        assert_eq!(reactor_break_sound_candidates(0, 3), None);
+    }
+}
+
+fn read_audio_payload(archive: &NxArchive, path: &str) -> Result<Option<Arc<[u8]>>, String> {
+    let Some(node) = resolve_relaxed(archive, path)? else {
+        return Ok(None);
+    };
+    let Some(bytes) = node.audio_bytes().map_err(|error| error.to_string())? else {
+        return Ok(None);
+    };
+    if bytes.len() <= NX_AUDIO_HEADER_LENGTH {
+        return Ok(None);
+    }
+    Ok(Some(Arc::from(&bytes[NX_AUDIO_HEADER_LENGTH..])))
 }
 
 fn resolve_relaxed(archive: &NxArchive, path: &str) -> Result<Option<NxNode>, String> {

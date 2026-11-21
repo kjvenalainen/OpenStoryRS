@@ -1,5 +1,30 @@
 use super::*;
 
+pub(super) fn skill_points_for_book(
+    stats: &openstory_protocol::CharacterStats,
+    tab: u8,
+    skills: &std::collections::HashMap<i32, openstory_protocol::SkillEntry>,
+) -> u16 {
+    // The v83 server does not store or report SP for beginner jobs. Their
+    // three novice skills share up to six points earned from levels 2–7.
+    if tab == 0 && matches!(stats.job, 0 | 1000 | 2000) {
+        let skill_id_base = i32::from(stats.job / 1000) * 10_000_000;
+        let spent = (0..3).fold(0_u16, |spent, index| {
+            let level = skills
+                .get(&(skill_id_base + 1_000 + index))
+                .map_or(0, |skill| skill.level.max(0).min(6) as u16);
+            spent.saturating_add(level)
+        });
+        return u16::from(stats.level.saturating_sub(1).min(6)).saturating_sub(spent);
+    }
+
+    stats
+        .skill_points_by_job
+        .iter()
+        .find(|(skill_tab, _)| *skill_tab == tab)
+        .map_or(stats.skill_points, |(_, points)| u16::from(*points))
+}
+
 impl ClientApp {
     pub(super) fn refresh_pet_equipment_texture(&mut self) {
         if !self.show_pet_equipment {
@@ -797,6 +822,7 @@ impl ClientApp {
     }
 
     pub(super) fn refresh_skill_book_entries(&mut self) {
+        self.quickslot_tooltip_skill_id = None;
         let Some(character) = self.active_character.as_ref() else {
             self.skill_book_entries.clear();
             return;
@@ -1054,14 +1080,8 @@ impl ClientApp {
             self.skill_book_texture = None;
             return;
         };
-        let skill_points = character
-            .stats
-            .skill_points_by_job
-            .iter()
-            .find(|(tab, _)| *tab == self.skill_book_tab)
-            .map_or(character.stats.skill_points, |(_, points)| {
-                u16::from(*points)
-            });
+        let skill_points =
+            skill_points_for_book(&character.stats, self.skill_book_tab, &self.skills);
         let book_job = skill_subjob_for_tab(character.stats.job, self.skill_book_tab);
         let book_title = book_job
             .and_then(|job| {
@@ -1119,8 +1139,13 @@ impl ClientApp {
             self.active_character.as_ref(),
             self.inventory.as_ref(),
         );
-        let quest_ids =
-            quest_ids_for_tab(&self.quest_log, &self.available_quests, self.quest_log_tab);
+        let quest_ids = quest_ids_for_tab(
+            &self.quest_log,
+            &self.available_quests,
+            self.quest_log_tab,
+            &self.quest_archive,
+            &self.font,
+        );
         if quest_ids.is_empty() {
             self.quest_log_selected = 0;
             self.quest_log_scroll = 0;
@@ -1139,10 +1164,9 @@ impl ClientApp {
             }
         }
         if self.quest_log_tab == QuestLogTab::Active {
-            let choice_count = self
-                .quest_log
-                .started
-                .get(self.quest_log_selected)
+            let selected_quest_id = quest_ids.get(self.quest_log_selected).copied();
+            let choice_count = selected_quest_id
+                .and_then(|id| self.quest_log.started.iter().find(|quest| quest.id == id))
                 .zip(self.active_character.as_ref())
                 .map(|(quest, character)| {
                     quest_reward_choices(
@@ -1180,6 +1204,7 @@ impl ClientApp {
             &mut self.item_name_cache,
             self.quest_log_tab,
             self.quest_log_selected,
+            self.quest_log_detail_open,
             self.quest_log_scroll,
             self.quest_reward_selected,
             self.active_character.as_ref(),

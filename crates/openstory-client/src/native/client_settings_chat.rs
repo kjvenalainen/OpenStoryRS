@@ -9,7 +9,6 @@ impl ClientApp {
             &self.font,
             &self.ui_archive,
             self.settings,
-            self.display_settings,
             self.input_settings,
             self.gameplay_settings,
             self.social_settings,
@@ -35,7 +34,6 @@ impl ClientApp {
 
     pub(super) fn open_settings(&mut self) {
         self.settings_original = self.settings;
-        self.display_settings_original = self.display_settings;
         self.input_settings_original = self.input_settings;
         self.gameplay_settings_original = self.gameplay_settings;
         self.social_settings_original = self.social_settings;
@@ -51,8 +49,8 @@ impl ClientApp {
             return;
         }
         if self.quit_confirmation_draws.is_empty() {
-            let assets = build_quit_confirmation_sprites(&self.legacy_ui_archive)
-                .or_else(|_| build_quit_confirmation_sprites(&self.ui_archive));
+            let assets = build_quit_confirmation_sprites(&self.legacy_ui_archive, &self.font)
+                .or_else(|_| build_quit_confirmation_sprites(&self.ui_archive, &self.font));
             match assets {
                 Ok((sprites, buttons)) => match self.upload_dynamic_sprites(sprites) {
                     Ok(draws) => {
@@ -77,7 +75,6 @@ impl ClientApp {
 
     pub(super) fn cancel_settings(&mut self) {
         self.settings = self.settings_original;
-        self.display_settings = self.display_settings_original;
         self.input_settings = self.input_settings_original;
         self.gameplay_settings = self.gameplay_settings_original;
         self.social_settings = self.social_settings_original;
@@ -101,11 +98,9 @@ impl ClientApp {
         ) {
             Ok(path) => {
                 self.settings_original = self.settings;
-                self.display_settings_original = self.display_settings;
                 self.input_settings_original = self.input_settings;
                 self.gameplay_settings_original = self.gameplay_settings;
                 self.social_settings_original = self.social_settings;
-                self.apply_display_settings();
                 apply_mouse_speed(self.input_settings.mouse_speed);
                 self.show_settings = false;
                 self.settings_dragging = None;
@@ -117,23 +112,6 @@ impl ClientApp {
                 self.settings_notice = Some(format!("Could not save: {error}"));
                 self.refresh_settings_texture();
             }
-        }
-    }
-
-    fn apply_display_settings(&self) {
-        let Some(window) = self.window.as_ref() else {
-            return;
-        };
-        if self.display_settings.fullscreen {
-            window.set_fullscreen(Some(winit::window::Fullscreen::Borderless(
-                window.current_monitor(),
-            )));
-        } else {
-            window.set_fullscreen(None);
-            let _ = window.request_inner_size(winit::dpi::LogicalSize::new(
-                f64::from(self.display_settings.width),
-                f64::from(self.display_settings.height),
-            ));
         }
     }
 
@@ -177,16 +155,6 @@ impl ClientApp {
             OptionControl::ScreenShake => {
                 self.gameplay_settings.screen_shake_enabled = value >= 50;
             }
-            OptionControl::Windowed => self.display_settings.fullscreen = value < 50,
-            OptionControl::Resolution800 if value >= 50 => {
-                self.display_settings.width = 800;
-                self.display_settings.height = 600;
-            }
-            OptionControl::Resolution1024 if value >= 50 => {
-                self.display_settings.width = 1024;
-                self.display_settings.height = 768;
-            }
-            OptionControl::Resolution800 | OptionControl::Resolution1024 => {}
             OptionControl::AllowWhisper => self.social_settings.allow_whisper = value >= 50,
             OptionControl::AllowChatInvite => self.social_settings.allow_chat_invite = value >= 50,
             OptionControl::AllowPartyInvite => {
@@ -252,13 +220,6 @@ impl ClientApp {
             OptionControl::ScreenShake => {
                 bool_to_percent(self.gameplay_settings.screen_shake_enabled)
             }
-            OptionControl::Windowed => bool_to_percent(!self.display_settings.fullscreen),
-            OptionControl::Resolution800 => bool_to_percent(
-                self.display_settings.width == 800 && self.display_settings.height == 600,
-            ),
-            OptionControl::Resolution1024 => bool_to_percent(
-                self.display_settings.width == 1024 && self.display_settings.height == 768,
-            ),
             OptionControl::AllowWhisper => bool_to_percent(self.social_settings.allow_whisper),
             OptionControl::AllowChatInvite => {
                 bool_to_percent(self.social_settings.allow_chat_invite)
@@ -293,12 +254,7 @@ impl ClientApp {
     }
 
     pub(super) fn set_option_setting_from_cursor(&mut self, slider: OptionControl, x: f32) {
-        let track_left = SETTINGS_PANEL_X
-            + if slider == OptionControl::EffectsQuality {
-                359.0
-            } else {
-                104.0
-            };
+        let track_left = SETTINGS_PANEL_X + slider.track_left() as f32;
         if slider.track_y().is_none() {
             return;
         }
@@ -318,53 +274,44 @@ impl ClientApp {
         }
         let local_x = cursor.x - SETTINGS_PANEL_X;
         let local_y = cursor.y - SETTINGS_PANEL_Y;
-        if (350.0..445.0).contains(&local_x) && (257.0..282.0).contains(&local_y) {
-            self.settings_selected_slider = OptionControl::EffectsQuality;
-            self.settings_dragging = Some(OptionControl::EffectsQuality);
-            self.set_option_setting_from_cursor(OptionControl::EffectsQuality, cursor.x);
-        } else if (98.0..272.0).contains(&local_x)
-            && let Some(slider) = [
-                OptionControl::GraphicsQuality,
-                OptionControl::Music,
-                OptionControl::SoundEffects,
-                OptionControl::HpWarning,
-                OptionControl::MpWarning,
-                OptionControl::MouseSpeed,
-            ]
-            .into_iter()
-            .find(|slider| {
-                slider
+        if let Some(slider) = [
+            OptionControl::GraphicsQuality,
+            OptionControl::Music,
+            OptionControl::SoundEffects,
+            OptionControl::MouseSpeed,
+            OptionControl::HpWarning,
+            OptionControl::MpWarning,
+            OptionControl::EffectsQuality,
+        ]
+        .into_iter()
+        .find(|slider| {
+            let left = slider.track_left() as f32;
+            let right = left + slider.track_width() as f32;
+            (left - 11.0..right + 11.0).contains(&local_x)
+                && slider
                     .track_y()
-                    .is_some_and(|y| (y as f32 - 12.0..y as f32 + 13.0).contains(&local_y))
-            })
-        {
-            self.settings_selected_slider = slider;
+                    .is_some_and(|y| (local_y - y as f32).abs() <= 12.0)
+        }) {
             self.settings_dragging = Some(slider);
             self.set_option_setting_from_cursor(slider, cursor.x);
-        } else if (241.0..258.0).contains(&local_y) && (263.0..296.0).contains(&local_x) {
-            self.settings_selected_slider = OptionControl::ScreenShake;
+        } else if (SYSTEM_OPTIONS_MUTE_CELL_X as f32..SYSTEM_OPTIONS_ROW_RIGHT as f32)
+            .contains(&local_x)
+            && let Some(control) = [
+                OptionControl::MuteMusic,
+                OptionControl::MuteEffects,
+                OptionControl::ScreenShake,
+            ]
+            .into_iter()
+            .find(|control| (local_y - control.system_checkbox_y() as f32).abs() <= 12.0)
+        {
+            self.settings_selected_slider = control;
             self.toggle_selected_option_setting();
-        } else if (63.0..84.0).contains(&local_y) && (263.0..296.0).contains(&local_x) {
-            self.settings_selected_slider = OptionControl::MuteMusic;
-            self.toggle_selected_option_setting();
-        } else if (91.0..112.0).contains(&local_y) && (263.0..296.0).contains(&local_x) {
-            self.settings_selected_slider = OptionControl::MuteEffects;
-            self.toggle_selected_option_setting();
-        } else if (296.0..323.0).contains(&local_y) && (258.0..286.0).contains(&local_x) {
-            self.settings_selected_slider = OptionControl::Windowed;
-            self.toggle_selected_option_setting();
-        } else if (338.0..365.0).contains(&local_y) && (5.0..100.0).contains(&local_x) {
-            self.settings_selected_slider = OptionControl::Resolution800;
-            self.set_option_setting(OptionControl::Resolution800, 100);
-        } else if (338.0..365.0).contains(&local_y) && (103.0..198.0).contains(&local_x) {
-            self.settings_selected_slider = OptionControl::Resolution1024;
-            self.set_option_setting(OptionControl::Resolution1024, 100);
         } else if let Some(control) = option_permission_at(local_x, local_y) {
             self.settings_selected_slider = control;
             self.toggle_selected_option_setting();
-        } else if (338.0..365.0).contains(&local_y) && (204.0..251.0).contains(&local_x) {
+        } else if SYSTEM_OPTIONS_OK_BUTTON.contains(local_x, local_y) {
             self.save_settings();
-        } else if (338.0..365.0).contains(&local_y) && (251.0..298.0).contains(&local_x) {
+        } else if SYSTEM_OPTIONS_CANCEL_BUTTON.contains(local_x, local_y) {
             self.cancel_settings();
         }
     }
@@ -384,6 +331,7 @@ impl ClientApp {
                 &self.chat_input
             },
             self.chat_open && !item_megaphone_open,
+            self.chat_input_focused && !item_megaphone_open,
             self.chat_target,
             (!item_megaphone_open)
                 .then(|| {
@@ -539,6 +487,7 @@ impl ClientApp {
                     self.cash_item_compose = None;
                     self.chat_input.clear();
                     self.chat_open = false;
+                    self.chat_input_focused = false;
                     self.item_megaphone_texture = None;
                     self.refresh_chat_texture();
                 }
@@ -586,6 +535,7 @@ impl ClientApp {
         self.whisper_target_focused = false;
         if focus_input {
             self.chat_open = false;
+            self.chat_input_focused = false;
             self.gameplay_input = GameplayInput::default();
         }
         self.refresh_whisper_texture();
@@ -600,6 +550,7 @@ impl ClientApp {
         self.whisper_input_focused = true;
         self.whisper_target_focused = true;
         self.chat_open = false;
+        self.chat_input_focused = false;
         self.gameplay_input = GameplayInput::default();
         self.refresh_whisper_texture();
         if let Some(window) = self.window.as_ref() {

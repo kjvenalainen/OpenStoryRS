@@ -216,19 +216,21 @@ impl ClientApp {
             GAMEPLAY_CAMERA_CENTER_Y,
             &mut self.remote_art_cache,
         )?;
-        let name_label_index = sprites.len();
-        append_text_sprite(
+        let name_label_index = append_map_name_tag_sprite(
             &mut sprites,
             &self.font,
+            &self.ui_archive,
+            Some(&self.character_archive),
+            Some(look),
             name,
-            centered_text_x(&self.font, name, 15.0),
-            GAMEPLAY_CAMERA_CENTER_Y - 92.0,
-            15.0,
+            512.0,
+            GAMEPLAY_CAMERA_CENTER_Y,
+            MapNameTagKind::Character,
         );
         let draws = self.upload_dynamic_sprites(sprites)?;
         Ok((
             uploaded_avatar_frames_runtime(assets, &draws),
-            draws.get(name_label_index).copied(),
+            name_label_index.and_then(|index| draws.get(index).copied()),
         ))
     }
 
@@ -911,7 +913,11 @@ impl ClientApp {
         if let Some(scene) = self.map_scene.as_mut() {
             scene.show_character_skill_effect(
                 None,
-                vec![CharacterSkillEffectAnimation { z: 0, frames }],
+                vec![CharacterSkillEffectAnimation {
+                    z: 0,
+                    flip_with_facing: true,
+                    frames,
+                }],
                 1.0,
             );
         }
@@ -1082,6 +1088,7 @@ impl ClientApp {
             .into_iter()
             .map(|asset| CharacterSkillEffectAnimation {
                 z: asset.z,
+                flip_with_facing: true,
                 frames: projectile_frames_runtime(asset.frames, &draws),
             })
             .filter(|animation| !animation.frames.is_empty())
@@ -1100,7 +1107,7 @@ impl ClientApp {
         if let Some(frames) = self.skill_point_effect_cache.get(&skill_id) {
             return Ok(frames.clone());
         }
-        let path = format!("{:03}.img/skill/{skill_id}/effect", skill_id / 10_000);
+        let path = format!("{:03}.img/skill/{skill_id:07}/effect", skill_id / 10_000);
         let source = self
             .skill_archive
             .root()
@@ -1162,6 +1169,7 @@ impl ClientApp {
                 let draws = self.upload_dynamic_sprites(sprites)?;
                 vec![CharacterSkillEffectAnimation {
                     z: 0,
+                    flip_with_facing: true,
                     frames: projectile_frames_runtime(frames, &draws),
                 }]
             }

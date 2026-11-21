@@ -9,6 +9,7 @@ const SLOPE_FACTOR: f64 = 0.1;
 const GROUND_SLIP: f64 = 3.0;
 const FLY_FRICTION: f64 = 0.05;
 const SWIM_FRICTION: f64 = 0.08;
+const MAX_STAIR_STEP_DOWN: f64 = 24.0;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum PhysicsMode {
@@ -125,27 +126,34 @@ impl PhysicsEngine {
                 .find_below(body.x, body.y)
                 .map(|(id, _)| id)
                 .unwrap_or(0);
-            self.update_ground_state(tree, body, false);
+            self.update_ground_state(tree, body, false, 0.0);
             return;
         };
         if body.mode == PhysicsMode::Fixated && body.foothold_id != 0 {
             return;
         }
 
-        let mut check_slope = false;
+        // A character can move several ticks along one diagonal foothold before
+        // reaching its linked neighbor. Keep following that same ground line
+        // while grounded instead of only snapping when the foothold id changes.
+        let check_slope = body.on_ground;
         if body.on_ground {
             if body.x.floor() > f64::from(current.right()) {
                 body.foothold_id = current.next;
+                if !foothold_covers_x(tree, body.foothold_id, body.x) {
+                    body.foothold_id = transition_foothold(tree, current, body).unwrap_or(0);
+                }
             } else if body.x.ceil() < f64::from(current.left()) {
                 body.foothold_id = current.previous;
+                if !foothold_covers_x(tree, body.foothold_id, body.x) {
+                    body.foothold_id = transition_foothold(tree, current, body).unwrap_or(0);
+                }
             }
             if body.foothold_id == 0 {
                 body.foothold_id = tree
                     .find_below(body.x, body.y)
                     .map(|(id, _)| id)
                     .unwrap_or(0);
-            } else {
-                check_slope = true;
             }
         } else {
             body.foothold_id = tree
@@ -153,10 +161,16 @@ impl PhysicsEngine {
                 .map(|(id, _)| id)
                 .unwrap_or(0);
         }
-        self.update_ground_state(tree, body, check_slope);
+        self.update_ground_state(tree, body, check_slope, current.slope());
     }
 
-    fn update_ground_state(self, tree: &FootholdTree, body: &mut PhysicsBody, check_slope: bool) {
+    fn update_ground_state(
+        self,
+        tree: &FootholdTree,
+        body: &mut PhysicsBody,
+        check_slope: bool,
+        previous_slope: f64,
+    ) {
         let current = tree.get(body.foothold_id).copied();
         let ground = current
             .map(|foothold| foothold.ground_y_extrapolated(body.x))
@@ -164,10 +178,13 @@ impl PhysicsEngine {
         body.foothold_slope = current.map_or(0.0, |foothold| foothold.slope());
 
         if body.vertical_speed == 0.0 && check_slope && body.horizontal_speed != 0.0 {
-            let vertical_delta = body.foothold_slope.abs() * (ground - body.y).abs();
-            if body.foothold_slope != 0.0 && vertical_delta <= body.horizontal_speed.abs() {
-                // The C++ negative-direction comparison mixed signed speed and
-                // positive distance, preventing slope following while walking left.
+            let step_x = (body.x - body.previous_x).abs();
+            let max_slope = body.foothold_slope.abs().max(previous_slope.abs());
+            // The legacy floor/ceil edge checks can defer a transition by one
+            // pixel, so include that pixel when estimating the ramp's height
+            // change across this step.
+            let max_ground_delta = max_slope * (step_x + 1.0) + 1.0;
+            if (ground - body.y).abs() <= max_ground_delta {
                 body.y = ground;
             }
         }
@@ -215,9 +232,15 @@ impl PhysicsEngine {
             }
         }
 
+        if body.mode == PhysicsMode::Normal && body.vertical_speed == 0.0 && body.on_ground {
+            self.follow_grounded_path(tree, body);
+        }
+
         if body.vertical_speed == 0.0 {
             return;
         }
+        let current_x = body.x;
+        let next_x = body.x + body.horizontal_speed;
         let current_y = body.y;
         let next_y = body.y + body.vertical_speed;
         let ground_current = tree
@@ -234,6 +257,25 @@ impl PhysicsEngine {
             body.y = bottom_ground;
             body.vertical_speed = 0.0;
             self.limit_movement(tree, body);
+        } else if let Some((foothold_id, contact_y)) =
+            tree.find_swept_ground_contact(current_x, current_y, next_x, next_y)
+        {
+            let foothold = tree.get(foothold_id).copied();
+            body.foothold_id = foothold_id;
+            body.foothold_slope = foothold.map_or(0.0, |foothold| foothold.slope());
+            body.foothold_layer = foothold.map_or(body.foothold_layer, |foothold| foothold.layer);
+            if let Some(ground_y) = foothold.and_then(|foothold| foothold.ground_y(next_x)) {
+                body.y = ground_y;
+                body.on_ground = true;
+            } else {
+                body.y = contact_y;
+                body.on_ground = true;
+                if !self.follow_grounded_path(tree, body) {
+                    body.on_ground = false;
+                }
+            }
+            body.vertical_speed = 0.0;
+            self.limit_movement(tree, body);
         } else {
             let MapBounds { top, bottom, .. } = tree.bounds();
             if next_y < f64::from(top) {
@@ -244,6 +286,78 @@ impl PhysicsEngine {
                 body.vertical_speed = 0.0;
             }
         }
+    }
+
+    /// Follows linked, non-rising footholds when one horizontal step crosses
+    /// more than one segment. This keeps momentum from carrying the body past
+    /// narrow stair surfaces before gravity can bring it down onto them.
+    fn follow_grounded_path(self, tree: &FootholdTree, body: &mut PhysicsBody) -> bool {
+        if body.horizontal_speed == 0.0 {
+            return false;
+        }
+
+        let left = body.horizontal_speed < 0.0;
+        let target_x = body.x + body.horizontal_speed;
+        let Some(mut current) = tree.get(body.foothold_id).copied() else {
+            return false;
+        };
+        if current.ground_y(target_x).is_some() {
+            return false;
+        }
+
+        // Foothold links can contain several short stair segments, so walk the
+        // links crossed by this tick instead of checking only one neighbor.
+        for _ in 0..tree.footholds().len() {
+            let next_id = if left { current.previous } else { current.next };
+            let Some(next) = tree.get(next_id).copied() else {
+                return false;
+            };
+            if next.is_wall() {
+                return false;
+            }
+            let current_edge = if left {
+                current.left()
+            } else {
+                current.right()
+            };
+            let next_edge = if left { next.right() } else { next.left() };
+            let horizontal_gap = if left {
+                f64::from(current_edge) - f64::from(next_edge)
+            } else {
+                f64::from(next_edge) - f64::from(current_edge)
+            };
+            if horizontal_gap.abs() > 1.0 {
+                return false;
+            }
+
+            let height_change = next.ground_y_extrapolated(f64::from(next_edge))
+                - current.ground_y_extrapolated(f64::from(current_edge));
+            if height_change < -1.0 || height_change > MAX_STAIR_STEP_DOWN {
+                return false;
+            }
+
+            if let Some(ground_y) = next.ground_y(target_x) {
+                if ground_y >= body.y {
+                    body.foothold_id = next.id;
+                    body.foothold_slope = next.slope();
+                    body.foothold_layer = next.layer;
+                    body.y = ground_y;
+                    body.on_ground = true;
+                    return true;
+                }
+                return false;
+            }
+
+            // Continue only when this segment lies between the starting
+            // foothold and the body's destination for this tick.
+            if (left && target_x >= f64::from(next.left()))
+                || (!left && target_x <= f64::from(next.right()))
+            {
+                return false;
+            }
+            current = next;
+        }
+        false
     }
 
     fn move_normal(self, body: &mut PhysicsBody) {
@@ -300,6 +414,34 @@ impl PhysicsEngine {
     }
 }
 
+fn foothold_covers_x(tree: &FootholdTree, foothold_id: u16, x: f64) -> bool {
+    tree.get(foothold_id)
+        .is_some_and(|foothold| foothold.ground_y(x).is_some())
+}
+
+/// Finds a nearby floor when a grounded foothold ends without a usable link.
+/// Only accept a surface close enough to be continuous over the last movement
+/// step, so a nearby platform at another height does not become a false ramp.
+fn transition_foothold(
+    tree: &FootholdTree,
+    previous: crate::foothold::Foothold,
+    body: &PhysicsBody,
+) -> Option<u16> {
+    let step_x = (body.x - body.previous_x).abs();
+    tree.footholds()
+        .iter()
+        .copied()
+        .filter_map(|foothold| {
+            let ground = foothold.ground_y(body.x)?;
+            let gap = (ground - body.y).abs();
+            let max_slope = previous.slope().abs().max(foothold.slope().abs());
+            let max_gap = max_slope * (step_x + 1.0) + 1.0;
+            (gap <= max_gap).then_some((foothold.id, gap))
+        })
+        .min_by(|left, right| left.1.total_cmp(&right.1))
+        .map(|(foothold_id, _)| foothold_id)
+}
+
 fn crosses(current_x: f64, next_x: f64, wall: f64, left: bool) -> bool {
     if left {
         current_x >= wall && next_x <= wall
@@ -346,6 +488,21 @@ mod tests {
     }
 
     #[test]
+    fn grounded_vertical_force_applies_contact_knockback_without_replacing_velocity() {
+        let tree = FootholdTree::new(vec![floor(1, 0, 0, 0, 100, 100, 100)]).unwrap();
+        let mut body = PhysicsBody::new(50.0, 100.0);
+        body.foothold_id = 1;
+        body.on_ground = true;
+        body.vertical_speed = 0.5;
+        body.vertical_force = -3.5;
+
+        PhysicsEngine.move_body(&tree, &mut body);
+
+        assert_eq!(body.vertical_speed, -3.0);
+        assert_eq!(body.y, 97.0);
+    }
+
+    #[test]
     fn linked_slope_transition_keeps_body_on_the_new_ground() {
         let tree = FootholdTree::new(vec![
             floor(1, 0, 2, 0, 0, 10, 10),
@@ -362,6 +519,86 @@ mod tests {
         assert_eq!(body.foothold_id, 2);
         assert_eq!(body.y, 11.0);
         assert!(body.on_ground);
+    }
+
+    fn assert_walk_stays_on_ground(
+        tree: &FootholdTree,
+        body: &mut PhysicsBody,
+        direction: f64,
+        ticks: usize,
+    ) {
+        for _ in 0..ticks {
+            body.apply_force(direction * 0.4, 0.0);
+            PhysicsEngine.move_body(tree, body);
+            assert!(
+                body.on_ground,
+                "body fell at x={}, y={}, foothold={}",
+                body.x, body.y, body.foothold_id
+            );
+            let ground = tree
+                .get(body.foothold_id)
+                .map(|foothold| foothold.ground_y_extrapolated(body.previous_x))
+                .expect("grounded body should have a foothold");
+            assert!(
+                (body.y - ground).abs() < 1e-6,
+                "body y={} did not match ground={} at x={} on foothold {}",
+                body.y,
+                ground,
+                body.previous_x,
+                body.foothold_id
+            );
+        }
+    }
+
+    #[test]
+    fn flat_ramp_top_and_bottom_transitions_stay_grounded_in_both_directions() {
+        let tree = FootholdTree::new(vec![
+            floor(1, 0, 2, -100, 100, 10, 100),
+            floor(2, 1, 3, 10, 100, 20, 85),
+            floor(3, 2, 0, 20, 85, 100, 85),
+        ])
+        .unwrap();
+
+        let mut moving_up = PhysicsBody::new(9.0, 100.0);
+        moving_up.foothold_id = 1;
+        moving_up.on_ground = true;
+        moving_up.horizontal_speed = 2.0;
+        assert_walk_stays_on_ground(&tree, &mut moving_up, 1.0, 8);
+        assert!(moving_up.x > 20.0, "walk should pass the ramp top");
+
+        let mut moving_down = PhysicsBody::new(31.0, 85.0);
+        moving_down.foothold_id = 3;
+        moving_down.on_ground = true;
+        moving_down.horizontal_speed = -2.0;
+        assert_walk_stays_on_ground(&tree, &mut moving_down, -1.0, 12);
+        assert!(moving_down.x < 10.0, "walk should pass the ramp bottom");
+    }
+
+    #[test]
+    fn unlinked_ramp_endpoints_recover_the_adjacent_floor() {
+        let tree = FootholdTree::new(vec![
+            floor(1, 0, 0, -100, 100, 10, 100),
+            floor(2, 0, 0, 10, 100, 20, 85),
+            floor(3, 0, 0, 20, 85, 100, 85),
+        ])
+        .unwrap();
+
+        let mut moving_up = PhysicsBody::new(9.0, 100.0);
+        moving_up.foothold_id = 1;
+        moving_up.on_ground = true;
+        moving_up.horizontal_speed = 2.0;
+        assert_walk_stays_on_ground(&tree, &mut moving_up, 1.0, 8);
+        assert!(moving_up.x > 20.0, "walk should pass the unlinked ramp top");
+
+        let mut moving_down = PhysicsBody::new(31.0, 85.0);
+        moving_down.foothold_id = 3;
+        moving_down.on_ground = true;
+        moving_down.horizontal_speed = -2.0;
+        assert_walk_stays_on_ground(&tree, &mut moving_down, -1.0, 12);
+        assert!(
+            moving_down.x < 10.0,
+            "walk should pass the unlinked ramp bottom"
+        );
     }
 
     #[test]

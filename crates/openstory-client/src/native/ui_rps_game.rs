@@ -47,6 +47,7 @@ fn composite_rps_game_buttons(
 ) -> Result<(), String> {
     let offset_x = RPS_GAME_PANEL_X.round() as i32;
     let offset_y = RPS_GAME_PANEL_Y.round() as i32;
+    let mut dialog = NxDialog::new(pixels, width, height, archive);
     for button in rps_game_active_buttons(game) {
         let (x, y, _, _, name) = rps_game_button_layout(button);
         let state = if game.hovered == Some(button) {
@@ -65,11 +66,7 @@ fn composite_rps_game_buttons(
         } else {
             format!("UIWindow.img/RpsGame/{name}/normal/0")
         };
-        composite_ui_bitmap(
-            pixels,
-            width,
-            height,
-            archive,
+        dialog.anchored_button(
             &path,
             offset_x + x.round() as i32,
             offset_y + y.round() as i32,
@@ -89,15 +86,8 @@ fn render_rps_game_panel(
     let panel_x = RPS_GAME_PANEL_X.round() as i32;
     let panel_y = RPS_GAME_PANEL_Y.round() as i32;
     let mut pixels = vec![0_u8; width * height * 4];
-    composite_ui_bitmap(
-        &mut pixels,
-        width,
-        height,
-        archive,
-        "UIWindow.img/RpsGame/backgrnd",
-        panel_x,
-        panel_y,
-    )?;
+    NxDialog::new(&mut pixels, width, height, archive)
+        .frame("UIWindow.img/RpsGame/backgrnd", panel_x, panel_y)?;
     composite_rps_game_buttons(archive, &mut pixels, width, height, game)?;
 
     if game.phase == RpsGamePhase::Result {

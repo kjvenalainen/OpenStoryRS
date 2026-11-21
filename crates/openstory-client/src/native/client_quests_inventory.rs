@@ -60,142 +60,19 @@ impl ClientApp {
         self.refresh_quest_log_texture();
     }
 
-    pub(super) fn accept_selected_quest(&mut self) {
-        let Some((quest_id, npc_id)) = self.available_quests.get(self.quest_log_selected).copied()
-        else {
-            return;
-        };
-        if !quest_is_available_for_player(
-            quest_id,
-            npc_id,
-            &self.quest_log,
-            &self.quest_archive,
-            match self.active_character.as_ref() {
-                Some(character) => character,
-                None => return,
-            },
-            self.inventory.as_ref(),
-        ) {
-            self.refresh_quest_log_texture();
-            return;
-        }
-        let scripted = quest_requires_script(&self.quest_archive, quest_id, 0, "startscript");
-        let packet = openstory_protocol::start_quest_packet(quest_id, npc_id, scripted);
-        if let Some(session) = self.session.as_ref() {
-            if let Err(error) = session.send_packet(packet) {
-                eprintln!("OpenStoryRS: could not start quest {quest_id}: {error}");
-                self.channel_connected = false;
-            }
-        }
-    }
-
-    pub(super) fn complete_selected_quest(&mut self) {
-        let Some(quest_id) = self
-            .quest_log
-            .started
-            .get(self.quest_log_selected)
-            .map(|quest| quest.id)
-        else {
-            return;
-        };
-        let Some(quest) = self
-            .quest_log
-            .started
-            .iter()
-            .find(|quest| quest.id == quest_id)
-        else {
-            return;
-        };
-        if !quest_is_completable(
-            quest,
-            &self.quest_archive,
-            self.inventory.as_ref(),
-            &self.quest_log,
-        ) {
-            self.refresh_quest_log_texture();
-            return;
-        }
-        let npc_id = self
-            .quest_archive
-            .root()
-            .resolve(&format!("Check.img/{quest_id}/1"))
-            .ok()
-            .flatten()
-            .and_then(|node| quest_node_integer(&node, "npc"));
-        let npc_id = npc_id.or_else(|| {
-            self.quest_archive
-                .root()
-                .resolve(&format!("Check.img/{quest_id}/0"))
-                .ok()
-                .flatten()
-                .and_then(|node| quest_node_integer(&node, "npc"))
-        });
-        let Some(npc_id) = npc_id.filter(|id| *id > 0) else {
-            return;
-        };
-        if self
-            .quest_archive
-            .root()
-            .resolve(&format!("Say.img/{quest_id}/1"))
-            .ok()
-            .flatten()
-            .is_some_and(|node| quest_property_truthy(&node, "ask"))
-        {
-            self.open_npc_quest_conversation(
-                npc_id,
-                NpcQuestChoice {
-                    quest_id,
-                    side: 1,
-                    ready: true,
-                },
-            );
-            return;
-        }
-        let reward_choices = self
-            .active_character
-            .as_ref()
-            .map_or_else(Vec::new, |character| {
-                quest_reward_choices(
-                    quest_id,
-                    &self.quest_archive,
-                    &self.string_archive,
-                    character,
-                    &mut self.item_name_cache,
-                )
-            });
-        let reward_selection = if reward_choices.is_empty() {
-            None
-        } else {
-            let Some(choice) = reward_choices.get(self.quest_reward_selected) else {
-                self.refresh_quest_log_texture();
-                return;
-            };
-            Some(choice.selection)
-        };
-        let packet = openstory_protocol::complete_quest_packet(
-            quest_id,
-            npc_id,
-            reward_selection,
-            quest_requires_script(&self.quest_archive, quest_id, 1, "endscript"),
-        );
-        if let Some(session) = self.session.as_ref() {
-            if let Err(error) = session.send_packet(packet) {
-                eprintln!("OpenStoryRS: could not complete quest {quest_id}: {error}");
-                self.channel_connected = false;
-            }
-        }
-    }
-
     pub(super) fn change_selected_quest_reward(&mut self, direction: isize) {
         if self.quest_log_tab != QuestLogTab::Active {
             return;
         }
-        let Some(quest_id) = self
-            .quest_log
-            .started
-            .get(self.quest_log_selected)
-            .map(|quest| quest.id)
-        else {
+        let Some(quest_id) = quest_ids_for_tab(
+            &self.quest_log,
+            &self.available_quests,
+            self.quest_log_tab,
+            &self.quest_archive,
+            &self.font,
+        )
+        .get(self.quest_log_selected)
+        .copied() else {
             return;
         };
         let choice_count = self.active_character.as_ref().map_or(0, |character| {
@@ -221,14 +98,24 @@ impl ClientApp {
         self.refresh_quest_log_texture();
     }
 
+    pub(super) fn quest_log_has_detail(&self) -> bool {
+        self.quest_log_detail_open
+            && quest_ids_for_tab(
+                &self.quest_log,
+                &self.available_quests,
+                self.quest_log_tab,
+                &self.quest_archive,
+                &self.font,
+            )
+            .get(self.quest_log_selected)
+            .is_some()
+    }
+
     pub(super) fn click_quest_log(&mut self, cursor: Point) -> bool {
         if !self.show_quest_log {
             return false;
         }
-        let has_detail =
-            quest_ids_for_tab(&self.quest_log, &self.available_quests, self.quest_log_tab)
-                .get(self.quest_log_selected)
-                .is_some();
+        let has_detail = self.quest_log_has_detail();
         let (panel_width, panel_height) = if has_detail || self.quest_forfeit_confirmation.is_some()
         {
             (QUEST_LOG_PANEL_WIDTH as f32, QUEST_LOG_PANEL_HEIGHT as f32)
@@ -262,12 +149,12 @@ impl ClientApp {
             }
             return true;
         }
-        if (5.0..20.0).contains(&y)
-            && ((207.0..240.0).contains(&x)
-                || (QUEST_LOG_DETAIL_X as f32 + 207.0
-                    ..QUEST_LOG_DETAIL_X as f32 + QUEST_LOG_DETAIL_WIDTH as f32 - 5.0)
-                    .contains(&x))
-        {
+        if has_detail && ui_foundation::QUEST_DETAIL_CLOSE_BUTTON.contains(x, y) {
+            self.quest_log_detail_open = false;
+            self.refresh_quest_log_texture();
+            return true;
+        }
+        if (5.0..20.0).contains(&y) && (207.0..240.0).contains(&x) {
             self.show_quest_log = false;
             return true;
         }
@@ -283,6 +170,7 @@ impl ClientApp {
             };
             if let Some(tab) = tab {
                 self.quest_log_tab = tab;
+                self.quest_log_detail_open = true;
                 self.quest_log_selected = 0;
                 self.quest_log_scroll = 0;
                 self.quest_reward_selected = 0;
@@ -293,10 +181,17 @@ impl ClientApp {
         if let Some(row) = ui_foundation::QUEST_GRID.hit(x, y) {
             let index = self.quest_log_scroll.saturating_add(row);
             if index
-                < quest_ids_for_tab(&self.quest_log, &self.available_quests, self.quest_log_tab)
-                    .len()
+                < quest_ids_for_tab(
+                    &self.quest_log,
+                    &self.available_quests,
+                    self.quest_log_tab,
+                    &self.quest_archive,
+                    &self.font,
+                )
+                .len()
             {
                 self.quest_log_selected = index;
+                self.quest_log_detail_open = true;
                 self.quest_reward_selected = 0;
                 self.refresh_quest_log_texture();
             }
@@ -315,37 +210,26 @@ impl ClientApp {
             }
             return true;
         }
-        if (365.0..389.0).contains(&y) {
-            match self.quest_log_tab {
-                QuestLogTab::Available
-                    if (QUEST_LOG_DETAIL_X as f32 + 36.0..QUEST_LOG_DETAIL_X as f32 + 110.0)
-                        .contains(&x) =>
-                {
-                    self.accept_selected_quest();
-                }
-                QuestLogTab::Active
-                    if (QUEST_LOG_DETAIL_X as f32 + 36.0..QUEST_LOG_DETAIL_X as f32 + 110.0)
-                        .contains(&x) =>
-                {
-                    self.complete_selected_quest();
-                }
-                QuestLogTab::Active
-                    if (QUEST_LOG_DETAIL_X as f32 + 120.0..QUEST_LOG_DETAIL_X as f32 + 190.0)
-                        .contains(&x) =>
-                {
-                    if let Some(quest_id) = self
-                        .quest_log
-                        .started
-                        .get(self.quest_log_selected)
-                        .map(|quest| quest.id)
-                    {
-                        self.quest_forfeit_confirmation = Some(quest_id);
-                        self.refresh_quest_log_texture();
-                    }
-                }
-                _ => {}
+        if has_detail && ui_foundation::QUEST_HELPER_BUTTON.contains(x, y) {
+            if self.quest_helper_dismissed || self.quest_helper_texture.is_none() {
+                self.quest_helper_dismissed = false;
+                self.refresh_quest_helper_texture();
             }
-            return true;
+        } else if self.quest_log_tab == QuestLogTab::Active {
+            if ui_foundation::QUEST_FORFEIT_BUTTON.contains(x, y)
+                && let Some(quest_id) = quest_ids_for_tab(
+                    &self.quest_log,
+                    &self.available_quests,
+                    self.quest_log_tab,
+                    &self.quest_archive,
+                    &self.font,
+                )
+                .get(self.quest_log_selected)
+                .copied()
+            {
+                self.quest_forfeit_confirmation = Some(quest_id);
+                self.refresh_quest_log_texture();
+            }
         }
         true
     }
@@ -365,6 +249,7 @@ impl ClientApp {
         ) {
             return false;
         }
+        let pending_skill_click = self.skill_book_last_click.take();
         let local_x = cursor.x - PANEL_X;
         let local_y = cursor.y - PANEL_Y;
         if (SKILL_BOOK_PANEL_WIDTH as f32 - 24.0..SKILL_BOOK_PANEL_WIDTH as f32).contains(&local_x)
@@ -405,6 +290,26 @@ impl ClientApp {
             };
             if ui_foundation::skill_sp_button(row).contains(local_x, local_y) {
                 self.spend_skill_point(&entry);
+            } else if entry.level > 0 && !entry.passive {
+                self.skill_book_last_click = pending_skill_click;
+                let (offset_x, offset_y) = self.dialog_window_offset(DialogWindow::SkillBook);
+                self.skill_book_drag = Some(SkillBookDrag {
+                    skill_id: entry.id,
+                    start: Point {
+                        x: cursor.x + offset_x,
+                        y: cursor.y + offset_y,
+                    },
+                    moved: false,
+                });
+                self.skill_macro_drag_texture = decode_nx_icon(
+                    &self.skill_archive,
+                    &format!("{:03}.img/skill/{:07}/icon", entry.id / 10_000, entry.id),
+                )
+                .and_then(|(width, height, pixels)| {
+                    self.renderer
+                        .as_ref()
+                        .and_then(|renderer| renderer.upload_bgra(width, height, &pixels).ok())
+                });
             } else {
                 self.use_skill(&entry);
             }
@@ -417,14 +322,11 @@ impl ClientApp {
         let Some(character) = self.active_character.clone() else {
             return;
         };
-        let points = character
-            .stats
-            .skill_points_by_job
-            .iter()
-            .find(|(tab, _)| *tab == self.skill_book_tab)
-            .map_or(character.stats.skill_points, |(_, points)| {
-                u16::from(*points)
-            });
+        let points = super::client_cash_skills::skill_points_for_book(
+            &character.stats,
+            self.skill_book_tab,
+            &self.skills,
+        );
         let cap = if skill.master_level > 0 {
             skill.max_level.min(skill.master_level)
         } else {
@@ -618,7 +520,11 @@ impl ClientApp {
         let animations = if teleport {
             match self.load_teleport_effect_frames() {
                 Ok(frames) if !frames.is_empty() => {
-                    vec![CharacterSkillEffectAnimation { z: 0, frames }]
+                    vec![CharacterSkillEffectAnimation {
+                        z: 0,
+                        flip_with_facing: true,
+                        frames,
+                    }]
                 }
                 Ok(_) => Vec::new(),
                 Err(error) => {
@@ -962,7 +868,7 @@ impl ClientApp {
         }
         let local_x = cursor.x - EQUIPMENT_INVENTORY_PANEL_X;
         let local_y = cursor.y - EQUIPMENT_INVENTORY_PANEL_Y;
-        if (156.0..168.0).contains(&local_x) && (6.0..18.0).contains(&local_y) {
+        if ui_foundation::INVENTORY_CLOSE_BUTTON.contains(local_x, local_y) {
             self.show_equipment_inventory = false;
         }
         true
@@ -981,22 +887,35 @@ impl ClientApp {
         ) {
             return false;
         }
+        if self.inventory_pending_move.take().is_some() {
+            self.refresh_inventory_texture();
+        }
         self.inventory_drag_source = None;
         let local_x = cursor.x - INVENTORY_PANEL_X;
         let local_y = cursor.y - INVENTORY_PANEL_Y;
-        if (156.0..169.0).contains(&local_x) && (5.0..20.0).contains(&local_y) {
+        let close = ui_foundation::INVENTORY_CLOSE_BUTTON;
+        if (close.x..close.x + close.width + 1.0).contains(&local_x)
+            && (close.y - 1.0..close.y + close.height + 2.0).contains(&local_y)
+        {
             self.show_inventory = false;
             self.inventory_hover_slot = None;
             self.pending_scroll_slot = None;
             return true;
         }
-        if (126.0..138.0).contains(&local_x) && (6.0..18.0).contains(&local_y) {
+        if ui_foundation::INVENTORY_GATHER_BUTTON.contains(local_x, local_y) {
             if self.inventory_tab != openstory_protocol::InventoryType::Equipped {
                 self.request_inventory_arrange(false);
             }
             return true;
         }
-        if (141.0..154.0).contains(&local_x) && (6.0..18.0).contains(&local_y) {
+        if ui_foundation::INVENTORY_MESO_BUTTON.contains(local_x, local_y) {
+            self.request_meso_drop();
+            return true;
+        }
+        let sort = ui_foundation::INVENTORY_SORT_BUTTON;
+        if (sort.x..sort.x + sort.width + 1.0).contains(&local_x)
+            && (sort.y..sort.y + sort.height).contains(&local_y)
+        {
             if self.inventory_tab != openstory_protocol::InventoryType::Equipped {
                 self.request_inventory_arrange(true);
             }
@@ -1054,23 +973,29 @@ impl ClientApp {
     pub(super) fn begin_pet_equipment_pointer(&mut self, cursor: Point) -> bool {
         if !rect_contains(
             SpriteRect {
-                x: 618.0,
-                y: 128.0,
-                width: 390.0,
-                height: 480.0,
+                x: PET_EQUIPMENT_PANEL_X,
+                y: PET_EQUIPMENT_PANEL_Y,
+                width: PET_EQUIPMENT_PANEL_WIDTH as f32,
+                height: PET_EQUIPMENT_PANEL_HEIGHT as f32,
                 blend_mode: BlendMode::Alpha,
             },
             cursor,
         ) {
             return false;
         }
-        if (976.0..1002.0).contains(&cursor.x) && (136.0..162.0).contains(&cursor.y) {
+        if (PET_EQUIPMENT_PANEL_X + 358.0..PET_EQUIPMENT_PANEL_X + 384.0).contains(&cursor.x)
+            && (PET_EQUIPMENT_PANEL_Y + 8.0..PET_EQUIPMENT_PANEL_Y + 34.0).contains(&cursor.y)
+        {
             self.show_pet_equipment = false;
             return true;
         }
         let worn = self.inventory.as_ref().and_then(|inventory| {
-            pet_equipment_grid_item_at(inventory, cursor.x - 618.0, cursor.y - 128.0)
-                .map(|item| item.slot)
+            pet_equipment_grid_item_at(
+                inventory,
+                cursor.x - PET_EQUIPMENT_PANEL_X,
+                cursor.y - PET_EQUIPMENT_PANEL_Y,
+            )
+            .map(|item| item.slot)
         });
         if let Some(slot) = worn {
             self.activate_inventory_item(openstory_protocol::InventoryType::Equipped, slot);
@@ -1154,13 +1079,27 @@ impl ClientApp {
         }
         let moved = cursor
             .is_none_or(|cursor| (cursor.x - origin.x).abs() + (cursor.y - origin.y).abs() >= 4.0);
-        if moved
-            && let Some(cursor) = cursor
-            && let Some(quickslot) = self.quickslot_at(cursor)
-        {
-            self.assign_inventory_item_to_quickslot(quickslot, source_type, source_slot);
-            self.refresh_inventory_texture();
-            return;
+        if moved && let Some(drop_cursor) = cursor {
+            let screen_cursor = self.cursor.unwrap_or(drop_cursor);
+            if self.show_key_config
+                && self.topmost_dialog_window_at(screen_cursor) == Some(DialogWindow::KeyConfig)
+            {
+                let x = drop_cursor.x - KEY_CONFIG_PANEL_X;
+                let y = drop_cursor.y - KEY_CONFIG_PANEL_Y;
+                if let Some(key) = self.key_config_drop_target(x, y) {
+                    self.assign_inventory_item_to_key(source_type, source_slot, key);
+                    self.refresh_inventory_texture();
+                    return;
+                }
+            }
+            if self.current_field.is_some()
+                && self.topmost_dialog_window_at(screen_cursor).is_none()
+                && let Some(quickslot) = self.quickslot_at(screen_cursor)
+            {
+                self.assign_inventory_item_to_quickslot(quickslot, source_type, source_slot);
+                self.refresh_inventory_texture();
+                return;
+            }
         }
         let destination =
             cursor.and_then(|cursor| inventory_slot_at(cursor, self.inventory_scroll_row));
@@ -1242,16 +1181,27 @@ impl ClientApp {
         let Ok(source) = i16::try_from(source_slot) else {
             return;
         };
-        let Ok(destination) = i16::try_from(destination) else {
+        let Ok(destination_position) = i16::try_from(destination) else {
             return;
         };
         let client_tick = self.client_started_at.elapsed().as_millis() as i32;
-        let packet =
-            openstory_protocol::move_item_packet(source_type, source, destination, 1, client_tick);
+        let packet = openstory_protocol::move_item_packet(
+            source_type,
+            source,
+            destination_position,
+            1,
+            client_tick,
+        );
         if let Some(session) = self.session.as_ref() {
-            if let Err(error) = session.send_packet(packet) {
-                eprintln!("OpenStory: could not move inventory item: {error}");
-                self.channel_connected = false;
+            match session.send_packet(packet) {
+                Ok(()) => {
+                    self.inventory_pending_move =
+                        Some((source_type, source_slot, destination, Instant::now()));
+                }
+                Err(error) => {
+                    eprintln!("OpenStory: could not move inventory item: {error}");
+                    self.channel_connected = false;
+                }
             }
         }
         self.refresh_inventory_texture();
@@ -1271,6 +1221,10 @@ impl ClientApp {
         }) else {
             return;
         };
+        let maximum = item_drop_maximum(item.count);
+        if maximum == 0 {
+            return;
+        }
         let info =
             inventory_item_info_node(&self.item_archive, &self.character_archive, item.item_id);
         let cash_item = item.cash
@@ -1284,7 +1238,7 @@ impl ClientApp {
             .is_some_and(|node| inventory_item_property_truthy(node, "tradeBlock"))
         {
             InventoryDropStep::ConfirmUntradable
-        } else if item.count > 1 {
+        } else if maximum > 1 {
             InventoryDropStep::Quantity
         } else {
             self.send_inventory_drop(inventory_type, slot, item.item_id, 1);
@@ -1295,9 +1249,37 @@ impl ClientApp {
             inventory_type,
             slot,
             item_id: item.item_id,
-            max_quantity: item.count.max(1),
-            quantity: item.count.max(1).to_string(),
+            max_quantity: maximum,
+            quantity: QuantityInput::new(Some(maximum)),
             step,
+            notice: None,
+        });
+        self.refresh_inventory_drop_prompt_texture();
+    }
+
+    fn request_meso_drop(&mut self) {
+        let maximum = self
+            .inventory
+            .as_ref()
+            .map_or(0, |inventory| meso_drop_maximum(inventory.meso));
+        if maximum < openstory_protocol::MIN_MESO_DROP {
+            self.push_chat_line(
+                format!(
+                    "[Notice] You need at least {} mesos to drop mesos.",
+                    openstory_protocol::MIN_MESO_DROP
+                ),
+                [255, 215, 128],
+            );
+            return;
+        }
+        self.inventory_drop_prompt = Some(InventoryDropPrompt {
+            action: InventoryQuantityAction::DropMesos,
+            inventory_type: openstory_protocol::InventoryType::Use,
+            slot: 0,
+            item_id: 0,
+            max_quantity: maximum,
+            quantity: QuantityInput::new(None),
+            step: InventoryDropStep::Quantity,
             notice: None,
         });
         self.refresh_inventory_drop_prompt_texture();
@@ -1323,14 +1305,16 @@ impl ClientApp {
                 self.send_inventory_drop(prompt.inventory_type, prompt.slot, prompt.item_id, 1);
             }
             InventoryDropStep::Quantity => {
-                let quantity = prompt.quantity.trim().parse::<u16>().ok();
-                let Some(quantity) =
-                    quantity.filter(|quantity| *quantity > 0 && *quantity <= prompt.max_quantity)
+                let quantity = prompt.quantity.value();
+                let minimum = prompt.minimum();
+                let Some(quantity) = quantity
+                    .filter(|quantity| *quantity >= minimum && *quantity <= prompt.max_quantity)
                 else {
-                    prompt.notice = Some(format!(
-                        "Enter a quantity from 1 to {}.",
-                        prompt.max_quantity
-                    ));
+                    prompt.notice = Some(if prompt.action == InventoryQuantityAction::DropMesos {
+                        format!("Enter an amount from {minimum} to {} mesos.", prompt.max_quantity)
+                    } else {
+                        format!("Enter a quantity from 1 to {}.", prompt.max_quantity)
+                    });
                     self.inventory_drop_prompt = Some(prompt);
                     self.refresh_inventory_drop_prompt_texture();
                     return;
@@ -1343,6 +1327,7 @@ impl ClientApp {
                         prompt.item_id,
                         quantity,
                     ),
+                    InventoryQuantityAction::DropMesos => self.send_meso_drop(i32::from(quantity)),
                     InventoryQuantityAction::StorageStore => {
                         let item = self.inventory.as_ref().and_then(|inventory| {
                             inventory
@@ -1433,86 +1418,132 @@ impl ClientApp {
         }
     }
 
-    pub(super) fn click_inventory_drop_prompt(&mut self, cursor: Point) {
-        let Some(prompt) = self.inventory_drop_prompt.as_ref() else {
-            return;
-        };
-        let inside = (312.0..712.0).contains(&cursor.x) && (240.0..528.0).contains(&cursor.y);
-        if !inside || !(472.0..512.0).contains(&cursor.y) {
+    fn send_meso_drop(&mut self, amount: i32) {
+        let available = self
+            .inventory
+            .as_ref()
+            .map_or(0, |inventory| inventory.meso);
+        if !self.channel_connected || i64::from(amount) > available {
+            self.push_chat_line(
+                "[Notice] Mesos can only be dropped while connected and within your balance."
+                    .to_owned(),
+                [255, 215, 128],
+            );
             return;
         }
-        if prompt.step == InventoryDropStep::Blocked {
-            if (452.0..572.0).contains(&cursor.x) {
-                self.resolve_inventory_drop_prompt(false);
-            }
-        } else if (365.0..485.0).contains(&cursor.x) {
-            self.resolve_inventory_drop_prompt(true);
-        } else if (539.0..659.0).contains(&cursor.x) {
+        let Some(packet) = openstory_protocol::drop_meso_packet(
+            self.client_started_at.elapsed().as_millis() as i32,
+            amount,
+        ) else {
+            return;
+        };
+        if let Some(session) = self.session.as_ref()
+            && let Err(error) = session.send_packet(packet)
+        {
+            eprintln!("OpenStoryRS: could not drop mesos: {error}");
+            self.channel_connected = false;
+        }
+    }
+
+    pub(super) fn click_inventory_drop_prompt(&mut self, cursor: Point) {
+        let Some(prompt) = self.inventory_drop_prompt.as_mut() else {
+            return;
+        };
+        let (left, top) = quantity_window_origin(1024, 768);
+        let x = cursor.x - left as f32;
+        let y = cursor.y - top as f32;
+        let blocked = prompt.step == InventoryDropStep::Blocked;
+        let (ok, cancel) = quantity_window_buttons(blocked);
+        if ok.contains(x, y) {
+            self.resolve_inventory_drop_prompt(!blocked);
+        } else if QUANTITY_CLOSE.contains(x, y) || (!blocked && cancel.contains(x, y)) {
             self.resolve_inventory_drop_prompt(false);
+        } else if prompt.step == InventoryDropStep::Quantity {
+            let min = prompt.minimum();
+            if prompt.quantity.press(x, y, min, prompt.max_quantity) {
+                prompt.notice = None;
+                self.refresh_inventory_drop_prompt_texture();
+            }
         }
     }
 
     pub(super) fn refresh_inventory_drop_prompt_texture(&mut self) {
-        let Some(prompt) = self.inventory_drop_prompt.as_ref() else {
+        let Some(prompt) = self.inventory_drop_prompt.as_mut() else {
             self.inventory_drop_prompt_texture = None;
             return;
         };
-        let item = match prompt.action {
-            InventoryQuantityAction::Drop | InventoryQuantityAction::StorageStore => {
-                self.inventory.as_ref().and_then(|inventory| {
-                    inventory
-                        .items
-                        .iter()
-                        .find(|item| {
-                            item.inventory_type == prompt.inventory_type
-                                && item.slot == prompt.slot
-                                && item.item_id == prompt.item_id
-                        })
-                        .cloned()
+        let matching_count = |items: &[openstory_protocol::InventoryItem]| {
+            items
+                .iter()
+                .find(|item| {
+                    item.inventory_type == prompt.inventory_type
+                        && item.slot == prompt.slot
+                        && item.item_id == prompt.item_id
                 })
-            }
-            InventoryQuantityAction::StorageTake => self.storage.as_ref().and_then(|storage| {
-                storage
-                    .state
-                    .items
-                    .iter()
-                    .find(|item| {
-                        item.inventory_type == prompt.inventory_type
-                            && item.slot == prompt.slot
-                            && item.item_id == prompt.item_id
-                    })
-                    .cloned()
-            }),
+                .map(|item| item.count)
         };
-        let Some(item) = item.filter(|item| item.item_id == prompt.item_id) else {
-            self.inventory_drop_prompt = None;
-            self.inventory_drop_prompt_texture = None;
+        let maximum = match prompt.action {
+            InventoryQuantityAction::DropMesos => self
+                .inventory
+                .as_ref()
+                .map(|inventory| meso_drop_maximum(inventory.meso)),
+            InventoryQuantityAction::Drop | InventoryQuantityAction::StorageStore => self
+                .inventory
+                .as_ref()
+                .and_then(|inventory| matching_count(&inventory.items))
+                .map(|count| {
+                    if prompt.action == InventoryQuantityAction::Drop {
+                        item_drop_maximum(count)
+                    } else {
+                        count.max(1)
+                    }
+                }),
+            InventoryQuantityAction::StorageTake => self
+                .storage
+                .as_ref()
+                .and_then(|storage| matching_count(&storage.state.items))
+                .map(|count| count.max(1)),
+        };
+        let Some(maximum) = maximum.filter(|&maximum| maximum >= prompt.minimum()) else {
+            let drop_mesos = prompt.action == InventoryQuantityAction::DropMesos;
+            self.resolve_inventory_drop_prompt(false);
+            if drop_mesos {
+                self.push_chat_line(
+                    format!(
+                        "[Notice] You need at least {} mesos to drop mesos.",
+                        openstory_protocol::MIN_MESO_DROP
+                    ),
+                    [255, 215, 128],
+                );
+            }
             return;
         };
-        if let Some(prompt) = self.inventory_drop_prompt.as_mut() {
-            prompt.max_quantity = item.count.max(1);
-            if prompt
-                .quantity
-                .parse::<u16>()
-                .is_ok_and(|quantity| quantity > prompt.max_quantity)
-            {
-                prompt.quantity = prompt.max_quantity.to_string();
-            }
+        if prompt.max_quantity != maximum {
+            prompt.max_quantity = maximum;
+            prompt.quantity.clamp_to_max(maximum);
+            prompt.notice = None;
         }
-        let Some(prompt) = self.inventory_drop_prompt.as_ref() else {
-            self.inventory_drop_prompt_texture = None;
-            return;
+        let icon = if prompt.action == InventoryQuantityAction::DropMesos {
+            None
+        } else {
+            inventory_item_icon(
+                prompt.item_id,
+                &self.item_archive,
+                &self.character_archive,
+                &mut self.inventory_icon_cache,
+            )
         };
         let pixels = match render_inventory_drop_prompt(
             &self.legacy_ui_archive,
             &self.font,
             prompt,
+            icon.as_ref(),
             &self.string_archive,
             &mut self.item_name_cache,
         ) {
             Ok(pixels) => pixels,
             Err(error) => {
-                eprintln!("OpenStoryRS: could not compose the NX item-drop prompt: {error}");
+                eprintln!("OpenStoryRS: could not compose the inventory quantity prompt: {error}");
                 return;
             }
         };
@@ -1527,7 +1558,9 @@ impl ClientApp {
         match result {
             Ok(Some(texture)) => self.inventory_drop_prompt_texture = Some(texture),
             Ok(None) => {}
-            Err(error) => eprintln!("OpenStoryRS: could not render item-drop prompt: {error}"),
+            Err(error) => {
+                eprintln!("OpenStoryRS: could not render the inventory quantity prompt: {error}")
+            }
         }
     }
 
@@ -1552,15 +1585,49 @@ impl ClientApp {
     }
 
     pub(super) fn sync_equipped_look(&mut self) {
-        let Some(mut look) = self
+        let look_changed = self.update_equipped_look_data();
+        let Some(look) = self
             .active_character
             .as_ref()
             .map(|character| character.look.clone())
         else {
             return;
         };
-        let Some(inventory) = self.inventory.as_ref() else {
+        if self.inventory.is_none() {
             return;
+        }
+        let ring_effect_id = equipped_ring_effect_id(&look, &self.effect_archive);
+        if !look_changed {
+            if ring_effect_id > 0
+                && self
+                    .map_scene
+                    .as_ref()
+                    .is_some_and(|scene| scene.local_item_aura.is_none())
+            {
+                if let Some(character_id) =
+                    self.active_character.as_ref().map(|character| character.id)
+                {
+                    self.set_character_item_effect(character_id, ring_effect_id);
+                }
+            }
+            return;
+        }
+        if self.map_scene.is_some() {
+            if let Err(error) = self.refresh_local_avatar_appearance(&look) {
+                eprintln!("OpenStory: could not update equipped appearance: {error}");
+            }
+        }
+        if let Some(character_id) = self.active_character.as_ref().map(|character| character.id) {
+            self.set_character_item_effect(character_id, ring_effect_id);
+        }
+    }
+
+    pub(super) fn update_equipped_look_data(&mut self) -> bool {
+        let Some(character) = self.active_character.as_ref() else {
+            return false;
+        };
+        let Some(inventory) = self.inventory.as_ref() else {
+            return false;
         };
         let mut equips = Vec::new();
         let mut weapon_id = 0;
@@ -1577,39 +1644,12 @@ impl ClientApp {
             }
         }
         equips.sort_unstable();
-        let look_changed = look.equips != equips || look.weapon_id != weapon_id;
-        let mut equipped_look = look.clone();
-        equipped_look.equips = equips.clone();
-        let ring_effect_id = equipped_ring_effect_id(&equipped_look, &self.effect_archive);
-        if !look_changed {
-            if ring_effect_id > 0
-                && self
-                    .map_scene
-                    .as_ref()
-                    .is_some_and(|scene| scene.local_item_aura.is_none())
-            {
-                if let Some(character_id) =
-                    self.active_character.as_ref().map(|character| character.id)
-                {
-                    self.set_character_item_effect(character_id, ring_effect_id);
-                }
-            }
-            return;
+        let look_changed = character.look.equips != equips || character.look.weapon_id != weapon_id;
+        if look_changed && let Some(character) = self.active_character.as_mut() {
+            character.look.equips = equips;
+            character.look.weapon_id = weapon_id;
         }
-        look.equips = equips;
-        look.weapon_id = weapon_id;
-        if let Some(character) = self.active_character.as_mut() {
-            character.look.equips = look.equips.clone();
-            character.look.weapon_id = look.weapon_id;
-        }
-        if self.map_scene.is_some() {
-            if let Err(error) = self.refresh_local_avatar_appearance(&look) {
-                eprintln!("OpenStory: could not update equipped appearance: {error}");
-            }
-        }
-        if let Some(character_id) = self.active_character.as_ref().map(|character| character.id) {
-            self.set_character_item_effect(character_id, ring_effect_id);
-        }
+        look_changed
     }
 
     pub(super) fn refresh_local_avatar_appearance(
@@ -1625,10 +1665,27 @@ impl ClientApp {
             GAMEPLAY_CAMERA_CENTER_Y,
             &mut self.remote_art_cache,
         )?;
+        let name = self
+            .active_character
+            .as_ref()
+            .map_or("", |character| character.stats.name.as_str());
+        let name_label_index = append_map_name_tag_sprite(
+            &mut sprites,
+            &self.font,
+            &self.ui_archive,
+            Some(&self.character_archive),
+            Some(look),
+            name,
+            512.0,
+            GAMEPLAY_CAMERA_CENTER_Y,
+            MapNameTagKind::Character,
+        );
         let draws = self.upload_dynamic_sprites(sprites)?;
         let frames = uploaded_avatar_frames_runtime(assets, &draws);
+        let name_label = name_label_index.and_then(|index| draws.get(index).copied());
         if let Some(scene) = self.map_scene.as_mut() {
             scene.avatar_frames = frames;
+            scene.local_name_label = name_label;
             scene.attack_stance = None;
             scene.desired_avatar_motion = if scene.is_locally_seated() {
                 AvatarMotion::Sit

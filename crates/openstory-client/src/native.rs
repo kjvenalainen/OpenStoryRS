@@ -12,14 +12,17 @@ mod monster_carnival;
 mod party_search;
 mod settings;
 mod skill_macros;
+mod skill_tooltip;
 mod ui_catalog;
 mod ui_clock;
+mod ui_dialog;
 mod ui_foundation;
 mod ui_preview;
 mod weather;
 mod world_map;
 
 use super::session;
+use ui_dialog::NxDialog;
 
 use openstory_core::buffs::{BuffGroup, BuffKey, CharacterBuffs};
 use openstory_core::combat::{
@@ -31,8 +34,11 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::ops::Range;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
+
+const INVENTORY_MOVE_PREVIEW_TIMEOUT: Duration = Duration::from_secs(2);
 
 use settings::{
     AudioSettings, DisplaySettings, GameplaySettings, InputSettings, LoginPreferences,
@@ -84,6 +90,7 @@ include!("native/ui_controls.rs");
 include!("native/ui_social.rs");
 include!("native/ui_family_guild.rs");
 include!("native/ui_chat_inventory.rs");
+include!("native/ui_quantity.rs");
 include!("native/ui_cash_storage.rs");
 include!("native/ui_trade_merchant.rs");
 include!("native/ui_inventory_data.rs");
@@ -94,6 +101,7 @@ include!("native/ui_wedding.rs");
 include!("native/ui_event_list.rs");
 include!("native/ui_rps_game.rs");
 include!("native/map_effect_draw.rs");
+include!("native/map_name_tags.rs");
 include!("native/map_entity_draw.rs");
 include!("native/map_damage_draw.rs");
 include!("native/login_scenes.rs");

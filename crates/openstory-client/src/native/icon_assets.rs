@@ -53,6 +53,7 @@ fn render_quickslot_panel_pixels(
     ui_archive: &NxArchive,
     keys: &[u8; 8],
     icons: &[Option<(u32, u32, Arc<[u8]>)>; 8],
+    item_counts: &[u32; 8],
 ) -> Vec<u8> {
     const WIDTH: usize = 151;
     const HEIGHT: usize = 80;
@@ -128,6 +129,18 @@ fn render_quickslot_panel_pixels(
                 *icon_height as usize,
                 x,
                 y,
+                32,
+            );
+        }
+        if item_counts[slot] > 0 {
+            let _ = draw_item_stack_count(
+                &mut pixels,
+                WIDTH,
+                HEIGHT,
+                ui_archive,
+                item_counts[slot],
+                x as i32,
+                y as i32 + 20,
                 32,
             );
         }
@@ -585,6 +598,7 @@ fn integer_property(node: &openstory_assets::NxNode, name: &str) -> Option<i64> 
         .and_then(|value| value.value().ok())?
     {
         NodeValue::Integer(value) => Some(value),
+        NodeValue::String(value) => value.trim().parse().ok(),
         _ => None,
     }
 }
@@ -650,6 +664,11 @@ fn number_property(node: &openstory_assets::NxNode, name: &str) -> Option<f32> {
     {
         NodeValue::Integer(value) => Some(value as f32),
         NodeValue::Real(value) => Some(value as f32),
+        NodeValue::String(value) => value
+            .trim()
+            .parse::<f32>()
+            .ok()
+            .filter(|value| value.is_finite()),
         _ => None,
     }
 }

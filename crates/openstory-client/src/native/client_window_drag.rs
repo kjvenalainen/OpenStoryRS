@@ -15,7 +15,12 @@ impl ClientApp {
                 EQUIPMENT_INVENTORY_PANEL_WIDTH as f32,
                 EQUIPMENT_INVENTORY_PANEL_HEIGHT as f32,
             ),
-            DialogWindow::PetEquipment if self.show_pet_equipment => (618.0, 128.0, 390.0, 480.0),
+            DialogWindow::PetEquipment if self.show_pet_equipment => (
+                PET_EQUIPMENT_PANEL_X,
+                PET_EQUIPMENT_PANEL_Y,
+                PET_EQUIPMENT_PANEL_WIDTH as f32,
+                PET_EQUIPMENT_PANEL_HEIGHT as f32,
+            ),
             DialogWindow::SkillBook if self.show_skill_book => (
                 SKILL_BOOK_PANEL_X,
                 SKILL_BOOK_PANEL_Y,
@@ -37,7 +42,11 @@ impl ClientApp {
             DialogWindow::QuestLog if self.show_quest_log => (
                 QUEST_LOG_PANEL_X,
                 QUEST_LOG_PANEL_Y,
-                QUEST_LOG_PANEL_WIDTH as f32,
+                if self.quest_log_has_detail() {
+                    QUEST_LOG_PANEL_WIDTH as f32
+                } else {
+                    QUEST_LOG_LIST_WIDTH as f32
+                },
                 QUEST_LOG_PANEL_HEIGHT as f32,
             ),
             DialogWindow::Status if self.show_status => (
@@ -117,8 +126,8 @@ impl ClientApp {
                 BUDDY_PANEL_HEIGHT as f32,
             ),
             DialogWindow::Guild if self.show_guild_panel => (
-                680.0,
-                174.0,
+                GUILD_PANEL_X,
+                GUILD_PANEL_Y,
                 GUILD_PANEL_WIDTH as f32,
                 GUILD_PANEL_HEIGHT as f32,
             ),
@@ -195,6 +204,10 @@ impl ClientApp {
                 self.monster_book.width as f32,
                 self.monster_book.height as f32,
             ),
+            DialogWindow::Minimap => {
+                let bounds = self.minimap_bounds?;
+                (bounds.x, bounds.y, bounds.width, bounds.height)
+            }
             _ => return None,
         };
         Some(SpriteRect {
@@ -206,8 +219,8 @@ impl ClientApp {
         })
     }
 
-    fn dialog_window_order(&self) -> [DialogWindow; 30] {
-        [
+    fn dialog_window_order(&self) -> Vec<DialogWindow> {
+        let default_order = [
             DialogWindow::EventList,
             DialogWindow::Wedding,
             DialogWindow::GuildBbs,
@@ -238,19 +251,26 @@ impl ClientApp {
             DialogWindow::PetEquipment,
             DialogWindow::EquipmentInventory,
             DialogWindow::Inventory,
-        ]
+            DialogWindow::Minimap,
+        ];
+        let mut order = self.raised_dialog_windows.clone();
+        for window in default_order {
+            if !order.contains(&window) {
+                order.push(window);
+            }
+        }
+        order
     }
 
     pub(super) fn has_open_dialog_window(&self) -> bool {
-        self.dialog_window_order()
-            .into_iter()
-            .any(|window| self.dialog_window_rect(window).is_some())
-            || self.cash_shop.is_some()
+        self.dialog_window_order().into_iter().any(|window| {
+            window != DialogWindow::Minimap && self.dialog_window_rect(window).is_some()
+        }) || self.cash_shop.is_some()
             || self.chat_open
             || self.active_whisper.is_some()
             || self.messenger.is_some()
             || self.monster_carnival.is_some()
-            || self.show_status_menu
+            || self.show_game_menu
     }
 
     pub(super) fn escape_topmost_dialog(&mut self) -> bool {
@@ -287,6 +307,7 @@ impl ClientApp {
         }
         if self.chat_open {
             self.chat_open = false;
+            self.chat_input_focused = false;
             self.cash_item_compose = None;
             self.refresh_chat_texture();
             return true;
@@ -299,9 +320,9 @@ impl ClientApp {
             );
             return true;
         }
-        if self.show_status_menu {
-            self.show_status_menu = false;
-            self.status_menu_texture = None;
+        if self.show_game_menu {
+            self.show_game_menu = false;
+            self.game_menu_texture = None;
             return true;
         }
         if self.monster_carnival.is_some() {
@@ -309,11 +330,11 @@ impl ClientApp {
             return true;
         }
 
-        let Some(window) = self
-            .dialog_window_order()
-            .into_iter()
-            .find(|window| self.dialog_window_rect(*window).is_some())
-        else {
+        let Some(window) = self.dialog_window_order().into_iter().find(|window| {
+            *window != DialogWindow::QuestHelper
+                && *window != DialogWindow::Minimap
+                && self.dialog_window_rect(*window).is_some()
+        }) else {
             return false;
         };
 
@@ -365,7 +386,7 @@ impl ClientApp {
                     None,
                 );
             }
-            DialogWindow::QuestHelper => self.quest_helper_dismissed = true,
+            DialogWindow::QuestHelper => return false,
             DialogWindow::OwlSearch => {
                 self.owl_search = None;
                 self.owl_texture = None;
@@ -472,15 +493,28 @@ impl ClientApp {
                     self.monster_book_animation_texture = None;
                 }
             }
+            DialogWindow::Minimap => return false,
         }
         true
     }
 
     pub(super) fn dialog_window_offset(&self, window: DialogWindow) -> (f32, f32) {
-        self.dialog_window_offsets
+        let offset = self
+            .dialog_window_offsets
             .get(&window)
             .copied()
-            .unwrap_or((0.0, 0.0))
+            .unwrap_or((0.0, 0.0));
+        let Some(base) = self.dialog_window_rect(window) else {
+            return offset;
+        };
+        let position = ui_foundation::UiRect::new(
+            base.x + offset.0,
+            base.y + offset.1,
+            base.width,
+            base.height,
+        )
+        .clamped_to_canvas();
+        (position.x - base.x, position.y - base.y)
     }
 
     pub(super) fn dialog_window_is_topmost_at(&self, target: DialogWindow, cursor: Point) -> bool {
@@ -525,35 +559,56 @@ impl ClientApp {
             .find(|window| self.dialog_window_hit_test(*window, cursor))
     }
 
-    pub(super) fn begin_dialog_window_drag(&mut self, cursor: Point) -> bool {
-        for window in self.dialog_window_order() {
-            let Some(base) = self.dialog_window_rect(window) else {
-                continue;
-            };
-            let (offset_x, offset_y) = self.dialog_window_offset(window);
-            let actual = SpriteRect {
-                x: base.x + offset_x,
-                y: base.y + offset_y,
-                ..base
-            };
-            let title_bar = SpriteRect {
-                x: actual.x + 3.0,
-                y: actual.y + 2.0,
-                // Leave the right edge free for close/sort/window controls.
-                width: (actual.width - 54.0).max(0.0),
-                height: 24.0_f32.min(actual.height),
-                blend_mode: BlendMode::Alpha,
-            };
-            if rect_contains(title_bar, cursor) {
-                self.dialog_window_drag = Some(DialogWindowDrag {
-                    window,
-                    grab_x: cursor.x - actual.x,
-                    grab_y: cursor.y - actual.y,
-                });
-                return true;
-            }
+    pub(super) fn raise_dialog_window(&mut self, window: DialogWindow) -> bool {
+        let Some(index) = self
+            .raised_dialog_windows
+            .iter()
+            .position(|raised| *raised == window)
+        else {
+            self.raised_dialog_windows.insert(0, window);
+            return true;
+        };
+        if index == 0 {
+            return false;
         }
-        false
+        self.raised_dialog_windows.remove(index);
+        self.raised_dialog_windows.insert(0, window);
+        true
+    }
+
+    pub(super) fn begin_dialog_window_drag(&mut self, cursor: Point) -> bool {
+        let Some(window) = self.topmost_dialog_window_at(cursor) else {
+            return false;
+        };
+        if window == DialogWindow::Minimap {
+            return false;
+        }
+        let Some(base) = self.dialog_window_rect(window) else {
+            return false;
+        };
+        let (offset_x, offset_y) = self.dialog_window_offset(window);
+        let actual = SpriteRect {
+            x: base.x + offset_x,
+            y: base.y + offset_y,
+            ..base
+        };
+        let title_bar = SpriteRect {
+            x: actual.x + 3.0,
+            y: actual.y + 2.0,
+            // Leave the right edge free for close/sort/window controls.
+            width: (actual.width - 54.0).max(0.0),
+            height: 24.0_f32.min(actual.height),
+            blend_mode: BlendMode::Alpha,
+        };
+        if !rect_contains(title_bar, cursor) {
+            return false;
+        }
+        self.dialog_window_drag = Some(DialogWindowDrag {
+            window,
+            grab_x: cursor.x - actual.x,
+            grab_y: cursor.y - actual.y,
+        });
+        true
     }
 
     pub(super) fn update_dialog_window_drag(&mut self, cursor: Point) -> bool {
@@ -574,16 +629,13 @@ impl ClientApp {
     }
 
     pub(super) fn persist_dialog_window_position(&self, window: DialogWindow) {
-        if window != DialogWindow::SkillBook {
+        if window == DialogWindow::Minimap {
             return;
         }
-        let Some(base) = self.dialog_window_rect(window) else {
-            return;
-        };
         let (offset_x, offset_y) = self.dialog_window_offset(window);
-        if let Err(error) = settings::save_skill_book_position(base.x + offset_x, base.y + offset_y)
-        {
-            eprintln!("OpenStoryRS: could not save skill window position: {error}");
+        let name = format!("{window:?}");
+        if let Err(error) = settings::save_dialog_window_offset(&name, offset_x, offset_y) {
+            eprintln!("OpenStoryRS: could not save {name} window position: {error}");
         }
     }
 
@@ -673,18 +725,74 @@ impl ClientApp {
                 DialogWindow::MonsterBook,
                 self.monster_book.texture.as_ref(),
             ),
+            (
+                DialogWindow::MonsterBook,
+                self.monster_book_animation_texture.as_ref(),
+            ),
+            (DialogWindow::Minimap, self.minimap_texture.as_ref()),
         ];
-        for draw in draws {
-            let Some(window) = textures.iter().find_map(|(window, texture)| {
-                texture
-                    .filter(|texture| std::ptr::eq(*texture, draw.texture))
-                    .map(|_| *window)
-            }) else {
+        let window_for_draw = |draw: &SpriteDraw<'_>| {
+            textures
+                .iter()
+                .find_map(|(window, candidate)| {
+                    candidate
+                        .filter(|candidate| std::ptr::eq(*candidate, draw.texture))
+                        .map(|_| *window)
+                })
+                .or_else(|| {
+                    let is_settings_dimmer = self.show_settings
+                        && self.solid_textures.first().is_some_and(|texture| {
+                            std::ptr::eq(texture, draw.texture)
+                                && draw.x == 0.0
+                                && draw.y == 0.0
+                                && draw.width == 1024.0
+                                && draw.height == 768.0
+                                && draw.tint == [0.0, 0.0, 0.0]
+                                && draw.opacity == 0.58
+                        });
+                    is_settings_dimmer.then_some(DialogWindow::Settings)
+                })
+        };
+        let mut draw_slots = Vec::new();
+        let mut window_draws = Vec::new();
+        for (index, draw) in draws.iter_mut().enumerate() {
+            let Some(window) = window_for_draw(draw) else {
                 continue;
             };
             let (offset_x, offset_y) = self.dialog_window_offset(window);
             draw.x += offset_x;
             draw.y += offset_y;
+            draw_slots.push(index);
+            window_draws.push((
+                window,
+                index,
+                SpriteDraw {
+                    texture: draw.texture,
+                    x: draw.x,
+                    y: draw.y,
+                    width: draw.width,
+                    height: draw.height,
+                    uv: draw.uv,
+                    tint: draw.tint,
+                    blend_mode: draw.blend_mode,
+                    flip_x: draw.flip_x,
+                    opacity: draw.opacity,
+                },
+            ));
+        }
+
+        let mut layer_rank = HashMap::new();
+        for (rank, window) in self.dialog_window_order().into_iter().rev().enumerate() {
+            layer_rank.insert(window, rank);
+        }
+        window_draws.sort_by_key(|(window, original_index, _)| {
+            (
+                layer_rank.get(window).copied().unwrap_or(usize::MAX),
+                *original_index,
+            )
+        });
+        for (slot, (_, _, draw)) in draw_slots.into_iter().zip(window_draws) {
+            draws[slot] = draw;
         }
     }
 }

@@ -4,7 +4,7 @@ pub(super) const UNIMPLEMENTED_NPC_TEXT: &str = "Nothing to say...";
 
 impl ClientApp {
     const NPC_CHAT_HORIZONTAL_RANGE: f64 = 200.0;
-    const NPC_CHAT_VERTICAL_RANGE: f64 = 100.0;
+    const NPC_CHAT_VERTICAL_RANGE: f64 = 400.0;
 
     pub(super) fn request_npc_talk(&mut self, object_id: i32) {
         let now = Instant::now();
@@ -24,6 +24,25 @@ impl ClientApp {
             return;
         };
         self.last_npc_talk_at = Some(now);
+        let trial_npc_dialogue = self.map_scene.as_ref().and_then(|scene| {
+            (scene.map_id == 1_020_000)
+                .then(|| job_trial_npc_dialogue(npc_id))
+                .flatten()
+        });
+        if let Some(text) = trial_npc_dialogue {
+            self.show_local_quest_conversation(
+                npc_id,
+                LocalQuestConversation {
+                    pages: vec![text.to_owned()],
+                    page: 0,
+                    request: None,
+                    accepted_pages: Vec::new(),
+                    questions: HashMap::new(),
+                    feedback: None,
+                },
+            );
+            return;
+        }
         let choices = npc_quest_choices(
             npc_id,
             &self.quest_log,
@@ -273,6 +292,19 @@ impl ClientApp {
         if let Some(object_id) = object_id {
             self.request_npc_talk(object_id);
         }
+    }
+}
+
+fn job_trial_npc_dialogue(npc_id: i32) -> Option<&'static str> {
+    match npc_id {
+        10_200 => Some("Do you wish to learn the way of the Bowman?\n\nCome see me in Henesys."),
+        10_201 => {
+            Some("Those who wish to become a Magician, follow me.\n\nCome see me in Ellinia.")
+        }
+        10_202 => Some("Do you wish to know more about Warriors?\n\nCome see me in Perion."),
+        10_203 => Some("Hey you! So you want to become a Thief?\n\nCome to Kerning City."),
+        10_204 => Some("Not everyone can become a Pirate!\n\nCome see me in Nautilus Harbor."),
+        _ => None,
     }
 }
 

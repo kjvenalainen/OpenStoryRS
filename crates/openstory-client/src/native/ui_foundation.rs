@@ -116,9 +116,34 @@ pub(super) const INVENTORY_GRID: UiGrid = UiGrid {
     rows: super::INVENTORY_SLOT_ROWS,
     step_x: super::INVENTORY_SLOT_STEP_X as f32,
     step_y: super::INVENTORY_SLOT_STEP_Y as f32,
-    cell_width: 34.0,
-    cell_height: 33.0,
+    cell_width: super::INVENTORY_SLOT_CELL_WIDTH as f32,
+    cell_height: super::INVENTORY_SLOT_CELL_HEIGHT as f32,
 };
+
+pub(super) const INVENTORY_CLOSE_BUTTON: UiRect = super::ui_dialog::close_button(156.0, 6.0);
+pub(super) const INVENTORY_GATHER_BUTTON: UiRect = UiRect::new(126.0, 6.0, 12.0, 12.0);
+pub(super) const INVENTORY_SORT_BUTTON: UiRect = UiRect::new(141.0, 6.0, 12.0, 12.0);
+pub(super) const INVENTORY_MESO_BUTTON: UiRect = UiRect::new(5.0, 253.0, 19.0, 23.0);
+pub(super) const QUEST_LIST_CLOSE_BUTTON: UiRect =
+    super::ui_dialog::close_button(super::QUEST_LOG_LIST_WIDTH as f32 - 18.0, 5.0);
+pub(super) const QUEST_DETAIL_CLOSE_BUTTON: UiRect = super::ui_dialog::close_button(
+    super::QUEST_LOG_DETAIL_X as f32 + super::QUEST_LOG_DETAIL_WIDTH as f32 - 18.0,
+    5.0,
+);
+
+const QUEST_FOOTER_BUTTON_Y: f32 = super::QUEST_LOG_PANEL_HEIGHT as f32 - 24.0;
+pub(super) const QUEST_HELPER_BUTTON: UiRect = UiRect::new(
+    super::QUEST_LOG_PANEL_WIDTH as f32 - 154.0,
+    QUEST_FOOTER_BUTTON_Y,
+    86.0,
+    17.0,
+);
+pub(super) const QUEST_FORFEIT_BUTTON: UiRect = UiRect::new(
+    super::QUEST_LOG_PANEL_WIDTH as f32 - 61.0,
+    QUEST_FOOTER_BUTTON_Y,
+    57.0,
+    17.0,
+);
 
 pub(super) const QUEST_GRID: UiGrid = UiGrid {
     x: 8.0,
@@ -127,7 +152,7 @@ pub(super) const QUEST_GRID: UiGrid = UiGrid {
     rows: super::QUEST_LOG_VISIBLE_ROWS,
     step_x: 230.0,
     step_y: 20.0,
-    cell_width: 230.0,
+    cell_width: super::QUEST_LOG_LIST_WIDTH as f32 - 26.0,
     cell_height: 20.0,
 };
 
@@ -339,10 +364,16 @@ mod tests {
     fn inventory_gaps_and_edges_do_not_select_neighboring_slots() {
         let grid = INVENTORY_GRID;
         assert_eq!(grid.hit(grid.x, grid.y), Some(0));
-        assert_eq!(grid.hit(grid.x + 34.0, grid.y), None);
-        assert_eq!(grid.hit(grid.x, grid.y + 33.0), None);
+        assert_eq!(grid.hit(grid.x + grid.cell_width, grid.y), None);
+        assert_eq!(grid.hit(grid.x, grid.y + grid.cell_height), None);
         let last = grid.cell(23);
-        assert_eq!(grid.hit(last.x + 33.0, last.y + 32.0), Some(23));
+        assert_eq!(
+            grid.hit(
+                last.x + grid.cell_width - 1.0,
+                last.y + grid.cell_height - 1.0
+            ),
+            Some(23)
+        );
         assert_eq!(grid.hit(f32::NAN, 0.0), None);
     }
 

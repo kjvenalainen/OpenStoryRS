@@ -42,30 +42,6 @@ fn resolve_ui_path(root: &NxNode, path: &str) -> Result<Option<NxNode>, String> 
     root.resolve(&candidate).map_err(|error| error.to_string())
 }
 
-/// Composites authored NX window layers in order. Callers provide each layer's
-/// legacy anchor; `composite_nx_ui_bitmap` applies the bitmap's NX origin and
-/// `resolve_ui_path` handles aliases between newer and v83 path layouts.
-fn composite_nx_ui_layers(
-    pixels: &mut [u8],
-    canvas_width: usize,
-    canvas_height: usize,
-    archive: &NxArchive,
-    layers: &[(&str, i32, i32)],
-) -> Result<(), String> {
-    for (path, anchor_x, anchor_y) in layers {
-        composite_nx_ui_bitmap(
-            pixels,
-            canvas_width,
-            canvas_height,
-            archive,
-            path,
-            *anchor_x,
-            *anchor_y,
-        )?;
-    }
-    Ok(())
-}
-
 /// Returns native bitmap dimensions and its NX anchor origin when a path is a
 /// bitmap. Window composition uses the visible top-left while the compositor
 /// accepts the original NX anchor point.
@@ -116,11 +92,8 @@ fn composite_nx_ui_modal(
             .ok_or_else(|| format!("missing NX modal bitmap {background_path:?}"))?;
     let left = ((canvas_width as f32 - background_width) * 0.5).floor();
     let top = ((canvas_height as f32 - background_height) * 0.5).floor();
-    composite_nx_ui_bitmap(
-        pixels,
-        canvas_width,
-        canvas_height,
-        archive,
+    let mut dialog = NxDialog::new(pixels, canvas_width, canvas_height, archive);
+    dialog.frame(
         background_path,
         left as i32 + origin_x,
         top as i32 + origin_y,
@@ -142,21 +115,12 @@ fn composite_nx_ui_modal(
         button_paths.iter().zip(button_geometry)
     {
         let button_top = top + background_height - button_height - 14.0;
-        composite_nx_ui_bitmap(
-            pixels,
-            canvas_width,
-            canvas_height,
-            archive,
+        let button = dialog.anchored_button(
             path,
             button_left.round() as i32 + button_origin_x,
             button_top.round() as i32 + button_origin_y,
         )?;
-        buttons.push(ui_foundation::UiRect::new(
-            button_left,
-            button_top,
-            button_width,
-            button_height,
-        ));
+        buttons.push(button);
         button_left += button_width + gap;
     }
     Ok(NxUiModalLayout {
@@ -262,7 +226,15 @@ fn composite_nx_ui_vertical_frame(
     if center_height == 0 {
         return Err(format!("NX frame bitmap {center_path:?} has empty height"));
     }
-    composite_nx_ui_bitmap(pixels, canvas_width, canvas_height, archive, top_path, left, top)?;
+    composite_nx_ui_bitmap(
+        pixels,
+        canvas_width,
+        canvas_height,
+        archive,
+        top_path,
+        left,
+        top,
+    )?;
     let mut y = top.saturating_add(
         nx_ui_bitmap_geometry(archive, top_path)
             .ok_or_else(|| format!("missing NX frame bitmap {top_path:?}"))?
@@ -343,7 +315,11 @@ fn composite_nx_ui_bitmap_centered(
     let (w, h, ox, oy) = nx_dialogue_button_geometry(archive, path)
         .ok_or_else(|| format!("missing NX bitmap {path:?}"))?;
     composite_nx_ui_bitmap(
-        pixels, width, height, archive, path,
+        pixels,
+        width,
+        height,
+        archive,
+        path,
         (bounds.x + (bounds.width - w) * 0.5).floor() as i32 + ox,
         (bounds.y + (bounds.height - h) * 0.5).floor() as i32 + oy,
     )
@@ -570,131 +546,40 @@ fn append_optional_sprite_at_top_left(
     Ok(Some(sprites[index].rect))
 }
 
-fn build_quit_confirmation_sprites(
-    archive: &NxArchive,
-) -> Result<(Vec<DecodedSprite>, [SpriteRect; 2]), String> {
-    // Prefer the v83 login modal. The larger v83 frame uses different
-    // proportions than the modern login modal, so center its text and
-    // button group from their actual NX dimensions instead of reusing the
-    // modern panel's fixed 17/70/130 offsets.
-    let background_path = "Login.img/Notice/backgrnd/0";
-    let background = archive
-        .root()
-        .resolve(background_path)
-        .map_err(|error| error.to_string())?
-        .ok_or_else(|| format!("missing native quit-dialog asset {background_path:?}"))?;
-    let bitmap = background
-        .bitmap()
-        .map_err(|error| error.to_string())?
-        .ok_or_else(|| format!("native quit-dialog asset {background_path:?} is not a bitmap"))?;
-    let panel_width = f32::from(bitmap.width());
-    let panel_height = f32::from(bitmap.height());
-    let left = (1024.0 - panel_width) / 2.0;
-    let top = (768.0 - panel_height) / 2.0;
-    let mut sprites = Vec::with_capacity(4);
-    let mut append_required = |path: &str, x, y| {
-        append_optional_sprite_at_top_left(&mut sprites, archive, path, x, y, 1.0)?
-            .ok_or_else(|| format!("missing native quit-dialog asset {path:?}"))
-    };
-    append_required(background_path, left, top)?;
-
-    let text_path = "Login.img/Notice/text/53";
-    let text_node = archive
-        .root()
-        .resolve(text_path)
-        .map_err(|error| error.to_string())?
-        .ok_or_else(|| format!("missing native quit-dialog asset {text_path:?}"))?;
-    let text_bitmap = text_node
-        .bitmap()
-        .map_err(|error| error.to_string())?
-        .ok_or_else(|| format!("native quit-dialog asset {text_path:?} is not a bitmap"))?;
-    let text_width = f32::from(text_bitmap.width());
-    let text_left = left + (panel_width - text_width) / 2.0;
-    append_required(text_path, text_left, top + 13.0)?;
-    drop(append_required);
-
-    // The prompt bitmap has an opaque paper-colored area below its glyphs, so
-    // it hides the mushroom artwork baked into the notice background. Restore
-    // just that part of the background after the text; the crop starts below
-    // the prompt glyphs and keeps the mushroom face in front.
-    let mushroom_crop = (32_u32, 45_u32, 72_u32, 70_u32);
-    let (crop_x, crop_y, crop_width, crop_height) = mushroom_crop;
-    if crop_x.saturating_add(crop_width) <= u32::from(bitmap.width())
-        && crop_y.saturating_add(crop_height) <= u32::from(bitmap.height())
-    {
-        let background_pixels = bitmap
-            .decode_bgra_shared()
-            .map_err(|error| error.to_string())?;
-        let source_width = usize::from(bitmap.width());
-        let mut crop_pixels = vec![0_u8; crop_width as usize * crop_height as usize * 4];
-        for row in 0..crop_height as usize {
-            let source_start = ((crop_y as usize + row) * source_width + crop_x as usize) * 4;
-            let destination_start = row * crop_width as usize * 4;
-            let row_bytes = crop_width as usize * 4;
-            crop_pixels[destination_start..destination_start + row_bytes]
-                .copy_from_slice(&background_pixels[source_start..source_start + row_bytes]);
-        }
-        sprites.push(DecodedSprite {
-            texture_key: format!("{background_path}#mushroom-foreground"),
-            rect: SpriteRect {
-                x: left + crop_x as f32,
-                y: top + crop_y as f32,
-                width: crop_width as f32,
-                height: crop_height as f32,
-                blend_mode: BlendMode::Alpha,
-            },
-            depth_order: 0,
-            texture_width: crop_width,
-            texture_height: crop_height,
-            pixels: crop_pixels.into(),
-        });
-    }
-
-    let mut append_required = |path: &str, x, y| {
-        append_optional_sprite_at_top_left(&mut sprites, archive, path, x, y, 1.0)?
-            .ok_or_else(|| format!("missing native quit-dialog asset {path:?}"))
-    };
-    let yes_path = "Login.img/Notice/BtYes/normal/0";
-    let no_path = "Login.img/Notice/BtNo/normal/0";
-    let button_width = |path: &str| -> Result<f32, String> {
-        let node = archive
-            .root()
-            .resolve(path)
-            .map_err(|error| error.to_string())?
-            .ok_or_else(|| format!("missing native quit-dialog asset {path:?}"))?;
-        let bitmap = node
-            .bitmap()
-            .map_err(|error| error.to_string())?
-            .ok_or_else(|| format!("native quit-dialog asset {path:?} is not a bitmap"))?;
-        Ok(f32::from(bitmap.width()))
-    };
-    let yes_width = button_width(yes_path)?;
-    let no_width = button_width(no_path)?;
-    let gap = 8.0_f32;
-    let group_width = yes_width + gap + no_width;
-    let buttons_left = left + (panel_width - group_width) / 2.0;
-    let button_y = top + panel_height - 56.0;
-    let yes = append_required(yes_path, buttons_left, button_y)?;
-    let no = append_required(no_path, buttons_left + yes_width + gap, button_y)?;
-    Ok((sprites, [yes, no]))
+#[derive(Clone, Copy)]
+enum MushroomPopupButtons {
+    Ok,
+    OkCancel,
 }
 
-fn build_server_notice_art(
+struct MushroomPopupArt {
+    width: u32,
+    height: u32,
+    pixels: Vec<u8>,
+    panel: SpriteRect,
+    buttons: Vec<SpriteRect>,
+    page_count: usize,
+}
+
+fn build_mushroom_popup_art(
     archive: &NxArchive,
     font: &fontdue::Font,
     message: &str,
     page: usize,
-) -> Result<(u32, u32, Vec<u8>, SpriteRect, SpriteRect, usize), String> {
+    buttons: MushroomPopupButtons,
+) -> Result<MushroomPopupArt, String> {
     let background_path = "Login.img/Notice/backgrnd/0";
     let background = archive
         .root()
         .resolve(background_path)
         .map_err(|error| error.to_string())?
-        .ok_or_else(|| format!("missing v83 server-notice asset {background_path:?}"))?;
+        .ok_or_else(|| format!("missing native mushroom dialog asset {background_path:?}"))?;
     let bitmap = background
         .bitmap()
         .map_err(|error| error.to_string())?
-        .ok_or_else(|| format!("v83 server-notice asset {background_path:?} is not a bitmap"))?;
+        .ok_or_else(|| {
+            format!("native mushroom dialog asset {background_path:?} is not a bitmap")
+        })?;
     let width = u32::from(bitmap.width());
     let height = u32::from(bitmap.height());
     let mut pixels = bitmap
@@ -702,42 +587,54 @@ fn build_server_notice_art(
         .map_err(|error| error.to_string())?
         .to_vec();
     let panel = SpriteRect {
-        x: (1024.0 - width as f32) / 2.0,
-        y: (768.0 - height as f32) / 2.0,
+        x: (1024.0 - width as f32) * 0.5,
+        y: (768.0 - height as f32) * 0.5,
         width: width as f32,
         height: height as f32,
         blend_mode: BlendMode::Alpha,
     };
-    let button_path = "Login.img/Notice/BtYes/normal/0";
-    let node = archive
-        .root()
-        .resolve(button_path)
-        .map_err(|error| error.to_string())?
-        .ok_or_else(|| format!("missing native notice button {button_path:?}"))?;
-    let button_bitmap = node
-        .bitmap()
-        .map_err(|error| error.to_string())?
-        .ok_or_else(|| format!("native notice button {button_path:?} is not a bitmap"))?;
-    let button_width = u32::from(button_bitmap.width());
-    let button_height = u32::from(button_bitmap.height());
-    let button_x = width.saturating_sub(button_width) / 2;
-    let button_y = height.saturating_sub(button_height + 22);
-    composite_nx_ui_bitmap(
-        &mut pixels,
-        width as usize,
-        height as usize,
-        archive,
-        button_path,
-        button_x as i32,
-        button_y as i32,
-    )?;
-    let button = SpriteRect {
-        x: panel.x + button_x as f32,
-        y: panel.y + button_y as f32,
-        width: button_width as f32,
-        height: button_height as f32,
-        blend_mode: BlendMode::Alpha,
+
+    let button_paths: &[&str] = match buttons {
+        MushroomPopupButtons::Ok => &["Login.img/Notice/BtYes/normal/0"],
+        MushroomPopupButtons::OkCancel => &[
+            "Login.img/Notice/BtYes/normal/0",
+            "Login.img/Notice/BtNo/normal/0",
+        ],
     };
+    let button_geometry = button_paths
+        .iter()
+        .map(|path| {
+            nx_dialogue_button_geometry(archive, path)
+                .ok_or_else(|| format!("missing native mushroom dialog button {path:?}"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let button_gap = if button_geometry.len() > 1 { 8.0 } else { 0.0 };
+    let buttons_width = button_geometry.iter().map(|button| button.0).sum::<f32>()
+        + button_gap * button_geometry.len().saturating_sub(1) as f32;
+    let mut button_x = ((width as f32 - buttons_width) * 0.5).floor();
+    let mut button_bounds = Vec::with_capacity(button_geometry.len());
+    for (path, (button_width, button_height, origin_x, origin_y)) in
+        button_paths.iter().zip(button_geometry)
+    {
+        let button_y = height as f32 - button_height - 22.0;
+        composite_nx_ui_bitmap(
+            &mut pixels,
+            width as usize,
+            height as usize,
+            archive,
+            path,
+            button_x.round() as i32 + origin_x,
+            button_y.round() as i32 + origin_y,
+        )?;
+        button_bounds.push(SpriteRect {
+            x: panel.x + button_x,
+            y: panel.y + button_y,
+            width: button_width,
+            height: button_height,
+            blend_mode: BlendMode::Alpha,
+        });
+        button_x += button_width + button_gap;
+    }
 
     let font_size = 14.0;
     let text_left = 104_u32.min(width.saturating_sub(24));
@@ -780,7 +677,84 @@ fn build_server_notice_art(
             [70, 50, 35],
         );
     }
-    Ok((width, height, pixels, panel, button, page_count))
+
+    Ok(MushroomPopupArt {
+        width,
+        height,
+        pixels,
+        panel,
+        buttons: button_bounds,
+        page_count,
+    })
+}
+
+fn build_mushroom_popup_sprite(art: MushroomPopupArt, texture_key: String) -> DecodedSprite {
+    DecodedSprite {
+        texture_key,
+        rect: art.panel,
+        depth_order: 0,
+        texture_width: art.width,
+        texture_height: art.height,
+        pixels: art.pixels.into(),
+    }
+}
+
+fn build_quit_confirmation_sprites(
+    archive: &NxArchive,
+    font: &fontdue::Font,
+) -> Result<(Vec<DecodedSprite>, [SpriteRect; 2]), String> {
+    let art = build_mushroom_popup_art(
+        archive,
+        font,
+        "Are you sure you want to exit?",
+        0,
+        MushroomPopupButtons::OkCancel,
+    )?;
+    let [ok, cancel] = art
+        .buttons
+        .as_slice()
+        .try_into()
+        .map_err(|_| "mushroom quit dialog did not render both buttons".to_owned())?;
+    let sprite = build_mushroom_popup_sprite(art, "native-mushroom-popup:quit".to_owned());
+    Ok((vec![sprite], [ok, cancel]))
+}
+
+fn build_character_delete_confirmation_sprites(
+    archive: &NxArchive,
+    font: &fontdue::Font,
+    message: &str,
+) -> Result<(Vec<DecodedSprite>, [SpriteRect; 2]), String> {
+    let art = build_mushroom_popup_art(archive, font, message, 0, MushroomPopupButtons::OkCancel)?;
+    let [ok, cancel] =
+        art.buttons.as_slice().try_into().map_err(|_| {
+            "mushroom character-delete dialog did not render both buttons".to_owned()
+        })?;
+    let sprite = build_mushroom_popup_sprite(
+        art,
+        format!("native-mushroom-popup:character-delete:{message}"),
+    );
+    Ok((vec![sprite], [ok, cancel]))
+}
+
+fn build_server_notice_art(
+    archive: &NxArchive,
+    font: &fontdue::Font,
+    message: &str,
+    page: usize,
+) -> Result<(u32, u32, Vec<u8>, SpriteRect, SpriteRect, usize), String> {
+    let art = build_mushroom_popup_art(archive, font, message, page, MushroomPopupButtons::Ok)?;
+    let button = *art
+        .buttons
+        .first()
+        .ok_or_else(|| "mushroom notice did not render an OK button".to_owned())?;
+    Ok((
+        art.width,
+        art.height,
+        art.pixels,
+        art.panel,
+        button,
+        art.page_count,
+    ))
 }
 
 fn wrap_server_notice(

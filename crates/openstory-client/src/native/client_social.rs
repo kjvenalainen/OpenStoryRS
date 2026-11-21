@@ -941,7 +941,7 @@ impl ClientApp {
         }
         let message = self.chat_input.trim().to_owned();
         if message.is_empty() {
-            self.chat_open = false;
+            self.chat_input_focused = false;
             self.refresh_chat_texture();
             return;
         }
@@ -965,6 +965,7 @@ impl ClientApp {
             self.execute_trade_command(command);
             self.chat_input.clear();
             self.chat_open = false;
+            self.chat_input_focused = false;
             self.refresh_chat_texture();
             return;
         }
@@ -972,6 +973,7 @@ impl ClientApp {
             self.execute_party_command(command);
             self.chat_input.clear();
             self.chat_open = false;
+            self.chat_input_focused = false;
             self.refresh_chat_texture();
             return;
         }
@@ -979,6 +981,7 @@ impl ClientApp {
             self.execute_buddy_command(command);
             self.chat_input.clear();
             self.chat_open = false;
+            self.chat_input_focused = false;
             self.refresh_chat_texture();
             return;
         }
@@ -986,6 +989,7 @@ impl ClientApp {
             self.execute_alliance_command(command);
             self.chat_input.clear();
             self.chat_open = false;
+            self.chat_input_focused = false;
             self.refresh_chat_texture();
             return;
         }
@@ -993,12 +997,14 @@ impl ClientApp {
             self.execute_guild_command(command);
             self.chat_input.clear();
             self.chat_open = false;
+            self.chat_input_focused = false;
             self.refresh_chat_texture();
             return;
         }
         if let Some(ChatCommand::OpenWhisper(target)) = command {
             self.chat_input.clear();
             self.chat_open = false;
+            self.chat_input_focused = false;
             self.refresh_chat_texture();
             self.open_whisper_window(&target, true);
             return;
@@ -1006,6 +1012,7 @@ impl ClientApp {
         if let Some(ChatCommand::Whisper { target, message }) = command {
             self.chat_input.clear();
             self.chat_open = false;
+            self.chat_input_focused = false;
             self.refresh_chat_texture();
             self.send_whisper_message(&target, &message, false);
             return;
@@ -1076,6 +1083,7 @@ impl ClientApp {
             return;
         }
         self.chat_input.clear();
+        self.chat_input_focused = false;
         self.refresh_chat_texture();
         if let Some(echo) = echo {
             self.push_chat_line(echo, [255, 255, 255]);
@@ -1102,6 +1110,7 @@ impl ClientApp {
         self.chat_input.clear();
         self.chat_target = ChatTarget::Public;
         self.chat_open = true;
+        self.chat_input_focused = true;
         let prompt = if kind.has_recipient_field(item_id) {
             "Enter an optional target name (blank Enter skips), then message lines; Escape cancels."
         } else if kind.uses_item_attachment(item_id) {
@@ -1194,6 +1203,7 @@ impl ClientApp {
         if !still_owned {
             self.cash_item_compose = None;
             self.chat_open = false;
+            self.chat_input_focused = false;
             self.chat_input.clear();
             self.refresh_chat_texture();
             self.push_chat_line(
@@ -1326,6 +1336,7 @@ impl ClientApp {
         }
         self.chat_input.clear();
         self.chat_open = false;
+        self.chat_input_focused = false;
         self.cash_item_compose = None;
         self.refresh_chat_texture();
     }

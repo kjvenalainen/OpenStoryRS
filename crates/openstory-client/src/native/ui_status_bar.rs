@@ -74,6 +74,14 @@ fn render_status_message_line(
     pixels
 }
 
+fn status_message_y(quickslots_visible: bool) -> f32 {
+    if quickslots_visible {
+        QUICKSLOT_PANEL_Y - STATUS_MESSAGE_HEIGHT as f32 - 2.0
+    } else {
+        STATUS_MESSAGE_Y
+    }
+}
+
 fn composite_scaled_nx_icon(
     destination: &mut [u8],
     canvas_width: usize,
@@ -141,6 +149,21 @@ impl StatusBarLayout {
             Self::V83 => 71,
         }
     }
+}
+
+fn game_menu_position_for_layout(layout: StatusBarLayout) -> (f32, f32) {
+    let (button_x, button_width) = match layout {
+        StatusBarLayout::Modern => (794.0, 54.0),
+        StatusBarLayout::V83 => (
+            V83_STATUS_BAR_BIG_BUTTON_X + V83_STATUS_BAR_BIG_BUTTON_STEP,
+            V83_STATUS_BAR_BIG_BUTTON_WIDTH,
+        ),
+    };
+    (
+        (button_x + (button_width - GAME_MENU_WIDTH as f32) * 0.5)
+            .clamp(8.0, V83_STATUS_BAR_WIDTH - GAME_MENU_WIDTH as f32 - 8.0),
+        layout.top() - GAME_MENU_HEIGHT as f32,
+    )
 }
 
 #[derive(Clone, Copy)]
@@ -1108,7 +1131,7 @@ struct LoginSceneAssets {
 
 fn upload_scene_sprites(
     renderer: &GpuRenderer,
-    sprites: Vec<DecodedSprite>,
+    sprites: &[DecodedSprite],
 ) -> Result<
     (
         Vec<GpuTexture>,
@@ -1119,7 +1142,7 @@ fn upload_scene_sprites(
 > {
     let mut unique_sprites = Vec::new();
     let mut texture_indices = HashMap::new();
-    for sprite in &sprites {
+    for sprite in sprites {
         if !texture_indices.contains_key(&sprite.texture_key) {
             let index = unique_sprites.len();
             unique_sprites.push(sprite);
@@ -1138,7 +1161,7 @@ fn upload_scene_sprites(
         .upload_bgra_atlas(&atlas_images)
         .map_err(|error| error.to_string())?;
     let draws = sprites
-        .into_iter()
+        .iter()
         .map(|sprite| {
             let texture_index = texture_indices
                 .get(&sprite.texture_key)
@@ -1148,4 +1171,30 @@ fn upload_scene_sprites(
         })
         .collect();
     Ok((textures, draws, texture_indices))
+}
+
+fn append_scene_local_name_tag(
+    sprites: &mut Vec<DecodedSprite>,
+    is_map_scene: bool,
+    character: Option<&openstory_protocol::CharacterInfo>,
+    font: &fontdue::Font,
+    ui_archive: &NxArchive,
+    character_archive: &NxArchive,
+) -> Option<usize> {
+    if !is_map_scene {
+        return None;
+    }
+    character.and_then(|character| {
+        append_map_name_tag_sprite(
+            sprites,
+            font,
+            ui_archive,
+            Some(character_archive),
+            Some(&character.look),
+            &character.stats.name,
+            512.0,
+            GAMEPLAY_CAMERA_CENTER_Y,
+            MapNameTagKind::Character,
+        )
+    })
 }

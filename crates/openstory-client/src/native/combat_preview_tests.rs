@@ -43,6 +43,7 @@ fn scene_with_mob() -> MapSceneRuntime {
                 can_fly: false,
                 body_attack: false,
                 boss: false,
+                knockback: 0,
                 speed: 0.0,
                 fly_speed: 0.0,
                 physical_attack: 1,
@@ -81,12 +82,46 @@ fn scene_with_mob() -> MapSceneRuntime {
             hp_bar_remaining: Duration::ZERO,
             statuses: HashSet::new(),
             control_acked: false,
+            movement_dirty: false,
             ai_counter: 0,
             random_state: 1,
             fly_direction: 0,
+            aggro_target: None,
         },
     );
     scene
+}
+
+#[test]
+fn mob_hit_reaction_uses_push_threshold_and_attack_direction() {
+    let mut scene = scene_with_mob();
+    let mob = scene.mobs.get_mut(&1).unwrap();
+    mob.control_mode = 1;
+    mob.traits.can_move = true;
+    mob.traits.knockback = 50;
+    mob.animations.insert(
+        MobMotion::Hit,
+        vec![MobFrameRuntime {
+            delay: Duration::from_millis(100),
+            sprites: Vec::new(),
+        }],
+    );
+
+    scene.apply_mob_damage_reaction(1, 49, true);
+    assert_eq!(scene.mobs[&1].motion, MobMotion::Stand);
+    assert!(!scene.mobs[&1].movement_dirty);
+
+    scene.apply_mob_damage_reaction(1, 50, true);
+    let mob = &scene.mobs[&1];
+    assert_eq!(mob.motion, MobMotion::Hit);
+    assert!(mob.server_flip);
+    assert_eq!(mob.server_stance, 8);
+    assert_eq!(mob.ai_counter, 170);
+    assert!(mob.movement_dirty);
+
+    scene.apply_mob_damage_reaction(1, 50, false);
+    assert!(!scene.mobs[&1].server_flip);
+    assert_eq!(scene.mobs[&1].server_stance, 9);
 }
 
 #[test]

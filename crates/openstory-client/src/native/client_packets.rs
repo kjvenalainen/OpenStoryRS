@@ -1,5 +1,43 @@
 use super::*;
 
+fn inventory_update_touches_move(
+    update: &openstory_protocol::InventoryUpdate,
+    inventory_type: openstory_protocol::InventoryType,
+    source: u16,
+    destination: u16,
+) -> bool {
+    let touches_slot = |kind, position: i16| {
+        kind == inventory_type
+            && (position.unsigned_abs() == source || position.unsigned_abs() == destination)
+    };
+    update
+        .modifications
+        .iter()
+        .any(|modification| match modification {
+            openstory_protocol::InventoryModification::Add(item) => {
+                item.inventory_type == inventory_type
+                    && (item.slot == source || item.slot == destination)
+            }
+            openstory_protocol::InventoryModification::ChangeCount {
+                inventory_type,
+                position,
+                ..
+            }
+            | openstory_protocol::InventoryModification::Remove {
+                inventory_type,
+                position,
+            } => touches_slot(*inventory_type, *position),
+            openstory_protocol::InventoryModification::Swap {
+                inventory_type,
+                position,
+                other_position,
+            } => {
+                touches_slot(*inventory_type, *position)
+                    || touches_slot(*inventory_type, *other_position)
+            }
+        })
+}
+
 impl ClientApp {
     pub(super) fn handle_server_packet(&mut self, packet: &[u8]) {
         if packet.len() < 2 {
@@ -962,7 +1000,7 @@ impl ClientApp {
                             .as_ref()
                             .is_some_and(|creation| creation.awaiting_create) =>
                     {
-                        self.fail_character_creation(format!(
+                        self.fail_character_creation(&format!(
                             "Character creation failed ({}). Review choices and retry.",
                             result.state
                         ));
@@ -1380,6 +1418,18 @@ impl ClientApp {
                 match openstory_protocol::parse_inventory_update(packet) {
                     Ok(update) => {
                         self.key_config_actions_dirty = true;
+                        if self.inventory_pending_move.is_some_and(
+                            |(inventory_type, source, destination, _)| {
+                                inventory_update_touches_move(
+                                    &update,
+                                    inventory_type,
+                                    source,
+                                    destination,
+                                )
+                            },
+                        ) {
+                            self.inventory_pending_move = None;
+                        }
                         if let Some(inventory) = self.inventory.as_mut() {
                             self.inventory_drag_source = None;
                             inventory.apply(update);
@@ -1406,6 +1456,7 @@ impl ClientApp {
                 match openstory_protocol::parse_inventory_capacity_update(packet) {
                     Ok(update) => {
                         self.inventory_drag_source = None;
+                        self.inventory_pending_move = None;
                         if let Some(inventory) = self.inventory.as_mut() {
                             inventory
                                 .set_slot_capacity(update.inventory_type, update.slot_capacity);
@@ -1487,6 +1538,7 @@ impl ClientApp {
                             stats.meso = i32::try_from(initial_inventory.meso).ok();
                         }
                         self.inventory = inventory;
+                        self.inventory_pending_move = None;
                         self.teleport_rock_locations = teleport_rock.unwrap_or_default();
                         self.key_config_actions_dirty = true;
                         self.inventory_texture = None;
@@ -1533,12 +1585,10 @@ impl ClientApp {
                             "OpenStory: entered field as character {character_id} at map {} portal {}",
                             stats.map_id, stats.portal
                         );
+                        self.update_equipped_look_data();
+                        self.map_entry_refresh_pending = true;
+                        self.map_entry_refresh_step = 0;
                         self.show_map_scene(stats.map_id, stats.portal);
-                        self.sync_equipped_look();
-                        self.refresh_inventory_texture();
-                        self.refresh_pet_equipment_texture();
-                        self.refresh_skill_book_entries();
-                        self.refresh_skill_book_texture();
                     }
                     Err(error) => eprintln!("OpenStory: invalid SET_FIELD packet: {error}"),
                 }
@@ -1802,7 +1852,14 @@ impl ClientApp {
                             .iter()
                             .map(|target| target.damage_lines.len())
                             .max()
-                            .unwrap_or(0);
+                            .unwrap_or_else(|| {
+                                usize::from(
+                                    attack.attack_type
+                                        == openstory_protocol::RemoteAttackType::Ranged
+                                        || attack.bullet_id > 0
+                                        || attack.skill_id > 0,
+                                )
+                            });
                         let hit_delays = attacker_look.as_ref().map_or_else(
                             || vec![Duration::ZERO; hit_count],
                             |look| {
@@ -2156,6 +2213,7 @@ impl ClientApp {
                         self.npc_dialogue = None;
                         self.npc_shop = Some(NpcShopUi::new(shop));
                         self.refresh_npc_shop_texture();
+                        self.update_npc_shop_hover();
                     }
                     Err(error) => eprintln!("OpenStory: invalid NPC shop: {error}"),
                 }
@@ -2351,6 +2409,16 @@ impl ClientApp {
             openstory_protocol::OPCODE_HIT_REACTOR => {
                 match openstory_protocol::parse_reactor_hit(packet) {
                     Ok(update) => {
+                        let hit_sound = self.map_scene.as_ref().and_then(|scene| {
+                            scene
+                                .reactors
+                                .get(&update.object_id)
+                                .map(|reactor| (reactor.reactor_id, reactor.state))
+                        });
+                        if let Some((reactor_id, state)) = hit_sound {
+                            self.audio
+                                .play_reactor_hit(&self.sound_archive, reactor_id, state);
+                        }
                         if let Some(scene) = self.map_scene.as_mut() {
                             scene.set_reactor_state(update.object_id, update.state);
                         }
@@ -2361,6 +2429,16 @@ impl ClientApp {
             openstory_protocol::OPCODE_REMOVE_REACTOR => {
                 match openstory_protocol::parse_reactor_remove(packet) {
                     Ok(update) => {
+                        let break_sound = self.map_scene.as_ref().and_then(|scene| {
+                            scene
+                                .reactors
+                                .get(&update.object_id)
+                                .map(|reactor| (reactor.reactor_id, reactor.state))
+                        });
+                        if let Some((reactor_id, state)) = break_sound {
+                            self.audio
+                                .play_reactor_break(&self.sound_archive, reactor_id, state);
+                        }
                         if let Some(scene) = self.map_scene.as_mut() {
                             scene.remove_reactor(update.object_id, update.state);
                         }
@@ -2480,9 +2558,8 @@ impl ClientApp {
                             })
                         });
                         if let Some((mob_id, x, y)) = mob_sound {
-                            let path = format!("Mob.img/{mob_id:07}.img/Die");
                             self.audio
-                                .play_world_sound(&self.sound_archive, &path, (x, y));
+                                .play_mob_death(&self.sound_archive, mob_id, (x, y));
                         }
                         if let Some(scene) = self.map_scene.as_mut() {
                             scene.kill_mob(object_id, animation);
@@ -2815,6 +2892,7 @@ impl ClientApp {
         self.mts_last_event = None;
         self.buddy_capacity = snapshot.buddy_capacity;
         self.inventory = Some(snapshot.inventory.clone());
+        self.inventory_pending_move = None;
         self.teleport_rock_locations = snapshot.teleport_rock.clone();
         self.skills = snapshot
             .skills
@@ -2901,6 +2979,7 @@ impl ClientApp {
                 self.active_character = None;
                 self.taming_mount_stats = None;
                 self.inventory = None;
+                self.inventory_pending_move = None;
                 self.current_field = None;
                 self.session_energy = None;
                 self.gm_account = false;
@@ -2908,7 +2987,7 @@ impl ClientApp {
                 self.mts_open = false;
                 self.mts_open_snapshot = None;
                 self.mts_balances = None;
-                self.show_status_menu = false;
+                self.show_game_menu = false;
                 self.channel_switch_open = false;
                 eprintln!("OpenStory: reconnecting to the login server after relog response");
             }

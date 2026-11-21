@@ -34,6 +34,7 @@ enum LoginAction {
     Login,
     Guest,
     Quit,
+    ReturnToLogin,
     ToggleSaveId,
     SelectWorld(u8),
     SelectChannel(u8),
@@ -47,6 +48,7 @@ enum LoginAction {
     BeginCharacterCreation,
     CycleCreationOption(usize, i8),
     ToggleCreationGender(bool),
+    CheckCreationName,
     FocusCreationName,
     SubmitCharacterCreation,
     CancelCharacterCreation,
@@ -58,16 +60,18 @@ enum LoginDoubleClickTarget {
     Character(usize),
 }
 
+const CREATION_NAME_TAKEN: &str = "That name is already in use. Choose another name.";
+
 struct CharacterCreationState {
     job: u16,
     female: bool,
     name: String,
+    name_available: bool,
     name_focused: bool,
     pools: Vec<Vec<i32>>,
     indices: [usize; 8],
     awaiting_name: bool,
     awaiting_create: bool,
-    notice: Option<String>,
 }
 
 impl CharacterCreationState {
@@ -76,12 +80,12 @@ impl CharacterCreationState {
             job,
             female: false,
             name: String::new(),
+            name_available: false,
             name_focused: true,
             pools,
             indices: [0; 8],
             awaiting_name: false,
             awaiting_create: false,
-            notice: None,
         }
     }
 }
@@ -91,8 +95,29 @@ enum PicEntryStep {
     Register,
     ConfirmRegistration,
     Verify,
-    DeleteConfirm,
     Notice,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CharacterDeleteConfirmationStep {
+    Initial,
+    Final,
+}
+
+impl CharacterDeleteConfirmationStep {
+    fn index(self) -> usize {
+        match self {
+            Self::Initial => 0,
+            Self::Final => 1,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct CharacterDeleteConfirmation {
+    character_id: i32,
+    pic_state: u8,
+    step: CharacterDeleteConfirmationStep,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -105,7 +130,6 @@ struct PicEntry {
     character_id: i32,
     step: PicEntryStep,
     purpose: PicPurpose,
-    pic_state: u8,
     input: String,
     first_input: String,
     notice: Option<String>,
@@ -160,6 +184,7 @@ fn load_login_scene(map: &NxArchive, legacy_ui: &NxArchive) -> Result<LoginScene
             255,
             false,
             &mut cache,
+            true,
         )? {
             animated_art.push(animation);
         }
@@ -469,18 +494,17 @@ fn load_world_selection_scene(
         }
     }
 
-    let (exit_x, exit_y) = design_point(8.0, 515.0);
     if let Some(rect) = append_optional_sprite(
         &mut sprites,
         legacy_ui,
-        "Login.img/Common/BtExit/normal/0",
-        exit_x,
-        exit_y,
+        "Login.img/Common/BtStart/normal/0",
+        CHARACTER_BACK_X,
+        CHARACTER_BACK_Y,
         UI_SCALE,
     )? {
         actions.push(LoginActionRegion {
             rect,
-            action: LoginAction::Quit,
+            action: LoginAction::ReturnToLogin,
         });
     }
     Ok(LoginSceneAssets {
@@ -492,6 +516,9 @@ fn load_world_selection_scene(
         save_id_indicator_draws: None,
     })
 }
+
+const CHARACTER_BACK_X: f32 = -6.0 * 1.28;
+const CHARACTER_BACK_Y: f32 = 515.0 * 1.28;
 
 fn load_character_selection_scene(
     map: &NxArchive,
@@ -505,6 +532,9 @@ fn load_character_selection_scene(
     action_focus: Option<usize>,
 ) -> Result<LoginSceneAssets, String> {
     const UI_SCALE: f32 = 1.28;
+    // Align the bridge and its controls with the right edge of the book opening.
+    const SCENE_SHIFT_X: f32 = 37.0 * UI_SCALE;
+    let scene_x = |x: f32| x * UI_SCALE + SCENE_SHIFT_X;
     let mut sprites = Vec::with_capacity(24);
     let mut actions = Vec::with_capacity(CHARACTER_PAGE_SIZE + 7);
     let mut animated_art = Vec::with_capacity(2);
@@ -521,7 +551,7 @@ fn load_character_selection_scene(
         &mut sprites,
         map,
         "Back/login.img/back/10",
-        77.0 * UI_SCALE,
+        scene_x(77.0),
         32.0 * UI_SCALE,
         UI_SCALE,
     )?;
@@ -529,7 +559,7 @@ fn load_character_selection_scene(
         &mut sprites,
         map,
         "Back/login.img/back/15",
-        143.0 * UI_SCALE,
+        scene_x(143.0),
         81.0 * UI_SCALE,
         UI_SCALE,
     )?;
@@ -537,7 +567,7 @@ fn load_character_selection_scene(
         &mut sprites,
         map,
         "Back/login.img/back/13",
-        141.0 * UI_SCALE,
+        scene_x(141.0),
         695.0 * UI_SCALE,
         UI_SCALE,
     )?;
@@ -545,7 +575,7 @@ fn load_character_selection_scene(
         &mut sprites,
         map,
         "Obj/login.img/CharSelect/signboard/0/0",
-        571.0 * UI_SCALE,
+        scene_x(571.0),
         257.0 * UI_SCALE,
         UI_SCALE,
     )?;
@@ -553,8 +583,16 @@ fn load_character_selection_scene(
         &mut sprites,
         map,
         "Back/login.img/back/14",
-        315.0 * UI_SCALE,
+        scene_x(315.0),
         393.0 * UI_SCALE,
+        UI_SCALE,
+    )?;
+    append_sprite(
+        &mut sprites,
+        legacy_ui,
+        "Login.img/Common/frame",
+        512.0,
+        384.0,
         UI_SCALE,
     )?;
 
@@ -572,7 +610,7 @@ fn load_character_selection_scene(
         if index >= slots {
             continue;
         }
-        let feet_x = (278.0 + visible_index as f32 * 72.0) * UI_SCALE;
+        let feet_x = scene_x(278.0 + visible_index as f32 * 72.0);
         let feet_y = 374.0 * UI_SCALE;
         if let Some(character) = characters.characters.get(index) {
             let selected = index == selected_character;
@@ -599,7 +637,7 @@ fn load_character_selection_scene(
                 } else {
                     "Login.img/CharSelect/charInfo"
                 };
-                let scroll_x = (278.0 + visible_index as f32 * 72.0 - 108.0) * UI_SCALE;
+                let scroll_x = feet_x - 108.0 * UI_SCALE;
                 let scroll_y = 125.0 * UI_SCALE;
                 append_optional_sprite(
                     &mut sprites,
@@ -609,7 +647,7 @@ fn load_character_selection_scene(
                     scroll_y,
                     UI_SCALE,
                 )?;
-                let sheet_x = (278.0 + visible_index as f32 * 72.0 - 108.0 + 17.0) * UI_SCALE;
+                let sheet_x = scroll_x + 17.0 * UI_SCALE;
                 let sheet_y = (125.0 + 36.0) * UI_SCALE;
                 append_optional_sprite_at_top_left(
                     &mut sprites,
@@ -762,7 +800,7 @@ fn load_character_selection_scene(
         &mut sprites,
         legacy_ui,
         "Login.img/CharSelect/pageL/0/0",
-        188.0 * UI_SCALE,
+        scene_x(188.0),
         337.0 * UI_SCALE,
         UI_SCALE,
     )?;
@@ -770,7 +808,7 @@ fn load_character_selection_scene(
         &mut sprites,
         legacy_ui,
         "Login.img/CharSelect/pageR/0/0",
-        499.0 * UI_SCALE,
+        scene_x(499.0),
         337.0 * UI_SCALE,
         UI_SCALE,
     )?;
@@ -793,8 +831,8 @@ fn load_character_selection_scene(
         &mut sprites,
         legacy_ui,
         "Login.img/Common/BtStart/normal/0",
-        -6.0 * UI_SCALE,
-        515.0 * UI_SCALE,
+        CHARACTER_BACK_X,
+        CHARACTER_BACK_Y,
         UI_SCALE,
     )? {
         actions.push(LoginActionRegion {
@@ -810,7 +848,7 @@ fn load_character_selection_scene(
             &mut sprites,
             legacy_ui,
             "Login.img/CharSelect/BtNew/normal/0",
-            521.0 * UI_SCALE,
+            scene_x(521.0),
             192.0 * UI_SCALE,
             UI_SCALE,
         )? {
@@ -833,7 +871,7 @@ fn load_character_selection_scene(
             &mut sprites,
             legacy_ui,
             "Login.img/CharSelect/BtNew/disabled/0",
-            521.0 * UI_SCALE,
+            scene_x(521.0),
             192.0 * UI_SCALE,
             UI_SCALE,
         )?;
@@ -847,7 +885,7 @@ fn load_character_selection_scene(
             &mut sprites,
             legacy_ui,
             "Login.img/CharSelect/BtSelect/normal/0",
-            521.0 * UI_SCALE,
+            scene_x(521.0),
             154.0 * UI_SCALE,
             UI_SCALE,
         )?;
@@ -857,7 +895,7 @@ fn load_character_selection_scene(
         // A small margin makes the full wooden sign easy to click.
         let select_hit_rect = select_rect.map_or(
             SpriteRect {
-                x: 632.0,
+                x: 632.0 + SCENE_SHIFT_X,
                 y: 169.0,
                 width: 224.0,
                 height: 82.0,
@@ -888,7 +926,7 @@ fn load_character_selection_scene(
             &mut sprites,
             legacy_ui,
             "Login.img/CharSelect/BtDelete/normal/0",
-            521.0 * UI_SCALE,
+            scene_x(521.0),
             240.0 * UI_SCALE,
             UI_SCALE,
         )? {
@@ -911,7 +949,7 @@ fn load_character_selection_scene(
             &mut sprites,
             legacy_ui,
             "Login.img/CharSelect/BtSelect/disabled/0",
-            521.0 * UI_SCALE,
+            scene_x(521.0),
             154.0 * UI_SCALE,
             UI_SCALE,
         )?;
@@ -919,7 +957,7 @@ fn load_character_selection_scene(
             &mut sprites,
             legacy_ui,
             "Login.img/CharSelect/BtDelete/disabled/0",
-            521.0 * UI_SCALE,
+            scene_x(521.0),
             240.0 * UI_SCALE,
             UI_SCALE,
         )?;
@@ -943,6 +981,7 @@ fn load_character_customization_scene(
     caret_visible: bool,
     creation: &CharacterCreationState,
     font: &fontdue::Font,
+    selected_world: Option<(&str, u8)>,
 ) -> Result<LoginSceneAssets, String> {
     let job = creation.job;
     let customize_asset = match job {
@@ -953,14 +992,7 @@ fn load_character_customization_scene(
     let mut sprites = Vec::with_capacity(48);
     let mut actions = Vec::with_capacity(24);
     let sky_index = sprites.len();
-    append_sprite(
-        &mut sprites,
-        map,
-        "Back/login.img/back/2",
-        10.0,
-        300.0,
-        1.0,
-    )?;
+    append_sprite(&mut sprites, map, "Back/login.img/back/2", 10.0, 300.0, 1.0)?;
     sprites[sky_index].rect = SpriteRect {
         x: 0.0,
         y: 0.0,
@@ -985,6 +1017,7 @@ fn load_character_customization_scene(
         ("17", 160.0, 263.0),
         ("18", 349.0, 1220.0),
     ] {
+        let (x, y) = (x + 30.0, y - 9.0);
         append_sprite(
             &mut sprites,
             map,
@@ -1003,34 +1036,74 @@ fn load_character_customization_scene(
         384.0,
         1.28,
     )?;
+    let pending = creation.awaiting_name || creation.awaiting_create;
     append_sprite(
         &mut sprites,
-        map,
-        "Obj/login.img/NewChar/signboard/1/0",
-        (115.0 + 85.0) * 1.28,
-        (170.0 + 65.0) * 1.28,
+        legacy_ui,
+        "Login.img/Common/step/3",
+        0.0,
+        40.0,
         1.28,
     )?;
     append_character_creation_option_text(
         &mut sprites,
         font,
-        "Create a character",
-        16.0 * 1.28,
-        26.0 * 1.28,
-        15.0,
-        [105, 67, 27],
+        "Ver. 0.83",
+        779.0,
+        10.0,
+        14.0,
+        [26, 22, 18],
     );
-
-    // These are the actual v83 class-specific customization boards. The
-    // newer C++ branch refers to a `CustomizeChar` node absent from the v83
-    // archive; these `NewChar*` assets are the compatible nodes.
+    if let Some((world, channel)) = selected_world {
+        append_sprite(
+            &mut sprites,
+            legacy_ui,
+            "Login.img/Common/selectWorld",
+            0.0,
+            122.0,
+            1.28,
+        )?;
+        for (label, y) in [
+            (world.to_owned(), 136.0),
+            (format!("CH.{}", u16::from(channel) + 1), 157.0),
+        ] {
+            let label = ui_foundation::ellipsize(font, &label, 12.0, 87.0);
+            let x = 130.0 - ui_foundation::measure_text(font, &label, 12.0) / 2.0;
+            append_text_sprite(&mut sprites, font, &label, x, y, 12.0);
+        }
+    }
+    if let Some(rect) = append_optional_sprite(
+        &mut sprites,
+        legacy_ui,
+        "Login.img/Common/BtStart/normal/0",
+        CHARACTER_BACK_X,
+        CHARACTER_BACK_Y,
+        1.28,
+    )? && !pending
+    {
+        actions.push(LoginActionRegion {
+            rect,
+            action: LoginAction::ReturnToWorld,
+        });
+    }
     append_optional_sprite(
         &mut sprites,
         legacy_ui,
-        &format!("{custom_path}/charSet"),
-        579.0,
-        143.0,
-        1.28,
+        &format!("{custom_path}/scroll/0/3"),
+        161.0,
+        233.0,
+        1.24,
+    )?;
+    const NAME_BOARD_X: f32 = 613.0;
+    const NAME_BOARD_Y: f32 = 131.0;
+    const NAME_BOARD_SCALE: f32 = 1.20;
+    append_optional_sprite(
+        &mut sprites,
+        legacy_ui,
+        &format!("{custom_path}/charName"),
+        NAME_BOARD_X,
+        NAME_BOARD_Y,
+        NAME_BOARD_SCALE,
     )?;
     let selected = |pool: usize| -> Option<i32> {
         creation
@@ -1073,16 +1146,59 @@ fn load_character_customization_scene(
             &mut sprites,
             character_archive,
             &look,
-            360.0 * 1.28,
-            348.0 * 1.28,
+            396.0 * 1.28,
+            343.0 * 1.28,
             1.28,
             true,
             &mut avatar_cache,
         )?;
     }
 
-    let gender_y = 250.0;
-    for (female, label, x) in [(false, "Male", 590.0), (true, "Female", 700.0)] {
+    for index in 0..8 {
+        let y = (273.0 + index as f32 * 21.08).round();
+        append_optional_sprite_at_top_left(
+            &mut sprites,
+            legacy_ui,
+            &format!("{custom_path}/avatarSel/{index}/normal"),
+            190.0,
+            y,
+            1.24,
+        )?;
+        let value = selected(index).unwrap_or_default();
+        let value_name =
+            character_creation_option_name(index, value, string_archive, item_name_cache);
+        let value_text = ui_foundation::ellipsize(font, &value_name, 13.0, 132.0);
+        let value_x = 357.0 - ui_foundation::measure_text(font, &value_text, 13.0) / 2.0;
+        append_character_creation_option_text(
+            &mut sprites,
+            font,
+            &value_text,
+            value_x.round(),
+            y + 1.0,
+            13.0,
+            [54, 39, 26],
+        );
+        for (direction, asset, x) in [(-1_i8, "BtLeft", 279.0), (1_i8, "BtRight", 426.0)] {
+            let path = format!("{custom_path}/{asset}/normal/0");
+            if let Some(rect) = append_optional_sprite_at_top_left(
+                &mut sprites,
+                legacy_ui,
+                &path,
+                x,
+                y + 3.0,
+                0.85,
+            )? {
+                if !pending {
+                    actions.push(LoginActionRegion {
+                        rect: padded_hit_rect(rect, 3.0, 3.0),
+                        action: LoginAction::CycleCreationOption(index, direction),
+                    });
+                }
+            }
+        }
+    }
+    let gender_y = 448.0;
+    for (female, label, x) in [(false, "Male", 204.0), (true, "Female", 319.0)] {
         let checkbox = if creation.female == female {
             "Basic.img/CheckBox/1"
         } else {
@@ -1096,108 +1212,103 @@ fn load_character_customization_scene(
             gender_y + 5.0,
             1.0,
         )?;
-        append_text_sprite(&mut sprites, font, label, x + 17.0, gender_y, 14.0);
-        actions.push(LoginActionRegion {
-            rect: SpriteRect {
-                x,
-                y: gender_y,
-                width: 90.0,
-                height: 24.0,
-                blend_mode: BlendMode::Alpha,
-            },
-            action: LoginAction::ToggleCreationGender(female),
-        });
-    }
-
-    let labels = [
-        "Face",
-        "Hair",
-        "Hair color",
-        "Skin",
-        "Top",
-        "Bottom",
-        "Shoes",
-        "Weapon",
-    ];
-    for (index, label) in labels.iter().enumerate() {
-        let y = 277.0 + index as f32 * 24.0;
-        let value = selected(index).unwrap_or_default();
-        let value_name =
-            character_creation_option_name(index, value, string_archive, item_name_cache);
-        let text = ui_foundation::ellipsize(font, &format!("{label}: {value_name}"), 13.0, 202.0);
         append_character_creation_option_text(
             &mut sprites,
             font,
-            &text,
-            593.0,
-            y,
+            label,
+            x + 17.0,
+            gender_y,
             13.0,
-            [82, 53, 29],
+            [54, 39, 26],
         );
-        for (direction, asset, x) in [(-1_i8, "BtLeft", 805.0), (1_i8, "BtRight", 829.0)] {
-            let path = format!("{custom_path}/{asset}/normal/0");
-            if let Some(rect) =
-                append_optional_sprite_at_top_left(&mut sprites, legacy_ui, &path, x, y + 3.0, 1.0)?
-            {
-                actions.push(LoginActionRegion {
-                    rect,
-                    action: LoginAction::CycleCreationOption(index, direction),
-                });
-            }
+        if !pending {
+            actions.push(LoginActionRegion {
+                rect: SpriteRect {
+                    x,
+                    y: gender_y,
+                    width: 90.0,
+                    height: 24.0,
+                    blend_mode: BlendMode::Alpha,
+                },
+                action: LoginAction::ToggleCreationGender(female),
+            });
         }
     }
 
-    let pending = creation.awaiting_name || creation.awaiting_create;
-    let name_text = if creation.name.is_empty() {
-        "Enter name".to_owned()
-    } else {
-        creation.name.clone()
-    };
-    let caret = if creation.name_focused && !pending && caret_visible {
-        "|"
-    } else {
-        ""
-    };
-    append_character_creation_option_text(
-        &mut sprites,
-        font,
-        &format!("{name_text}{caret}"),
-        624.0,
-        578.0,
-        14.0,
-        [54, 39, 26],
-    );
-    actions.push(LoginActionRegion {
-        rect: SpriteRect {
-            x: 610.0,
-            y: 557.0,
-            width: 228.0,
-            height: 65.0,
-            blend_mode: BlendMode::Alpha,
-        },
-        action: LoginAction::FocusCreationName,
-    });
-
-    if let Some(notice) = creation.notice.as_deref() {
+    const NAME_X: f32 = NAME_BOARD_X + 32.0;
+    const NAME_Y: f32 = NAME_BOARD_Y + 114.0;
+    const NAME_SIZE: f32 = 14.0;
+    if creation.name_available {
+        append_sprite(
+            &mut sprites,
+            legacy_ui,
+            "Basic.img/CheckBox/1",
+            NAME_X + 159.0,
+            NAME_Y + 16.0,
+            1.0,
+        )?;
+    }
+    if !creation.name.is_empty() {
         append_character_creation_option_text(
             &mut sprites,
             font,
-            notice,
-            300.0,
-            630.0,
-            12.0,
-            [142, 47, 33],
+            &creation.name,
+            NAME_X + 8.0,
+            NAME_Y + 12.0,
+            NAME_SIZE,
+            [191, 229, 255],
         );
+    }
+    if creation.name_focused && !pending && caret_visible {
+        let text_width = ui_foundation::measure_text(font, &creation.name, NAME_SIZE);
+        append_ui_solid_rect(
+            &mut sprites,
+            "character-create-caret",
+            NAME_X + 9.0 + text_width.round(),
+            NAME_Y + 16.0,
+            1,
+            13,
+            [191, 229, 255, 255],
+        );
+    }
+    // The button includes wood grain that lines up with the name board at this offset.
+    let check_state = if pending { "disabled" } else { "normal" };
+    if let Some(rect) = append_optional_sprite_at_top_left(
+        &mut sprites,
+        legacy_ui,
+        &format!("{custom_path}/BtCheck/{check_state}/0"),
+        NAME_BOARD_X + 131.0 * NAME_BOARD_SCALE,
+        NAME_BOARD_Y + 66.0 * NAME_BOARD_SCALE,
+        NAME_BOARD_SCALE,
+    )? && !pending
+    {
+        actions.push(LoginActionRegion {
+            rect,
+            action: LoginAction::CheckCreationName,
+        });
+    }
+    if !pending {
+        actions.push(LoginActionRegion {
+            rect: SpriteRect {
+                x: NAME_X,
+                y: NAME_Y + 8.0,
+                width: 177.0,
+                height: 29.0,
+                blend_mode: BlendMode::Alpha,
+            },
+            action: LoginAction::FocusCreationName,
+        });
     }
     let yes_state = if pending { "disabled" } else { "normal" };
     let no_state = if pending { "disabled" } else { "normal" };
+    let button_y = NAME_BOARD_Y + 211.0;
     let yes_rect = append_optional_sprite(
         &mut sprites,
         legacy_ui,
         &format!("{custom_path}/BtYes/{yes_state}/0"),
-        614.0,
-        477.0,
-        1.0,
+        NAME_BOARD_X + 21.0,
+        button_y,
+        NAME_BOARD_SCALE,
     )?;
     if !pending && let Some(rect) = yes_rect {
         actions.push(LoginActionRegion {
@@ -1205,13 +1316,14 @@ fn load_character_customization_scene(
             action: LoginAction::SubmitCharacterCreation,
         });
     }
+    // The Cancel sprite includes the right trim of the hanging name board.
     let no_rect = append_optional_sprite(
         &mut sprites,
         legacy_ui,
         &format!("{custom_path}/BtNo/{no_state}/0"),
-        713.0,
-        477.0,
-        1.0,
+        NAME_BOARD_X + 129.0,
+        button_y,
+        NAME_BOARD_SCALE,
     )?;
     if !pending && let Some(rect) = no_rect {
         actions.push(LoginActionRegion {
@@ -1220,16 +1332,32 @@ fn load_character_customization_scene(
         });
     }
     if pending {
-        actions.retain(|action| {
-            !matches!(
-                action.action,
-                LoginAction::CycleCreationOption(_, _)
-                    | LoginAction::ToggleCreationGender(_)
-                    | LoginAction::FocusCreationName
-                    | LoginAction::SubmitCharacterCreation
-                    | LoginAction::CancelCharacterCreation
-            )
-        });
+        let notice = if creation.awaiting_name {
+            "Checking name…"
+        } else {
+            "Creating character…"
+        };
+        let width = ui_foundation::measure_text(font, notice, 12.0).ceil() as u32 + 16;
+        let x = (NAME_BOARD_X + 117.0 - width as f32 / 2.0).round();
+        let y = NAME_BOARD_Y + 284.0;
+        append_ui_solid_rect(
+            &mut sprites,
+            &format!("character-create-notice:{width}"),
+            x,
+            y,
+            width,
+            23,
+            [199, 226, 246, 255],
+        );
+        append_character_creation_option_text(
+            &mut sprites,
+            font,
+            notice,
+            x + 8.0,
+            y + 3.0,
+            12.0,
+            [54, 39, 26],
+        );
     }
 
     Ok(LoginSceneAssets {
@@ -1267,12 +1395,12 @@ fn clip_last_login_sprite(sprites: &mut [DecodedSprite]) {
     if right <= left || bottom <= top {
         return;
     }
-    let source_left = (((left - rect.x) / rect.width * source_width as f32).floor() as usize)
-        .min(source_width);
-    let source_top = (((top - rect.y) / rect.height * source_height as f32).floor() as usize)
-        .min(source_height);
-    let source_right = (((right - rect.x) / rect.width * source_width as f32).ceil() as usize)
-        .min(source_width);
+    let source_left =
+        (((left - rect.x) / rect.width * source_width as f32).floor() as usize).min(source_width);
+    let source_top =
+        (((top - rect.y) / rect.height * source_height as f32).floor() as usize).min(source_height);
+    let source_right =
+        (((right - rect.x) / rect.width * source_width as f32).ceil() as usize).min(source_width);
     let source_bottom = (((bottom - rect.y) / rect.height * source_height as f32).ceil() as usize)
         .min(source_height);
     let crop_width = source_right.saturating_sub(source_left);

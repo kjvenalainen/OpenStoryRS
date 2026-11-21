@@ -25,26 +25,17 @@ fn build_event_list_panel(
     received: bool,
 ) -> Result<EventListPanel, String> {
     let mut pixels = vec![0_u8; EVENT_LIST_PANEL_WIDTH * EVENT_LIST_PANEL_HEIGHT * 4];
-    composite_nx_ui_nine_slice_frame(
+    let mut dialog = NxDialog::new(
         &mut pixels,
         EVENT_LIST_PANEL_WIDTH,
         EVENT_LIST_PANEL_HEIGHT,
         archive,
-        "UIWindow.img/EventWindow/backgrnd",
-        0,
-        0,
-        EVENT_LIST_PANEL_WIDTH,
-        EVENT_LIST_PANEL_HEIGHT,
-    )?;
-    composite_nx_ui_bitmap(
-        &mut pixels,
-        EVENT_LIST_PANEL_WIDTH,
-        EVENT_LIST_PANEL_HEIGHT,
-        archive,
+    );
+    dialog.resizable_frame()?;
+    dialog.buttons(&[(
         "UIWindow.img/EventWindow/backgrnd/BtClose/normal/0",
-        EVENT_LIST_PANEL_WIDTH as i32 - 28,
-        7,
-    )?;
+        ui_dialog::close_button(EVENT_LIST_PANEL_WIDTH as f32 - 28.0, 7.0),
+    )])?;
     draw_dialogue_text(
         font,
         &mut pixels,

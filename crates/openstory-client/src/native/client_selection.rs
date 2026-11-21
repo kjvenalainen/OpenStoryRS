@@ -58,6 +58,23 @@ impl ClientApp {
         }
     }
 
+    pub(super) fn return_to_login(&mut self) {
+        let scene = load_login_scene(&self.map_archive, &self.legacy_ui_archive);
+        match scene.and_then(|scene| self.replace_scene(scene)) {
+            Ok(()) => {
+                self.character_list = None;
+                self.character_selection_status = None;
+                self.character_creation = None;
+                self.show_login_fields = true;
+                self.focused_field = LoginField::Account;
+                self.reset_login_caret();
+                self.refresh_field_texture(LoginField::Account);
+                self.refresh_field_texture(LoginField::Password);
+            }
+            Err(error) => eprintln!("OpenStory: could not return to login: {error}"),
+        }
+    }
+
     pub(super) fn select_world(&mut self, world_id: u8) {
         if self
             .worlds
@@ -166,7 +183,7 @@ impl ClientApp {
         match action {
             0 => self.select_character(self.selected_character_index),
             1 => self.begin_character_creation(),
-            2 => self.delete_character(self.selected_character_index),
+            2 => self.request_character_deletion(self.selected_character_index),
             _ => {}
         }
     }
@@ -174,6 +191,7 @@ impl ClientApp {
     pub(super) fn click_character_selection(&mut self, cursor: Point) -> bool {
         if self.character_list.is_none()
             || self.character_creation.is_some()
+            || self.character_delete_confirmation.is_some()
             || self.show_login_fields
             || self.current_field.is_some()
         {
@@ -214,7 +232,7 @@ impl ClientApp {
                 LoginAction::SelectCharacter(_) => {
                     self.select_character(self.selected_character_index)
                 }
-                LoginAction::DeleteCharacter(index) => self.delete_character(index),
+                LoginAction::DeleteCharacter(index) => self.request_character_deletion(index),
                 LoginAction::PreviousCharacterPage => self.change_character_page(-1),
                 LoginAction::NextCharacterPage => self.change_character_page(1),
                 LoginAction::BeginCharacterCreation => self.begin_character_creation(),
@@ -282,17 +300,16 @@ impl ClientApp {
     pub(super) fn begin_character_creation(&mut self) {
         const EXPLORER_CREATION_JOB: u16 = 1;
         let job = EXPLORER_CREATION_JOB;
-        let mut creation = match load_character_creation_options(&self.etc_archive, job, false) {
+        let creation = match load_character_creation_options(&self.etc_archive, job, false) {
             Ok(options) => CharacterCreationState::customize(job, options),
             Err(error) => {
                 eprintln!("OpenStory: could not load character creation options: {error}");
-                let mut creation = CharacterCreationState::customize(job, vec![Vec::new(); 8]);
-                creation.notice = Some("Character appearance data could not be loaded".to_owned());
-                creation
+                self.show_server_notice_popup("Character appearance data could not be loaded.");
+                return;
             }
         };
-        creation.name_focused = true;
         self.character_creation = Some(creation);
+        self.reset_login_caret();
         self.refresh_character_creation_scene();
     }
 
@@ -309,6 +326,9 @@ impl ClientApp {
             self.login_caret_visible,
             creation,
             &self.font,
+            self.selected_world
+                .and_then(|id| self.worlds.iter().find(|world| world.id == id))
+                .map(|world| (world.name.as_str(), self.selected_channel)),
         );
         match scene.and_then(|scene| self.replace_scene(scene)) {
             Ok(()) => self.show_login_fields = false,
@@ -332,7 +352,6 @@ impl ClientApp {
         if let Some(creation) = self.character_creation.as_mut() {
             if !creation.awaiting_name && !creation.awaiting_create {
                 creation.name_focused = true;
-                creation.notice = None;
                 self.reset_login_caret();
             }
         }
@@ -360,7 +379,6 @@ impl ClientApp {
         } else {
             (*index + 1) % pool.len()
         };
-        creation.notice = None;
         self.refresh_character_creation_scene();
     }
 
@@ -379,67 +397,64 @@ impl ClientApp {
                     creation.female = female;
                     creation.pools = options;
                     creation.indices = [0; 8];
-                    creation.notice = None;
                 }
                 self.refresh_character_creation_scene();
             }
-            Err(error) => eprintln!("OpenStory: could not switch character gender: {error}"),
+            Err(error) => {
+                eprintln!("OpenStory: could not switch character gender: {error}");
+                self.fail_character_creation("Could not load the selected appearance options.");
+            }
         }
     }
 
-    pub(super) fn submit_character_creation(&mut self) {
-        let Some(creation) = self.character_creation.as_ref() else {
+    pub(super) fn check_creation_name(&mut self) {
+        let Some(name) = self
+            .character_creation
+            .as_ref()
+            .filter(|creation| !creation.awaiting_name && !creation.awaiting_create)
+            .map(|creation| creation.name.trim().to_owned())
+        else {
             return;
         };
-        if creation.awaiting_name || creation.awaiting_create {
-            return;
+        if let Some(creation) = self.character_creation.as_mut() {
+            creation.name_available = false;
         }
-        let name = creation.name.trim();
         let name_length = name.chars().count();
-        if !(4..=12).contains(&name_length) || !name.is_ascii() {
-            if let Some(creation) = self.character_creation.as_mut() {
-                creation.notice = Some("Name must be 4–12 ASCII characters".to_owned());
-            }
-            self.refresh_character_creation_scene();
+        let validation_notice = if !(4..=12).contains(&name_length) || !name.is_ascii() {
+            Some("Name must be 4–12 ASCII characters.")
+        } else if creation_name_is_forbidden(&self.etc_archive, &name) {
+            Some("That name is not allowed.")
+        } else {
+            None
+        };
+        if let Some(notice) = validation_notice {
+            self.fail_character_creation(notice);
             return;
         }
-        if creation_name_is_forbidden(&self.etc_archive, name) {
-            if let Some(creation) = self.character_creation.as_mut() {
-                creation.notice = Some("That name is not allowed".to_owned());
-            }
-            self.refresh_character_creation_scene();
-            return;
-        }
-        let packet = match openstory_protocol::request_character_name(name) {
+        let packet = match openstory_protocol::request_character_name(&name) {
             Ok(packet) => packet,
             Err(error) => {
-                if let Some(creation) = self.character_creation.as_mut() {
-                    creation.notice = Some(format!("Could not check name: {error}"));
-                }
-                self.refresh_character_creation_scene();
+                eprintln!("OpenStory: could not encode name check: {error}");
+                self.fail_character_creation("Could not check the name. Please try again.");
                 return;
             }
         };
         let Some(session) = self.session.as_ref() else {
-            if let Some(creation) = self.character_creation.as_mut() {
-                creation.notice =
-                    Some("Connect to a server before creating a character".to_owned());
-            }
-            self.refresh_character_creation_scene();
+            self.fail_character_creation("Connect to a server before creating a character.");
             return;
         };
         match session.send_packet(packet) {
             Ok(()) => {
                 if let Some(creation) = self.character_creation.as_mut() {
                     creation.awaiting_name = true;
+                    creation.name_available = false;
                     creation.name_focused = false;
-                    creation.notice = Some("Checking name…".to_owned());
                 }
             }
             Err(error) => {
-                if let Some(creation) = self.character_creation.as_mut() {
-                    creation.notice = Some(format!("Could not check name: {error}"));
-                }
+                eprintln!("OpenStory: could not send name check: {error}");
+                self.fail_character_creation("Could not check the name. Please try again.");
+                return;
             }
         }
         self.refresh_character_creation_scene();
@@ -450,7 +465,7 @@ impl ClientApp {
             Ok(result) => result,
             Err(error) => {
                 eprintln!("OpenStory: invalid character-name response: {error}");
-                self.fail_character_creation("Invalid name-check response".to_owned());
+                self.fail_character_creation("Invalid name-check response.");
                 return;
             }
         };
@@ -461,30 +476,51 @@ impl ClientApp {
             eprintln!("OpenStory: ignored an unexpected character-name response");
             return;
         }
+        if let Some(creation) = self.character_creation.as_mut() {
+            creation.awaiting_name = false;
+            creation.name_available = !used;
+            creation.name_focused = true;
+        }
+        self.refresh_character_creation_scene();
         if used {
-            if let Some(creation) = self.character_creation.as_mut() {
-                creation.awaiting_name = false;
-                creation.name_focused = true;
-                creation.notice = Some("That name is already in use".to_owned());
-            }
-            self.refresh_character_creation_scene();
+            self.show_server_notice_popup(CREATION_NAME_TAKEN);
+        }
+    }
+
+    pub(super) fn submit_character_creation(&mut self) {
+        if self.character_creation.as_ref().is_some_and(|creation| {
+            !creation.name_available && !creation.awaiting_name && !creation.awaiting_create
+        }) {
+            self.fail_character_creation("Check that name before continuing.");
             return;
         }
-        let job = creation.job;
-        let selected = |pool: usize| -> Option<i32> {
-            let values = creation.pools.get(pool)?;
-            values.get(*creation.indices.get(pool)?).copied()
+        let (name, job, female, values) = {
+            let Some(creation) = self.character_creation.as_ref() else {
+                return;
+            };
+            if creation.awaiting_name || creation.awaiting_create {
+                return;
+            }
+            let selected = |pool: usize| -> Option<i32> {
+                let values = creation.pools.get(pool)?;
+                values.get(*creation.indices.get(pool)?).copied()
+            };
+            (
+                creation.name.trim().to_owned(),
+                creation.job,
+                creation.female,
+                (
+                    selected(0),
+                    selected(1),
+                    selected(2).and_then(|value| u8::try_from(value).ok()),
+                    selected(3).and_then(|value| u8::try_from(value).ok()),
+                    selected(4),
+                    selected(5),
+                    selected(6),
+                    selected(7),
+                ),
+            )
         };
-        let values = (
-            selected(0),
-            selected(1),
-            selected(2).and_then(|value| u8::try_from(value).ok()),
-            selected(3).and_then(|value| u8::try_from(value).ok()),
-            selected(4),
-            selected(5),
-            selected(6),
-            selected(7),
-        );
         let (
             Some(face),
             Some(hair),
@@ -496,65 +532,48 @@ impl ClientApp {
             Some(weapon),
         ) = values
         else {
-            self.fail_character_creation("Selected appearance data is incomplete".to_owned());
+            self.fail_character_creation("Selected appearance data is incomplete.");
             return;
         };
         let create_packet = openstory_protocol::create_character(
-            &name,
-            job,
-            face,
-            hair,
-            hair_color,
-            skin,
-            top,
-            bottom,
-            shoes,
-            weapon,
-            creation.female,
+            &name, job, face, hair, hair_color, skin, top, bottom, shoes, weapon, female,
         );
         let Some(session) = self.session.as_ref() else {
-            self.fail_character_creation("Server connection is unavailable".to_owned());
+            self.fail_character_creation("Server connection is unavailable.");
             return;
         };
         match create_packet {
             Err(error) => {
                 eprintln!("OpenStory: could not encode character creation request: {error}");
-                if let Some(creation) = self.character_creation.as_mut() {
-                    creation.awaiting_name = false;
-                    creation.name_focused = true;
-                    creation.notice = Some("Could not create the character request".to_owned());
-                }
+                self.fail_character_creation("Could not prepare the character creation request.");
+                return;
             }
             Ok(packet) => match session.send_packet(packet) {
                 Ok(()) => {
                     if let Some(creation) = self.character_creation.as_mut() {
-                        creation.awaiting_name = false;
                         creation.awaiting_create = true;
-                        creation.notice = Some("Creating character…".to_owned());
+                        creation.name_focused = false;
                     }
                 }
                 Err(error) => {
                     eprintln!("OpenStory: could not send character creation request: {error}");
-                    if let Some(creation) = self.character_creation.as_mut() {
-                        creation.awaiting_name = false;
-                        creation.name_focused = true;
-                        creation.notice =
-                            Some("Could not send character creation request".to_owned());
-                    }
+                    self.fail_character_creation("Could not send the character creation request.");
+                    return;
                 }
             },
         }
         self.refresh_character_creation_scene();
     }
 
-    pub(super) fn fail_character_creation(&mut self, message: String) {
-        if let Some(creation) = self.character_creation.as_mut() {
-            creation.awaiting_name = false;
-            creation.awaiting_create = false;
-            creation.name_focused = true;
-            creation.notice = Some(message);
-        }
+    pub(super) fn fail_character_creation(&mut self, message: &str) {
+        let Some(creation) = self.character_creation.as_mut() else {
+            return;
+        };
+        creation.awaiting_name = false;
+        creation.awaiting_create = false;
+        creation.name_focused = true;
         self.refresh_character_creation_scene();
+        self.show_server_notice_popup(message);
     }
 
     pub(super) fn handle_created_character(&mut self, packet: &[u8]) {
@@ -567,10 +586,8 @@ impl ClientApp {
                     self.character_page =
                         list.characters.len().saturating_sub(1) / CHARACTER_PAGE_SIZE;
                     self.selected_character_index = list.characters.len().saturating_sub(1);
-                    // Character creation returns to the selected new slot;
-                    // put keyboard focus on Select so the next Enter keeps
-                    // the legacy action flow instead of reopening creation.
-                    self.character_action_focus = Some(0);
+                    // Clear the action focus so Enter uses its default Start action.
+                    self.character_action_focus = None;
                     self.character_creation = None;
                     self.refresh_character_scene();
                 } else {
@@ -582,10 +599,9 @@ impl ClientApp {
             Err(error) => {
                 eprintln!("OpenStory: invalid created-character response: {error}");
                 if let Some(creation) = self.character_creation.as_mut() {
-                    creation.awaiting_create = false;
-                    creation.notice = Some("The server rejected character creation".to_owned());
-                    self.refresh_character_creation_scene();
+                    creation.name_available = false;
                 }
+                self.fail_character_creation("The server rejected character creation.");
             }
         }
     }
@@ -676,6 +692,7 @@ impl ClientApp {
         let Some(character) = self.active_character.as_mut() else {
             return;
         };
+        let mut meso_changed = false;
         for change in update.changes {
             use openstory_protocol::CharacterStatChange as Change;
             match change {
@@ -704,6 +721,7 @@ impl ClientApp {
                 Change::Meso(value) => {
                     character.stats.meso = Some(value);
                     if let Some(inventory) = self.inventory.as_mut() {
+                        meso_changed |= inventory.meso != i64::from(value);
                         inventory.meso = i64::from(value);
                     }
                 }
@@ -728,6 +746,14 @@ impl ClientApp {
         }
         self.refresh_map_hud();
         self.refresh_inventory_texture();
+        if meso_changed
+            && self
+                .inventory_drop_prompt
+                .as_ref()
+                .is_some_and(|prompt| prompt.action == InventoryQuantityAction::DropMesos)
+        {
+            self.refresh_inventory_drop_prompt_texture();
+        }
         self.refresh_npc_shop_texture();
         self.refresh_skill_book_entries();
         self.refresh_skill_book_texture();

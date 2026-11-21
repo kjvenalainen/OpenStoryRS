@@ -128,6 +128,7 @@ pub(super) struct MiniMapData {
     pub center_y: f32,
     pub magnification: u8,
     pub hidden: bool,
+    has_map: bool,
     map_mark: Option<SpriteImage>,
     canvas: SpriteImage,
     portals: Vec<MapPortal>,
@@ -211,15 +212,36 @@ impl UiAssets {
 
 impl MiniMapData {
     /// Loads a map's `miniMap` canvas, transform, portal positions, and minimap
-    /// marker art. Maps that intentionally omit a minimap return `Ok(None)`.
+    /// marker art. Maps without a canvas still get the collapsed map-name bar.
     pub fn load(map_archive: &NxArchive, map_id: i32) -> Result<Option<Self>, String> {
         if !(0..=MAX_MAP_ID).contains(&map_id) {
             return Err(format!("minimap map id {map_id} is outside the v83 range"));
         }
         let map_path = format!("Map/Map{}/{map_id:09}.img", map_id / 100_000_000);
         let map = required(&map_archive.root(), &map_path)?;
+        let info = required(&map, "info")?;
+        let hidden = integer_child(&info, "hideMinimap").unwrap_or(0) != 0;
         let Some(mini_map) = optional_child(&map, "miniMap")? else {
-            return Ok(None);
+            let empty_image = SpriteImage {
+                pixels: Arc::from(vec![0_u8; 4]),
+                width: 1,
+                height: 1,
+                origin_x: 0.0,
+                origin_y: 0.0,
+            };
+            return Ok(Some(Self {
+                map_id,
+                center_x: 0.0,
+                center_y: 0.0,
+                magnification: 0,
+                hidden,
+                has_map: false,
+                map_mark: None,
+                canvas: empty_image.clone(),
+                portals: Vec::new(),
+                marker_icons: Vec::new(),
+                portal_icon: empty_image,
+            }));
         };
         let _width = integer_child(&mini_map, "width")
             .filter(|value| *value > 0)
@@ -246,7 +268,6 @@ impl MiniMapData {
             return Err(format!("{map_path}/miniMap/canvas has empty dimensions"));
         }
 
-        let info = required(&map, "info")?;
         let portals = load_portals(&map, &map_path)?;
         let marker_root = required(&map_archive.root(), "MapHelper.img/minimap")?;
         let marker_icons = [
@@ -296,19 +317,23 @@ impl MiniMapData {
             })
             .transpose()?
             .flatten();
-        let hidden = integer_child(&info, "hideMinimap").unwrap_or(0) != 0;
         Ok(Some(Self {
             map_id,
             center_x: center_x as f32,
             center_y: center_y as f32,
             magnification,
             hidden,
+            has_map: true,
             map_mark,
             canvas,
             portals,
             marker_icons,
             portal_icon,
         }))
+    }
+
+    pub fn has_map(&self) -> bool {
+        self.has_map
     }
 
     fn map_units_per_pixel(&self) -> f32 {
@@ -368,6 +393,11 @@ pub(super) fn render(
     if data.hidden {
         return Err(format!("minimap is hidden on map {}", data.map_id));
     }
+    let presentation = if data.has_map {
+        presentation
+    } else {
+        Presentation::Collapsed
+    };
 
     let label: String = map_name.chars().take(MAX_MAP_LABEL_CHARS).collect();
     let street_label: String = street_name.chars().take(MAX_MAP_LABEL_CHARS).collect();
@@ -380,9 +410,13 @@ pub(super) fn render(
     let (button_min, button_max, min_action, max_action) = match presentation {
         Presentation::Collapsed => (
             &ui_assets.min_disabled,
-            &ui_assets.max_normal,
+            if data.has_map {
+                &ui_assets.max_normal
+            } else {
+                &ui_assets.max_disabled
+            },
             None,
-            Some(HitAction::Expand),
+            data.has_map.then_some(HitAction::Expand),
         ),
         Presentation::Normal => (
             &ui_assets.min_normal,
@@ -404,17 +438,45 @@ pub(super) fn render(
     let mut hit_regions = Vec::new();
     let (panel_width, panel_height, pixels) = match presentation {
         Presentation::Collapsed => {
-            let width = 149.0_f32.min(viewport.width - x).max(1.0);
+            let collapsed_name_width = measure_text(label_font, &label, 11.0);
+            let desired_width = if data.has_map {
+                149.0
+            } else {
+                (collapsed_name_width
+                    + button_min.width as f32
+                    + button_max.width as f32
+                    + button_map.width as f32
+                    + 20.0)
+                    .max(149.0)
+            };
+            let width = desired_width.min(viewport.width - x).max(1.0);
             let mut canvas = Canvas::new(width as u32, 20)?;
             draw_collapsed_frame(&mut canvas, &ui_assets.collapsed, width);
-            canvas.draw_image(
-                &ui_assets.title,
-                9.0,
-                8.0,
-                ui_assets.title.width as f32,
-                ui_assets.title.height as f32,
-                false,
-            );
+            if data.has_map {
+                canvas.draw_image(
+                    &ui_assets.title,
+                    9.0,
+                    8.0,
+                    ui_assets.title.width as f32,
+                    ui_assets.title.height as f32,
+                    false,
+                );
+            } else {
+                canvas.draw_text_outlined(
+                    label_font,
+                    &label,
+                    9.0,
+                    3.0,
+                    11.0,
+                    [255, 255, 255],
+                    MAP_LABEL_OUTLINE,
+                    width
+                        - button_min.width as f32
+                        - button_max.width as f32
+                        - button_map.width as f32
+                        - 25.0,
+                );
+            }
             let mut button_x = width
                 - button_min.width as f32
                 - button_max.width as f32
@@ -441,6 +503,9 @@ pub(super) fn render(
             (width as u32, 20, canvas.into_pixels())
         }
         Presentation::Normal | Presentation::Expanded => {
+            if !data.has_map {
+                return Err(format!("minimap map {} has no canvas", data.map_id));
+            }
             let expanded = presentation == Presentation::Expanded;
             let canvas_y = if expanded { 60.0 } else { 29.0 };
             let map_height = data.canvas.height as f32;
@@ -1043,27 +1108,12 @@ impl Canvas {
     }
 
     fn tile_image(&mut self, image: &SpriteImage, x: f32, y: f32, width: f32, height: f32) {
-        if image.width == 0 || image.height == 0 || width <= 0.0 || height <= 0.0 {
-            return;
-        }
-        let right = x + width;
-        let bottom = y + height;
-        let mut tile_y = y;
-        while tile_y < bottom {
-            let mut tile_x = x;
-            while tile_x < right {
-                self.draw_image(
-                    image,
-                    tile_x,
-                    tile_y,
-                    image.width as f32,
-                    image.height as f32,
-                    false,
-                );
-                tile_x += image.width as f32;
-            }
-            tile_y += image.height as f32;
-        }
+        let area = super::ui_foundation::UiRect::new(x, y, width, height);
+        let tile_width = image.width as f32;
+        let tile_height = image.height as f32;
+        super::ui_dialog::tile_frame_area(area, tile_width, tile_height, |x, y| {
+            self.draw_image(image, x, y, tile_width, tile_height, false);
+        });
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1079,9 +1129,18 @@ impl Canvas {
         clip_bottom: f32,
         color: [u8; 4],
     ) {
-        if ![x, y, width, height, clip_left, clip_top, clip_right, clip_bottom]
-            .into_iter()
-            .all(f32::is_finite)
+        if ![
+            x,
+            y,
+            width,
+            height,
+            clip_left,
+            clip_top,
+            clip_right,
+            clip_bottom,
+        ]
+        .into_iter()
+        .all(f32::is_finite)
             || width <= 0.0
             || height <= 0.0
             || clip_right <= clip_left

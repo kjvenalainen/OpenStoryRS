@@ -32,12 +32,16 @@ pub enum CashShopOperation {
     },
     PurchaseAccepted,
     ItemPurchased(CashShopItem),
+    ItemsPurchased(Vec<CashShopItem>),
     ItemWithdrawn {
         inventory_slot: i16,
         item_record: Vec<u8>,
     },
     PurchaseDenied(u8),
-    CouponRedeemed,
+    CouponRedeemed {
+        items: Vec<CashShopItem>,
+        maple_points: i32,
+    },
     /// Cash Shop message code returned for failed shop operations, including
     /// coupon validation failures.
     CashShopMessage(u8),
@@ -85,6 +89,20 @@ pub fn parse_cash_shop_operation(body: &[u8]) -> Result<CashShopOperation, Packe
         0x57 => Ok(CashShopOperation::ItemPurchased(read_cash_shop_item(
             &mut packet,
         )?)),
+        0x89 => {
+            let count = usize::from(packet.read_u8()?);
+            if count > MAX_CASH_SHOP_LOCKER_ITEMS {
+                return Err(PacketError::TooManyCashShopItems(
+                    MAX_CASH_SHOP_LOCKER_ITEMS,
+                ));
+            }
+            let mut items = Vec::with_capacity(count);
+            for _ in 0..count {
+                items.push(read_cash_shop_item(&mut packet)?);
+            }
+            packet.read_u16()?; // reserved
+            Ok(CashShopOperation::ItemsPurchased(items))
+        }
         0x68 => {
             let inventory_slot = packet.read_i16()?;
             let item_record = packet.read_bytes(packet.remaining())?.to_vec();
@@ -94,7 +112,23 @@ pub fn parse_cash_shop_operation(body: &[u8]) -> Result<CashShopOperation, Packe
             })
         }
         0x4C => Ok(CashShopOperation::PurchaseDenied(packet.read_u8()?)),
-        0x59 => Ok(CashShopOperation::CouponRedeemed),
+        0x59 => {
+            let count = usize::from(packet.read_u8()?);
+            if count > MAX_CASH_SHOP_LOCKER_ITEMS {
+                return Err(PacketError::TooManyCashShopItems(
+                    MAX_CASH_SHOP_LOCKER_ITEMS,
+                ));
+            }
+            let mut items = Vec::with_capacity(count);
+            for _ in 0..count {
+                items.push(read_cash_shop_item(&mut packet)?);
+            }
+            let maple_points = packet.read_i32()?;
+            Ok(CashShopOperation::CouponRedeemed {
+                items,
+                maple_points,
+            })
+        }
         // Cosmic/HeavenMS encode Cash Shop messages as a one-byte code;
         // coupon failures include invalid, expired, and already-used codes.
         0x5C => Ok(CashShopOperation::CashShopMessage(packet.read_u8()?)),
@@ -104,6 +138,11 @@ pub fn parse_cash_shop_operation(body: &[u8]) -> Result<CashShopOperation, Packe
 
 pub fn enter_cash_shop_packet() -> Vec<u8> {
     PacketWriter::new(OPCODE_ENTER_CASH_SHOP).into_bytes()
+}
+
+/// Requests the server's current cash balances while the Cash Shop is open.
+pub fn query_cash_balance_packet() -> Vec<u8> {
+    PacketWriter::new(OPCODE_CHECK_CASH).into_bytes()
 }
 
 /// The legacy client exits the Cash Shop with a bare CHANGE_MAP opcode.

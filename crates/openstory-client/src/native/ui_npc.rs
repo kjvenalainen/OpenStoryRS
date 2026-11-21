@@ -225,7 +225,7 @@ fn npc_dialogue_icon(
         'q' => (ui_archive, format!("UIWindow.img/QuestIcon/{id}")),
         's' => (
             skill_archive,
-            format!("{:03}.img/skill/{id}/icon", id / 10_000),
+            format!("{:03}.img/skill/{id:07}/icon", id / 10_000),
         ),
         'f' => (
             character_archive,
@@ -428,6 +428,7 @@ impl NpcDialogueLayout {
     const PREV_X: i32 = 389;
     const NEXT_X: i32 = 471;
     const OK_X: i32 = 471;
+    const SELECTION_BOTTOM_Y: i32 = 227;
     const BUTTON_Y: i32 = 236;
 }
 
@@ -476,6 +477,22 @@ fn npc_dialogue_text_view_height(message_type: i8) -> usize {
         4 => 106,
         _ => NpcDialogueLayout::BOTTOM_Y - NpcDialogueLayout::TEXT_Y as usize,
     }
+}
+
+fn npc_dialogue_selection_visible_rows(text_view_height: usize) -> usize {
+    let first_row_y = NpcDialogueLayout::TEXT_Y
+        + if text_view_height == 0 {
+            0
+        } else {
+            text_view_height as i32 + 8
+        };
+    let available_height = NpcDialogueLayout::SELECTION_BOTTOM_Y - first_row_y;
+    let row_height = NpcDialogueLayout::SELECTION_HEIGHT as i32;
+    let row_step = NpcDialogueLayout::SELECTION_ROW_STEP;
+    if available_height < row_height {
+        return 0;
+    }
+    (1 + (available_height - row_height) / row_step).clamp(0, 5) as usize
 }
 
 #[cfg(test)]
@@ -713,7 +730,7 @@ fn render_npc_dialogue(
             .iter()
             .enumerate()
             .skip(first_visible_selection)
-            .take(5)
+            .take(npc_dialogue_selection_visible_rows(text_view_height))
             .enumerate()
         {
             let local_y = NpcDialogueLayout::TEXT_Y
@@ -1042,16 +1059,16 @@ fn push_nx_dialogue_button(
     y: i32,
     action: NpcDialogueAction,
 ) {
-    let (button_width, button_height, origin_x, origin_y) =
-        nx_dialogue_button_geometry(archive, path).unwrap_or((46.0, 18.0, 0, 0));
+    let bounds = NxDialog::new(pixels, width, height, archive)
+        .anchored_button(path, x, y)
+        .unwrap_or(ui_foundation::UiRect::new(x as f32, y as f32, 46.0, 18.0));
     let rect = SpriteRect {
-        x: NpcDialogueLayout::PANEL_X + x as f32 - origin_x as f32,
-        y: NpcDialogueLayout::PANEL_Y + y as f32 - origin_y as f32,
-        width: button_width,
-        height: button_height,
+        x: NpcDialogueLayout::PANEL_X + bounds.x,
+        y: NpcDialogueLayout::PANEL_Y + bounds.y,
+        width: bounds.width,
+        height: bounds.height,
         blend_mode: BlendMode::Alpha,
     };
-    let _ = composite_nx_ui_bitmap(pixels, width, height, archive, path, x, y);
     buttons.push(NpcDialogueButton { rect, action });
 }
 
@@ -1061,22 +1078,16 @@ fn composite_npc_dialogue_frame(
     height: usize,
     ui_archive: &NxArchive,
 ) -> bool {
-    let top = "UIWindow.img/UtilDlgEx/t";
-    let fill = "UIWindow.img/UtilDlgEx/c";
-    let bottom = "UIWindow.img/UtilDlgEx/s";
-    composite_nx_ui_vertical_frame(
-        pixels,
-        width,
-        height,
-        ui_archive,
-        top,
-        fill,
-        bottom,
-        0,
-        0,
-        NpcDialogueLayout::BOTTOM_Y as i32,
-    )
-    .is_ok()
+    NxDialog::new(pixels, width, height, ui_archive)
+        .vertical_frame(
+            [
+                "UIWindow.img/UtilDlgEx/t",
+                "UIWindow.img/UtilDlgEx/c",
+                "UIWindow.img/UtilDlgEx/s",
+            ],
+            NpcDialogueLayout::BOTTOM_Y as i32,
+        )
+        .is_ok()
 }
 
 pub(super) fn render_npc_dialogue_preview(

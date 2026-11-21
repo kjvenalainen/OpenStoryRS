@@ -709,8 +709,8 @@ impl ClientApp {
     }
 
     pub(super) fn click_guild_panel(&mut self, cursor: Point) {
-        let x = cursor.x - 680.0;
-        let y = cursor.y - 174.0;
+        let x = cursor.x - GUILD_PANEL_X;
+        let y = cursor.y - GUILD_PANEL_Y;
         match &mut self.guild_panel_mode {
             GuildPanelMode::Overview => {
                 if self.guild_info.is_some() {

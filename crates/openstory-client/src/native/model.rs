@@ -101,9 +101,6 @@ enum OptionControl {
     MpWarning,
     MouseSpeed,
     ScreenShake,
-    Windowed,
-    Resolution800,
-    Resolution1024,
     AllowWhisper,
     AllowChatInvite,
     AllowPartyInvite,
@@ -130,10 +127,7 @@ impl OptionControl {
             Self::HpWarning => Self::MpWarning,
             Self::MpWarning => Self::MouseSpeed,
             Self::MouseSpeed => Self::ScreenShake,
-            Self::ScreenShake => Self::Windowed,
-            Self::Windowed => Self::Resolution800,
-            Self::Resolution800 => Self::Resolution1024,
-            Self::Resolution1024 => Self::AllowWhisper,
+            Self::ScreenShake => Self::AllowWhisper,
             Self::AllowWhisper => Self::AllowChatInvite,
             Self::AllowChatInvite => Self::AllowPartyInvite,
             Self::AllowPartyInvite => Self::AllowGuildChat,
@@ -151,17 +145,16 @@ impl OptionControl {
 
     fn track_y(self) -> Option<usize> {
         match self {
-            Self::GraphicsQuality => Some(44),
+            Self::GraphicsQuality => Some(45),
             Self::EffectsQuality => Some(269),
-            Self::Music => Some(72),
+            Self::Music => Some(75),
             Self::MuteMusic => None,
-            Self::SoundEffects => Some(100),
+            Self::SoundEffects => Some(105),
             Self::MuteEffects => None,
-            Self::HpWarning => Some(184),
-            Self::MpWarning => Some(212),
-            Self::MouseSpeed => Some(156),
+            Self::HpWarning => Some(195),
+            Self::MpWarning => Some(225),
+            Self::MouseSpeed => Some(165),
             Self::ScreenShake => None,
-            Self::Windowed | Self::Resolution800 | Self::Resolution1024 => None,
             Self::AllowWhisper
             | Self::AllowChatInvite
             | Self::AllowPartyInvite
@@ -177,16 +170,33 @@ impl OptionControl {
         }
     }
 
+    fn track_left(self) -> usize {
+        if self == Self::EffectsQuality {
+            359
+        } else {
+            104
+        }
+    }
+
+    fn system_checkbox_y(self) -> usize {
+        match self {
+            Self::MuteMusic => 75,
+            Self::MuteEffects => 105,
+            Self::ScreenShake => 255,
+            _ => unreachable!("only system checkboxes have a row center"),
+        }
+    }
+
     fn track_width(self) -> usize {
         match self {
-            Self::Music | Self::SoundEffects => 100,
+            Self::Music | Self::SoundEffects => 95,
             Self::EffectsQuality => 75,
             _ => 130,
         }
     }
 
     fn is_toggle(self) -> bool {
-        self == Self::ScreenShake || self.track_y().is_none()
+        self.track_y().is_none()
     }
 }
 
@@ -888,6 +898,7 @@ struct MapSceneRuntime {
     avatar_frames: Vec<AvatarFrameRuntime>,
     avatar_indices: HashSet<usize>,
     active_avatar_frame: Option<usize>,
+    local_name_label: Option<(usize, SpriteRect)>,
     local_death_art: Option<LocalDeathArtRuntime>,
     local_mount: Option<MountLookRuntime>,
     desired_avatar_motion: AvatarMotion,
@@ -1008,6 +1019,7 @@ struct MapBackgroundRuntime {
 #[derive(Clone)]
 struct CharacterSkillEffectAnimation {
     z: i8,
+    flip_with_facing: bool,
     frames: Vec<ProjectileFrameRuntime>,
 }
 
@@ -1033,6 +1045,7 @@ struct MapCharacterSkillEffect {
     character_id: Option<i32>,
     point_position: Option<(f64, f64)>,
     z: i8,
+    flip_with_facing: bool,
     speed_factor: f32,
     frames: Vec<ProjectileFrameRuntime>,
     frame_index: usize,
@@ -1060,6 +1073,7 @@ struct PendingMobAttackImpact {
     remaining: Duration,
     hit_effects: Arc<Vec<SkillHitEffectAnimation>>,
     hit_effect_flip: bool,
+    hit_damage: Option<i32>,
     damage: Option<MobDamageNumber>,
 }
 
@@ -1067,6 +1081,7 @@ struct MapProjectileRuntime {
     frames: Vec<ProjectileFrameRuntime>,
     frame_index: usize,
     frame_elapsed: Duration,
+    launch_delay: Duration,
     x: f64,
     y: f64,
     target_x: f64,
@@ -1234,6 +1249,7 @@ enum PortalWarp {
 }
 
 struct MapReactorRuntime {
+    reactor_id: i32,
     state: i8,
     x: f64,
     y: f64,
@@ -1870,6 +1886,8 @@ struct MapNpcRuntime {
     quest_mark_frames: Vec<NpcQuestMarkFrameRuntime>,
     quest_mark_frame_index: usize,
     quest_mark_elapsed: Duration,
+    name_label: Option<(usize, SpriteRect)>,
+    function_label: Option<(usize, SpriteRect)>,
 }
 
 #[derive(Clone, Copy)]
@@ -2402,6 +2420,7 @@ enum InventoryDropStep {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum InventoryQuantityAction {
     Drop,
+    DropMesos,
     StorageStore,
     StorageTake,
 }
@@ -2412,9 +2431,28 @@ struct InventoryDropPrompt {
     slot: u16,
     item_id: i32,
     max_quantity: u16,
-    quantity: String,
+    quantity: QuantityInput,
     step: InventoryDropStep,
     notice: Option<String>,
+}
+
+impl InventoryDropPrompt {
+    fn minimum(&self) -> u16 {
+        if self.action == InventoryQuantityAction::DropMesos {
+            openstory_protocol::MIN_MESO_DROP
+        } else {
+            1
+        }
+    }
+}
+
+fn meso_drop_maximum(balance: i64) -> u16 {
+    balance.clamp(0, i64::from(openstory_protocol::MAX_MESO_DROP)) as u16
+}
+
+fn item_drop_maximum(count: u16) -> u16 {
+    // The v83 inventory move packet encodes the quantity as a signed short.
+    count.min(i16::MAX as u16)
 }
 
 struct PendingStorageRestore {
@@ -2455,7 +2493,9 @@ struct CashShopUi {
     character_slots: u16,
     pending_withdrawal: Option<i64>,
     pending_nx_charge: bool,
+    pending_cash_query: bool,
     confirmation: bool,
+    preview_remove_all: bool,
     notice: Option<String>,
 }
 
@@ -2537,7 +2577,9 @@ impl CashShopUi {
             character_slots: 0,
             pending_withdrawal: None,
             pending_nx_charge: false,
+            pending_cash_query: false,
             confirmation: false,
+            preview_remove_all: false,
             notice: Some("Connecting to the Cash Shop…".to_owned()),
         }
     }
@@ -2669,6 +2711,14 @@ struct MobFrameAsset {
     sprites: Range<usize>,
 }
 
+#[derive(Clone, Copy)]
+enum MobAggroTarget {
+    LocalPlayer,
+    RemotePlayer(i32),
+}
+
+const MOB_AGGRO_STOP_DISTANCE: f64 = 32.0;
+
 struct MapMobRuntime {
     mob_id: i32,
     x: f64,
@@ -2694,9 +2744,11 @@ struct MapMobRuntime {
     hp_bar_remaining: Duration,
     statuses: HashSet<(openstory_protocol::MobStatusMaskGroup, u32)>,
     control_acked: bool,
+    movement_dirty: bool,
     ai_counter: u16,
     random_state: u32,
     fly_direction: i8,
+    aggro_target: Option<MobAggroTarget>,
 }
 
 struct MapSummonRuntime {
@@ -2838,7 +2890,11 @@ impl MapPetRuntime {
         let owner_delta_x = owner.0 - self.body.x;
         let owner_delta_y = owner.1 - self.body.y;
         let owner_distance = owner_delta_x.hypot(owner_delta_y);
-        let max_owner_distance = if self.loot_target.is_some() { 250.0 } else { 150.0 };
+        let max_owner_distance = if self.loot_target.is_some() {
+            250.0
+        } else {
+            150.0
+        };
         let current_state = self.state();
         self.body.horizontal_force = 0.0;
         self.body.vertical_force = 0.0;
@@ -2879,7 +2935,11 @@ impl MapPetRuntime {
             2 => {
                 let destination = self.loot_target.unwrap_or(owner);
                 let delta_x = destination.0 - self.body.x;
-                let deadzone = if self.loot_target.is_some() { 8.0 } else { 50.0 };
+                let deadzone = if self.loot_target.is_some() {
+                    8.0
+                } else {
+                    50.0
+                };
                 if self.body.on_ground {
                     self.set_local_motion(1, self.stance & 1 == 1);
                 } else if owner_distance > max_owner_distance {
@@ -2997,6 +3057,7 @@ struct MobTraits {
     can_fly: bool,
     body_attack: bool,
     boss: bool,
+    knockback: i32,
     speed: f64,
     fly_speed: f64,
     physical_attack: i32,
@@ -3041,9 +3102,10 @@ impl MapMobRuntime {
             .animations
             .get(&self.motion)
             .and_then(|frames| frames.get(self.frame_index))?;
-        frame.sprites.iter().fold(
-            None,
-            |bounds: Option<(f64, f64, f64, f64)>, (_, rect)| {
+        frame
+            .sprites
+            .iter()
+            .fold(None, |bounds: Option<(f64, f64, f64, f64)>, (_, rect)| {
                 let left = self.x + f64::from(rect.x - 512.0);
                 let top = self.y + f64::from(rect.y - GAMEPLAY_CAMERA_CENTER_Y);
                 let right = left + f64::from(rect.width);
@@ -3057,8 +3119,7 @@ impl MapMobRuntime {
                     ),
                     None => (left, top, right, bottom),
                 })
-            },
-        )
+            })
     }
 
     fn is_frozen(&self) -> bool {
@@ -3131,6 +3192,57 @@ impl MapMobRuntime {
             }
         }
         self.refresh_server_stance();
+    }
+
+    fn move_toward_aggro_target(&mut self, target_x: f64, target_y: f64) {
+        if !self.traits.can_move
+            || self.dying
+            || matches!(
+                self.motion,
+                MobMotion::Hit | MobMotion::Jump | MobMotion::Attack(_) | MobMotion::Skill(_)
+            )
+        {
+            return;
+        }
+
+        let old_motion = self.motion;
+        let old_flip = self.server_flip;
+        let old_fly_direction = self.fly_direction;
+        let dx = target_x - self.x;
+        self.server_flip = dx >= 0.0;
+        if dx.abs() > MOB_AGGRO_STOP_DISTANCE {
+            self.set_motion(MobMotion::Move);
+        } else {
+            self.set_motion(MobMotion::Stand);
+        }
+        if self.traits.can_fly {
+            self.fly_direction = if target_y < self.y - MOB_AGGRO_STOP_DISTANCE {
+                -1
+            } else if target_y > self.y + MOB_AGGRO_STOP_DISTANCE {
+                1
+            } else {
+                0
+            };
+        }
+
+        if old_motion != self.motion
+            || old_flip != self.server_flip
+            || old_fly_direction != self.fly_direction
+        {
+            self.ai_counter = 0;
+            self.refresh_server_stance();
+            self.movement_dirty = true;
+        }
+    }
+
+    fn finish_aggro_action(&mut self, target_x: f64, target_y: f64) {
+        let old_motion = self.motion;
+        self.set_motion(MobMotion::Stand);
+        if old_motion != self.motion {
+            self.refresh_server_stance();
+            self.movement_dirty = true;
+        }
+        self.move_toward_aggro_target(target_x, target_y);
     }
 
     fn set_motion(&mut self, desired: MobMotion) {
@@ -3422,6 +3534,7 @@ impl MapSceneRuntime {
             avatar_frames,
             avatar_indices,
             active_avatar_frame,
+            local_name_label: None,
             local_death_art: None,
             local_mount: None,
             desired_avatar_motion: AvatarMotion::Stand,
@@ -3999,6 +4112,7 @@ impl MapSceneRuntime {
             player.avatar_elapsed = Duration::ZERO;
         }
         if let (Some(frames), Some((source_x, source_y))) = (projectile_frames, source_position) {
+            let launch_delay = hit_delays.first().copied().unwrap_or_default();
             let targets = attack
                 .targets
                 .iter()
@@ -4016,6 +4130,7 @@ impl MapSceneRuntime {
                     source_y,
                     source_x + if attack.to_left { -400.0 } else { 400.0 },
                     source_y - 26.0,
+                    launch_delay,
                 );
             } else {
                 for (target_x, target_y) in targets {
@@ -4025,11 +4140,20 @@ impl MapSceneRuntime {
                         source_y,
                         target_x,
                         target_y,
+                        launch_delay,
                     );
                 }
             }
         }
         for target in attack.targets {
+            if source_position.is_some()
+                && target.damage_lines.iter().any(|damage| damage.damage > 0)
+            {
+                self.mark_mob_aggro(
+                    target.object_id,
+                    MobAggroTarget::RemotePlayer(attack.attacker_id),
+                );
+            }
             let mut stack_offset = 0.0;
             for (hit_index, damage) in target.damage_lines.into_iter().enumerate() {
                 let mob_damage = openstory_protocol::MobDamage {
@@ -4065,7 +4189,7 @@ impl MapSceneRuntime {
                         0.0
                     }
             } else {
-                camera_delta_x * background.horizontal_parallax / 100.0
+                -camera_delta_x * background.horizontal_parallax / 100.0
             };
             let raw_delta_y = if background.vertical_mobile {
                 camera_delta_y
@@ -4075,7 +4199,7 @@ impl MapSceneRuntime {
                         0.0
                     }
             } else {
-                camera_delta_y * background.vertical_parallax / 100.0
+                -camera_delta_y * background.vertical_parallax / 100.0
             };
             let delta_x = if background.horizontal_tiled {
                 let interval = background.tile_width.max(1.0);
@@ -4900,9 +5024,17 @@ impl MapSceneRuntime {
         frames: Vec<ProjectileFrameRuntime>,
         target_x: f64,
         target_y: f64,
+        launch_delay: Duration,
     ) {
         let (source_x, source_y) = (self.player.x, self.player.y);
-        self.launch_projectile_from(frames, source_x, source_y, target_x, target_y);
+        self.launch_projectile_from(
+            frames,
+            source_x,
+            source_y,
+            target_x,
+            target_y,
+            launch_delay,
+        );
     }
 
     fn launch_projectile_from(
@@ -4912,6 +5044,7 @@ impl MapSceneRuntime {
         source_y: f64,
         target_x: f64,
         target_y: f64,
+        launch_delay: Duration,
     ) {
         if frames.is_empty() {
             return;
@@ -4924,6 +5057,7 @@ impl MapSceneRuntime {
             frames,
             frame_index: 0,
             frame_elapsed: Duration::ZERO,
+            launch_delay,
             x: source_x + if facing_left { -30.0 } else { 30.0 },
             y: source_y - 26.0,
             target_x,
@@ -4935,6 +5069,12 @@ impl MapSceneRuntime {
     fn advance_projectiles(&mut self, updates: u8) {
         for _ in 0..updates {
             self.projectiles.retain_mut(|projectile| {
+                if !projectile.launch_delay.is_zero() {
+                    projectile.launch_delay = projectile
+                        .launch_delay
+                        .saturating_sub(Duration::from_millis(8));
+                    return true;
+                }
                 projectile.frame_elapsed = projectile
                     .frame_elapsed
                     .saturating_add(Duration::from_millis(8));
@@ -5050,11 +5190,8 @@ impl MapSceneRuntime {
                     pet.movement_ticks = pet.movement_ticks.saturating_add(1);
                     if pet.movement_ticks >= 10 {
                         pet.movement_ticks = 0;
-                        let position = (
-                            rounded_i16(pet.body.x),
-                            rounded_i16(pet.body.y),
-                            pet.stance,
-                        );
+                        let position =
+                            (rounded_i16(pet.body.x), rounded_i16(pet.body.y), pet.stance);
                         if pet.last_sent_movement != Some(position) {
                             packets.push(openstory_protocol::move_pet(
                                 pet.unique_id,
@@ -5153,6 +5290,7 @@ impl MapSceneRuntime {
                     character_id,
                     point_position: None,
                     z: animation.z,
+                    flip_with_facing: animation.flip_with_facing,
                     speed_factor,
                     frames: animation.frames,
                     frame_index: 0,
@@ -5168,6 +5306,7 @@ impl MapSceneRuntime {
                 character_id: None,
                 point_position: Some((x, y)),
                 z: 0,
+                flip_with_facing: false,
                 speed_factor: 1.0,
                 frames,
                 frame_index: 0,
@@ -5294,16 +5433,23 @@ impl MapSceneRuntime {
         damage: Option<(openstory_protocol::MobDamage, bool, f32)>,
         delay: Duration,
     ) {
+        let hit_damage = damage.map(|(damage, _, _)| damage.damage);
         // Capture the head position before a server death/removal can discard
         // the mob. A delayed killing hit must still display its damage.
         let damage = damage.and_then(|(damage, critical, stack_offset)| {
             self.mob_damage_number(damage, critical, stack_offset)
         });
-        if hit_effects.is_empty() && damage.is_none() {
+        if hit_effects.is_empty() && hit_damage.is_none() && damage.is_none() {
             return;
         }
         if delay.is_zero() {
-            self.apply_mob_attack_impact(object_id, &hit_effects, hit_effect_flip, damage);
+            self.apply_mob_attack_impact(
+                object_id,
+                &hit_effects,
+                hit_effect_flip,
+                hit_damage,
+                damage,
+            );
             return;
         }
         if self.pending_mob_attack_impacts.len() >= 512 {
@@ -5315,6 +5461,7 @@ impl MapSceneRuntime {
                 remaining: delay,
                 hit_effects,
                 hit_effect_flip,
+                hit_damage,
                 damage,
             });
     }
@@ -5324,8 +5471,12 @@ impl MapSceneRuntime {
         object_id: i32,
         hit_effects: &[SkillHitEffectAnimation],
         hit_effect_flip: bool,
+        hit_damage: Option<i32>,
         damage: Option<MobDamageNumber>,
     ) {
+        if let Some(damage) = hit_damage {
+            self.apply_mob_damage_reaction(object_id, damage, hit_effect_flip);
+        }
         self.show_mob_hit_effects(object_id, hit_effects, hit_effect_flip);
         if let Some(number) = damage {
             self.push_mob_damage_number(number);
@@ -5334,6 +5485,13 @@ impl MapSceneRuntime {
 
     fn advance_mobs(&mut self, updates: u8) -> Vec<Vec<u8>> {
         let elapsed = Duration::from_millis(8 * u64::from(updates));
+        let local_player_position = (self.player.x, self.player.y);
+        let remote_player_positions = self
+            .remote_players
+            .iter()
+            .filter(|(_, player)| !player.dead)
+            .map(|(id, player)| (*id, (player.x, player.y)))
+            .collect::<HashMap<_, _>>();
         self.damage_numbers.retain_mut(|number| {
             number.elapsed = number.elapsed.saturating_add(elapsed);
             number.elapsed < number.lifetime
@@ -5347,6 +5505,7 @@ impl MapSceneRuntime {
                     remaining: impact.remaining,
                     hit_effects: Arc::clone(&impact.hit_effects),
                     hit_effect_flip: impact.hit_effect_flip,
+                    hit_damage: impact.hit_damage,
                     damage: impact.damage.take(),
                 });
                 false
@@ -5412,7 +5571,24 @@ impl MapSceneRuntime {
                         mob.y = mob.body.y;
                         mob.foothold = mob.body.foothold_id;
                     }
+                    if mob.control_mode > 0 && mob.movement_dirty {
+                        packets.push(mob_movement_packet(*object_id, mob, 0));
+                        mob.movement_dirty = false;
+                    }
                     continue;
+                }
+
+                let aggro_position = mob.aggro_target.and_then(|target| match target {
+                    MobAggroTarget::LocalPlayer => Some(local_player_position),
+                    MobAggroTarget::RemotePlayer(player_id) => {
+                        remote_player_positions.get(&player_id).copied()
+                    }
+                });
+                if mob.aggro_target.is_some() && aggro_position.is_none() {
+                    mob.aggro_target = None;
+                }
+                if let Some((target_x, target_y)) = aggro_position {
+                    mob.move_toward_aggro_target(target_x, target_y);
                 }
 
                 mob.ai_counter = mob.ai_counter.saturating_add(1);
@@ -5438,7 +5614,7 @@ impl MapSceneRuntime {
                         MobMotion::Hit if mob.traits.can_move => {
                             let force = if mob.body.on_ground { 0.2 } else { 0.1 };
                             mob.body
-                                .apply_force(if mob.server_flip { force } else { -force }, 0.0);
+                                .apply_force(if mob.server_flip { -force } else { force }, 0.0);
                         }
                         MobMotion::Jump => mob.body.apply_force(0.0, -5.0),
                         _ => mob.body.apply_force(0.0, 0.0),
@@ -5457,15 +5633,20 @@ impl MapSceneRuntime {
                 }
 
                 if mob.motion == MobMotion::Jump && mob.body.on_ground {
-                    mob.choose_next_move();
+                    if let Some((target_x, target_y)) = aggro_position {
+                        mob.finish_aggro_action(target_x, target_y);
+                    } else {
+                        mob.choose_next_move();
+                    }
                     packets.push(mob_movement_packet(*object_id, mob, 0));
                     mob.ai_counter = 0;
                     continue;
                 }
 
                 let just_claimed = !mob.control_acked;
-                if just_claimed {
+                if just_claimed || mob.movement_dirty {
                     mob.control_acked = true;
+                    mob.movement_dirty = false;
                     packets.push(mob_movement_packet(*object_id, mob, 0));
                 } else if (mob.body.horizontal_speed != 0.0 || mob.body.vertical_speed != 0.0)
                     && mob.body.on_ground
@@ -5477,10 +5658,18 @@ impl MapSceneRuntime {
                 let next = match mob.motion {
                     MobMotion::Hit => mob.ai_counter > 200,
                     MobMotion::Jump => false,
+                    MobMotion::Attack(_) | MobMotion::Skill(_) => {
+                        animation_ended && mob.ai_counter > 200
+                    }
+                    _ if aggro_position.is_some() => false,
                     _ => animation_ended && mob.ai_counter > 200,
                 };
                 if next {
-                    mob.choose_next_move();
+                    if let Some((target_x, target_y)) = aggro_position {
+                        mob.finish_aggro_action(target_x, target_y);
+                    } else {
+                        mob.choose_next_move();
+                    }
                     packets.push(mob_movement_packet(*object_id, mob, 0));
                     mob.ai_counter = 0;
                 }
@@ -5492,6 +5681,7 @@ impl MapSceneRuntime {
                 impact.object_id,
                 &impact.hit_effects,
                 impact.hit_effect_flip,
+                impact.hit_damage,
                 impact.damage,
             );
         }
@@ -5603,7 +5793,44 @@ impl MapSceneRuntime {
         if damage.damage <= 0 {
             return;
         }
+        // Server-originated damage (DoT, mist, Body Pressure, and similar)
+        // follows the reference client's controller-side hit reaction.
+        self.apply_mob_damage_reaction(damage.object_id, damage.damage, false);
         self.show_mob_damage_line(damage, false, 0.0);
+    }
+
+    fn apply_mob_damage_reaction(&mut self, object_id: i32, damage: i32, to_left: bool) {
+        let Some(mob) = self.mobs.get_mut(&object_id) else {
+            return;
+        };
+        if mob.dying && mob.motion != MobMotion::Die {
+            mob.set_motion(MobMotion::Die);
+            mob.refresh_server_stance();
+            return;
+        }
+        if mob.control_mode <= 0 || mob.dying || damage < mob.traits.knockback {
+            return;
+        }
+
+        // Only the controller drives and reports the mob. Other clients get
+        // this reaction from the controller's authoritative stance/movement.
+        mob.server_flip = to_left;
+        mob.ai_counter = 170;
+        mob.set_motion(MobMotion::Hit);
+        mob.refresh_server_stance();
+        mob.movement_dirty = true;
+    }
+
+    fn mark_mob_aggro(&mut self, object_id: i32, target: MobAggroTarget) {
+        if let Some(mob) = self.mobs.get_mut(&object_id)
+            && !mob.dying
+        {
+            mob.aggro_target = Some(target);
+        }
+    }
+
+    pub(super) fn mark_local_mob_aggro(&mut self, object_id: i32) {
+        self.mark_mob_aggro(object_id, MobAggroTarget::LocalPlayer);
     }
 
     fn show_mob_damage_line(
@@ -5897,6 +6124,9 @@ impl MapSceneRuntime {
         let Some(mob) = self.mobs.get_mut(&spawn.object_id) else {
             return false;
         };
+        if spawn.is_new_spawn {
+            mob.aggro_target = None;
+        }
         if mob.control_mode <= 0 {
             mob.x = f64::from(spawn.x);
             mob.y = f64::from(spawn.y);
@@ -6077,9 +6307,10 @@ fn select_portal<'a>(
         .filter(eligible)
         .find(|portal| portal.target_map_id < 999_999_999)
         .or_else(|| {
-            portals.iter().filter(eligible).find(|portal| {
-                matches!(portal.portal_type, 7..=9 | 11) && !portal.name.is_empty()
-            })
+            portals
+                .iter()
+                .filter(eligible)
+                .find(|portal| matches!(portal.portal_type, 7..=9 | 11) && !portal.name.is_empty())
         })
 }
 
@@ -6176,11 +6407,24 @@ mod pet_pathing_tests {
         let mut body = PhysicsBody::new(0.0, 0.0);
         body.on_ground = false;
         let mut pet = MapPetRuntime {
-            owner_id: 1, slot: 0, item_id: 0, unique_id: 1, name_label: None,
-            x: 0.0, y: 0.0, body, loot_target: Some((100.0, -50.0)),
-            movement_ticks: 0, last_sent_movement: None, stance: 4,
-            animations: HashMap::new(), frame_index: 0, elapsed: Duration::ZERO,
-            command_remaining: Duration::ZERO, interaction: None, speech_bubble_remaining: None,
+            owner_id: 1,
+            slot: 0,
+            item_id: 0,
+            unique_id: 1,
+            name_label: None,
+            x: 0.0,
+            y: 0.0,
+            body,
+            loot_target: Some((100.0, -50.0)),
+            movement_ticks: 0,
+            last_sent_movement: None,
+            stance: 4,
+            animations: HashMap::new(),
+            frame_index: 0,
+            elapsed: Duration::ZERO,
+            command_remaining: Duration::ZERO,
+            interaction: None,
+            speech_bubble_remaining: None,
         };
         pet.follow_local((-180.0, 0.0), None);
         assert_eq!(pet.body.x, 0.0);

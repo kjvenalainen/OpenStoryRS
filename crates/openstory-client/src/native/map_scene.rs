@@ -66,6 +66,7 @@ fn load_map_scene(
                 &mut cache,
                 &mut map_art_animations,
             )?;
+            align_map_background_to_viewport(map_id, entry, &mut sprites[first_sprite..]);
             if let Some(background) =
                 map_background_asset(entry, first_sprite..sprites.len(), &sprites, None)
             {
@@ -147,6 +148,7 @@ fn load_map_scene(
                 &mut cache,
                 &mut map_art_animations,
             )?;
+            align_map_background_to_viewport(map_id, entry, &mut sprites[first_sprite..]);
             if let Some(background) =
                 map_background_asset(entry, first_sprite..sprites.len(), &sprites, None)
             {
@@ -233,6 +235,49 @@ fn load_map_scene(
     })
 }
 
+fn map_portal_id_for_target(
+    archive: &NxArchive,
+    map_id: i32,
+    target_name: &str,
+) -> u8 {
+    if map_id < 0 {
+        return u8::MAX;
+    }
+    let map_path = format!("Map/Map{}/{map_id:09}.img", map_id / 100_000_000);
+    let Some(portals) = archive
+        .root()
+        .resolve(&map_path)
+        .ok()
+        .flatten()
+        .and_then(|map| map.child("portal").ok().flatten())
+    else {
+        return u8::MAX;
+    };
+    let target_name = if target_name.is_empty() {
+        "sp"
+    } else {
+        target_name
+    };
+    let mut spawn_portal = None;
+    for portal in portals.children().unwrap_or_default() {
+        let Some(portal_id) = portal
+            .name()
+            .ok()
+            .and_then(|name| name.parse::<u8>().ok())
+        else {
+            continue;
+        };
+        let name = string_property(&portal, "pn").unwrap_or_default();
+        if name == target_name {
+            return portal_id;
+        }
+        if name == "sp" {
+            spawn_portal = Some(portal_id);
+        }
+    }
+    spawn_portal.unwrap_or(u8::MAX)
+}
+
 fn map_music_path(archive: &NxArchive, map_id: i32) -> Option<String> {
     if map_id < 0 {
         return None;
@@ -305,6 +350,23 @@ fn map_background_tile_counts(kind: i64, tile_width: f32, tile_height: f32) -> (
         1
     };
     (count_x, count_y)
+}
+
+fn align_map_background_to_viewport(
+    map_id: i32,
+    entry: &openstory_assets::NxNode,
+    sprites: &mut [DecodedSprite],
+) {
+    // This full-width backdrop in map 30001 starts 112px into the 1024px
+    // viewport, exposing a vertical strip of the flat sky layer on the left.
+    if map_id == 30_001
+        && integer_property(entry, "no") == Some(1)
+        && string_property(entry, "bS").as_deref() == Some("grassySoil")
+    {
+        for sprite in sprites {
+            sprite.rect.x -= 112.0;
+        }
+    }
 }
 
 #[derive(Default)]

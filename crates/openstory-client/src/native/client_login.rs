@@ -1,5 +1,23 @@
 use super::*;
 
+const MAX_MAP_PREFETCH_CANDIDATES: usize = 3;
+const MAX_PREFETCHED_MAP_SCENES: usize = 3;
+const MAX_PREFETCHED_MAP_SCENE_BYTES: usize = 128 * 1024 * 1024;
+const MAP_TEXTURE_UPLOAD_BATCH_BYTES: usize = 4 * 1024 * 1024;
+const MAP_TEXTURE_UPLOAD_BATCH_IMAGES: usize = 4;
+const MAP_TEXTURE_UPLOAD_BATCH_MAX_DIMENSION: u32 = 512;
+
+fn decoded_scene_bytes(scene: &LoginSceneAssets) -> usize {
+    let mut bitmaps = HashSet::new();
+    scene
+        .sprites
+        .iter()
+        .filter(|sprite| bitmaps.insert(sprite.pixels.as_ptr() as usize))
+        .fold(0_usize, |total, sprite| {
+            total.saturating_add(sprite.pixels.len())
+        })
+}
+
 impl ClientApp {
     pub(super) fn respond_to_server_notice(&mut self, accept: bool) {
         if self.server_notice_popup.is_none() {
@@ -62,19 +80,250 @@ impl ClientApp {
     }
 
     pub(super) fn show_map_scene(&mut self, map_id: i32, portal: u8) {
+        self.pending_map_scene_upload = None;
         self.clear_boss_hp_gauge();
         self.weather_overlay.clear();
         self.weather_texture = None;
-        let music_path = map_music_path(&self.map_archive, map_id);
-        let scene = load_map_scene(
-            &self.map_archive,
-            Some(&self.character_archive),
-            map_id,
-            portal,
+        self.gameplay_input = GameplayInput::default();
+        if self.map_loading_texture.is_none()
+            && let Some(renderer) = self.renderer.as_ref()
+        {
+            let pixels = rasterize_label(&self.font, "Loading map...", 18.0, 180, 28);
+            match renderer.upload_bgra(180, 28, &pixels) {
+                Ok(texture) => self.map_loading_texture = Some(texture),
+                Err(error) => {
+                    eprintln!("OpenStoryRS: could not prepare map loading label: {error}")
+                }
+            }
+        }
+
+        self.map_loading_started_at = Some(Instant::now());
+        self.map_loading_frame_rendered = false;
+        let character_look = self
+            .active_character
+            .as_ref()
+            .map(|character| character.look.clone());
+        if let Some(look) = character_look
+            && let Some(prefetched) = self.take_prefetched_map_scene(map_id, portal, &look)
+        {
+            self.cancel_map_prefetch();
+            let (sender, receiver) = std::sync::mpsc::channel();
+            let _ = sender.send((map_id, portal, prefetched.music_path, Ok(prefetched.scene)));
+            self.map_load_receiver = Some(receiver);
+            if let Some(window) = self.window.as_ref() {
+                window.request_redraw();
+            }
+            return;
+        }
+        self.cancel_map_prefetch();
+
+        let map_archive = self.map_archive.clone();
+        let character_archive = self.character_archive.clone();
+        let character = self.active_character.clone();
+        let font = self.font.clone();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let worker = std::thread::Builder::new()
+            .name(format!("map-load-{map_id}"))
+            .spawn(move || {
+                let music_path = map_music_path(&map_archive, map_id);
+                let scene = load_map_scene(
+                    &map_archive,
+                    Some(&character_archive),
+                    map_id,
+                    portal,
+                    character.as_ref(),
+                    &font,
+                );
+                let _ = sender.send((map_id, portal, music_path, scene));
+            });
+        match worker {
+            Ok(_) => {
+                self.map_load_receiver = Some(receiver);
+                if let Some(window) = self.window.as_ref() {
+                    window.request_redraw();
+                }
+            }
+            Err(error) => {
+                self.map_load_receiver = None;
+                self.map_loading_started_at = None;
+                self.map_loading_frame_rendered = false;
+                self.map_entry_refresh_pending = false;
+                self.pending_map_transition_ack = None;
+                eprintln!("OpenStoryRS: could not start loading map {map_id}: {error}");
+            }
+        }
+    }
+
+    pub(super) fn process_map_load_completion(&mut self) {
+        if self.map_loading_started_at.is_some() && !self.map_loading_frame_rendered {
+            return;
+        }
+        let Some(receiver) = self.map_load_receiver.as_ref() else {
+            return;
+        };
+        let result = match receiver.try_recv() {
+            Ok(result) => result,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                eprintln!("OpenStoryRS: map loading worker stopped unexpectedly");
+                self.map_load_receiver = None;
+                self.map_loading_started_at = None;
+                self.map_loading_frame_rendered = false;
+                self.map_entry_refresh_pending = false;
+                if let Some(window) = self.window.as_ref() {
+                    window.request_redraw();
+                }
+                return;
+            }
+        };
+        let (map_id, portal, music_path, scene) = result;
+        self.map_load_receiver = None;
+        match scene {
+            Ok(scene) => self.begin_map_scene_upload(map_id, portal, music_path, scene),
+            Err(error) => self.finish_map_scene_load(map_id, portal, music_path, Err(error)),
+        }
+    }
+
+    fn begin_map_scene_upload(
+        &mut self,
+        map_id: i32,
+        portal: u8,
+        music_path: Option<String>,
+        mut scene: LoginSceneAssets,
+    ) {
+        let local_name_label_index = append_scene_local_name_tag(
+            &mut scene.sprites,
+            scene.map_scene.is_some(),
             self.active_character.as_ref(),
             &self.font,
+            &self.ui_archive,
+            &self.character_archive,
         );
-        match scene.and_then(|scene| self.replace_scene(scene)) {
+        let mut seen = HashSet::new();
+        let unique_sprite_indices = scene
+            .sprites
+            .iter()
+            .enumerate()
+            .filter_map(|(index, sprite)| seen.insert(sprite.texture_key.clone()).then_some(index))
+            .collect();
+        self.pending_map_scene_upload = Some(PendingMapSceneUpload {
+            map_id,
+            portal,
+            music_path,
+            scene,
+            local_name_label_index,
+            unique_sprite_indices,
+            next_sprite: 0,
+            textures: Vec::new(),
+            texture_indices: HashMap::new(),
+        });
+    }
+
+    pub(super) fn advance_pending_map_scene_upload(&mut self) {
+        let Some(pending) = self.pending_map_scene_upload.as_ref() else {
+            return;
+        };
+        let start = pending.next_sprite;
+        let mut end = start;
+        let mut batch_bytes = 0_usize;
+        while end < pending.unique_sprite_indices.len()
+            && end - start < MAP_TEXTURE_UPLOAD_BATCH_IMAGES
+        {
+            let sprite = &pending.scene.sprites[pending.unique_sprite_indices[end]];
+            let is_large = sprite.texture_width > MAP_TEXTURE_UPLOAD_BATCH_MAX_DIMENSION
+                || sprite.texture_height > MAP_TEXTURE_UPLOAD_BATCH_MAX_DIMENSION;
+            if end > start && is_large {
+                break;
+            }
+            let bytes = (sprite.texture_width as usize)
+                .saturating_mul(sprite.texture_height as usize)
+                .saturating_mul(4);
+            if end > start && batch_bytes.saturating_add(bytes) > MAP_TEXTURE_UPLOAD_BATCH_BYTES {
+                break;
+            }
+            batch_bytes = batch_bytes.saturating_add(bytes);
+            end += 1;
+            if is_large {
+                break;
+            }
+        }
+
+        if end > start {
+            let atlas_images = {
+                let pending = self.pending_map_scene_upload.as_ref().unwrap();
+                pending.unique_sprite_indices[start..end]
+                    .iter()
+                    .map(|index| {
+                        let sprite = &pending.scene.sprites[*index];
+                        BgraImage {
+                            width: sprite.texture_width,
+                            height: sprite.texture_height,
+                            pixels: sprite.pixels.as_ref(),
+                        }
+                    })
+                    .collect::<Vec<_>>()
+            };
+            let result = self
+                .renderer
+                .as_ref()
+                .ok_or_else(|| "graphics are not ready to upload a map".to_owned())
+                .and_then(|renderer| {
+                    renderer
+                        .upload_bgra_atlas(&atlas_images)
+                        .map_err(|error| error.to_string())
+                });
+            match result {
+                Ok(textures) => {
+                    let pending = self.pending_map_scene_upload.as_mut().unwrap();
+                    for (offset, texture) in textures.into_iter().enumerate() {
+                        let sprite_index = pending.unique_sprite_indices[start + offset];
+                        let key = pending.scene.sprites[sprite_index].texture_key.clone();
+                        let texture_index = pending.textures.len();
+                        pending.texture_indices.insert(key, texture_index);
+                        pending.textures.push(texture);
+                    }
+                    pending.next_sprite = end;
+                }
+                Err(error) => {
+                    let pending = self.pending_map_scene_upload.take().unwrap();
+                    self.finish_map_scene_load(
+                        pending.map_id,
+                        pending.portal,
+                        pending.music_path,
+                        Err(error),
+                    );
+                    return;
+                }
+            }
+        }
+
+        let finished = self
+            .pending_map_scene_upload
+            .as_ref()
+            .is_some_and(|pending| pending.next_sprite == pending.unique_sprite_indices.len());
+        if finished {
+            let pending = self.pending_map_scene_upload.take().unwrap();
+            let result = self.replace_scene_with_uploaded(
+                pending.scene,
+                pending.local_name_label_index,
+                pending.textures,
+                pending.texture_indices,
+            );
+            self.finish_map_scene_load(pending.map_id, pending.portal, pending.music_path, result);
+        } else if let Some(window) = self.window.as_ref() {
+            window.request_redraw();
+        }
+    }
+
+    fn finish_map_scene_load(
+        &mut self,
+        map_id: i32,
+        portal: u8,
+        music_path: Option<String>,
+        result: Result<(), String>,
+    ) {
+        self.pending_map_transition_ack = None;
+        match result {
             Ok(()) => {
                 let up_is_held = self.gameplay_input.up
                     || self
@@ -91,14 +340,10 @@ impl ClientApp {
                     self.audio.play_music(&self.sound_archive, &path);
                 }
                 self.current_field = Some((map_id, portal));
-                // Replacing the map scene resets sprite_textures. Reload the
-                // native HUD afterward so its draw indices refer to this scene.
-                self.load_native_status_bar();
-                self.refresh_map_hud();
-                self.show_status_menu = false;
+                self.show_game_menu = false;
                 self.chat_open = false;
+                self.chat_input_focused = false;
                 self.chat_input.clear();
-                self.refresh_chat_texture();
                 self.npc_dialogue = None;
                 self.pending_npc_talk = None;
                 self.character_info = None;
@@ -116,8 +361,63 @@ impl ClientApp {
                 {
                     self.enter_death_state();
                 }
+                self.start_map_prefetch();
+                self.map_entry_refresh_step = 0;
+                self.pending_map_transition_ack = Some((map_id, portal));
+            }
+            Err(error) => {
+                eprintln!("OpenStory: could not load map {map_id}: {error}");
+                self.map_entry_refresh_pending = false;
+            }
+        }
+        if self.pending_map_transition_ack.is_none() {
+            self.map_loading_started_at = None;
+            self.map_loading_frame_rendered = false;
+        }
+        if let Some(window) = self.window.as_ref() {
+            window.request_redraw();
+        }
+    }
+
+    pub(super) fn advance_pending_map_scene_finalize(&mut self) {
+        if self.pending_map_transition_ack.is_none() {
+            return;
+        }
+        match self.map_entry_refresh_step {
+            0 => {
+                if let Some(look) = self
+                    .active_character
+                    .as_ref()
+                    .map(|character| character.look.clone())
+                {
+                    self.refresh_local_mount(&look);
+                }
+            }
+            1 => self.load_native_status_bar(),
+            2 => self.refresh_quickslots_texture(),
+            3 => self.refresh_chat_texture(),
+            4 => {
+                self.refresh_minimap_texture();
+                self.next_minimap_refresh = Instant::now() + Duration::from_millis(100);
+            }
+            5 if self.map_entry_refresh_pending => self.sync_equipped_look(),
+            6 if self.map_entry_refresh_pending => self.refresh_inventory_texture(),
+            7 if self.map_entry_refresh_pending => self.refresh_pet_equipment_texture(),
+            8 if self.map_entry_refresh_pending => self.refresh_skill_book_entries(),
+            9 if self.map_entry_refresh_pending => self.refresh_skill_book_texture(),
+            5..=9 => {
+                self.map_entry_refresh_step = 10;
+                if let Some(window) = self.window.as_ref() {
+                    window.request_redraw();
+                }
+                return;
+            }
+            _ => {
+                let Some((map_id, portal)) = self.pending_map_transition_ack.take() else {
+                    return;
+                };
                 // The v83 server keeps map-changing actions locked until the
-                // client confirms that it has finished loading the field.
+                // field and its native UI are ready.
                 if let Some(session) = self.session.as_ref()
                     && let Err(error) =
                         session.send_packet(openstory_protocol::player_map_transfer_packet())
@@ -126,9 +426,201 @@ impl ClientApp {
                     self.channel_connected = false;
                 }
                 eprintln!("OpenStory: loaded map {map_id} at portal {portal}");
+                self.map_entry_refresh_pending = false;
+                self.map_loading_started_at = None;
+                self.map_loading_frame_rendered = false;
+                if let Some(window) = self.window.as_ref() {
+                    window.request_redraw();
+                }
+                return;
             }
-            Err(error) => eprintln!("OpenStory: could not load map {map_id}: {error}"),
         }
+        self.map_entry_refresh_step = self.map_entry_refresh_step.saturating_add(1);
+        if let Some(window) = self.window.as_ref() {
+            window.request_redraw();
+        }
+    }
+
+    pub(super) fn process_map_prefetch_results(&mut self) {
+        let mut ready = Vec::new();
+        let mut disconnected = false;
+        if let Some(receiver) = self.map_prefetch_receiver.as_ref() {
+            loop {
+                match receiver.try_recv() {
+                    Ok(scene) => ready.push(scene),
+                    Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        disconnected = true;
+                        break;
+                    }
+                }
+            }
+        }
+        for scene in ready {
+            self.cache_prefetched_map_scene(scene);
+        }
+        if disconnected {
+            self.map_prefetch_receiver = None;
+            self.map_prefetch_cancel = None;
+        }
+    }
+
+    fn start_map_prefetch(&mut self) {
+        self.cancel_map_prefetch();
+        let Some(character) = self.active_character.clone() else {
+            return;
+        };
+        let Some(scene) = self.map_scene.as_ref() else {
+            return;
+        };
+        let map_id = scene.map_id;
+        let origin = (scene.player.x, scene.player.y);
+        let look = character.look.clone();
+        let mut seen = HashSet::new();
+        let mut candidates = scene
+            .portals
+            .iter()
+            .filter(|portal| {
+                portal.target_map_id >= 0
+                    && portal.target_map_id < 999_999_999
+                    && portal.target_map_id != map_id
+            })
+            .filter_map(|portal| {
+                let key = (portal.target_map_id, portal.target_name.clone());
+                if !seen.insert(key.clone()) {
+                    return None;
+                }
+                let dx = portal.x - origin.0;
+                let dy = portal.y - origin.1;
+                Some((dx * dx + dy * dy, key.0, key.1))
+            })
+            .collect::<Vec<_>>();
+        candidates.sort_by(|left, right| left.0.total_cmp(&right.0));
+        let candidates = candidates
+            .into_iter()
+            .take(MAX_MAP_PREFETCH_CANDIDATES)
+            .map(|(_, destination, target_name)| (destination, target_name))
+            .collect::<Vec<_>>();
+        if candidates.is_empty() {
+            return;
+        }
+
+        let map_archive = self.map_archive.clone();
+        let character_archive = self.character_archive.clone();
+        let font = self.font.clone();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let worker_cancel = cancel.clone();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let worker = std::thread::Builder::new()
+            .name(format!("map-prefetch-{map_id}"))
+            .spawn(move || {
+                for (destination, target_name) in candidates {
+                    if worker_cancel.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    let portal_id =
+                        map_portal_id_for_target(&map_archive, destination, &target_name);
+                    let music_path = map_music_path(&map_archive, destination);
+                    let Ok(scene) = load_map_scene(
+                        &map_archive,
+                        Some(&character_archive),
+                        destination,
+                        portal_id,
+                        Some(&character),
+                        &font,
+                    ) else {
+                        continue;
+                    };
+                    if worker_cancel.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    let decoded_bytes = decoded_scene_bytes(&scene);
+                    if decoded_bytes > MAX_PREFETCHED_MAP_SCENE_BYTES {
+                        continue;
+                    }
+                    if sender
+                        .send(PrefetchedMapScene {
+                            map_id: destination,
+                            portal_id,
+                            character_look: look.clone(),
+                            music_path,
+                            scene,
+                            decoded_bytes,
+                        })
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+            });
+        match worker {
+            Ok(_) => {
+                self.map_prefetch_receiver = Some(receiver);
+                self.map_prefetch_cancel = Some(cancel);
+            }
+            Err(error) => {
+                eprintln!("OpenStoryRS: could not start adjacent map prefetch: {error}");
+            }
+        }
+    }
+
+    fn cancel_map_prefetch(&mut self) {
+        if let Some(cancel) = self.map_prefetch_cancel.take() {
+            cancel.store(true, Ordering::Relaxed);
+        }
+        self.map_prefetch_receiver = None;
+    }
+
+    fn cache_prefetched_map_scene(&mut self, scene: PrefetchedMapScene) {
+        if scene.decoded_bytes > MAX_PREFETCHED_MAP_SCENE_BYTES {
+            return;
+        }
+        if let Some(index) = self.prefetched_map_scenes.iter().position(|cached| {
+            cached.map_id == scene.map_id
+                && cached.portal_id == scene.portal_id
+                && cached.character_look == scene.character_look
+        }) {
+            if let Some(replaced) = self.prefetched_map_scenes.remove(index) {
+                self.prefetched_map_scene_bytes = self
+                    .prefetched_map_scene_bytes
+                    .saturating_sub(replaced.decoded_bytes);
+            }
+        }
+        while self.prefetched_map_scenes.len() >= MAX_PREFETCHED_MAP_SCENES
+            || self
+                .prefetched_map_scene_bytes
+                .saturating_add(scene.decoded_bytes)
+                > MAX_PREFETCHED_MAP_SCENE_BYTES
+        {
+            let Some(evicted) = self.prefetched_map_scenes.pop_front() else {
+                break;
+            };
+            self.prefetched_map_scene_bytes = self
+                .prefetched_map_scene_bytes
+                .saturating_sub(evicted.decoded_bytes);
+        }
+        self.prefetched_map_scene_bytes = self
+            .prefetched_map_scene_bytes
+            .saturating_add(scene.decoded_bytes);
+        self.prefetched_map_scenes.push_back(scene);
+    }
+
+    fn take_prefetched_map_scene(
+        &mut self,
+        map_id: i32,
+        portal_id: u8,
+        character_look: &openstory_protocol::CharacterLook,
+    ) -> Option<PrefetchedMapScene> {
+        let index = self.prefetched_map_scenes.iter().position(|scene| {
+            scene.map_id == map_id
+                && scene.portal_id == portal_id
+                && &scene.character_look == character_look
+        })?;
+        let scene = self.prefetched_map_scenes.remove(index)?;
+        self.prefetched_map_scene_bytes = self
+            .prefetched_map_scene_bytes
+            .saturating_sub(scene.decoded_bytes);
+        Some(scene)
     }
 
     pub(super) fn select_character(&mut self, index: usize) {
@@ -150,7 +642,7 @@ impl ClientApp {
         }
     }
 
-    pub(super) fn delete_character(&mut self, index: usize) {
+    pub(super) fn request_character_deletion(&mut self, index: usize) {
         let Some((character_id, pic_state)) = self.character_list.as_ref().and_then(|list| {
             list.characters
                 .get(index)
@@ -158,16 +650,104 @@ impl ClientApp {
         }) else {
             return;
         };
-        self.begin_pic_entry_for(
+        if !self.ensure_character_delete_confirmation_assets() {
+            return;
+        }
+        self.character_delete_confirmation = Some(CharacterDeleteConfirmation {
             character_id,
-            PicEntryStep::DeleteConfirm,
-            PicPurpose::DeleteCharacter,
-        );
-        if pic_state == 0 {
-            if let Some(entry) = self.pic_entry.as_mut() {
-                entry.notice = Some("A PIC must be set before deleting characters".to_owned());
+            pic_state,
+            step: CharacterDeleteConfirmationStep::Initial,
+        });
+        if let Some(window) = self.window.as_ref() {
+            window.request_redraw();
+        }
+    }
+
+    fn ensure_character_delete_confirmation_assets(&mut self) -> bool {
+        let prompts = [
+            "This will delete your character, do you want to continue?",
+            "Are you sure you want to delete your character?",
+        ];
+        for (index, prompt) in prompts.iter().enumerate() {
+            if !self.character_delete_confirmation_draws[index].is_empty() {
+                continue;
             }
-            self.refresh_pic_dialog_texture();
+            let sprites = build_character_delete_confirmation_sprites(
+                &self.legacy_ui_archive,
+                &self.font,
+                prompt,
+            )
+            .or_else(|_| {
+                build_character_delete_confirmation_sprites(&self.ui_archive, &self.font, prompt)
+            });
+            let (sprites, buttons) = match sprites {
+                Ok(assets) => assets,
+                Err(error) => {
+                    eprintln!("OpenStory: character deletion confirmation is unavailable: {error}");
+                    return false;
+                }
+            };
+            match self.upload_dynamic_sprites(sprites) {
+                Ok(draws) => {
+                    self.character_delete_confirmation_draws[index] = draws;
+                    self.character_delete_confirmation_buttons[index] = buttons.map(Some);
+                }
+                Err(error) => {
+                    eprintln!(
+                        "OpenStory: could not upload character deletion confirmation: {error}"
+                    );
+                    return false;
+                }
+            }
+        }
+        true
+    }
+
+    pub(super) fn confirm_character_deletion(&mut self, accept: bool) {
+        let Some(confirmation) = self.character_delete_confirmation else {
+            return;
+        };
+        if !accept {
+            self.character_delete_confirmation = None;
+        } else if confirmation.step == CharacterDeleteConfirmationStep::Initial {
+            if let Some(confirmation) = self.character_delete_confirmation.as_mut() {
+                confirmation.step = CharacterDeleteConfirmationStep::Final;
+            }
+        } else {
+            self.character_delete_confirmation = None;
+            self.begin_character_deletion(confirmation.character_id, confirmation.pic_state);
+        }
+        if let Some(window) = self.window.as_ref() {
+            window.request_redraw();
+        }
+    }
+
+    fn begin_character_deletion(&mut self, character_id: i32, pic_state: u8) {
+        match pic_state {
+            0 => {
+                self.begin_pic_entry_for(
+                    character_id,
+                    PicEntryStep::Notice,
+                    PicPurpose::DeleteCharacter,
+                );
+                if let Some(entry) = self.pic_entry.as_mut() {
+                    entry.notice = Some("A PIC must be set before deleting characters".to_owned());
+                }
+                self.refresh_pic_dialog_texture();
+            }
+            1 => {
+                self.begin_pic_entry_for(
+                    character_id,
+                    PicEntryStep::Verify,
+                    PicPurpose::DeleteCharacter,
+                );
+                if let Some(entry) = self.pic_entry.as_mut() {
+                    entry.notice = Some("Enter the PIC to confirm deletion".to_owned());
+                }
+                self.refresh_pic_dialog_texture();
+            }
+            2 => self.send_delete_character(character_id, ""),
+            state => eprintln!("OpenStory: unsupported PIC state {state}"),
         }
     }
 
@@ -241,15 +821,10 @@ impl ClientApp {
         step: PicEntryStep,
         purpose: PicPurpose,
     ) {
-        let pic_state = self
-            .character_list
-            .as_ref()
-            .map_or(2, |list| list.pic_state);
         self.pic_entry = Some(PicEntry {
             character_id,
             step,
             purpose,
-            pic_state,
             input: String::new(),
             first_input: String::new(),
             notice: None,
@@ -266,10 +841,6 @@ impl ClientApp {
             PicEntryStep::Register => ("Create a PIC", "Enter 6 to 16 letters or numbers"),
             PicEntryStep::ConfirmRegistration => ("Confirm your PIC", "Enter the new PIC again"),
             PicEntryStep::Verify => ("Enter your PIC", "Enter 6 to 16 letters or numbers"),
-            PicEntryStep::DeleteConfirm => (
-                "Delete this character?",
-                "Press Enter to confirm or Escape to cancel",
-            ),
             PicEntryStep::Notice => ("Character deletion failed", "Press Enter to close"),
         };
         let masked_input = "*".repeat(entry.input.chars().count());
@@ -297,10 +868,7 @@ impl ClientApp {
         let Some(entry) = self.pic_entry.as_mut() else {
             return;
         };
-        if matches!(
-            entry.step,
-            PicEntryStep::DeleteConfirm | PicEntryStep::Notice
-        ) {
+        if entry.step == PicEntryStep::Notice {
             return;
         }
         for character in input
@@ -323,29 +891,6 @@ impl ClientApp {
         if entry.step == PicEntryStep::Notice {
             self.pic_entry = None;
             self.pic_dialog_texture = None;
-            return;
-        }
-        if entry.step == PicEntryStep::DeleteConfirm {
-            match entry.pic_state {
-                0 => {
-                    self.pic_entry = None;
-                    self.pic_dialog_texture = None;
-                }
-                1 => {
-                    entry.step = PicEntryStep::Verify;
-                    entry.notice = Some("Enter the PIC to confirm deletion".to_owned());
-                    self.refresh_pic_dialog_texture();
-                }
-                2 => {
-                    let character_id = entry.character_id;
-                    self.send_delete_character(character_id, "");
-                }
-                state => {
-                    eprintln!("OpenStory: unsupported PIC state {state}");
-                    self.pic_entry = None;
-                    self.pic_dialog_texture = None;
-                }
-            }
             return;
         }
         if entry.input.len() < 6 {
@@ -392,9 +937,7 @@ impl ClientApp {
                     PicPurpose::DeleteCharacter => self.send_delete_character(character_id, &pic),
                 }
             }
-            PicEntryStep::DeleteConfirm | PicEntryStep::Notice => {
-                unreachable!("handled before PIC validation")
-            }
+            PicEntryStep::Notice => unreachable!("handled before PIC validation"),
         }
     }
 
@@ -521,6 +1064,7 @@ impl ClientApp {
             LoginAction::SelectWorld(_)
             | LoginAction::SelectChannel(_)
             | LoginAction::EnterWorld
+            | LoginAction::ReturnToLogin
             | LoginAction::HighlightCharacter(_)
             | LoginAction::SelectCharacter(_)
             | LoginAction::DeleteCharacter(_)
@@ -530,6 +1074,7 @@ impl ClientApp {
             | LoginAction::BeginCharacterCreation
             | LoginAction::CycleCreationOption(_, _)
             | LoginAction::ToggleCreationGender(_)
+            | LoginAction::CheckCreationName
             | LoginAction::FocusCreationName
             | LoginAction::SubmitCharacterCreation
             | LoginAction::CancelCharacterCreation => return,
@@ -878,6 +1423,12 @@ impl ClientApp {
     }
 
     pub(super) fn process_network_events(&mut self) {
+        if self.map_load_receiver.is_some()
+            || self.pending_map_scene_upload.is_some()
+            || self.map_loading_started_at.is_some()
+        {
+            return;
+        }
         loop {
             let event = self.session.as_ref().and_then(|session| session.try_recv());
             let Some(event) = event else {
@@ -956,6 +1507,12 @@ impl ClientApp {
                     self.pending_merchant_permit = None;
                     eprintln!("OpenStory: server connection closed: {message}");
                 }
+            }
+            if self.map_load_receiver.is_some()
+                || self.pending_map_scene_upload.is_some()
+                || self.map_loading_started_at.is_some()
+            {
+                break;
             }
         }
     }

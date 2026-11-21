@@ -1142,28 +1142,11 @@ fn tile_image(
     width: usize,
     height: usize,
 ) {
-    if image.width == 0 || image.height == 0 {
-        return;
-    }
-    let bottom = top.saturating_add(height);
-    let right = left.saturating_add(width);
-    let mut y = top;
-    while y < bottom {
-        let mut x = left;
-        while x < right {
-            blit(
-                pixels,
-                canvas_width,
-                canvas_height,
-                image,
-                x as f32,
-                y as f32,
-                1.0,
-            );
-            x = x.saturating_add(image.width);
-        }
-        y = y.saturating_add(image.height);
-    }
+    let area =
+        super::ui_foundation::UiRect::new(left as f32, top as f32, width as f32, height as f32);
+    super::ui_dialog::tile_frame_area(area, image.width as f32, image.height as f32, |x, y| {
+        blit(pixels, canvas_width, canvas_height, image, x, y, 1.0);
+    });
 }
 
 fn draw_button(

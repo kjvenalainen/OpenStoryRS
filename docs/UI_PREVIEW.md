@@ -17,6 +17,7 @@ cargo run -p openstory-client -- \
 
 Available previews are `login`, `login-active`, `world-select`, `character-select-empty`,
 `character-select-populated`, `character-create-explorer`, `native-keybindings`,
+`page-map-name-tags`,
 `native-items`, `native-equipment`, `native-skills`, `native-pet-equipment`,
 `native-npc-store`, `native-storage`, `native-cash-shop`, `native-monster-book`,
 `native-monster-book-detail`, `native-status`,
@@ -30,6 +31,8 @@ connection are used.
 
 World Map previews use the Victoria region; the search case finds Orbis across regions, the
 marker case displays a map detail tooltip, and the result case shows the selected Orbis map.
+The map name tag preview shows NPC labels and default and cash ring based character labels
+over the same live map backdrop used by gameplay previews.
 
 Each case writes 1024x768 and 1440x900 PNGs. The widescreen output uses the
 client's 1024x768 aspect-ratio-preserving viewport and letterboxing.

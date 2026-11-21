@@ -59,8 +59,16 @@ impl ClientApp {
         let social_settings = SocialSettings::load();
         let saved_quickslot_keys = load_quickslot_keys();
         let quickslot_keys_customized = saved_quickslot_keys.is_some();
-        let mut dialog_window_offsets = HashMap::new();
-        if let Some((x, y)) = settings::load_skill_book_position() {
+        let mut dialog_window_offsets = DialogWindow::PERSISTED
+            .iter()
+            .filter_map(|window| {
+                let name = format!("{window:?}");
+                settings::load_dialog_window_offset(&name).map(|offset| (*window, offset))
+            })
+            .collect::<HashMap<_, _>>();
+        if !dialog_window_offsets.contains_key(&DialogWindow::SkillBook)
+            && let Some((x, y)) = settings::load_skill_book_position()
+        {
             let position = ui_foundation::UiRect::new(
                 x,
                 y,
@@ -138,6 +146,7 @@ impl ClientApp {
             cursor: None,
             cursor_physical: None,
             dialog_window_offsets,
+            raised_dialog_windows: Vec::new(),
             dialog_window_drag: None,
             field_textures: Vec::with_capacity(2),
             account_text,
@@ -154,6 +163,9 @@ impl ClientApp {
             save_id_indicator_draws,
             pic_entry: None,
             pic_dialog_texture: None,
+            character_delete_confirmation: None,
+            character_delete_confirmation_draws: std::array::from_fn(|_| Vec::new()),
+            character_delete_confirmation_buttons: [[None; 2]; 2],
             settings_texture: None,
             status_texture: None,
             status_detail_texture: None,
@@ -177,6 +189,10 @@ impl ClientApp {
             cash_shop_hit_regions: Vec::new(),
             owl_texture: None,
             skill_book_texture: None,
+            skill_tooltip_texture: None,
+            skill_tooltip_key: None,
+            skill_tooltip_height: 0,
+            quickslot_tooltip_skill_id: None,
             quest_log_texture: None,
             quest_helper_texture: None,
             quest_helper_texture_size: None,
@@ -189,6 +205,7 @@ impl ClientApp {
             channel_switch_texture: None,
             channel_switch_actions: Vec::new(),
             channel_switch_selected: 0,
+            channel_switch_last_click: None,
             messenger: None,
             messenger_texture: None,
             messenger_actions: Vec::new(),
@@ -220,6 +237,7 @@ impl ClientApp {
             }]),
             chat_input: String::new(),
             chat_open: false,
+            chat_input_focused: false,
             chat_target: ChatTarget::Public,
             cash_item_compose: None,
             owl_search: None,
@@ -278,13 +296,15 @@ impl ClientApp {
             key_config_actions_dirty: true,
             server_keymap: None,
             quickslot_keys: saved_quickslot_keys.unwrap_or(DEFAULT_QUICKSLOT_KEYS),
+            quickslot_hover_slot: None,
             quickslot_pointer_binding: None,
             quickslot_keys_customized,
-            show_quickslots: false,
+            show_quickslots: true,
             quickslot_texture: None,
+            quickslot_rendered_counts: None,
             quickslot_icon_cache: HashMap::new(),
-            show_status_menu: false,
-            status_menu_texture: None,
+            show_game_menu: false,
+            game_menu_texture: None,
             combo_count: 0,
             combo_displayed: 0,
             combo_fade_remaining: Duration::ZERO,
@@ -294,6 +314,8 @@ impl ClientApp {
                 openstory_protocol::SkillMacro::default();
                 openstory_protocol::SKILL_MACRO_COUNT
             ],
+            skill_book_drag: None,
+            skill_book_last_click: None,
             pending_macro_skills: VecDeque::new(),
             next_macro_skill_at: Instant::now(),
             status_auto_confirmation: false,
@@ -303,7 +325,6 @@ impl ClientApp {
             settings,
             settings_original: settings,
             display_settings,
-            display_settings_original: display_settings,
             input_settings,
             input_settings_original: input_settings,
             gameplay_settings,
@@ -328,6 +349,7 @@ impl ClientApp {
             inventory_scroll_row: 0,
             inventory_hover_slot: None,
             inventory_drag_source: None,
+            inventory_pending_move: None,
             pending_scroll_slot: None,
             inventory_drop_prompt: None,
             death_notice: false,
@@ -438,11 +460,24 @@ impl ClientApp {
             quest_start_npc_index,
             available_quests: Vec::new(),
             quest_log_tab: QuestLogTab::Active,
+            quest_log_detail_open: true,
             quest_log_selected: 0,
             quest_log_scroll: 0,
             quest_reward_selected: 0,
             quest_forfeit_confirmation: None,
             current_field: None,
+            map_load_receiver: None,
+            pending_map_scene_upload: None,
+            map_loading_started_at: None,
+            map_loading_frame_rendered: false,
+            map_loading_texture: None,
+            map_entry_refresh_pending: false,
+            map_entry_refresh_step: 0,
+            pending_map_transition_ack: None,
+            map_prefetch_receiver: None,
+            map_prefetch_cancel: None,
+            prefetched_map_scenes: VecDeque::new(),
+            prefetched_map_scene_bytes: 0,
             show_login_fields: true,
             map_scene: None,
             last_npc_talk_at: None,
@@ -1161,8 +1196,7 @@ impl ClientApp {
             }
             if knockback {
                 scene.player.horizontal_speed = if direction == 0 { -1.5 } else { 1.5 };
-                scene.player.vertical_speed = -3.5;
-                scene.player.on_ground = false;
+                scene.player.vertical_force -= 3.5;
             }
             let timestamp = self.client_started_at.elapsed().as_millis() as u32;
             let packet = openstory_protocol::take_damage_packet(
@@ -1598,6 +1632,7 @@ impl ClientApp {
             .map(|(_, _, (x, y))| (*x, *y - 24.0))
             .take(15)
             .collect::<Vec<_>>();
+        let projectile_launch_delay = skill_hit_delays.first().copied().unwrap_or_default();
         let reactor_target =
             scene.nearest_reactor_target(attack_range, horizontal_range_multiplier);
         let reactor_target_position = reactor_target.and_then(|object_id| {
@@ -1613,7 +1648,7 @@ impl ClientApp {
             .into_iter()
             .map(|(object_id, mob, _)| {
                 let mut stack_offset = 0.0;
-                let damage_lines = (0..hit_count.clamp(1, 15))
+                let damage_lines: Vec<i32> = (0..hit_count.clamp(1, 15))
                     .map(|hit_index| {
                         let (damage, critical) = basic_attack_damage(scene, attack_stats, mob);
                         impacts.push((
@@ -1626,6 +1661,9 @@ impl ClientApp {
                         damage
                     })
                     .collect();
+                if damage_lines.iter().any(|damage| *damage > 0) {
+                    scene.mark_local_mob_aggro(object_id);
+                }
                 openstory_protocol::AttackDamageTarget {
                     object_id,
                     damage_lines,
@@ -1669,10 +1707,15 @@ impl ClientApp {
                             scene.player.y - 26.0,
                         )
                     });
-                    scene.launch_projectile(frames, target_x, target_y);
+                    scene.launch_projectile(frames, target_x, target_y, projectile_launch_delay);
                 } else {
                     for (target_x, target_y) in projectile_targets {
-                        scene.launch_projectile(frames.clone(), target_x, target_y);
+                        scene.launch_projectile(
+                            frames.clone(),
+                            target_x,
+                            target_y,
+                            projectile_launch_delay,
+                        );
                     }
                 }
             }
@@ -1731,6 +1774,7 @@ impl ClientApp {
         self.quickslot_pointer_binding = None;
         self.key_config_pointer_start = None;
         self.chat_open = false;
+        self.chat_input_focused = false;
         self.whisper_input_focused = false;
         self.key_config_capture = None;
         self.quickslot_key_capture = None;
@@ -1743,10 +1787,6 @@ impl ClientApp {
             self.key_config_quickslot_draft = Some(self.quickslot_keys);
             self.key_config_scroll_row = 0;
             self.key_config_actions_dirty = true;
-            self.show_inventory = false;
-            self.show_skill_book = false;
-            self.show_quest_log = false;
-            self.show_pet_equipment = false;
             self.refresh_key_config_texture();
         }
     }
@@ -1759,34 +1799,42 @@ impl ClientApp {
         if self.show_quickslots {
             self.refresh_quickslots_texture();
         }
+        self.update_inventory_hover();
+        self.refresh_inventory_tooltip_texture();
     }
 
-    pub(super) fn toggle_status_menu(&mut self) {
-        self.show_status_menu = !self.show_status_menu;
-        if self.show_status_menu {
-            self.refresh_status_menu_texture();
+    pub(super) fn toggle_game_menu(&mut self) {
+        self.show_game_menu = !self.show_game_menu;
+        if self.show_game_menu {
+            self.refresh_game_menu_texture();
         }
     }
 
-    pub(super) fn refresh_status_menu_texture(&mut self) {
-        if !self.show_status_menu {
+    pub(super) fn refresh_game_menu_texture(&mut self) {
+        if !self.show_game_menu {
             return;
         }
-        let pixels = render_status_menu(&self.font);
+        let pixels = match render_game_menu(&self.ui_archive, &self.font) {
+            Ok(pixels) => pixels,
+            Err(error) => {
+                eprintln!("OpenStoryRS: could not render the game menu: {error}");
+                return;
+            }
+        };
         let Some(renderer) = self.renderer.as_ref() else {
             return;
         };
-        let result = if let Some(texture) = self.status_menu_texture.as_ref() {
+        let result = if let Some(texture) = self.game_menu_texture.as_ref() {
             renderer.update_bgra(texture, &pixels).map(|()| None)
         } else {
             renderer
-                .upload_bgra(STATUS_MENU_WIDTH, STATUS_MENU_HEIGHT, &pixels)
+                .upload_bgra(GAME_MENU_WIDTH, GAME_MENU_HEIGHT, &pixels)
                 .map(Some)
         };
         match result {
-            Ok(Some(texture)) => self.status_menu_texture = Some(texture),
+            Ok(Some(texture)) => self.game_menu_texture = Some(texture),
             Ok(None) => {}
-            Err(error) => eprintln!("OpenStoryRS: could not update the status menu: {error}"),
+            Err(error) => eprintln!("OpenStoryRS: could not update the game menu: {error}"),
         }
     }
 
@@ -1858,62 +1906,29 @@ impl ClientApp {
         }
     }
 
-    pub(super) fn activate_status_menu_item(&mut self, item: usize) {
-        self.show_status_menu = false;
+    pub(super) fn activate_game_menu_item(&mut self, item: usize) {
+        self.show_game_menu = false;
         match item {
-            0 => self.open_status_window(),
-            1 => {
-                self.show_skill_book = !self.show_skill_book;
-                if self.show_skill_book {
-                    self.skill_book_tab = 0;
-                    self.skill_book_scroll_row = 0;
-                    self.refresh_skill_book_entries();
-                    self.refresh_skill_book_texture();
-                }
-            }
-            2 => {
-                self.show_quest_log = true;
-                self.quest_log_tab = QuestLogTab::Active;
-                self.quest_log_scroll = 0;
-                self.quest_log_selected = 0;
-                self.quest_reward_selected = 0;
-                self.quest_forfeit_confirmation = None;
-                self.refresh_quest_log_texture();
-            }
-            3 => self.toggle_event_list(),
-            4 => self.open_inventory_tab(openstory_protocol::InventoryType::Use),
-            5 => self.open_inventory_tab(openstory_protocol::InventoryType::Equip),
-            6 => {
-                self.show_party_panel = !self.show_party_panel;
-                self.refresh_party_texture();
-            }
-            7 => {
-                self.show_buddy_panel = !self.show_buddy_panel;
-                self.refresh_buddy_texture();
-            }
-            8 => {
-                self.show_guild_panel = !self.show_guild_panel;
-                self.refresh_guild_texture();
-            }
-            9 => {
-                self.monster_book.open = !self.monster_book.open;
-                if self.monster_book.open {
-                    self.refresh_monster_book_texture();
-                }
-            }
-            10 => {
-                if self.world_map.open {
-                    self.world_map.open = false;
-                    self.refresh_world_map_texture();
-                } else {
-                    self.open_world_map();
-                }
-            }
-            11 => self.toggle_key_config(),
-            12 => self.open_settings(),
-            13 => self.open_quit_confirmation(),
+            0 => self.open_channel_switch(),
+            1 => self.open_settings(),
+            2 => self.open_quit_confirmation(),
             _ => {}
         }
+    }
+
+    pub(super) fn game_menu_position(&self) -> (f32, f32) {
+        game_menu_position_for_layout(self.status_bar_layout)
+    }
+
+    pub(super) fn open_quest_log(&mut self) {
+        self.show_quest_log = true;
+        self.quest_log_tab = QuestLogTab::Active;
+        self.quest_log_detail_open = true;
+        self.quest_log_scroll = 0;
+        self.quest_log_selected = 0;
+        self.quest_reward_selected = 0;
+        self.quest_forfeit_confirmation = None;
+        self.refresh_quest_log_texture();
     }
 
     pub(super) fn click_native_status_bar(&mut self, cursor: Point) -> bool {
@@ -1921,27 +1936,53 @@ impl ClientApp {
             return false;
         }
 
-        if self.show_status_menu {
+        if self.show_game_menu {
+            let (menu_x, menu_y) = self.game_menu_position();
             let menu_bounds = SpriteRect {
-                x: STATUS_MENU_X,
-                y: STATUS_MENU_Y,
-                width: STATUS_MENU_WIDTH as f32,
-                height: STATUS_MENU_HEIGHT as f32,
+                x: menu_x,
+                y: menu_y,
+                width: GAME_MENU_WIDTH as f32,
+                height: GAME_MENU_HEIGHT as f32,
                 blend_mode: BlendMode::Alpha,
             };
             if rect_contains(menu_bounds, cursor) {
-                let row_y = cursor.y - (STATUS_MENU_Y + 4.0);
-                if row_y >= 0.0 {
-                    let row = (row_y / STATUS_MENU_ROW_HEIGHT as f32) as usize;
-                    if row < STATUS_MENU_ROWS.len() {
-                        self.audio
-                            .play_ui_sound(&self.sound_archive, "UI.img/BtMouseClick");
-                        self.activate_status_menu_item(row);
-                    }
+                let local_x = cursor.x - menu_x;
+                let local_y = cursor.y - menu_y;
+                if GAME_MENU_CLOSE.contains(local_x, local_y) {
+                    self.audio
+                        .play_ui_sound(&self.sound_archive, "UI.img/BtMouseClick");
+                    self.show_game_menu = false;
+                } else if let Some(row) = (0..GAME_MENU_ROWS.len())
+                    .find(|index| game_menu_row(*index).contains(local_x, local_y))
+                {
+                    self.audio
+                        .play_ui_sound(&self.sound_archive, "UI.img/BtMouseClick");
+                    self.activate_game_menu_item(row);
                 }
                 return true;
             }
-            self.show_status_menu = false;
+            self.show_game_menu = false;
+            self.game_menu_texture = None;
+            let (button_x, button_width) = match self.status_bar_layout {
+                StatusBarLayout::Modern => (794.0, 54.0),
+                StatusBarLayout::V83 => (
+                    V83_STATUS_BAR_BIG_BUTTON_X + V83_STATUS_BAR_BIG_BUTTON_STEP,
+                    V83_STATUS_BAR_BIG_BUTTON_WIDTH,
+                ),
+            };
+            let button_y = STATUS_BAR_TOP + 35.0;
+            if rect_contains(
+                SpriteRect {
+                    x: button_x,
+                    y: button_y,
+                    width: button_width,
+                    height: 34.0,
+                    blend_mode: BlendMode::Alpha,
+                },
+                cursor,
+            ) {
+                return true;
+            }
         }
 
         let small_x = match self.status_bar_layout {
@@ -2015,19 +2056,20 @@ impl ClientApp {
                     if v83 {
                         match button {
                             Some(0) => self.open_cash_shop(),
-                            Some(1) => self.toggle_status_menu(),
+                            Some(1) => self.toggle_game_menu(),
                             Some(2) => self.toggle_key_config(),
                             _ => {}
                         }
                     } else {
                         match button {
-                            Some(0) => self.toggle_status_menu(),
+                            Some(0) => self.toggle_game_menu(),
                             Some(1) => self.open_cash_shop(),
                             Some(2) => self.open_settings(),
                             Some(3) => {
                                 self.chat_target = ChatTarget::Public;
                                 self.chat_input = "/trade ".to_owned();
                                 self.chat_open = true;
+                                self.chat_input_focused = true;
                                 self.refresh_chat_texture();
                             }
                             _ => {}
@@ -2049,15 +2091,31 @@ impl ClientApp {
         ui_foundation::QUICKSLOT_GRID.hit(cursor.x - 865.0, cursor.y - 615.0)
     }
 
+    pub(super) fn current_quickslot_binding(
+        &self,
+        slot: usize,
+    ) -> Option<openstory_protocol::KeyBinding> {
+        let key = *self.current_quickslot_keys().get(slot)?;
+        if let Some(bindings) = self
+            .key_config_draft
+            .as_deref()
+            .or(self.server_keymap.as_deref())
+        {
+            return bindings.get(usize::from(key)).copied();
+        }
+        default_keymap_bindings().get(usize::from(key)).copied()
+    }
+
     pub(super) fn click_quickslot(&mut self, cursor: Point) -> bool {
         let Some(slot) = self.quickslot_at(cursor) else {
             return false;
         };
-        let key = self.quickslot_keys[slot];
+        let key = self.current_quickslot_keys()[slot];
         let fallback = default_keymap_bindings();
         if let Some(binding) = self
-            .server_keymap
+            .key_config_draft
             .as_deref()
+            .or(self.server_keymap.as_deref())
             .unwrap_or(&fallback)
             .get(usize::from(key))
             .copied()
@@ -2138,12 +2196,17 @@ impl ClientApp {
         const WIDTH: usize = 151;
         const HEIGHT: usize = 80;
         let fallback = default_keymap_bindings();
-        let bindings = self.server_keymap.as_deref().unwrap_or(&fallback);
-        let slot_bindings = self
-            .quickslot_keys
+        let bindings = self
+            .key_config_draft
+            .as_deref()
+            .or(self.server_keymap.as_deref())
+            .unwrap_or(&fallback);
+        let quickslot_keys = self.current_quickslot_keys();
+        let slot_bindings = quickslot_keys
             .iter()
             .map(|key| bindings.get(usize::from(*key)).copied().unwrap_or_default())
             .collect::<Vec<_>>();
+        let item_counts = self.current_quickslot_item_counts();
         let icons: [Option<(u32, u32, Arc<[u8]>)>; 8] = std::array::from_fn(|slot| {
             let binding = slot_bindings.get(slot).copied().unwrap_or_default();
             (binding.kind != 0)
@@ -2153,8 +2216,9 @@ impl ClientApp {
         let pixels = render_quickslot_panel_pixels(
             quickslot_background_image(&self.legacy_ui_archive),
             &self.ui_archive,
-            &self.quickslot_keys,
+            &quickslot_keys,
             &icons,
+            &item_counts,
         );
 
         let Some(renderer) = self.renderer.as_ref() else {
@@ -2168,9 +2232,45 @@ impl ClientApp {
                 .map(Some)
         };
         match result {
-            Ok(Some(texture)) => self.quickslot_texture = Some(texture),
-            Ok(None) => {}
+            Ok(Some(texture)) => {
+                self.quickslot_texture = Some(texture);
+                self.quickslot_rendered_counts = Some(item_counts);
+            }
+            Ok(None) => self.quickslot_rendered_counts = Some(item_counts),
             Err(error) => eprintln!("OpenStoryRS: could not refresh quick slots: {error}"),
+        }
+        self.refresh_inventory_tooltip_texture();
+    }
+
+    fn current_quickslot_item_counts(&self) -> [u32; 8] {
+        let fallback = default_keymap_bindings();
+        let bindings = self
+            .key_config_draft
+            .as_deref()
+            .or(self.server_keymap.as_deref())
+            .unwrap_or(&fallback);
+        let inventory = self.inventory.as_ref();
+        let quickslot_keys = self.current_quickslot_keys();
+        std::array::from_fn(|slot| {
+            let binding = bindings
+                .get(usize::from(quickslot_keys[slot]))
+                .copied()
+                .unwrap_or_default();
+            if matches!(binding.kind, 2 | 3) {
+                inventory.map_or(0, |inventory| inventory.item_count(binding.action))
+            } else {
+                0
+            }
+        })
+    }
+
+    pub(super) fn refresh_quickslot_counts_if_changed(&mut self) {
+        if !self.show_quickslots {
+            return;
+        }
+        let counts = self.current_quickslot_item_counts();
+        if self.quickslot_texture.is_none() || self.quickslot_rendered_counts != Some(counts) {
+            self.refresh_quickslots_texture();
         }
     }
 
@@ -2316,7 +2416,7 @@ impl ClientApp {
         );
         self.skill_macro_drag_texture = decode_nx_icon(
             &self.skill_archive,
-            &format!("{:03}.img/skill/{skill_id}/icon", skill_id / 10_000),
+            &format!("{:03}.img/skill/{skill_id:07}/icon", skill_id / 10_000),
         )
         .and_then(|(width, height, pixels)| {
             self.renderer
@@ -2563,6 +2663,20 @@ impl ClientApp {
         self.refresh_quickslots_texture();
     }
 
+    pub(super) fn current_quickslot_keys(&self) -> [u8; 8] {
+        self.key_config_quickslot_draft
+            .unwrap_or(self.quickslot_keys)
+    }
+
+    pub(super) fn key_config_drop_target(&self, x: f32, y: f32) -> Option<u8> {
+        if self.quickslot_key_capture.is_some() && keyboard_settings::QUICKSLOT_POPUP.contains(x, y)
+        {
+            return keyboard_settings::quickslot_at(x, y)
+                .map(|slot| self.current_quickslot_keys()[slot]);
+        }
+        keyboard_settings::key_at(x, y)
+    }
+
     pub(super) fn click_key_config(&mut self, cursor: Point) {
         let (x, y) = (cursor.x - KEY_CONFIG_PANEL_X, cursor.y - KEY_CONFIG_PANEL_Y);
         if self.quickslot_key_capture.is_some() && keyboard_settings::QUICKSLOT_POPUP.contains(x, y)
@@ -2593,6 +2707,7 @@ impl ClientApp {
                     self.key_config_scroll_row = 0;
                     self.key_config_capture = None;
                     self.quickslot_key_capture = None;
+                    self.refresh_quickslots_texture();
                 }
                 keyboard_settings::Button::Clear => {
                     self.key_config_draft = Some(vec![
@@ -2603,6 +2718,7 @@ impl ClientApp {
                     self.key_config_scroll_row = 0;
                     self.key_config_capture = None;
                     self.quickslot_key_capture = None;
+                    self.refresh_quickslots_texture();
                 }
             }
         } else if self.quickslot_key_capture.is_some() {
@@ -2677,6 +2793,7 @@ impl ClientApp {
             .get_or_insert(self.quickslot_keys);
         keyboard_settings::assign_quickslot(keys, slot, key);
         self.refresh_key_config_texture();
+        self.refresh_quickslots_texture();
     }
 
     pub(super) fn scroll_key_config(&mut self, direction: isize) {
@@ -2748,6 +2865,103 @@ impl ClientApp {
         );
         self.key_config_draft = Some(bindings);
         self.refresh_key_config_texture();
+        self.refresh_quickslots_texture();
+    }
+
+    pub(super) fn update_skill_book_drag(&mut self, cursor: Point) -> bool {
+        let Some(drag) = self.skill_book_drag.as_mut() else {
+            return false;
+        };
+        if !drag.moved
+            && ((cursor.x - drag.start.x).abs() >= 4.0 || (cursor.y - drag.start.y).abs() >= 4.0)
+        {
+            drag.moved = true;
+        }
+        drag.moved
+    }
+
+    pub(super) fn finish_skill_book_drag(&mut self, cursor: Option<Point>) {
+        let Some(drag) = self.skill_book_drag.take() else {
+            return;
+        };
+        self.skill_macro_drag_texture = None;
+        let Some(cursor) = cursor else {
+            self.skill_book_last_click = None;
+            return;
+        };
+        if !drag.moved {
+            let now = Instant::now();
+            let double_clicked =
+                self.skill_book_last_click
+                    .take()
+                    .is_some_and(|(previous_skill, previous_at)| {
+                        previous_skill == drag.skill_id
+                            && now.duration_since(previous_at) <= Duration::from_millis(500)
+                    });
+            if double_clicked {
+                self.use_keybound_skill(drag.skill_id);
+            } else {
+                self.skill_book_last_click = Some((drag.skill_id, now));
+            }
+            return;
+        }
+        self.skill_book_last_click = None;
+
+        if self.show_key_config
+            && self.dialog_window_hit_test(DialogWindow::KeyConfig, cursor)
+            && self.topmost_dialog_window_at(cursor) == Some(DialogWindow::KeyConfig)
+        {
+            let (offset_x, offset_y) = self.dialog_window_offset(DialogWindow::KeyConfig);
+            let (x, y) = (
+                cursor.x - KEY_CONFIG_PANEL_X - offset_x,
+                cursor.y - KEY_CONFIG_PANEL_Y - offset_y,
+            );
+            if let Some(key) = self.key_config_drop_target(x, y) {
+                self.assign_skill_to_key(drag.skill_id, key);
+            }
+        } else if self.current_field.is_some()
+            && let Some(slot) = self.quickslot_at(cursor)
+        {
+            let topmost_window = self.topmost_dialog_window_at(cursor);
+            if topmost_window.is_none() || topmost_window == Some(DialogWindow::SkillBook) {
+                let key = self.current_quickslot_keys()[slot];
+                self.assign_skill_to_key(drag.skill_id, key);
+            }
+        }
+    }
+
+    fn assign_skill_to_key(&mut self, skill_id: i32, key: u8) -> bool {
+        let Some(skill) = self
+            .skills
+            .get(&skill_id)
+            .filter(|skill| skill.level > 0 && (skill.id % 10_000) / 1_000 != 0)
+        else {
+            return false;
+        };
+        let value = openstory_protocol::KeyBinding {
+            kind: 1,
+            action: skill.id,
+        };
+        let previous = self
+            .key_config_draft
+            .clone()
+            .or_else(|| self.server_keymap.clone())
+            .unwrap_or_else(default_keymap_bindings);
+        let mut updated = previous.clone();
+        if !keyboard_settings::assign(&mut updated, key, value) {
+            return false;
+        }
+        if self.show_key_config {
+            self.key_config_draft = Some(updated);
+        } else {
+            let updates = keyboard_settings::changes(&previous, &updated);
+            self.server_keymap = Some(updated);
+            self.send_key_config_updates(&updates);
+        }
+        self.key_config_actions_dirty = true;
+        self.refresh_key_config_texture();
+        self.refresh_quickslots_texture();
+        true
     }
 
     pub(super) fn clear_key_config_binding(&mut self, row: usize) {
@@ -2768,15 +2982,21 @@ impl ClientApp {
         self.key_config_draft = Some(bindings);
         self.key_config_actions_dirty = true;
         self.refresh_key_config_texture();
+        self.refresh_quickslots_texture();
     }
 
     pub(super) fn use_keybound_skill(&mut self, skill_id: i32) {
-        let skill = self
+        let Some(skill) = self
             .skill_ui_entry_by_id(skill_id)
-            .filter(|skill| skill.level > 0 && !skill.passive);
-        if let Some(skill) = skill {
-            self.use_skill(&skill);
-        }
+            .filter(|skill| skill.level > 0 && !skill.passive)
+        else {
+            self.push_chat_line(
+                "[Notice] That skill is not learned or available to this character.".to_owned(),
+                [255, 215, 128],
+            );
+            return;
+        };
+        self.use_skill(&skill);
     }
 
     pub(super) fn skill_ui_entry_by_id(&mut self, skill_id: i32) -> Option<SkillUiEntry> {
@@ -2853,6 +3073,9 @@ impl ClientApp {
         if self.pending_macro_skills.is_empty() {
             return;
         }
+        if self.map_loading_started_at.is_some() {
+            return;
+        }
         if self.current_field.is_none() || !self.channel_connected {
             self.pending_macro_skills.clear();
             return;
@@ -2901,6 +3124,18 @@ impl ClientApp {
         inventory_type: openstory_protocol::InventoryType,
         inventory_slot: u16,
     ) {
+        let Some(key) = self.current_quickslot_keys().get(quickslot).copied() else {
+            return;
+        };
+        self.assign_inventory_item_to_key(inventory_type, inventory_slot, key);
+    }
+
+    pub(super) fn assign_inventory_item_to_key(
+        &mut self,
+        inventory_type: openstory_protocol::InventoryType,
+        inventory_slot: u16,
+        key: u8,
+    ) -> bool {
         let Some(item_id) = self.inventory.as_ref().and_then(|inventory| {
             inventory
                 .items
@@ -2912,7 +3147,7 @@ impl ClientApp {
                 })
                 .map(|item| item.item_id)
         }) else {
-            return;
+            return false;
         };
         let kind = match inventory_type {
             openstory_protocol::InventoryType::Use | openstory_protocol::InventoryType::Setup => 2,
@@ -2923,38 +3158,44 @@ impl ClientApp {
                     [255, 215, 128],
                 );
                 self.refresh_chat_texture();
-                return;
+                return false;
             }
         };
-        if !self.channel_connected {
+        if !self.show_key_config && !self.channel_connected {
             self.push_chat_line(
                 "[Quick slots] Connect to a field before changing bindings.".to_owned(),
                 [255, 215, 128],
             );
             self.refresh_chat_texture();
-            return;
+            return false;
         }
-        let Some(key) = self.quickslot_keys.get(quickslot).copied() else {
-            return;
-        };
         let binding = openstory_protocol::KeyBinding {
             kind,
             action: item_id,
         };
-        let mut bindings = self
+        let previous = self
             .server_keymap
             .clone()
             .unwrap_or_else(default_keymap_bindings);
-        let Some(target) = bindings.get_mut(usize::from(key)) else {
-            return;
-        };
-        *target = binding;
-        self.server_keymap = Some(bindings);
-        self.send_key_config_updates(&[(key, binding)]);
+        let mut updated = self
+            .key_config_draft
+            .clone()
+            .unwrap_or_else(|| previous.clone());
+        if !keyboard_settings::assign(&mut updated, key, binding) {
+            return false;
+        }
+        if self.show_key_config {
+            self.key_config_draft = Some(updated);
+        } else {
+            let updates = keyboard_settings::changes(&previous, &updated);
+            self.server_keymap = Some(updated);
+            self.send_key_config_updates(&updates);
+        }
         self.key_config_actions_dirty = true;
         self.refresh_key_config_texture();
         self.refresh_quickslots_texture();
         self.refresh_inventory_texture();
+        true
     }
 
     pub(super) fn apply_keymap_binding(
@@ -3010,24 +3251,30 @@ impl ClientApp {
                 10 => {
                     self.chat_target = ChatTarget::Public;
                     self.chat_open = true;
+                    self.chat_input_focused = false;
                     self.refresh_chat_texture();
                 }
                 7 => self.toggle_minimap(),
                 8 => {
+                    if !self.show_quest_log {
+                        self.quest_log_detail_open = true;
+                    }
                     self.show_quest_log = !self.show_quest_log;
                     self.refresh_quest_log_texture();
                 }
                 9 => self.toggle_key_config(),
                 11 => self.open_new_whisper_window(),
-                14 => self.toggle_status_menu(),
+                14 => self.toggle_game_menu(),
                 12 => {
                     self.chat_target = ChatTarget::Party;
                     self.chat_open = true;
+                    self.chat_input_focused = false;
                     self.refresh_chat_texture();
                 }
                 13 => {
                     self.chat_target = ChatTarget::Buddy;
                     self.chat_open = true;
+                    self.chat_input_focused = false;
                     self.refresh_chat_texture();
                 }
                 15 => {
@@ -3035,6 +3282,7 @@ impl ClientApp {
                 }
                 16 => {
                     self.chat_open = !self.chat_open;
+                    self.chat_input_focused = false;
                     self.refresh_chat_texture();
                 }
                 17 => {
@@ -3044,6 +3292,7 @@ impl ClientApp {
                 18 => {
                     self.chat_target = ChatTarget::Guild;
                     self.chat_open = true;
+                    self.chat_input_focused = false;
                     self.refresh_chat_texture();
                 }
                 19 => {
@@ -3072,6 +3321,7 @@ impl ClientApp {
                 24 => {
                     self.chat_target = ChatTarget::Alliance;
                     self.chat_open = true;
+                    self.chat_input_focused = false;
                     self.refresh_chat_texture();
                 }
                 25 => self.open_channel_switch(),
@@ -3145,7 +3395,7 @@ impl ClientApp {
             }
             _ => {}
         }
-        if pressed && !repeat && binding.kind == 4 && self.chat_open {
+        if pressed && !repeat && binding.kind == 4 && self.chat_input_focused {
             self.gameplay_input = GameplayInput::default();
         }
         true
@@ -3511,22 +3761,76 @@ impl ClientApp {
         false
     }
 
-    pub(super) fn replace_scene(&mut self, scene: LoginSceneAssets) -> Result<(), String> {
+    pub(super) fn replace_scene(&mut self, mut scene: LoginSceneAssets) -> Result<(), String> {
+        let local_name_label_index = append_scene_local_name_tag(
+            &mut scene.sprites,
+            scene.map_scene.is_some(),
+            self.active_character.as_ref(),
+            &self.font,
+            &self.ui_archive,
+            &self.character_archive,
+        );
+        let renderer = self
+            .renderer
+            .as_ref()
+            .ok_or_else(|| "graphics are not ready to change screens".to_owned())?;
+        let (textures, draws, texture_indices) = upload_scene_sprites(renderer, &scene.sprites)?;
+        self.finish_scene_replacement(
+            scene,
+            local_name_label_index,
+            textures,
+            draws,
+            texture_indices,
+        )
+    }
+
+    pub(super) fn replace_scene_with_uploaded(
+        &mut self,
+        scene: LoginSceneAssets,
+        local_name_label_index: Option<usize>,
+        textures: Vec<GpuTexture>,
+        texture_indices: HashMap<String, usize>,
+    ) -> Result<(), String> {
+        let draws = scene
+            .sprites
+            .iter()
+            .map(|sprite| {
+                let texture_index = texture_indices
+                    .get(&sprite.texture_key)
+                    .copied()
+                    .expect("scene texture was indexed before upload");
+                (texture_index, sprite.rect)
+            })
+            .collect();
+        self.finish_scene_replacement(
+            scene,
+            local_name_label_index,
+            textures,
+            draws,
+            texture_indices,
+        )
+    }
+
+    fn finish_scene_replacement(
+        &mut self,
+        scene: LoginSceneAssets,
+        local_name_label_index: Option<usize>,
+        textures: Vec<GpuTexture>,
+        mut draws: Vec<(usize, SpriteRect)>,
+        texture_indices: HashMap<String, usize>,
+    ) -> Result<(), String> {
         let LoginSceneAssets {
-            sprites,
+            sprites: _,
             actions,
             map_scene,
             animated_art,
             login_buttons,
             save_id_indicator_draws,
         } = scene;
-        let renderer = self
-            .renderer
-            .as_ref()
-            .ok_or_else(|| "graphics are not ready to change screens".to_owned())?;
-        let (textures, mut draws, texture_indices) = upload_scene_sprites(renderer, sprites)?;
         let mut map_scene = map_scene.map(|scene| MapSceneRuntime::new(scene, &mut draws));
         if let Some(scene) = map_scene.as_mut() {
+            scene.local_name_label =
+                local_name_label_index.and_then(|index| draws.get(index).copied());
             scene.energy = self.session_energy;
             scene.gm_account = self.gm_account;
             scene.gm_hidden = self.gm_hidden;
@@ -3536,9 +3840,25 @@ impl ClientApp {
         self.sprite_textures = textures;
         self.texture_indices = texture_indices;
         self.remote_art_cache.clear();
+        // Runtime frame caches contain indices into the sprite table above.
+        // Replacing the scene rebuilds that table, so cached frames must be
+        // discarded before they can resolve to unrelated textures.
+        self.projectile_frames_cache.clear();
         self.item_use_effect_cache.clear();
         self.item_aura_frames_cache.clear();
+        self.summon_frames_cache.clear();
+        self.dragon_frames_cache.clear();
+        self.pet_frames_cache.clear();
+        self.pet_interaction_frames_cache.clear();
+        self.skill_projectile_cache.clear();
+        self.skill_effect_cache.clear();
+        self.skill_point_effect_cache.clear();
+        self.mob_disease_effect_cache.clear();
+        self.character_effect_cache.clear();
+        self.field_effect_cache.clear();
+        self.skill_hit_effect_cache.clear();
         self.face_expression_cache.clear();
+        self.teleport_effect_frames = None;
         self.npc_dialogue = None;
         self.pending_npc_talk = None;
         self.rps_game = None;
@@ -3565,10 +3885,13 @@ impl ClientApp {
         if self.map_scene.is_none() {
             self.clear_boss_hp_gauge();
         }
+        let defer_map_ui_refresh =
+            self.map_loading_started_at.is_some() && self.map_scene.is_some();
         if let Some(look) = self
             .active_character
             .as_ref()
             .map(|character| character.look.clone())
+            && !defer_map_ui_refresh
         {
             self.refresh_local_mount(&look);
         }
@@ -3595,16 +3918,20 @@ impl ClientApp {
         self.remote_chalkboard_textures.clear();
         self.pet_speech_textures.clear();
         if self.map_scene.is_some() {
-            self.refresh_map_hud();
+            if !defer_map_ui_refresh {
+                self.refresh_map_hud();
+            }
         } else {
             self.map_hud_texture = None;
         }
-        self.refresh_minimap_texture();
+        if !defer_map_ui_refresh {
+            self.refresh_minimap_texture();
+        }
         if self.map_scene.is_none() {
             self.current_field = None;
             self.clear_clock();
             self.gameplay_input = GameplayInput::default();
-            self.show_status_menu = false;
+            self.show_game_menu = false;
         }
         if let Some(window) = self.window.as_ref() {
             window.request_redraw();

@@ -12,10 +12,14 @@ use openstory_assets::{NodeValue, NxArchive};
 
 const WIDTH: usize = 1024;
 const HEIGHT: usize = 768;
+const CASH_SHOP_X: usize = 112;
+const CASH_SHOP_Y: usize = 84;
+const CASH_SHOP_WIDTH: usize = 800;
+const CASH_SHOP_HEIGHT: usize = 600;
 const GRID_COLUMNS: usize = 2;
 const GRID_ROWS: usize = 5;
 pub(super) const CATALOG_PAGE_SIZE: usize = GRID_COLUMNS * GRID_ROWS;
-const LOCKER_PAGE_SIZE: usize = 8;
+pub(super) const LOCKER_PAGE_SIZE: usize = 8;
 
 /// A logical-coordinate region used by both the Cash Shop view and input code.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -24,6 +28,17 @@ pub(super) struct Rect {
     pub y: f32,
     pub width: f32,
     pub height: f32,
+}
+
+impl From<super::ui_foundation::UiRect> for Rect {
+    fn from(rect: super::ui_foundation::UiRect) -> Self {
+        Self {
+            x: rect.x,
+            y: rect.y,
+            width: rect.width,
+            height: rect.height,
+        }
+    }
 }
 
 impl Rect {
@@ -35,7 +50,9 @@ impl Rect {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum HitAction {
     Close,
-    Help,
+    BuyPreviewedItem,
+    DefaultAvatarPreview,
+    RemoveAvatarEquipment,
     Coupon,
     Charge,
     CheckCash,
@@ -92,8 +109,8 @@ pub(super) fn render(
     icon_cache: &mut HashMap<i32, Option<(u32, u32, Arc<[u8]>)>>,
     name_cache: &mut HashMap<i32, Option<String>>,
 ) -> Result<Scene, String> {
-    const X: usize = 112;
-    const Y: usize = 84;
+    const X: usize = CASH_SHOP_X;
+    const Y: usize = CASH_SHOP_Y;
     let mut pixels = vec![0; WIDTH * HEIGHT * 4];
     let mut hit_regions = Vec::new();
     draw_asset(
@@ -113,7 +130,21 @@ pub(super) fn render(
         (Y + 41) as f32,
         1.0,
     )?;
-    if let Some(character) = character {
+    let preview_character = character.map(|character| {
+        let mut preview = character.clone();
+        if state.preview_remove_all {
+            preview.look.equips.clear();
+            preview.look.masked_equips.clear();
+            preview.look.weapon_id = 0;
+        } else if let Some(product) = state
+            .selected_sn
+            .and_then(|sn| products.iter().find(|product| product.sn == sn))
+        {
+            try_on_cash_shop_item(&mut preview.look, product.item_id);
+        }
+        preview
+    });
+    if let Some(character) = preview_character.as_ref() {
         let mut avatar = Vec::new();
         super::append_character_preview(
             &mut avatar,
@@ -214,24 +245,24 @@ pub(super) fn render(
         21.0,
         HitAction::Search,
     ));
-    for (index, (path, x, y, action)) in [
+    for (path, x, y, action) in [
         (
             "CashShop.img/CSChar/BtBuyAvatar/normal/0",
             22,
             240,
-            HitAction::Help,
+            HitAction::BuyPreviewedItem,
         ),
         (
             "CashShop.img/CSChar/BtDefaultAvatar/normal/0",
             101,
             240,
-            HitAction::Help,
+            HitAction::DefaultAvatarPreview,
         ),
         (
             "CashShop.img/CSChar/BtTakeoffAvatar/normal/0",
             180,
             240,
-            HitAction::Help,
+            HitAction::RemoveAvatarEquipment,
         ),
         (
             "CashShop.img/CSStatus/BtCharge/normal/0",
@@ -253,9 +284,7 @@ pub(super) fn render(
         ),
     ]
     .into_iter()
-    .enumerate()
     {
-        let _ = index;
         if let Some(bounds) = draw_asset(
             &mut pixels,
             ui_archive,
@@ -288,6 +317,23 @@ pub(super) fn render(
         8.0,
         HitAction::CatalogView,
     ));
+    for (index, item) in state.locker.iter().take(12).enumerate() {
+        if let Some((w, h, icon)) =
+            super::inventory_item_icon(item.item_id, item_archive, character_archive, icon_cache)
+        {
+            super::composite_inventory_icon(
+                &mut pixels,
+                WIDTH,
+                HEIGHT,
+                &icon,
+                w as usize,
+                h as usize,
+                X + 22 + index % 6 * 34,
+                Y + 348 + index / 6 * 34,
+                32,
+            );
+        }
+    }
     if let Some(inventory) = inventory {
         for (index, item) in inventory
             .items
@@ -544,10 +590,34 @@ pub(super) fn render(
         hit_regions.clear();
         draw_coupon_dialog(ui_archive, font, state, &mut pixels, &mut hit_regions)?;
     }
+    scale_cash_shop_to_canvas(&mut pixels, &mut hit_regions);
     Ok(Scene {
         pixels,
         hit_regions,
     })
+}
+
+fn scale_cash_shop_to_canvas(pixels: &mut Vec<u8>, hit_regions: &mut [HitRegion]) {
+    let scale_x = WIDTH as f32 / CASH_SHOP_WIDTH as f32;
+    let scale_y = HEIGHT as f32 / CASH_SHOP_HEIGHT as f32;
+    let mut scaled = vec![0; WIDTH * HEIGHT * 4];
+    for y in 0..HEIGHT {
+        let source_y = CASH_SHOP_Y + y * CASH_SHOP_HEIGHT / HEIGHT;
+        for x in 0..WIDTH {
+            let source_x = CASH_SHOP_X + x * CASH_SHOP_WIDTH / WIDTH;
+            let source = (source_y * WIDTH + source_x) * 4;
+            let target = (y * WIDTH + x) * 4;
+            scaled[target..target + 4].copy_from_slice(&pixels[source..source + 4]);
+        }
+    }
+    *pixels = scaled;
+
+    for region in hit_regions {
+        region.bounds.x = (region.bounds.x - CASH_SHOP_X as f32) * scale_x;
+        region.bounds.y = (region.bounds.y - CASH_SHOP_Y as f32) * scale_y;
+        region.bounds.width *= scale_x;
+        region.bounds.height *= scale_y;
+    }
 }
 
 fn logical_region(x: f32, y: f32, width: f32, height: f32, action: HitAction) -> HitRegion {
@@ -560,6 +630,34 @@ fn logical_region(x: f32, y: f32, width: f32, height: f32, action: HitAction) ->
         },
         action,
     }
+}
+
+fn try_on_cash_shop_item(look: &mut openstory_protocol::CharacterLook, item_id: i32) {
+    if !(1_000_000..2_000_000).contains(&item_id) {
+        return;
+    }
+    let slot = match item_id / 10_000 {
+        100 => 1,
+        101 => 2,
+        102 => 3,
+        103 => 4,
+        104 | 105 => 5,
+        106 => 6,
+        107 => 7,
+        108 => 8,
+        109 => 10,
+        110 => 9,
+        111 => 12,
+        112 => 17,
+        113 => 50,
+        114 => 49,
+        130..=170 => 11,
+        _ => return,
+    };
+    let slot = slot as i8;
+    look.masked_equips
+        .retain(|(equipped_slot, _)| *equipped_slot != slot);
+    look.masked_equips.push((slot, item_id));
 }
 
 pub(super) fn render_preview(
@@ -663,15 +761,11 @@ fn draw_purchase_confirmation(
     hit_regions: &mut Vec<HitRegion>,
 ) -> Result<(), String> {
     blend_rect(pixels, 0, 0, WIDTH, HEIGHT, [0, 0, 0, 176]);
-    draw_asset(
-        pixels,
-        ui_archive,
+    super::NxDialog::new(pixels, WIDTH, HEIGHT, ui_archive).frame(
         "Basic.img/YesNo/backgrnd",
-        380.0,
-        318.0,
-        1.0,
-    )?
-    .ok_or_else(|| "missing native purchase confirmation background".to_owned())?;
+        380,
+        318,
+    )?;
     if let Some(product) = state
         .selected_sn
         .and_then(|sn| products.iter().find(|p| p.sn == sn))
@@ -735,17 +829,13 @@ fn draw_purchase_confirmation(
             [35, 35, 35],
         );
     }
+    let mut dialog = super::NxDialog::new(pixels, WIDTH, HEIGHT, ui_archive);
     for (path, x, action) in [
-        (
-            "Basic.img/BtYes/normal/0",
-            439.0,
-            HitAction::ConfirmPurchase,
-        ),
-        ("Basic.img/BtNo/normal/0", 520.0, HitAction::CancelPurchase),
+        ("Basic.img/BtYes/normal/0", 439, HitAction::ConfirmPurchase),
+        ("Basic.img/BtNo/normal/0", 520, HitAction::CancelPurchase),
     ] {
-        let bounds = draw_asset(pixels, ui_archive, path, x, 412.0, 1.0)?
-            .ok_or_else(|| format!("missing native button {path}"))?;
-        hit_regions.push(region(bounds, action));
+        let bounds = dialog.anchored_button(path, x, 412)?;
+        hit_regions.push(region(bounds.into(), action));
     }
     Ok(())
 }
@@ -758,15 +848,11 @@ fn draw_coupon_dialog(
     hit_regions: &mut Vec<HitRegion>,
 ) -> Result<(), String> {
     blend_rect(pixels, 0, 0, WIDTH, HEIGHT, [0, 0, 0, 176]);
-    draw_asset(
-        pixels,
-        ui_archive,
+    super::NxDialog::new(pixels, WIDTH, HEIGHT, ui_archive).frame(
         "Basic.img/YesNo/backgrnd",
-        380.0,
-        318.0,
-        1.0,
-    )?
-    .ok_or_else(|| "missing native coupon dialog background".to_owned())?;
+        380,
+        318,
+    )?;
     add_text(
         font,
         pixels,
@@ -809,15 +895,14 @@ fn draw_coupon_dialog(
     } else {
         "Basic.img/BtOK/normal/0"
     };
-    let bounds = draw_asset(pixels, ui_archive, ok_path, 439.0, 412.0, 1.0)?
-        .ok_or_else(|| format!("missing native button {ok_path}"))?;
+    let mut dialog = super::NxDialog::new(pixels, WIDTH, HEIGHT, ui_archive);
+    let bounds = dialog.anchored_button(ok_path, 439, 412)?;
     if !state.coupon_pending {
-        hit_regions.push(region(bounds, HitAction::CouponSubmit));
+        hit_regions.push(region(bounds.into(), HitAction::CouponSubmit));
     }
     let path = "Basic.img/BtCancel/normal/0";
-    let bounds = draw_asset(pixels, ui_archive, path, 520.0, 412.0, 1.0)?
-        .ok_or_else(|| format!("missing native button {path}"))?;
-    hit_regions.push(region(bounds, HitAction::CouponCancel));
+    let bounds = dialog.anchored_button(path, 520, 412)?;
+    hit_regions.push(region(bounds.into(), HitAction::CouponCancel));
     Ok(())
 }
 

@@ -143,7 +143,10 @@ pub struct SkillUseRules {
 /// Evaluates deterministic v83 skill-use restrictions after the client has
 /// resolved weapon and inventory data from NX and the authoritative snapshot.
 pub fn evaluate_skill_use(rules: SkillUseRules) -> Option<SkillUseBlockReason> {
-    if rules.skill_level > rules.master_level {
+    // v83 reports a master level only for skills that use mastery books.
+    // A zero value means the skill has no separate mastery cap, not that
+    // every learned level is unmastered.
+    if rules.master_level > 0 && rules.skill_level > rules.master_level {
         return Some(SkillUseBlockReason::NotMastered);
     }
     if !skill_job_can_use(rules.job_id, rules.skill_id) {

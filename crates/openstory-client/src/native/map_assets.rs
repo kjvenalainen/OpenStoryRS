@@ -162,6 +162,7 @@ fn append_map_layer(
         .map_err(|error| error.to_string())?
         .and_then(|info| string_property(&info, "tS"));
 
+    // Keep world-layer art beyond the spawn viewport so camera movement can reveal it later.
     if let Some(objects) = layer.child("obj").map_err(|error| error.to_string())? {
         let mut objects = numeric_children(&objects)?;
         objects.sort_by_key(|object| integer_property(object, "z").unwrap_or(0));
@@ -190,7 +191,15 @@ fn append_map_layer(
             let anchor_y = number_property(&object, "y").unwrap_or(0.0) + camera_y;
             let flipped = integer_property(&object, "f").unwrap_or(0) != 0;
             if let Some(animation) = append_map_art_animation(
-                sprites, &art, &path, anchor_x, anchor_y, 255, flipped, cache,
+                sprites,
+                &art,
+                &path,
+                anchor_x,
+                anchor_y,
+                255,
+                flipped,
+                cache,
+                false,
             )? {
                 animations.push(animation);
             }
@@ -227,7 +236,9 @@ fn append_map_layer(
     for (_, tile, path, art) in tiles_with_art {
         let anchor_x = number_property(&tile, "x").unwrap_or(0.0) + camera_x;
         let anchor_y = number_property(&tile, "y").unwrap_or(0.0) + camera_y;
-        append_map_art_sprite(sprites, &art, &path, anchor_x, anchor_y, 255, false, cache)?;
+        append_map_art_sprite_with_culling(
+            sprites, &art, &path, anchor_x, anchor_y, 255, false, cache, false,
+        )?;
     }
     Ok(())
 }
@@ -241,6 +252,7 @@ fn append_map_art_animation(
     opacity: u8,
     flipped: bool,
     cache: &mut MapArtCache,
+    cull_offscreen: bool,
 ) -> Result<Option<MapArtAnimationAsset>, String> {
     let source_is_bitmap = source
         .bitmap()
@@ -259,7 +271,7 @@ fn append_map_art_animation(
         } else {
             format!("{path}/{frame_name}")
         };
-        append_map_art_sprite(
+        append_map_art_sprite_with_culling(
             sprites,
             frame_node,
             &frame_path,
@@ -268,6 +280,7 @@ fn append_map_art_animation(
             opacity,
             flipped,
             cache,
+            cull_offscreen,
         )?;
         let delay_ms = integer_property(frame_node, "delay")
             .and_then(|delay| u16::try_from(delay).ok())
@@ -295,6 +308,22 @@ fn append_map_art_sprite(
     flipped: bool,
     cache: &mut MapArtCache,
 ) -> Result<(), String> {
+    append_map_art_sprite_with_culling(
+        sprites, source, path, anchor_x, anchor_y, opacity, flipped, cache, true,
+    )
+}
+
+fn append_map_art_sprite_with_culling(
+    sprites: &mut Vec<DecodedSprite>,
+    source: &openstory_assets::NxNode,
+    path: &str,
+    anchor_x: f32,
+    anchor_y: f32,
+    opacity: u8,
+    flipped: bool,
+    cache: &mut MapArtCache,
+    cull_offscreen: bool,
+) -> Result<(), String> {
     let Some(art) = first_bitmap_node(source)? else {
         return Ok(());
     };
@@ -316,13 +345,15 @@ fn append_map_art_sprite(
     };
     let x = anchor_x - origin.0;
     let y = anchor_y - origin.1;
-    const CAMERA_CULL_MARGIN: f32 = 512.0;
-    if x + width as f32 <= -CAMERA_CULL_MARGIN
-        || y + height as f32 <= -CAMERA_CULL_MARGIN
-        || x >= 1024.0 + CAMERA_CULL_MARGIN
-        || y >= 768.0 + CAMERA_CULL_MARGIN
-    {
-        return Ok(());
+    if cull_offscreen {
+        const CAMERA_CULL_MARGIN: f32 = 512.0;
+        if x + width as f32 <= -CAMERA_CULL_MARGIN
+            || y + height as f32 <= -CAMERA_CULL_MARGIN
+            || x >= 1024.0 + CAMERA_CULL_MARGIN
+            || y >= 768.0 + CAMERA_CULL_MARGIN
+        {
+            return Ok(());
+        }
     }
 
     let cached = if let Some(cached) = cache.get(path) {

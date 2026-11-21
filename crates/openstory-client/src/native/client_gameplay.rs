@@ -283,12 +283,14 @@ impl ClientApp {
             ))
             .is_some_and(|buff| buff.value > 0);
         self.active_buffs.expire(now);
-        if self.active_buffs.len() != initial_count {
+        let map_loading = self.map_loading_started_at.is_some();
+        if self.active_buffs.len() != initial_count && !map_loading {
             self.refresh_map_hud();
         }
-        if self
-            .buff_list_refreshed_at
-            .is_none_or(|last| now.saturating_duration_since(last) >= Duration::from_millis(125))
+        if !map_loading
+            && self.buff_list_refreshed_at.is_none_or(|last| {
+                now.saturating_duration_since(last) >= Duration::from_millis(125)
+            })
         {
             self.refresh_buff_list_texture(now);
         }
@@ -297,6 +299,7 @@ impl ClientApp {
                 openstory_protocol::BuffMaskGroup::First,
                 STATUS_MONSTER_RIDING,
             ))
+            && !map_loading
             && let Some(look) = self
                 .active_character
                 .as_ref()
@@ -719,7 +722,10 @@ impl ClientApp {
 
     pub(super) fn toggle_minimap(&mut self) {
         if let Some(scene) = self.map_scene.as_mut()
-            && scene.minimap.as_ref().is_some_and(|data| !data.hidden)
+            && scene
+                .minimap
+                .as_ref()
+                .is_some_and(|data| !data.hidden && data.has_map())
         {
             scene.minimap_presentation = match scene.minimap_presentation {
                 minimap::Presentation::Collapsed => minimap::Presentation::Normal,
@@ -735,7 +741,10 @@ impl ClientApp {
 
     pub(super) fn adjust_minimap_presentation(&mut self, expand: bool) {
         if let Some(scene) = self.map_scene.as_mut()
-            && scene.minimap.as_ref().is_some_and(|data| !data.hidden)
+            && scene
+                .minimap
+                .as_ref()
+                .is_some_and(|data| !data.hidden && data.has_map())
         {
             scene.minimap_presentation = match (scene.minimap_presentation, expand) {
                 (minimap::Presentation::Collapsed, true) => minimap::Presentation::Normal,
@@ -767,7 +776,10 @@ impl ClientApp {
         match action {
             Some(minimap::HitAction::Expand) => self.adjust_minimap_presentation(true),
             Some(minimap::HitAction::Collapse) => self.adjust_minimap_presentation(false),
-            Some(minimap::HitAction::OpenWorldMap) => self.open_world_map(),
+            Some(minimap::HitAction::OpenWorldMap) => {
+                self.open_world_map();
+                self.raise_dialog_window(DialogWindow::WorldMap);
+            }
             None => {}
         }
         true

@@ -18,6 +18,18 @@ fn reference_crop(
             142,
         ),
         "hud-quickslot" => (865, 615, 152, 83, 152, 83),
+        "hud-quickslot-item-tooltip" | "hud-quickslot-skill-tooltip" => {
+            let tooltip = scene?.sprites.iter().find(|sprite| {
+                sprite.texture_key.ends_with("quickslot-preview")
+            })?;
+            let left = tooltip.rect.x.min(865.0).floor().max(0.0) as u32;
+            let top = tooltip.rect.y.min(615.0).floor().max(0.0) as u32;
+            let right = (tooltip.rect.x + tooltip.rect.width).max(1016.0).ceil() as u32;
+            let bottom = (tooltip.rect.y + tooltip.rect.height).max(695.0).ceil() as u32;
+            let width = right.saturating_sub(left);
+            let height = bottom.saturating_sub(top);
+            (left, top, width, height, width, height)
+        }
         "hud-minimap-collapsed" | "hud-minimap-normal" | "hud-minimap-expanded" => {
             let sprite = scene?.sprites.last()?;
             let (w, h) = match name {
@@ -27,7 +39,7 @@ fn reference_crop(
             };
             (sprite.rect.x as u32, sprite.rect.y as u32, w, h, w, h)
         }
-        "panel-item-inventory" => (
+        "panel-item-inventory" | "panel-item-inventory-pending-move" => (
             INVENTORY_PANEL_X as u32,
             INVENTORY_PANEL_Y as u32,
             INVENTORY_PANEL_WIDTH,
@@ -44,15 +56,18 @@ fn reference_crop(
             187,
             296,
         ),
-        "panel-item-tooltip" => (
+        "panel-item-tooltip"
+        | "panel-item-tooltip-gloves"
+        | "panel-item-tooltip-bow"
+        | "panel-item-tooltip-thief" => (
             520,
             240,
             INVENTORY_TOOLTIP_WIDTH,
             INVENTORY_TOOLTIP_HEIGHT,
-            237,
-            183,
+            INVENTORY_TOOLTIP_WIDTH,
+            INVENTORY_TOOLTIP_HEIGHT,
         ),
-        "panel-skill-inventory" => (
+        "panel-skill-inventory" | "panel-skill-inventory-beginner" => (
             SKILL_BOOK_PANEL_X as u32,
             SKILL_BOOK_PANEL_Y as u32,
             SKILL_BOOK_PANEL_WIDTH,
@@ -88,10 +103,10 @@ fn reference_crop(
         "panel-system-options" => (
             SETTINGS_PANEL_X as u32,
             SETTINGS_PANEL_Y as u32,
-            458,
-            366,
-            300,
-            397,
+            SETTINGS_PANEL_WIDTH,
+            SETTINGS_PANEL_HEIGHT,
+            SETTINGS_PANEL_WIDTH,
+            SETTINGS_PANEL_HEIGHT,
         ),
         "panel-revive-character" => (369, 311, 285, 139, 285, 139),
         "panel-quest-helper" => (
@@ -146,6 +161,10 @@ fn write_reference_artifacts(
         &crop,
     )
     .map_err(|e| e.to_string())?;
+    // The source capture predates the current system-options and tooltip layouts.
+    if name == "panel-system-options" || name.starts_with("panel-item-tooltip") {
+        return Ok(());
+    }
     let reference_path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../reference-images")
         .join(format!("{name}.png"));

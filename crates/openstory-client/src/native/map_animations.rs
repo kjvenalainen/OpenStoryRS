@@ -1810,6 +1810,11 @@ fn append_mob_animations(
             .and_then(|node| integer_property(node, "boss"))
             .unwrap_or(0)
             != 0,
+        knockback: info
+            .as_ref()
+            .and_then(|node| integer_property(node, "pushed"))
+            .unwrap_or(0)
+            .clamp(0, i32::MAX as i64) as i32,
         speed,
         fly_speed,
         physical_attack: info

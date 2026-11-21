@@ -351,7 +351,9 @@ fn render_inventory_item_cell(
     character_archive: &NxArchive,
     icon_cache: &mut HashMap<i32, Option<(u32, u32, Arc<[u8]>)>>,
 ) -> Vec<u8> {
-    let mut pixels = vec![0; 34 * 33 * 4];
+    let cell_width = INVENTORY_SLOT_CELL_WIDTH;
+    let cell_height = INVENTORY_SLOT_CELL_HEIGHT;
+    let mut pixels = vec![0; cell_width * cell_height * 4];
     if let Some((icon_width, icon_height, icon_pixels)) =
         inventory_item_icon(item.item_id, item_archive, character_archive, icon_cache)
     {
@@ -360,8 +362,8 @@ fn render_inventory_item_cell(
                 .unwrap_or((1, 0));
         composite_bgra_pixels(
             &mut pixels,
-            34,
-            33,
+            cell_width,
+            cell_height,
             &icon_pixels,
             icon_width as usize,
             icon_height as usize,
@@ -373,10 +375,43 @@ fn render_inventory_item_cell(
         item.inventory_type,
         openstory_protocol::InventoryType::Equip | openstory_protocol::InventoryType::Equipped
     ) {
-        let _ = draw_item_stack_count(&mut pixels, 34, 33, ui_archive, item.count, 0, 20, 34);
+        let _ = draw_item_stack_count(
+            &mut pixels,
+            cell_width,
+            cell_height,
+            ui_archive,
+            item.count,
+            0,
+            20,
+            cell_width,
+        );
     }
 
     pixels
+}
+
+fn inventory_display_item<'a>(
+    inventory: &'a openstory_protocol::InventorySnapshot,
+    active_tab: openstory_protocol::InventoryType,
+    slot: u16,
+    pending_move: Option<(openstory_protocol::InventoryType, u16, u16)>,
+) -> Option<&'a openstory_protocol::InventoryItem> {
+    let lookup_slot = match pending_move {
+        Some((inventory_type, source, destination)) if inventory_type == active_tab => {
+            if slot == source {
+                destination
+            } else if slot == destination {
+                source
+            } else {
+                slot
+            }
+        }
+        _ => slot,
+    };
+    inventory
+        .items
+        .iter()
+        .find(|item| item.inventory_type == active_tab && item.slot == lookup_slot)
 }
 
 fn render_inventory_panel(
@@ -386,6 +421,7 @@ fn render_inventory_panel(
     scroll_row: u16,
     hovered_slot: Option<u16>,
     drag_source: Option<(openstory_protocol::InventoryType, u16)>,
+    pending_move: Option<(openstory_protocol::InventoryType, u16, u16)>,
     pending_scroll_slot: Option<u16>,
     ui_archive: &NxArchive,
     item_archive: &NxArchive,
@@ -397,16 +433,22 @@ fn render_inventory_panel(
     const WIDTH: usize = INVENTORY_PANEL_WIDTH as usize;
     const HEIGHT: usize = INVENTORY_PANEL_HEIGHT as usize;
     let mut pixels = vec![0_u8; WIDTH * HEIGHT * 4];
-    // Native NX layers remain the source of truth; no reference screenshot
-    // pixels participate in the live window.
-    for (path, x, y) in [
-        ("UIWindow.img/Item/backgrnd", 0, 0),
-        ("UIWindow.img/Item/BtGather/normal/0", 132, 12),
-        ("UIWindow.img/Item/BtSort/normal/0", 147, 12),
-        ("Basic.img/BtClose/normal/0", 156, 6),
-    ] {
-        let _ = composite_nx_ui_bitmap(&mut pixels, WIDTH, HEIGHT, ui_archive, path, x, y);
-    }
+    let mut dialog = NxDialog::new(&mut pixels, WIDTH, HEIGHT, ui_archive);
+    let _ = dialog.frame("UIWindow.img/Item/backgrnd", 0, 0);
+    let _ = dialog.buttons(&[
+        (
+            "UIWindow.img/Item/BtGather/normal/0",
+            ui_foundation::INVENTORY_GATHER_BUTTON,
+        ),
+        (
+            "UIWindow.img/Item/BtSort/normal/0",
+            ui_foundation::INVENTORY_SORT_BUTTON,
+        ),
+        (
+            ui_dialog::CLOSE_BUTTON_ART,
+            ui_foundation::INVENTORY_CLOSE_BUTTON,
+        ),
+    ]);
     for (index, tab) in inventory_tabs().into_iter().enumerate() {
         let bounds = ui_foundation::inventory_tab(index);
         let _ = composite_nx_ui_tab(
@@ -423,9 +465,8 @@ fn render_inventory_panel(
             "disabled"
         };
         let path = format!("UIWindow.img/Item/Tab/{state}/{index}");
-        let _ = composite_nx_ui_bitmap_centered(
-            &mut pixels, WIDTH, HEIGHT, ui_archive, &path, bounds,
-        );
+        let _ =
+            composite_nx_ui_bitmap_centered(&mut pixels, WIDTH, HEIGHT, ui_archive, &path, bounds);
     }
     let maximum_slot = inventory_slot_max(inventory, active_tab);
     for row in 0..INVENTORY_SLOT_ROWS {
@@ -447,10 +488,7 @@ fn render_inventory_panel(
                 );
                 continue;
             }
-            let Some(item) = inventory
-                .items
-                .iter()
-                .find(|item| item.inventory_type == active_tab && item.slot == slot)
+            let Some(item) = inventory_display_item(inventory, active_tab, slot, pending_move)
             else {
                 continue;
             };
@@ -467,8 +505,8 @@ fn render_inventory_panel(
                     WIDTH,
                     HEIGHT,
                     &cell_pixels,
-                    34,
-                    33,
+                    INVENTORY_SLOT_CELL_WIDTH,
+                    INVENTORY_SLOT_CELL_HEIGHT,
                     x as i32,
                     y as i32,
                 );
@@ -525,6 +563,8 @@ pub(super) fn render_inventory_tooltip(
     item_archive: &NxArchive,
     character_archive: &NxArchive,
     string_archive: &NxArchive,
+    player_stats: Option<&openstory_protocol::CharacterStats>,
+    player_inventory: Option<&openstory_protocol::InventorySnapshot>,
     icon_cache: &mut HashMap<i32, Option<(u32, u32, Arc<[u8]>)>>,
     item_name_cache: &mut HashMap<i32, Option<String>>,
 ) -> Vec<u8> {
@@ -539,7 +579,7 @@ pub(super) fn render_inventory_tooltip(
         0,
         WIDTH,
         HEIGHT,
-        [82, 54, 51, 218],
+        [91, 48, 40, 255],
     );
     for (x, y, w, h) in [
         (0, 0, WIDTH, 1),
@@ -549,15 +589,35 @@ pub(super) fn render_inventory_tooltip(
     ] {
         fill_dialogue_rect(&mut pixels, WIDTH, HEIGHT, x, y, w, h, [230, 225, 228, 255]);
     }
-    let name = item_name(item.item_id, string_archive, item_name_cache);
-    let name = ui_foundation::ellipsize(font, &name, 13.0, (WIDTH - 28) as f32);
+    let equipment = item.item_id / 1_000_000 == 1;
+    let item_name = item_name(item.item_id, string_archive, item_name_cache);
+    let name = if equipment {
+        match item.item_id / 1_000 % 10 {
+            0 => format!("{item_name} (Male)"),
+            1 => format!("{item_name} (Female)"),
+            _ => item_name,
+        }
+    } else {
+        item_name
+    };
+    let name = ui_foundation::ellipsize(font, &name, 13.0, (WIDTH - 18) as f32);
+    fill_dialogue_rect(
+        &mut pixels,
+        WIDTH,
+        HEIGHT,
+        8,
+        12,
+        4,
+        4,
+        [255, 223, 107, 255],
+    );
     ui_foundation::draw_text_role(
         font,
         &mut pixels,
         WIDTH,
         HEIGHT,
         &name,
-        17,
+        18,
         8,
         ui_foundation::UiTextRole::Title,
         WIDTH - 28,
@@ -565,14 +625,13 @@ pub(super) fn render_inventory_tooltip(
         Some([255, 255, 255]),
     );
     let info = inventory_item_info_node(item_archive, character_archive, item.item_id);
-    let equipment = item.item_id / 1_000_000 == 1;
     let icon_size = if equipment { 64 } else { 32 };
     fill_dialogue_rect(
         &mut pixels,
         WIDTH,
         HEIGHT,
-        9,
-        32,
+        11,
+        30,
         icon_size + 4,
         icon_size + 4,
         [220, 220, 220, 255],
@@ -581,8 +640,8 @@ pub(super) fn render_inventory_tooltip(
         &mut pixels,
         WIDTH,
         HEIGHT,
-        10,
-        33,
+        12,
+        31,
         icon_size + 2,
         icon_size + 2,
         [150, 150, 150, 255],
@@ -597,19 +656,48 @@ pub(super) fn render_inventory_tooltip(
             &icon,
             w as usize,
             h as usize,
-            11,
-            34,
+            13,
+            32,
             icon_size,
         );
     }
     if equipment {
-        for (row, (label, key)) in [
-            ("LEV", "reqLevel"),
-            ("STR", "reqSTR"),
-            ("DEX", "reqDEX"),
-            ("INT", "reqINT"),
-            ("LUK", "reqLUK"),
-            ("FAM", "reqPOP"),
+        let required_job = info
+            .as_ref()
+            .and_then(|node| integer_property(node, "reqJob"))
+            .unwrap_or(0);
+        let equipped_bonuses = [0, 1, 2, 3].map(|stat_index| {
+            player_inventory.map_or(0, |inventory| {
+                inventory
+                    .equipped()
+                    .filter_map(|item| {
+                        item.equip
+                            .as_ref()?
+                            .stats
+                            .get(stat_index)
+                            .copied()
+                            .map(i64::from)
+                    })
+                    .sum::<i64>()
+            })
+        });
+        let player_values = player_stats.map(|stats| {
+            [
+                i64::from(stats.level),
+                i64::from(stats.strength) + equipped_bonuses[0],
+                i64::from(stats.dexterity) + equipped_bonuses[1],
+                i64::from(stats.intelligence) + equipped_bonuses[2],
+                i64::from(stats.luck) + equipped_bonuses[3],
+                i64::from(stats.fame),
+            ]
+        });
+        for (row, (label, key, stat_index)) in [
+            ("LEV", "reqLevel", 0),
+            ("STR", "reqSTR", 1),
+            ("DEX", "reqDEX", 2),
+            ("INT", "reqINT", 3),
+            ("LUK", "reqLUK", 4),
+            ("FAM", "reqPOP", 5),
         ]
         .into_iter()
         .enumerate()
@@ -622,6 +710,7 @@ pub(super) fn render_inventory_tooltip(
                     _ => None,
                 })
                 .unwrap_or(0);
+            let insufficient = player_values.is_some_and(|values| value > values[stat_index]);
             draw_dialogue_text(
                 font,
                 &mut pixels,
@@ -629,60 +718,164 @@ pub(super) fn render_inventory_tooltip(
                 HEIGHT,
                 &format!("REQ {label} : {value}"),
                 93,
-                29 + row as i32 * 11,
+                35 + row as i32 * 11,
                 10.0,
                 WIDTH - 101,
                 12,
-                [255, 255, 255],
+                if insufficient {
+                    [255, 76, 76]
+                } else {
+                    [255, 255, 255]
+                },
             );
         }
-        draw_dialogue_text(
-            font,
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            "BEGINNER WARRIOR MAGICIAN BOWMAN THIEF PIRATE",
-            9,
-            110,
-            8.0,
-            WIDTH - 18,
-            12,
-            [255, 175, 72],
-        );
+        let class_labels = [
+            ("BEGINNER", 32_i64),
+            ("WARRIOR", 1),
+            ("MAGICIAN", 2),
+            ("BOWMAN", 4),
+            ("THIEF", 8),
+            ("PIRATE", 16),
+        ];
+        const CLASS_BUTTON_Y: usize = 107;
+        const CLASS_BUTTON_HEIGHT: usize = 14;
+        const CLASS_BUTTON_PADDING: i32 = 2;
+        let available_class_width = WIDTH as i32 - 10;
+        let class_gap = 2_i32;
+        let mut class_font_size = 8.0;
+        let class_widths = loop {
+            let widths = class_labels
+                .iter()
+                .map(|(label, _)| dialogue_text_width(font, label, class_font_size).ceil() as i32)
+                .collect::<Vec<_>>();
+            let total_width = widths.iter().sum::<i32>()
+                + CLASS_BUTTON_PADDING * 2 * class_labels.len() as i32
+                + class_gap * class_labels.len().saturating_sub(1) as i32;
+            if total_width <= available_class_width || class_font_size <= 6.5 {
+                break widths;
+            }
+            class_font_size -= 0.25;
+        };
+        let mut class_x = 5_i32;
+        for ((label, class_bit), label_width) in class_labels.into_iter().zip(class_widths) {
+            let available = required_job == 0 || required_job & class_bit != 0;
+            let button_width = label_width + CLASS_BUTTON_PADDING * 2;
+            fill_dialogue_rect(
+                &mut pixels,
+                WIDTH,
+                HEIGHT,
+                class_x as usize,
+                CLASS_BUTTON_Y,
+                button_width as usize,
+                CLASS_BUTTON_HEIGHT,
+                [0, 0, 0, 255],
+            );
+            let border = [101, 106, 128, 255];
+            fill_dialogue_rect(
+                &mut pixels,
+                WIDTH,
+                HEIGHT,
+                class_x as usize,
+                CLASS_BUTTON_Y,
+                button_width as usize,
+                1,
+                border,
+            );
+            fill_dialogue_rect(
+                &mut pixels,
+                WIDTH,
+                HEIGHT,
+                class_x as usize,
+                CLASS_BUTTON_Y + CLASS_BUTTON_HEIGHT - 1,
+                button_width as usize,
+                1,
+                border,
+            );
+            fill_dialogue_rect(
+                &mut pixels,
+                WIDTH,
+                HEIGHT,
+                class_x as usize,
+                CLASS_BUTTON_Y,
+                1,
+                CLASS_BUTTON_HEIGHT,
+                border,
+            );
+            fill_dialogue_rect(
+                &mut pixels,
+                WIDTH,
+                HEIGHT,
+                class_x as usize + button_width as usize - 1,
+                CLASS_BUTTON_Y,
+                1,
+                CLASS_BUTTON_HEIGHT,
+                border,
+            );
+            draw_dialogue_text(
+                font,
+                &mut pixels,
+                WIDTH,
+                HEIGHT,
+                label,
+                class_x + CLASS_BUTTON_PADDING,
+                CLASS_BUTTON_Y as i32 + 2,
+                class_font_size,
+                label_width.max(1) as usize + 1,
+                12,
+                if available {
+                    [255, 175, 72]
+                } else {
+                    [133, 136, 155]
+                },
+            );
+            class_x += button_width + class_gap;
+        }
         fill_dialogue_rect(
             &mut pixels,
             WIDTH,
             HEIGHT,
             5,
-            127,
+            123,
             WIDTH - 10,
             1,
             [220, 220, 220, 255],
         );
-        let category = match item.item_id / 10_000 {
-            100 => "HAT",
-            101..=103 => "ACCESSORY",
-            104 => "TOP",
-            105 => "OVERALL",
-            106 => "BOTTOM",
-            107 => "SHOES",
-            108 => "GLOVES",
-            109 => "SHIELD",
-            110 => "CAPE",
-            _ => "WEAPON",
+        let item_prefix = item.item_id / 10_000;
+        let item_type = match item_prefix {
+            100 => "Hat",
+            101 => "Face Accessory",
+            102 => "Eye Accessory",
+            103 => "Earrings",
+            104 => "Top",
+            105 => "Overall",
+            106 => "Bottom",
+            107 => "Shoes",
+            108 => "Gloves",
+            109 => "Shield",
+            110 => "Cape",
+            111 => "Ring",
+            112 => "Pendant",
+            130 => "One-Handed Sword",
+            131 => "One-Handed Axe",
+            132 => "One-Handed Mace",
+            133 => "Dagger",
+            137 => "Wand",
+            138 => "Staff",
+            140 => "Two-Handed Sword",
+            141 => "Two-Handed Axe",
+            142 => "Two-Handed Mace",
+            143 => "Spear",
+            144 => "Polearm",
+            145 => "Bow",
+            146 => "Crossbow",
+            147 => "Claw",
+            148 => "Knuckle",
+            149 => "Gun",
+            170 => "Wand",
+            _ => "Equipment",
         };
+        let is_weapon = matches!(item_prefix, 130..=149 | 170);
         let equip = item.equip.as_ref();
-        let (stat_label, stat_value) = if let Some(equip) = equip {
-            if equip.stats[6] > 0 {
-                ("WEAPON ATT.", equip.stats[6])
-            } else if equip.stats[7] > 0 {
-                ("MAGIC ATT.", equip.stats[7])
-            } else {
-                ("WEAPON DEF.", equip.stats[8])
-            }
-        } else {
-            ("WEAPON DEF.", 0)
-        };
         let untradable = item.cash
             || info
                 .as_ref()
@@ -695,36 +888,188 @@ pub(super) fn render_inventory_tooltip(
                 HEIGHT,
                 "Untradable",
                 9,
-                99,
+                94,
                 9.0,
                 WIDTH - 18,
                 12,
                 [255, 175, 72],
             );
         }
-        let slots = equip.map(|data| data.upgrade_slots).unwrap_or(0);
-        for (row, value) in [
-            format!("- CATEGORY : {category}"),
-            format!("- {stat_label} : {stat_value}"),
-            format!("- NUMBER OF UPGRADES AVAILABLE : {slots}"),
-        ]
-        .into_iter()
-        .enumerate()
-        {
+        let mut detail_rows = vec![format!("Type: {item_type}")];
+        if is_weapon {
+            if let Some(speed) = info
+                .as_ref()
+                .and_then(|node| integer_property(node, "attackSpeed"))
+            {
+                let speed_name = match speed {
+                    2 => "Fastest",
+                    3 => "Faster",
+                    4 => "Fast",
+                    5 => "Fast (5)",
+                    6 => "Average",
+                    7 => "Slow",
+                    8 => "Very Slow",
+                    _ => "Average",
+                };
+                detail_rows.push(format!("Attack Speed: {speed_name} ({speed})"));
+            }
+        }
+        let mut bonus_rows = Vec::new();
+        for (index, property, label) in [
+            (0, "incSTR", "STR"),
+            (1, "incDEX", "DEX"),
+            (2, "incINT", "INT"),
+            (3, "incLUK", "LUK"),
+            (4, "incMHP", "HP"),
+            (5, "incMMP", "MP"),
+            (6, "incPAD", "Weapon Attack"),
+            (7, "incMAD", "Magic Attack"),
+            (8, "incPDD", "Weapon Def."),
+            (9, "incMDD", "Magic Def."),
+            (10, "incACC", "Accuracy"),
+            (11, "incEVA", "Avoidability"),
+            (12, "incHands", "Hands"),
+            (13, "incSpeed", "Speed"),
+            (14, "incJump", "Jump"),
+        ] {
+            let value = equip
+                .and_then(|data| data.stats.get(index).copied().map(i64::from))
+                .filter(|value| *value != 0)
+                .or_else(|| {
+                    info.as_ref()
+                        .and_then(|node| integer_property(node, property))
+                        .filter(|value| *value != 0)
+                });
+            if let Some(value) = value {
+                bonus_rows.push(format!("{label}: {value:+}"));
+            }
+        }
+        detail_rows.append(&mut bonus_rows);
+        let critical_rate = info.as_ref().and_then(|node| {
+            ["incCr", "incCR", "incCriticalRate", "incCrit"]
+                .into_iter()
+                .find_map(|property| integer_property(node, property))
+        });
+        if let Some(value) = critical_rate.filter(|value| *value != 0) {
+            detail_rows.push(format!("Critical Rate: {value:+}%"));
+        }
+        let slots = equip.map_or_else(
+            || {
+                info.as_ref()
+                    .and_then(|node| integer_property(node, "tuc"))
+                    .unwrap_or(0)
+            },
+            |data| i64::from(data.upgrade_slots),
+        );
+        detail_rows.push(format!("Remaining Enhancements: {slots}"));
+        if detail_rows.len() > 6 {
+            let enhancements = detail_rows.pop().unwrap_or_default();
+            let overflow = detail_rows.drain(4..).collect::<Vec<_>>().join(", ");
+            detail_rows.push(format!("Other: {overflow}"));
+            detail_rows.push(enhancements);
+        }
+        for (row, detail) in detail_rows.iter().enumerate() {
+            let y = 130 + row as i32 * 12;
+            for (offset, x, width) in [(0, 1, 2), (1, 0, 4), (2, 0, 4), (3, 1, 2)] {
+                fill_dialogue_rect(
+                    &mut pixels,
+                    WIDTH,
+                    HEIGHT,
+                    9 + x,
+                    y as usize + 3 + offset,
+                    width,
+                    1,
+                    [70, 175, 255, 255],
+                );
+            }
+            let detail = ui_foundation::ellipsize(font, detail, 9.0, (WIDTH - 29) as f32);
             draw_dialogue_text(
                 font,
                 &mut pixels,
                 WIDTH,
                 HEIGHT,
-                &value,
-                9,
-                134 + row as i32 * 14,
-                10.0,
-                WIDTH - 18,
-                13,
-                [255, 255, 255],
+                &detail,
+                19,
+                y,
+                9.0,
+                WIDTH - 29,
+                12,
+                [239, 231, 215],
             );
         }
+        fill_dialogue_rect(
+            &mut pixels,
+            WIDTH,
+            HEIGHT,
+            5,
+            204,
+            WIDTH - 10,
+            1,
+            [184, 190, 209, 255],
+        );
+        let sell_price = info
+            .as_ref()
+            .and_then(|node| integer_property(node, "price"))
+            .unwrap_or(0)
+            .max(0)
+            / 2;
+        let sell_price = format_meso_amount(sell_price);
+        let sell_price = sell_price.strip_suffix(" Mesos").unwrap_or(&sell_price);
+        let price_label = format!("Shop Sell Price: {sell_price}");
+        draw_dialogue_text(
+            font,
+            &mut pixels,
+            WIDTH,
+            HEIGHT,
+            &price_label,
+            9,
+            207,
+            8.5,
+            WIDTH - 25,
+            12,
+            [239, 231, 215],
+        );
+        let coin_x = 9 + dialogue_text_width(font, &price_label, 8.5).ceil() as usize + 2;
+        for (row, left, width) in [
+            (0, 2, 3),
+            (1, 1, 5),
+            (2, 0, 7),
+            (3, 0, 7),
+            (4, 0, 7),
+            (5, 1, 5),
+            (6, 2, 3),
+        ] {
+            fill_dialogue_rect(
+                &mut pixels,
+                WIDTH,
+                HEIGHT,
+                coin_x + left,
+                209 + row,
+                width,
+                1,
+                [20, 138, 224, 255],
+            );
+        }
+        fill_dialogue_rect(
+            &mut pixels,
+            WIDTH,
+            HEIGHT,
+            coin_x + 1,
+            210,
+            5,
+            5,
+            [38, 192, 255, 255],
+        );
+        fill_dialogue_rect(
+            &mut pixels,
+            WIDTH,
+            HEIGHT,
+            coin_x + 2,
+            211,
+            3,
+            3,
+            [94, 231, 255, 255],
+        );
     } else {
         let summary = inventory_item_stat_summary(item, item_archive, character_archive)
             .or_else(|| item_description(item.item_id, string_archive))
@@ -785,6 +1130,7 @@ fn render_inventory_drop_prompt(
     ui_archive: &NxArchive,
     font: &fontdue::Font,
     prompt: &InventoryDropPrompt,
+    item_icon: Option<&(u32, u32, Arc<[u8]>)>,
     string_archive: &NxArchive,
     name_cache: &mut HashMap<i32, Option<String>>,
 ) -> Result<Vec<u8>, String> {
@@ -799,109 +1145,68 @@ fn render_inventory_drop_prompt(
         0,
         WIDTH,
         HEIGHT,
-        [0, 0, 0, 175],
+        [0, 0, 0, 140],
     );
-    let (background_path, button_paths): (&str, &[&str]) = match prompt.step {
-        InventoryDropStep::ConfirmUntradable => (
-            "Basic.img/YesNo/backgrnd",
-            &["Basic.img/BtYes/normal/0", "Basic.img/BtNo/normal/0"],
-        ),
-        InventoryDropStep::Quantity => (
-            "Basic.img/YesNo/backgrnd",
-            &["Basic.img/BtOK/normal/0", "Basic.img/BtCancel/normal/0"],
-        ),
-        InventoryDropStep::Blocked => ("Basic.img/Notice/backgrnd", &["Basic.img/BtOK/normal/0"]),
+    let icon = if prompt.action == InventoryQuantityAction::DropMesos {
+        Some(QuantityIcon::Mesos)
+    } else {
+        item_icon.map(QuantityIcon::Item)
     };
-    let modal = composite_nx_ui_modal(
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        ui_archive,
-        background_path,
-        button_paths,
-    )?;
-    let left = modal.bounds.x.round() as i32 + 18;
-    let top = modal.bounds.y.round() as i32 + 12;
-    let text_width = (modal.bounds.width - 36.0).max(0.0) as usize;
-    let title = match (prompt.action, prompt.step) {
-        (_, InventoryDropStep::Quantity) => "Choose item quantity",
-        (InventoryQuantityAction::Drop, InventoryDropStep::ConfirmUntradable) => {
-            "Confirm item drop"
-        }
-        (InventoryQuantityAction::Drop, InventoryDropStep::Blocked) => "Item cannot be dropped",
-        _ => "Choose item quantity",
-    };
-    draw_dialogue_text(
-        font,
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        title,
-        left,
-        top,
-        14.0,
-        text_width,
-        18,
-        [35, 35, 35],
-    );
-    let name = item_name(prompt.item_id, string_archive, name_cache);
-    let message = match prompt.step {
-        InventoryDropStep::ConfirmUntradable => {
-            format!("{name} cannot be recovered once dropped. Continue?")
-        }
+    let (title, message) = match prompt.step {
         InventoryDropStep::Quantity => {
-            let action = match prompt.action {
-                InventoryQuantityAction::Drop => "drop",
-                InventoryQuantityAction::StorageStore => "store",
-                InventoryQuantityAction::StorageTake => "take out",
+            let title = match prompt.action {
+                InventoryQuantityAction::Drop => "DROP ITEM",
+                InventoryQuantityAction::DropMesos => "DROP MESOS",
+                InventoryQuantityAction::StorageStore => "STORE ITEMS",
+                InventoryQuantityAction::StorageTake => "TAKE ITEMS",
             };
-            format!("How many {name} would you like to {action}?")
+            let message = if icon.is_some() {
+                String::new()
+            } else {
+                let name = item_name(prompt.item_id, string_archive, name_cache);
+                ui_foundation::ellipsize(font, &name, 10.0, 273.0)
+            };
+            (title, message)
         }
-        InventoryDropStep::Blocked => "Cash items cannot be dropped.".to_owned(),
+        InventoryDropStep::ConfirmUntradable => {
+            let message = if icon.is_some() {
+                "This item cannot be recovered once dropped. Continue?".to_owned()
+            } else {
+                let name = item_name(prompt.item_id, string_archive, name_cache);
+                format!("{name} cannot be recovered once dropped. Continue?")
+            };
+            ("CONFIRM ITEM DROP", message)
+        }
+        InventoryDropStep::Blocked => (
+            "ITEM CANNOT BE DROPPED",
+            "Cash items cannot be dropped.".to_owned(),
+        ),
     };
-    draw_dialogue_text(
+    let art = render_quantity_window(
+        ui_archive,
         font,
+        title,
+        &message,
+        icon,
+        (prompt.step == InventoryDropStep::Quantity).then_some((
+            &prompt.quantity,
+            prompt.minimum(),
+            prompt.max_quantity,
+        )),
+        prompt.notice.as_deref(),
+        prompt.step,
+    )?;
+    let (x, y) = quantity_window_origin(WIDTH, HEIGHT);
+    composite_bgra_pixels(
         &mut pixels,
         WIDTH,
         HEIGHT,
-        &message,
-        left,
-        top + 26,
-        11.0,
-        text_width,
-        28,
-        [44, 44, 44],
+        &art,
+        QUANTITY_WINDOW_WIDTH,
+        QUANTITY_WINDOW_HEIGHT,
+        x,
+        y,
     );
-    if prompt.step == InventoryDropStep::Quantity {
-        draw_dialogue_text(
-            font,
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            &format!("Quantity: {}  (1 to {})", prompt.quantity, prompt.max_quantity),
-            left,
-            top + 61,
-            11.0,
-            text_width,
-            16,
-            [44, 44, 44],
-        );
-    }
-    if let Some(notice) = prompt.notice.as_deref() {
-        draw_dialogue_text(
-            font,
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            notice,
-            left,
-            top + 78,
-            10.0,
-            text_width,
-            14,
-            [125, 40, 35],
-        );
-    }
     Ok(pixels)
 }
 
@@ -919,15 +1224,7 @@ fn render_death_notice(font: &fontdue::Font, ui: &NxArchive, respawn_pending: bo
         HEIGHT,
         [0, 0, 0, 160],
     );
-    let _ = composite_nx_ui_bitmap(
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        ui,
-        "UIWindow.img/Notice/0",
-        369,
-        311,
-    );
+    let _ = NxDialog::new(&mut pixels, WIDTH, HEIGHT, ui).frame("UIWindow.img/Notice/0", 369, 311);
     let button = ui_foundation::REVIVE_BUTTON;
     let path = if respawn_pending {
         "Basic.img/BtOK/disabled/0"
@@ -1057,22 +1354,12 @@ fn render_equipment_inventory_panel(
     const HEIGHT: usize = EQUIPMENT_INVENTORY_PANEL_HEIGHT as usize;
     let mut pixels = vec![0_u8; WIDTH * HEIGHT * 4];
 
-    let _ = composite_nx_ui_layers(
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        ui_archive,
-        &[("UIWindow.img/Equip/backgrnd", 0, 0)],
-    );
-    let _ = composite_nx_ui_bitmap(
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        ui_archive,
-        "Basic.img/BtClose/normal/0",
-        156,
-        6,
-    );
+    let mut dialog = NxDialog::new(&mut pixels, WIDTH, HEIGHT, ui_archive);
+    let _ = dialog.frame("UIWindow.img/Equip/backgrnd", 0, 0);
+    let _ = dialog.buttons(&[(
+        ui_dialog::CLOSE_BUTTON_ART,
+        ui_foundation::INVENTORY_CLOSE_BUTTON,
+    )]);
 
     for item in inventory.equipped() {
         let Some((x, y)) = equipment_inventory_slot_position(item.slot) else {
@@ -1111,24 +1398,30 @@ fn render_pet_equipment_panel(
     const WIDTH: usize = 390;
     const HEIGHT: usize = 480;
     let mut pixels = vec![0_u8; WIDTH * HEIGHT * 4];
-    let _ = composite_nx_ui_nine_slice_frame(
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        ui_archive,
-        "UIWindow.img/EventWindow/backgrnd",
-        0,
-        0,
-        WIDTH,
-        HEIGHT,
-    );
+    let _ = NxDialog::new(&mut pixels, WIDTH, HEIGHT, ui_archive).resizable_frame();
     // The pet grid covers only the top of the equipment frame; clip its
     // unused doll section before compositing the original art over the frame.
     // The pet overlay is 177px wide, two pixels wider than the equipment doll.
     // Preserve its authored right border rather than clipping it to the doll.
     let mut equipment = vec![0_u8; 177 * 204 * 4];
-    let _ = composite_nx_ui_bitmap(&mut equipment, 177, 204, ui_archive, "UIWindow.img/Equip/backgrnd", 0, 0);
-    let _ = composite_nx_ui_bitmap(&mut equipment, 177, 204, ui_archive, "UIWindow.img/Equip/pet", 0, 23);
+    let _ = composite_nx_ui_bitmap(
+        &mut equipment,
+        177,
+        204,
+        ui_archive,
+        "UIWindow.img/Equip/backgrnd",
+        0,
+        0,
+    );
+    let _ = composite_nx_ui_bitmap(
+        &mut equipment,
+        177,
+        204,
+        ui_archive,
+        "UIWindow.img/Equip/pet",
+        0,
+        23,
+    );
     composite_bgra_pixels(&mut pixels, WIDTH, HEIGHT, &equipment, 177, 204, 0, 0);
     for item in inventory.equipped() {
         let Some((x, y)) = pet_equipment_grid_position(item.item_id) else {
@@ -1308,9 +1601,7 @@ fn render_pet_equipment_panel(
             [43, 48, 48],
         );
         let location = match item.inventory_type {
-            openstory_protocol::InventoryType::Equipped => {
-                "Equipped · click to remove".to_owned()
-            }
+            openstory_protocol::InventoryType::Equipped => "Equipped · click to remove".to_owned(),
             openstory_protocol::InventoryType::Cash => "Cash inventory".to_owned(),
             _ if pet_equipment_destination(item.item_id, inventory).is_some() => {
                 "Click to equip".to_owned()

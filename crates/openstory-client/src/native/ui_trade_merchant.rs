@@ -12,44 +12,25 @@ fn render_character_info_panel(
     const WIDTH: usize = CHARACTER_INFO_PANEL_WIDTH as usize;
     const HEIGHT: usize = CHARACTER_INFO_PANEL_HEIGHT as usize;
     let mut pixels = vec![0_u8; WIDTH * HEIGHT * 4];
-    let _ = composite_nx_ui_bitmap(
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        ui_archive,
+    let _ = NxDialog::new(&mut pixels, WIDTH, HEIGHT, ui_archive).frame(
         "UIWindow.img/UserInfo/backgrnd2",
         0,
         0,
     );
-    let _ = composite_nx_ui_bitmap(
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        ui_archive,
+    let _ = NxDialog::new(&mut pixels, WIDTH, HEIGHT, ui_archive).frame(
         "UIWindow.img/UserInfo/backgrnd3",
         286,
         0,
     );
     for y in [165, 300] {
-        let _ = composite_nx_ui_bitmap(
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            ui_archive,
+        let _ = NxDialog::new(&mut pixels, WIDTH, HEIGHT, ui_archive).frame(
             "Basic.img/Notice/backgrnd",
             286,
             y,
         );
     }
-    let _ = composite_nx_ui_bitmap(
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        ui_archive,
-        "Basic.img/BtClose/normal/0",
-        255,
-        5,
-    );
+    let _ = NxDialog::new(&mut pixels, WIDTH, HEIGHT, ui_archive)
+        .anchored_button("Basic.img/BtClose/normal/0", 255, 5);
     if let Some(look) = look {
         let mut sprites = Vec::new();
         if append_character_preview(
@@ -434,11 +415,7 @@ fn render_trade_room_panel(
     const WIDTH: usize = TRADE_PANEL_WIDTH as usize;
     const HEIGHT: usize = TRADE_PANEL_HEIGHT as usize;
     let mut pixels = vec![0_u8; WIDTH * HEIGHT * 4];
-    let _ = composite_nx_ui_bitmap(
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        ui_archive,
+    let _ = NxDialog::new(&mut pixels, WIDTH, HEIGHT, ui_archive).frame(
         "UIWindow.img/TradingRoom/backgrnd",
         78,
         20,
@@ -578,13 +555,11 @@ fn render_trade_room_panel(
         14,
         [35, 35, 35],
     );
-    for (path, x, y) in [
+    NxDialog::new(&mut pixels, WIDTH, HEIGHT, ui_archive).anchored_buttons(&[
         ("UIWindow.img/TradingRoom/BtCoin/normal/0", 247, 264),
         ("UIWindow.img/TradingRoom/BtTrade/normal/0", 385, 290),
         ("UIWindow.img/TradingRoom/BtCancel/normal/0", 451, 290),
-    ] {
-        let _ = composite_nx_ui_bitmap(&mut pixels, WIDTH, HEIGHT, ui_archive, path, x, y);
-    }
+    ]);
     if let Some(notice) = ui.notice.as_deref() {
         draw_dialogue_text(
             font,
@@ -601,11 +576,7 @@ fn render_trade_room_panel(
         );
     }
     if let Some(source) = ui.pending_item {
-        let _ = composite_nx_ui_bitmap(
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            ui_archive,
+        let _ = NxDialog::new(&mut pixels, WIDTH, HEIGHT, ui_archive).frame(
             "Basic.img/Notice/backgrnd",
             228,
             210,
@@ -767,11 +738,7 @@ fn render_hired_merchant_room_panel(
     const HEIGHT: usize = HIRED_MERCHANT_PANEL_HEIGHT as usize;
     let room = &ui.state;
     let mut pixels = vec![0; WIDTH * HEIGHT * 4];
-    let _ = composite_nx_ui_bitmap(
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        ui_archive,
+    let _ = NxDialog::new(&mut pixels, WIDTH, HEIGHT, ui_archive).frame(
         "UIWindow.img/PersonalShop/backgrnd",
         88,
         20,
@@ -942,16 +909,9 @@ fn render_hired_merchant_room_panel(
             [160, 55, 35],
         );
     }
+    let mut dialog = NxDialog::new(&mut pixels, WIDTH, HEIGHT, ui_archive);
     for (_, path, x, y) in merchant_controls(room) {
-        let _ = composite_nx_ui_bitmap(
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            ui_archive,
-            path,
-            x as i32,
-            y as i32,
-        );
+        let _ = dialog.anchored_button(path, x as i32, y as i32);
     }
     fill_dialogue_rect(
         &mut pixels,
@@ -986,11 +946,7 @@ fn render_hired_merchant_room_panel(
         365,
     );
     if let Some(source) = ui.stock_source {
-        let _ = composite_nx_ui_bitmap(
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            ui_archive,
+        let _ = NxDialog::new(&mut pixels, WIDTH, HEIGHT, ui_archive).frame(
             "Basic.img/Notice/backgrnd",
             218,
             214,
