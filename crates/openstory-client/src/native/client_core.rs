@@ -188,6 +188,7 @@ impl ClientApp {
             pet_equipment_texture: None,
             cash_shop_texture: None,
             cash_shop_hit_regions: Vec::new(),
+            cash_shop_hovered_item: None,
             owl_texture: None,
             skill_book_texture: None,
             skill_tooltip_texture: None,
@@ -1297,13 +1298,21 @@ impl ClientApp {
             .attack_stance
             .map(AvatarMotion::Attack)
             .unwrap_or(fallback_motion);
-        let animation_speed = if scene.local_ladder.is_some() {
-            scene.player.vertical_speed.abs()
-        } else {
-            1.0
+        let animation_elapsed = match motion {
+            AvatarMotion::Walk => Duration::from_millis(
+                character_movement_animation_elapsed(scene.player.horizontal_speed.abs())
+                    .as_millis() as u64
+                    * u64::from(frame.updates),
+            ),
+            AvatarMotion::Ladder | AvatarMotion::Rope => Duration::from_millis(
+                character_movement_animation_elapsed(scene.player.vertical_speed.abs()).as_millis()
+                    as u64
+                    * u64::from(frame.updates),
+            ),
+            _ => Duration::from_millis(8 * u64::from(frame.updates)),
         };
         scene.advance_avatar_animation(
-            Duration::from_secs_f64(0.008 * f64::from(frame.updates) * animation_speed),
+            animation_elapsed,
             motion,
             fallback_motion,
             &mut self.sprite_draws,
@@ -1676,14 +1685,16 @@ impl ClientApp {
                 return;
             }
         };
-        if skill_id > 0 {
+        let skill_use_sound_played = if skill_id > 0 {
             scene.show_character_skill_effect(None, skill_effects, skill_effect_speed_factor);
             self.audio.play_skill_use(
                 &self.sound_archive,
                 skill_id,
                 (rounded_i16(scene.player.x), rounded_i16(scene.player.y)),
-            );
-        }
+            )
+        } else {
+            false
+        };
         scene.start_attack(stance, &mut self.sprite_draws);
         let regular_action = skill_id == 0
             || character_skill_action_name(
@@ -1695,7 +1706,10 @@ impl ClientApp {
             .ok()
             .flatten()
             .is_none();
-        if regular_action && let Some(weapon_id) = character_weapon_id(&character.look) {
+        if regular_action
+            && !skill_use_sound_played
+            && let Some(weapon_id) = character_weapon_id(&character.look)
+        {
             let degenerate = attack_stats.attack_type == openstory_protocol::AttackType::Close
                 && matches!(attack_stats.weapon_type, 145 | 146 | 147 | 149);
             self.audio.play_weapon_attack(
@@ -1925,6 +1939,8 @@ impl ClientApp {
         self.show_equipment_inventory = !self.show_equipment_inventory;
         if self.show_equipment_inventory {
             self.refresh_equipment_inventory_texture();
+        } else {
+            self.show_pet_equipment = false;
         }
     }
 
@@ -2032,8 +2048,6 @@ impl ClientApp {
                         Some(3) => {
                             self.show_skill_book = !self.show_skill_book;
                             if self.show_skill_book {
-                                self.skill_book_tab = 0;
-                                self.skill_book_scroll_row = 0;
                                 self.refresh_skill_book_entries();
                                 self.refresh_skill_book_texture();
                             }
@@ -3364,13 +3378,7 @@ impl ClientApp {
                         self.open_alliance_panel();
                     }
                 }
-                45 => {
-                    self.show_pet_equipment = !self.show_pet_equipment;
-                    if self.show_pet_equipment {
-                        self.pet_equipment_scroll_row = 0;
-                        self.refresh_pet_equipment_texture();
-                    }
-                }
+                45 => self.toggle_pet_equipment_panel(),
                 _ => {}
             },
             5 => match binding.action {
@@ -3771,6 +3779,7 @@ impl ClientApp {
                 self.show_buddy_panel = false;
             } else if self.show_equipment_inventory {
                 self.show_equipment_inventory = false;
+                self.show_pet_equipment = false;
             } else if self.show_inventory {
                 if self.pending_scroll_slot.take().is_some() {
                     self.refresh_inventory_texture();

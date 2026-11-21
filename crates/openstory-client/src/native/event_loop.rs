@@ -163,6 +163,7 @@ impl ApplicationHandler for ClientApp {
                 self.cursor = None;
                 self.cursor_physical = None;
                 self.update_npc_shop_hover();
+                self.update_cash_shop_hover();
                 if self.update_inventory_hover() {
                     self.refresh_inventory_texture();
                 }
@@ -227,6 +228,7 @@ impl ApplicationHandler for ClientApp {
                     window.request_redraw();
                 }
                 self.update_npc_shop_hover();
+                self.update_cash_shop_hover();
                 if self.update_rps_game_hover()
                     && let Some(window) = self.window.as_ref()
                 {
@@ -910,12 +912,18 @@ impl ApplicationHandler for ClientApp {
                     && self.dialog_window_hit_test(DialogWindow::EquipmentInventory, screen_cursor)
                     && self.begin_equipment_inventory_pointer(cursor)
                 {
+                    if let Some(window) = self.window.as_ref() {
+                        window.request_redraw();
+                    }
                     return;
                 }
                 if self.show_pet_equipment
                     && self.dialog_window_hit_test(DialogWindow::PetEquipment, screen_cursor)
                     && self.begin_pet_equipment_pointer(cursor)
                 {
+                    if let Some(window) = self.window.as_ref() {
+                        window.request_redraw();
+                    }
                     return;
                 }
                 if self.show_skill_book
@@ -1366,11 +1374,11 @@ impl ApplicationHandler for ClientApp {
                         self.dialog_window_hit_test(DialogWindow::PetEquipment, cursor)
                     })
                     && cursor.is_some_and(|cursor| {
-                        (PET_EQUIPMENT_PANEL_X + 16.0
-                            ..PET_EQUIPMENT_PANEL_X + PET_EQUIPMENT_PANEL_WIDTH as f32 - 6.0)
+                        (PET_EQUIPMENT_PANEL_X + 8.0
+                            ..PET_EQUIPMENT_PANEL_X + PET_EQUIPMENT_PANEL_WIDTH as f32 - 8.0)
                             .contains(&cursor.x)
-                            && (PET_EQUIPMENT_PANEL_Y + 220.0
-                                ..PET_EQUIPMENT_PANEL_Y + PET_EQUIPMENT_PANEL_HEIGHT as f32 - 20.0)
+                            && (PET_EQUIPMENT_PANEL_Y + PET_EQUIPMENT_GEAR_LIST_Y
+                                ..PET_EQUIPMENT_PANEL_Y + PET_EQUIPMENT_PANEL_HEIGHT as f32 - 12.0)
                                 .contains(&cursor.y)
                     })
                 {
@@ -2792,7 +2800,10 @@ impl ApplicationHandler for ClientApp {
                     && !self.quit_confirmation
                     && !self.has_open_dialog_window()
                 {
-                    self.open_quit_confirmation();
+                    self.toggle_game_menu();
+                    if let Some(window) = self.window.as_ref() {
+                        window.request_redraw();
+                    }
                     return;
                 }
                 if self.current_field.is_some()
@@ -4989,6 +5000,43 @@ impl ApplicationHandler for ClientApp {
                         uv: [0.0, 0.0, 1.0, 1.0],
                         tint: [1.0; 3],
                         blend_mode: rect.blend_mode,
+                        flip_x: false,
+                        opacity: 1.0,
+                    });
+                }
+                if self.cash_shop.is_some()
+                    && self.cash_shop_hovered_item.is_some()
+                    && self.inventory_drag_source.is_none()
+                    && self.inventory_drop_prompt.is_none()
+                    && !self.quit_confirmation
+                    && !self.wedding_panel_open
+                    && self.server_notice_popup.is_none()
+                    && let (Some(texture), Some(cursor)) =
+                        (self.inventory_tooltip_texture.as_ref(), self.cursor)
+                {
+                    let width = INVENTORY_TOOLTIP_WIDTH as f32;
+                    let height = INVENTORY_TOOLTIP_HEIGHT as f32;
+                    let x = if cursor.x + 18.0 + width > 1024.0 {
+                        cursor.x - width - 18.0
+                    } else {
+                        cursor.x + 18.0
+                    }
+                    .clamp(0.0, 1024.0 - width);
+                    let y = if cursor.y + 18.0 + height > 768.0 {
+                        cursor.y - height - 18.0
+                    } else {
+                        cursor.y + 18.0
+                    }
+                    .clamp(0.0, 768.0 - height);
+                    draws.push(SpriteDraw {
+                        texture,
+                        x,
+                        y,
+                        width,
+                        height,
+                        uv: [0.0, 0.0, 1.0, 1.0],
+                        tint: [1.0, 1.0, 1.0],
+                        blend_mode: BlendMode::Alpha,
                         flip_x: false,
                         opacity: 1.0,
                     });

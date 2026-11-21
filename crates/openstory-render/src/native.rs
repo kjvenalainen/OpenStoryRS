@@ -164,6 +164,12 @@ pub struct GpuRenderer {
     config: wgpu::SurfaceConfiguration,
     window_size: WindowSize<u32>,
     logical_size: LogicalSize,
+    scene_size: WindowSize<u32>,
+    _scene_texture: wgpu::Texture,
+    scene_view: wgpu::TextureView,
+    scene_uniform: wgpu::Buffer,
+    scene_bind_group: wgpu::BindGroup,
+    scene_pipeline: wgpu::RenderPipeline,
     texture_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     sprite_pipeline_alpha: wgpu::RenderPipeline,
@@ -203,6 +209,117 @@ impl GpuRenderer {
             .get_default_config(&adapter, initial.width, initial.height)
             .ok_or(RendererError::AdapterUnavailable)?;
         surface.configure(&device, &config);
+
+        let scene_size = WindowSize::new(
+            logical_size.width.ceil() as u32,
+            logical_size.height.ceil() as u32,
+        );
+        if scene_size.width == 0
+            || scene_size.height == 0
+            || scene_size.width > device.limits().max_texture_dimension_2d
+            || scene_size.height > device.limits().max_texture_dimension_2d
+        {
+            return Err(RendererError::TextureTooLarge {
+                width: scene_size.width,
+                height: scene_size.height,
+                limit: device.limits().max_texture_dimension_2d,
+            });
+        }
+        let scene_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("openstory-logical-frame"),
+            size: wgpu::Extent3d {
+                width: scene_size.width,
+                height: scene_size.height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: config.format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let scene_view = scene_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let scene_uniform = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("openstory-upscale-parameters"),
+            size: 16,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let scene_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("openstory-upscale-linear-sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+            ..Default::default()
+        });
+        let scene_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("openstory-upscale-bind-group-layout"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: wgpu::BufferSize::new(16),
+                    },
+                    count: None,
+                },
+            ],
+        });
+        let scene_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("openstory-upscale-bind-group"),
+            layout: &scene_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&scene_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&scene_sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: scene_uniform.as_entire_binding(),
+                },
+            ],
+        });
+        let scene_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("openstory-upscale-shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("upscale.wgsl").into()),
+        });
+        let scene_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("openstory-upscale-pipeline-layout"),
+                bind_group_layouts: &[Some(&scene_layout)],
+                immediate_size: 0,
+            });
+        let scene_pipeline = create_upscale_pipeline(
+            &device,
+            &scene_pipeline_layout,
+            &scene_shader,
+            config.format,
+        );
 
         let texture_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("openstory-sprite-texture-layout"),
@@ -288,6 +405,12 @@ impl GpuRenderer {
             config,
             window_size,
             logical_size,
+            scene_size,
+            _scene_texture: scene_texture,
+            scene_view,
+            scene_uniform,
+            scene_bind_group,
+            scene_pipeline,
             texture_layout,
             sampler,
             sprite_pipeline_alpha,
@@ -678,6 +801,11 @@ impl GpuRenderer {
         let view = frame
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
+        self.queue.write_buffer(
+            &self.scene_uniform,
+            0,
+            cast_slice(&[viewport.x, viewport.y, viewport.scale, 0.0]),
+        );
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -686,7 +814,51 @@ impl GpuRenderer {
 
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("openstory-sprites"),
+                label: Some("openstory-logical-scene"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &self.scene_view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: 0.02,
+                            g: 0.03,
+                            b: 0.08,
+                            a: 1.0,
+                        }),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_viewport(
+                0.0,
+                0.0,
+                self.scene_size.width as f32,
+                self.scene_size.height as f32,
+                0.0,
+                1.0,
+            );
+            if !self.draw_ranges.is_empty() {
+                pass.set_vertex_buffer(0, self.instance_buffer.slice(..));
+                for (range, sprite_index) in &self.draw_ranges {
+                    let pipeline = match sprites[*sprite_index].blend_mode {
+                        BlendMode::Alpha => &self.sprite_pipeline_alpha,
+                        BlendMode::Additive => &self.sprite_pipeline_additive,
+                    };
+                    pass.set_pipeline(pipeline);
+                    pass.set_bind_group(0, &sprites[*sprite_index].texture.inner.bind_group, &[]);
+                    pass.draw(0..6, range.clone());
+                }
+            }
+        }
+
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("openstory-upscaled-frame"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &view,
                     depth_slice: None,
@@ -714,18 +886,9 @@ impl GpuRenderer {
                 0.0,
                 1.0,
             );
-            if !self.draw_ranges.is_empty() {
-                pass.set_vertex_buffer(0, self.instance_buffer.slice(..));
-                for (range, sprite_index) in &self.draw_ranges {
-                    let pipeline = match sprites[*sprite_index].blend_mode {
-                        BlendMode::Alpha => &self.sprite_pipeline_alpha,
-                        BlendMode::Additive => &self.sprite_pipeline_additive,
-                    };
-                    pass.set_pipeline(pipeline);
-                    pass.set_bind_group(0, &sprites[*sprite_index].texture.inner.bind_group, &[]);
-                    pass.draw(0..6, range.clone());
-                }
-            }
+            pass.set_pipeline(&self.scene_pipeline);
+            pass.set_bind_group(0, &self.scene_bind_group, &[]);
+            pass.draw(0..3, 0..1);
         }
 
         self.queue.submit([encoder.finish()]);
@@ -770,6 +933,40 @@ fn create_sprite_pipeline(
             entry_point: Some("vertex_main"),
             compilation_options: Default::default(),
             buffers: &[Some(vertex_layout)],
+        },
+        primitive: wgpu::PrimitiveState::default(),
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        fragment: Some(wgpu::FragmentState {
+            module: shader,
+            entry_point: Some("fragment_main"),
+            compilation_options: Default::default(),
+            targets: &color_targets,
+        }),
+        multiview_mask: None,
+        cache: None,
+    })
+}
+
+fn create_upscale_pipeline(
+    device: &wgpu::Device,
+    layout: &wgpu::PipelineLayout,
+    shader: &wgpu::ShaderModule,
+    format: wgpu::TextureFormat,
+) -> wgpu::RenderPipeline {
+    let color_targets = [Some(wgpu::ColorTargetState {
+        format,
+        blend: None,
+        write_mask: wgpu::ColorWrites::ALL,
+    })];
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("openstory-upscale-pipeline"),
+        layout: Some(layout),
+        vertex: wgpu::VertexState {
+            module: shader,
+            entry_point: Some("vertex_main"),
+            compilation_options: Default::default(),
+            buffers: &[],
         },
         primitive: wgpu::PrimitiveState::default(),
         depth_stencil: None,

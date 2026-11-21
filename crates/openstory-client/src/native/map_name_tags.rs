@@ -6,6 +6,7 @@ const CHARACTER_NAME_TAG_Y_OFFSET: f32 = 3.0;
 #[derive(Clone, Copy)]
 enum MapNameTagKind {
     Character,
+    Pet,
     Npc,
 }
 
@@ -106,7 +107,7 @@ fn append_map_name_tag_sprite(
             )
         } else {
             let (r, g, b) = match kind {
-                MapNameTagKind::Character => (255, 255, 255),
+                MapNameTagKind::Character | MapNameTagKind::Pet => (255, 255, 255),
                 MapNameTagKind::Npc => (255, 255, 0),
             };
             let width = (measured_width + 8).min(MAP_NAME_TAG_MAX_WIDTH);
@@ -139,7 +140,7 @@ fn append_map_name_tag_sprite(
         text_baseline,
     );
     let panel_y_offset = match kind {
-        MapNameTagKind::Character => CHARACTER_NAME_TAG_Y_OFFSET,
+        MapNameTagKind::Character | MapNameTagKind::Pet => CHARACTER_NAME_TAG_Y_OFFSET,
         MapNameTagKind::Npc => 0.0,
     };
     let texture_key = format!(
@@ -382,6 +383,11 @@ fn append_map_name_tag_draws<'a>(
         let offset_y = (npc.y - scene.player.y) as f32;
         append(npc.name_label, offset_x, offset_y, 1.0);
         append(npc.function_label, offset_x, offset_y, 1.0);
+    }
+    for pet in scene.pets.values() {
+        let offset_x = (pet.x - scene.player.x) as f32;
+        let offset_y = (pet.y - scene.player.y) as f32;
+        append(pet.name_label, offset_x, offset_y, 1.0);
     }
     for player in scene.remote_players.values() {
         let offset_x = (player.x - scene.player.x + player.recoil_offset_x) as f32;

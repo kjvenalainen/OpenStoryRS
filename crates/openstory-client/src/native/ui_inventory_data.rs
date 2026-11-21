@@ -58,13 +58,17 @@ fn first_free_equip_inventory_slot(
         .and_then(|slot| i16::try_from(slot).ok())
 }
 
-// Cosmic's v83 character-info response reads the pet label ring from -114.
-// Other pet slots are reusable only when the server already placed the same
-// item in one; never guess a destination or use zero (the drop operation).
+// 181xxxx PetEquip items occupy equipped slot 123 (wire destination -123).
+// Upstream currently maps them to NONE/0, which the server interprets as a
+// drop request. Cosmic's v83 character-info response reads the pet label ring
+// from -114, so keep that separate known slot for the label-ring item.
 fn pet_equipment_destination(
     item_id: i32,
     inventory: &openstory_protocol::InventorySnapshot,
 ) -> Option<i16> {
+    if item_id / 10_000 == 181 {
+        return Some(123);
+    }
     if !(180..=183).contains(&(item_id / 10_000)) {
         return None;
     }

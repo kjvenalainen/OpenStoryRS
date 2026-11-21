@@ -858,6 +858,13 @@ impl ClientApp {
                             item_id,
                         );
                     }
+                    Ok(Some(openstory_protocol::StatusInfoUpdate::Meso { gain })) => {
+                        let sign = if gain < 0 { "-" } else { "+" };
+                        self.show_status_message(
+                            format!("You have gained mesos ({sign}{})", gain.unsigned_abs()),
+                            [255, 255, 255],
+                        );
+                    }
                     Ok(Some(openstory_protocol::StatusInfoUpdate::Experience {
                         white,
                         gain,
@@ -878,6 +885,9 @@ impl ClientApp {
                                 [255, 220, 44],
                             );
                         }
+                    }
+                    Ok(Some(openstory_protocol::StatusInfoUpdate::InfoText(text))) => {
+                        self.show_status_message(text, [255, 220, 44]);
                     }
                     Ok(None) => match openstory_protocol::parse_quest_status_update(packet) {
                         Ok(Some(update)) => self.apply_quest_update(update),

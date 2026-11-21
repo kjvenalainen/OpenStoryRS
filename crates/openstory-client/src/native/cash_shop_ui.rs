@@ -73,6 +73,22 @@ pub(super) enum HitAction {
     CancelPurchase,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ItemHover {
+    Product(usize),
+    Locker(usize),
+}
+
+impl ItemHover {
+    pub(super) fn from_action(action: HitAction) -> Option<Self> {
+        match action {
+            HitAction::Product(index) | HitAction::BuyProduct(index) => Some(Self::Product(index)),
+            HitAction::LockerItem(index) => Some(Self::Locker(index)),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct HitRegion {
     pub bounds: Rect,
@@ -132,15 +148,13 @@ pub(super) fn render(
     )?;
     let preview_character = character.map(|character| {
         let mut preview = character.clone();
-        if state.preview_remove_all {
-            preview.look.equips.clear();
-            preview.look.masked_equips.clear();
-            preview.look.weapon_id = 0;
-        } else if let Some(product) = state
-            .selected_sn
-            .and_then(|sn| products.iter().find(|product| product.sn == sn))
-        {
-            try_on_cash_shop_item(&mut preview.look, product.item_id);
+        if !state.preview_remove_all {
+            if let Some(product) = state
+                .selected_sn
+                .and_then(|sn| products.iter().find(|product| product.sn == sn))
+            {
+                try_on_cash_shop_item(&mut preview.look, product.item_id);
+            }
         }
         preview
     });
@@ -179,6 +193,7 @@ pub(super) fn render(
             (X + 22) as i32,
             (Y + 41) as i32,
         );
+        draw_equipped_pets(&mut pixels, item_archive, &character.look, X + 22, Y + 41)?;
         let name = super::ui_foundation::ellipsize(font, &character.stats.name, 11.0, 130.0);
         add_text(
             font,
@@ -248,20 +263,20 @@ pub(super) fn render(
     for (path, x, y, action) in [
         (
             "CashShop.img/CSChar/BtBuyAvatar/normal/0",
-            22,
-            240,
+            19,
+            237,
             HitAction::BuyPreviewedItem,
         ),
         (
             "CashShop.img/CSChar/BtDefaultAvatar/normal/0",
-            101,
-            240,
+            104,
+            237,
             HitAction::DefaultAvatarPreview,
         ),
         (
             "CashShop.img/CSChar/BtTakeoffAvatar/normal/0",
-            180,
-            240,
+            189,
+            237,
             HitAction::RemoveAvatarEquipment,
         ),
         (
@@ -639,6 +654,34 @@ fn logical_region(x: f32, y: f32, width: f32, height: f32, action: HitAction) ->
     }
 }
 
+fn draw_equipped_pets(
+    pixels: &mut [u8],
+    item_archive: &NxArchive,
+    look: &openstory_protocol::CharacterLook,
+    stage_x: usize,
+    stage_y: usize,
+) -> Result<(), String> {
+    let pets = look
+        .pet_ids
+        .iter()
+        .copied()
+        .filter(|item_id| *item_id > 0)
+        .collect::<Vec<_>>();
+    let spacing = 32.0;
+    let first_offset = -((pets.len().saturating_sub(1)) as f32) * spacing / 2.0;
+    for (index, item_id) in pets.into_iter().enumerate() {
+        let anchor_x = stage_x as f32 + 160.0 + first_offset + index as f32 * spacing;
+        let anchor_y = stage_y as f32 + 156.0;
+        for stance in ["stand0", "stand1"] {
+            let path = format!("Pet/{item_id}.img/{stance}/0");
+            if draw_asset(pixels, item_archive, &path, anchor_x, anchor_y, 1.0)?.is_some() {
+                break;
+            }
+        }
+    }
+    Ok(())
+}
+
 fn try_on_cash_shop_item(look: &mut openstory_protocol::CharacterLook, item_id: i32) {
     if !(1_000_000..2_000_000).contains(&item_id) {
         return;
@@ -709,7 +752,7 @@ pub(super) fn render_preview(
     state.notice = Some("Offline preview data; no server is connected.".to_owned());
 
     match variant {
-        "catalog" => state.category = 0,
+        "catalog" | "catalog-tooltip" => state.category = 0,
         "locker" => {
             state.view = super::CashShopView::Locker;
             state.locker = products
@@ -733,16 +776,22 @@ pub(super) fn render_preview(
             state.coupon_code = "MAPLE2026".to_owned();
         }
         "confirmation" => state.confirmation = true,
+        "remove-all" => {
+            state.category = 0;
+            state.preview_remove_all = true;
+        }
         _ => {
             return Err(format!(
-                "unknown Cash Shop preview {variant:?}; choose catalog, locker, coupon, or confirmation"
+                "unknown Cash Shop preview {variant:?}; choose catalog, catalog-tooltip, remove-all, locker, coupon, or confirmation"
             ));
         }
     }
 
     let mut icon_cache = HashMap::new();
     let mut name_cache = HashMap::new();
-    render(
+    let mut preview_character = super::ui_preview::preview_character();
+    preview_character.look.pet_ids[0] = 5_000_000;
+    let mut scene = render(
         ui_archive,
         font,
         &state,
@@ -750,11 +799,54 @@ pub(super) fn render_preview(
         item_archive,
         character_archive,
         string_archive,
-        Some(&super::ui_preview::preview_character()),
+        Some(&preview_character),
         Some(&super::ui_preview::preview_inventory()),
         &mut icon_cache,
         &mut name_cache,
-    )
+    )?;
+    if variant == "catalog-tooltip" {
+        if let Some(product) = products.first() {
+            let item = openstory_protocol::InventoryItem {
+                inventory_type: cash_shop_inventory_type(product.item_id),
+                item_id: product.item_id,
+                count: product.count.max(1),
+                ..Default::default()
+            };
+            let tooltip = super::render_inventory_tooltip(
+                font,
+                &item,
+                ui_archive,
+                item_archive,
+                character_archive,
+                string_archive,
+                Some(&preview_character.stats),
+                Some(&super::ui_preview::preview_inventory()),
+                &mut icon_cache,
+                &mut name_cache,
+            );
+            composite_scaled(
+                &mut scene.pixels,
+                510.0,
+                208.0,
+                1.0,
+                super::INVENTORY_TOOLTIP_WIDTH as usize,
+                super::INVENTORY_TOOLTIP_HEIGHT as usize,
+                &tooltip,
+            );
+        }
+    }
+    Ok(scene)
+}
+
+pub(super) fn cash_shop_inventory_type(item_id: i32) -> openstory_protocol::InventoryType {
+    match item_id / 1_000_000 {
+        1 => openstory_protocol::InventoryType::Equip,
+        2 => openstory_protocol::InventoryType::Use,
+        3 => openstory_protocol::InventoryType::Setup,
+        4 => openstory_protocol::InventoryType::Etc,
+        5 => openstory_protocol::InventoryType::Cash,
+        _ => openstory_protocol::InventoryType::Equip,
+    }
 }
 
 fn draw_purchase_confirmation(

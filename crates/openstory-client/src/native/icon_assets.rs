@@ -166,18 +166,42 @@ fn map_texture_key(path: &str, opacity: u8, flipped: bool) -> String {
     format!("{path}:opacity={opacity}:flip={flipped}")
 }
 
+// Map art can reach the same NX bitmap through more than one path. Key these
+// scene textures by archive bitmap identity, as the legacy atlas does by id.
+fn map_bitmap_texture_key(
+    path: &str,
+    bitmap_key: (usize, u32, u16, u16),
+    opacity: u8,
+    flipped: bool,
+) -> String {
+    let namespace = if path.starts_with("portal:") {
+        "portal"
+    } else {
+        "map-art"
+    };
+    format!(
+        "{namespace}:{}:opacity={opacity}:flip={flipped}",
+        bitmap_cache_key(bitmap_key)
+    )
+}
+
+fn bitmap_cache_key(bitmap_key: (usize, u32, u16, u16)) -> String {
+    let (archive, index, width, height) = bitmap_key;
+    format!("bitmap={archive:x}:{index}:{width}x{height}")
+}
+
 fn prepare_map_pixels(
-    pixels: &[u8],
+    pixels: &Arc<[u8]>,
     width: u32,
     height: u32,
     opacity: u8,
     flipped: bool,
 ) -> Arc<[u8]> {
     if width == 0 || height == 0 {
-        return Arc::from(pixels);
+        return Arc::clone(pixels);
     }
     if opacity == 255 && !flipped {
-        return Arc::from(pixels);
+        return Arc::clone(pixels);
     }
     let mut output = pixels.to_vec();
     if flipped {

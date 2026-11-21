@@ -7,9 +7,6 @@ struct PendingMapSceneUpload {
     scene: LoginSceneAssets,
     local_name_label_index: Option<usize>,
     unique_sprite_indices: Vec<usize>,
-    next_sprite: usize,
-    textures: Vec<GpuTexture>,
-    texture_indices: HashMap<String, usize>,
 }
 
 struct PrefetchedMapScene {
@@ -113,6 +110,7 @@ struct ClientApp {
     pet_equipment_texture: Option<GpuTexture>,
     cash_shop_texture: Option<GpuTexture>,
     cash_shop_hit_regions: Vec<cash_shop_ui::HitRegion>,
+    cash_shop_hovered_item: Option<cash_shop_ui::ItemHover>,
     owl_texture: Option<GpuTexture>,
     skill_book_texture: Option<GpuTexture>,
     skill_tooltip_texture: Option<GpuTexture>,

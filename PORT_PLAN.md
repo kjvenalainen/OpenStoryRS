@@ -815,8 +815,9 @@ and sends the matching selection index.
   attack broadcasts are decoded with bounded damage lines. They
   play weapon-appropriate NX attack stances for remote characters and show normal and critical
   damage plus the legacy normal miss glyph above affected mobs. Attack skills play their
-  skill-specific Use sound; weapon attack sounds are local-action sounds and are not replayed
-  for remote broadcasts. Each hit's damage, reaction, mob sound, hit effect, and skill Hit sound
+  skill-specific Use sound, which takes precedence over a reused regular-action weapon sound;
+  weapon sounds remain local-action sounds and are not replayed for remote broadcasts. Each
+  hit's damage, reaction, mob sound, hit effect, and skill Hit sound
   follow its authored hit frame and projectile travel. Server mob death/removal presentation
   applies immediately when `KILL_MOB` arrives. Damage lines
   keep their legacy spacing and stacking. Left Control sends a one-hit regular attack

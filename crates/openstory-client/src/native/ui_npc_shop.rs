@@ -27,7 +27,9 @@ struct NpcShopUi {
     shop: openstory_protocol::NpcShop,
     // Indices into the full server list. Zero-price / zero-pitch projectile
     // entries remain available to Recharge but are not buy offers.
+    all_buy_item_indices: Vec<usize>,
     buy_item_indices: Vec<usize>,
+    buy_recommended: bool,
     tab: openstory_protocol::InventoryType,
     buy_scroll: usize,
     sell_scroll: usize,
@@ -108,7 +110,7 @@ fn composite_npc_shop_tab(
 
 impl NpcShopUi {
     fn new(shop: openstory_protocol::NpcShop) -> Self {
-        let buy_item_indices = shop
+        let all_buy_item_indices: Vec<usize> = shop
             .items
             .iter()
             .enumerate()
@@ -116,7 +118,9 @@ impl NpcShopUi {
             .collect();
         Self {
             shop,
-            buy_item_indices,
+            buy_item_indices: all_buy_item_indices.clone(),
+            all_buy_item_indices,
+            buy_recommended: false,
             tab: openstory_protocol::InventoryType::Equip,
             buy_scroll: 0,
             sell_scroll: 0,
@@ -134,6 +138,54 @@ impl NpcShopUi {
             auto_recharge_notice_sent: false,
         }
     }
+
+    fn update_buy_item_indices(
+        &mut self,
+        character: Option<&openstory_protocol::CharacterInfo>,
+        inventory: &openstory_protocol::InventorySnapshot,
+        character_archive: &NxArchive,
+    ) {
+        self.buy_item_indices = if self.buy_recommended {
+            npc_shop_recommended_buy_indices(
+                &self.shop,
+                &self.all_buy_item_indices,
+                character,
+                inventory,
+                character_archive,
+            )
+        } else {
+            self.all_buy_item_indices.clone()
+        };
+    }
+}
+
+fn npc_shop_recommended_buy_indices(
+    shop: &openstory_protocol::NpcShop,
+    buy_item_indices: &[usize],
+    character: Option<&openstory_protocol::CharacterInfo>,
+    inventory: &openstory_protocol::InventorySnapshot,
+    character_archive: &NxArchive,
+) -> Vec<usize> {
+    let Some(character) = character else {
+        return Vec::new();
+    };
+    buy_item_indices
+        .iter()
+        .copied()
+        .filter(|index| {
+            let Some(item) = shop.items.get(*index) else {
+                return false;
+            };
+            item.item_id / 1_000_000 == 1
+                && equipment_block_reason(
+                    item.item_id,
+                    character,
+                    inventory,
+                    character_archive,
+                )
+                .is_none()
+        })
+        .collect()
 }
 
 fn npc_shop_buy_quantity(item: &openstory_protocol::NpcShopItem) -> NpcShopQuantity {
@@ -141,7 +193,7 @@ fn npc_shop_buy_quantity(item: &openstory_protocol::NpcShopItem) -> NpcShopQuant
         buy: true,
         slot: item.slot,
         item_id: item.item_id,
-        maximum: if item.item_id / 1_000_000 == 1 {
+        maximum: if npc_shop_item_is_equipment(item.item_id) {
             1
         } else if item.buyable == 0 {
             100
@@ -151,6 +203,10 @@ fn npc_shop_buy_quantity(item: &openstory_protocol::NpcShopItem) -> NpcShopQuant
         input: QuantityInput::new(Some(1)),
         invalid: false,
     }
+}
+
+fn npc_shop_item_is_equipment(item_id: i32) -> bool {
+    item_id / 1_000_000 == 1
 }
 
 fn npc_shop_sell_quantity(item: &openstory_protocol::InventoryItem) -> Option<NpcShopQuantity> {
@@ -360,7 +416,7 @@ fn render_npc_shop_panel(
     font: &fontdue::Font,
     state: &NpcShopUi,
     inventory: &openstory_protocol::InventorySnapshot,
-    look: Option<&openstory_protocol::CharacterLook>,
+    character: Option<&openstory_protocol::CharacterInfo>,
     ui: &NxArchive,
     npcs: &NxArchive,
     items: &NxArchive,
@@ -384,12 +440,12 @@ fn render_npc_shop_panel(
         52,
         76,
     );
-    if let Some(look) = look {
+    if let Some(character) = character {
         let mut sprites = Vec::new();
         append_character_preview(
             &mut sprites,
             characters,
-            look,
+            &character.look,
             288.0,
             76.0,
             0.85,
@@ -450,32 +506,42 @@ fn render_npc_shop_panel(
             },
         );
     }
-    composite_npc_shop_tab(&mut pixels, ui, 7, 54, true)?;
-    composite_nx_ui_bitmap_centered(
+    composite_npc_shop_tab(&mut pixels, ui, 7, 54, !state.buy_recommended)?;
+    ui_foundation::draw_tab_label(
+        font,
         &mut pixels,
         NPC_SHOP_WIDTH,
         NPC_SHOP_HEIGHT,
-        ui,
-        "UIWindow.img/Shop/TabBuy/enabled/0",
+        "All",
         ui_foundation::UiRect::new(7.0, 95.0, 54.0, 21.0),
-    )?;
+    );
+    composite_npc_shop_tab(&mut pixels, ui, 61, 100, state.buy_recommended)?;
+    ui_foundation::draw_tab_label(
+        font,
+        &mut pixels,
+        NPC_SHOP_WIDTH,
+        NPC_SHOP_HEIGHT,
+        "Recommended",
+        ui_foundation::UiRect::new(61.0, 95.0, 100.0, 21.0),
+    );
+    let sell_tab_labels = ["Equip", "Use", "Setup", "Etc", "Cash"];
     for (index, tab) in storage_tabs().into_iter().enumerate() {
-        composite_npc_shop_tab(&mut pixels, ui, 237 + index * 39, 39, state.tab == tab)?;
-        composite_nx_ui_bitmap_centered(
+        let bounds = ui_foundation::npc_shop_sell_tab(index);
+        composite_npc_shop_tab(
+            &mut pixels,
+            ui,
+            bounds.x as usize,
+            bounds.width as usize,
+            state.tab == tab,
+        )?;
+        ui_foundation::draw_tab_label(
+            font,
             &mut pixels,
             NPC_SHOP_WIDTH,
             NPC_SHOP_HEIGHT,
-            ui,
-            &format!(
-                "UIWindow.img/Shop/TabSell/{}/{index}",
-                if state.tab == tab {
-                    "enabled"
-                } else {
-                    "disabled"
-                }
-            ),
-            ui_foundation::UiRect::new(237.0 + index as f32 * 39.0, 95.0, 39.0, 21.0),
-        )?;
+            sell_tab_labels[index],
+            bounds,
+        );
     }
     let sell: Vec<_> = inventory
         .items
@@ -704,6 +770,21 @@ fn render_npc_shop_panel(
             }
         }
     }
+    if state.buy_recommended && state.buy_item_indices.is_empty() {
+        draw_dialogue_text(
+            font,
+            &mut pixels,
+            NPC_SHOP_WIDTH,
+            NPC_SHOP_HEIGHT,
+            "No recommended items",
+            48,
+            180,
+            12.0,
+            160,
+            16,
+            [105, 105, 105],
+        );
+    }
     let balance = if state.shop.currency_item_id > 0 {
         let currency_item_id = state.shop.currency_item_id;
         if let Some((w, h, icon)) = inventory_item_icon(currency_item_id, items, characters, icons)
@@ -893,6 +974,11 @@ impl ClientApp {
             self.npc_shop_texture = None;
             return;
         };
+        state.update_buy_item_indices(
+            self.active_character.as_ref(),
+            inventory,
+            &self.character_archive,
+        );
         state.buy_scroll = state
             .buy_scroll
             .min(state.buy_item_indices.len().saturating_sub(NPC_SHOP_ROWS));
@@ -936,7 +1022,7 @@ impl ClientApp {
             &self.font,
             state,
             inventory,
-            self.active_character.as_ref().map(|c| &c.look),
+            self.active_character.as_ref(),
             &self.legacy_ui_archive,
             &self.npc_archive,
             &self.item_archive,
@@ -1090,22 +1176,30 @@ impl ClientApp {
                 self.refresh_npc_shop_texture();
                 return;
             }
-            state.quantity = if name == "BtBuy" {
-                state
+            if name == "BtBuy" {
+                let selected_item = state
                     .buy_selection
                     .and_then(|index| state.buy_item_indices.get(index))
                     .and_then(|shop_index| state.shop.items.get(*shop_index))
-                    .map(npc_shop_buy_quantity)
+                    .map(|item| (item.slot, item.item_id));
+                state.hovered_item = None;
+                if let Some((slot, item_id)) = selected_item {
+                    self.buy_npc_shop_item(slot, item_id);
+                } else {
+                    self.refresh_npc_shop_texture();
+                }
+                return;
             } else {
-                self.inventory
+                state.quantity = self
+                    .inventory
                     .as_ref()
                     .and_then(|inv| {
                         inv.items.iter().find(|i| {
                             i.inventory_type == state.tab && Some(i.slot) == state.sell_selection
                         })
                     })
-                    .and_then(npc_shop_sell_quantity)
-            };
+                    .and_then(npc_shop_sell_quantity);
+            }
             state.hovered_item = None;
             if state
                 .quantity
@@ -1118,13 +1212,25 @@ impl ClientApp {
             self.refresh_npc_shop_texture();
             return;
         }
-        if (96.0..115.0).contains(&y) && (237.0..432.0).contains(&x) {
-            let index = ((x - 237.0) / 39.0) as usize;
-            state.tab = storage_tabs()[index.min(4)];
-            state.sell_scroll = 0;
-            state.sell_selection = None;
-            state.last_sell_click = None;
-            state.hovered_item = None;
+        if (96.0..115.0).contains(&y) && (7.0..161.0).contains(&x) {
+            let recommended = x >= 61.0;
+            if state.buy_recommended != recommended {
+                state.buy_recommended = recommended;
+                state.buy_scroll = 0;
+                state.buy_selection = None;
+                state.last_buy_click = None;
+                state.hovered_item = None;
+            }
+        } else if (95.0..116.0).contains(&y) && (237.0..446.0).contains(&x) {
+            if let Some(index) = (0..5).find(|index| {
+                ui_foundation::npc_shop_sell_tab(*index).contains(x, y)
+            }) {
+                state.tab = storage_tabs()[index];
+                state.sell_scroll = 0;
+                state.sell_selection = None;
+                state.last_sell_click = None;
+                state.hovered_item = None;
+            }
         } else if let Some(row) = npc_shop_row_at(x, y, false) {
             let index = state.buy_scroll + row;
             if index < state.buy_item_indices.len() {
@@ -1140,6 +1246,18 @@ impl ClientApp {
                     Some((index, now))
                 };
                 if double_click {
+                    let equipment = state
+                        .buy_item_indices
+                        .get(index)
+                        .and_then(|shop_index| state.shop.items.get(*shop_index))
+                        .filter(|item| npc_shop_item_is_equipment(item.item_id))
+                        .map(|item| (item.slot, item.item_id));
+                    if let Some((slot, item_id)) = equipment {
+                        state.quantity = None;
+                        state.hovered_item = None;
+                        self.buy_npc_shop_item(slot, item_id);
+                        return;
+                    }
                     state.quantity = state
                         .buy_item_indices
                         .get(index)
@@ -1210,6 +1328,46 @@ impl ClientApp {
             .is_some_and(|quantity| quantity.maximum == 1)
         {
             self.confirm_npc_shop_quantity();
+        }
+        self.refresh_npc_shop_texture();
+    }
+
+    fn buy_npc_shop_item(&mut self, slot: i16, item_id: i32) {
+        if self.npc_shop.as_ref().is_none_or(|state| state.pending) {
+            return;
+        }
+
+        let unsupported_currency = self.npc_shop.as_ref().is_some_and(|state| {
+            state
+                .shop
+                .items
+                .iter()
+                .find(|item| item.slot == slot && item.item_id == item_id)
+                .is_some_and(|item| item.price <= 0 && item.pitch <= 0)
+        });
+        if unsupported_currency {
+            self.show_server_notice_popup(
+                "This item requires a special currency that's not supported.",
+            );
+            self.refresh_npc_shop_texture();
+            return;
+        }
+
+        let Some(packet) = openstory_protocol::npc_shop_item_action(slot, item_id, 1, true).ok()
+        else {
+            return;
+        };
+        let Some(session) = self.session.as_ref() else {
+            return;
+        };
+        match session.send_packet(packet) {
+            Ok(()) => {
+                if let Some(state) = self.npc_shop.as_mut() {
+                    state.pending = true;
+                    state.quantity = None;
+                }
+            }
+            Err(error) => eprintln!("OpenStoryRS: shop action failed: {error}"),
         }
         self.refresh_npc_shop_texture();
     }

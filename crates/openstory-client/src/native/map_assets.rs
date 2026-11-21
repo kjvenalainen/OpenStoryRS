@@ -387,18 +387,34 @@ fn append_map_art_sprite_with_culling(
         }
     }
 
-    let cached = if let Some(cached) = cache.get(path) {
-        cached
+    let raw_cache_key = bitmap_cache_key(bitmap.cache_key());
+    let pixels = if let Some(cached) = cache.get(&raw_cache_key) {
+        cached.3
     } else {
         let pixels = bitmap
             .decode_bgra_shared()
             .map_err(|error| error.to_string())?;
-        let cached = (width, height, origin, pixels);
-        cache.insert(path.to_owned(), cached.clone());
-        cached
+        cache.insert(
+            raw_cache_key,
+            (width, height, origin, Arc::clone(&pixels)),
+        );
+        pixels
     };
-    let texture_key = map_texture_key(path, opacity, flipped);
-    let pixels = prepare_map_pixels(&cached.3, width, height, opacity, flipped);
+    let texture_key = map_bitmap_texture_key(
+        path,
+        bitmap.cache_key(),
+        opacity,
+        flipped,
+    );
+    let pixels = if let Some(pixels) = cache.get_prepared(&texture_key) {
+        pixels
+    } else {
+        let pixels = prepare_map_pixels(&pixels, width, height, opacity, flipped);
+        if opacity != 255 || flipped {
+            cache.insert_prepared(texture_key.clone(), Arc::clone(&pixels));
+        }
+        pixels
+    };
     sprites.push(DecodedSprite {
         texture_key,
         rect: SpriteRect {

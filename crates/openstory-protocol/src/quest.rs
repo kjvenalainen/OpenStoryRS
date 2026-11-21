@@ -42,10 +42,12 @@ pub enum QuestUpdate {
     Completed { id: i16, timestamp: i64 },
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum StatusInfoUpdate {
     Item { item_id: i32, quantity: i32 },
+    Meso { gain: i32 },
     Experience { white: bool, gain: i32, bonus: i32 },
+    InfoText(String),
 }
 
 /// A server-reported reason a quest action could not be completed.
@@ -156,7 +158,7 @@ pub fn parse_quest_status_update(bytes: &[u8]) -> Result<Option<QuestUpdate>, Pa
     Ok(Some(update))
 }
 
-/// Parses the item and experience feed variants of `SHOW_STATUS_INFO`.
+/// Parses item, meso, experience, and script info-text variants of `SHOW_STATUS_INFO`.
 /// Other status modes are left to their owning handlers.
 pub fn parse_status_info_update(bytes: &[u8]) -> Result<Option<StatusInfoUpdate>, PacketError> {
     let mut packet = PacketReader::new(bytes);
@@ -167,6 +169,12 @@ pub fn parse_status_info_update(bytes: &[u8]) -> Result<Option<StatusInfoUpdate>
                 item_id: packet.read_i32()?,
                 quantity: packet.read_i32()?,
             })),
+            1 => {
+                packet.skip(1)?;
+                Ok(Some(StatusInfoUpdate::Meso {
+                    gain: packet.read_i32()?,
+                }))
+            }
             _ => Ok(None),
         },
         3 => {
@@ -177,6 +185,12 @@ pub fn parse_status_info_update(bytes: &[u8]) -> Result<Option<StatusInfoUpdate>
             packet.skip(19)?;
             Ok(Some(StatusInfoUpdate::Experience { white, gain, bonus }))
         }
+        5 => {
+            let gain = packet.read_i32()?;
+            packet.skip(2)?;
+            Ok(Some(StatusInfoUpdate::Meso { gain }))
+        }
+        9 => Ok(Some(StatusInfoUpdate::InfoText(packet.read_string()?))),
         _ => Ok(None),
     }
 }
@@ -325,5 +339,26 @@ fn expect_opcode(packet: &mut PacketReader<'_>, expected: u16) -> Result<(), Pac
         Ok(())
     } else {
         Err(PacketError::UnexpectedOpcode { expected, actual })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_script_info_text_used_by_title_quests() {
+        let mut packet = PacketWriter::new(OPCODE_SHOW_STATUS_INFO);
+        packet.write_i8(9);
+        packet
+            .write_string("You have earned the <Beginner Adventurer> title.")
+            .unwrap();
+
+        assert_eq!(
+            parse_status_info_update(&packet.into_bytes()).unwrap(),
+            Some(StatusInfoUpdate::InfoText(
+                "You have earned the <Beginner Adventurer> title.".to_owned()
+            ))
+        );
     }
 }

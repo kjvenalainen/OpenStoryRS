@@ -3,9 +3,6 @@ use super::*;
 const MAX_MAP_PREFETCH_CANDIDATES: usize = 3;
 const MAX_PREFETCHED_MAP_SCENES: usize = 3;
 const MAX_PREFETCHED_MAP_SCENE_BYTES: usize = 128 * 1024 * 1024;
-const MAP_TEXTURE_UPLOAD_BATCH_BYTES: usize = 4 * 1024 * 1024;
-const MAP_TEXTURE_UPLOAD_BATCH_IMAGES: usize = 4;
-const MAP_TEXTURE_UPLOAD_BATCH_MAX_DIMENSION: u32 = 512;
 
 fn decoded_scene_bytes(scene: &LoginSceneAssets) -> usize {
     let mut bitmaps = HashSet::new();
@@ -291,106 +288,67 @@ impl ClientApp {
             scene,
             local_name_label_index,
             unique_sprite_indices,
-            next_sprite: 0,
-            textures: Vec::new(),
-            texture_indices: HashMap::new(),
         });
     }
 
     pub(super) fn advance_pending_map_scene_upload(&mut self) {
-        let Some(pending) = self.pending_map_scene_upload.as_ref() else {
+        let Some(pending) = self.pending_map_scene_upload.take() else {
             return;
         };
-        let start = pending.next_sprite;
-        let mut end = start;
-        let mut batch_bytes = 0_usize;
-        while end < pending.unique_sprite_indices.len()
-            && end - start < MAP_TEXTURE_UPLOAD_BATCH_IMAGES
-        {
-            let sprite = &pending.scene.sprites[pending.unique_sprite_indices[end]];
-            let is_large = sprite.texture_width > MAP_TEXTURE_UPLOAD_BATCH_MAX_DIMENSION
-                || sprite.texture_height > MAP_TEXTURE_UPLOAD_BATCH_MAX_DIMENSION;
-            if end > start && is_large {
-                break;
-            }
-            let bytes = (sprite.texture_width as usize)
-                .saturating_mul(sprite.texture_height as usize)
-                .saturating_mul(4);
-            if end > start && batch_bytes.saturating_add(bytes) > MAP_TEXTURE_UPLOAD_BATCH_BYTES {
-                break;
-            }
-            batch_bytes = batch_bytes.saturating_add(bytes);
-            end += 1;
-            if is_large {
-                break;
-            }
-        }
-
-        if end > start {
-            let atlas_images = {
-                let pending = self.pending_map_scene_upload.as_ref().unwrap();
-                pending.unique_sprite_indices[start..end]
-                    .iter()
-                    .map(|index| {
-                        let sprite = &pending.scene.sprites[*index];
-                        BgraImage {
-                            width: sprite.texture_width,
-                            height: sprite.texture_height,
-                            pixels: sprite.pixels.as_ref(),
-                        }
-                    })
-                    .collect::<Vec<_>>()
-            };
-            let result = self
-                .renderer
-                .as_ref()
-                .ok_or_else(|| "graphics are not ready to upload a map".to_owned())
-                .and_then(|renderer| {
-                    renderer
-                        .upload_bgra_atlas(&atlas_images)
-                        .map_err(|error| error.to_string())
-                });
-            match result {
-                Ok(textures) => {
-                    let pending = self.pending_map_scene_upload.as_mut().unwrap();
-                    for (offset, texture) in textures.into_iter().enumerate() {
-                        let sprite_index = pending.unique_sprite_indices[start + offset];
-                        let key = pending.scene.sprites[sprite_index].texture_key.clone();
-                        let texture_index = pending.textures.len();
-                        pending.texture_indices.insert(key, texture_index);
-                        pending.textures.push(texture);
-                    }
-                    pending.next_sprite = end;
+        let atlas_images = pending
+            .unique_sprite_indices
+            .iter()
+            .map(|index| {
+                let sprite = &pending.scene.sprites[*index];
+                BgraImage {
+                    width: sprite.texture_width,
+                    height: sprite.texture_height,
+                    pixels: sprite.pixels.as_ref(),
                 }
-                Err(error) => {
-                    let pending = self.pending_map_scene_upload.take().unwrap();
-                    self.finish_map_scene_load(
-                        pending.map_id,
-                        pending.portal,
-                        pending.music_path,
-                        Err(error),
-                    );
-                    return;
-                }
-            }
-        }
-
-        let finished = self
-            .pending_map_scene_upload
+            })
+            .collect::<Vec<_>>();
+        let result = self
+            .renderer
             .as_ref()
-            .is_some_and(|pending| pending.next_sprite == pending.unique_sprite_indices.len());
-        if finished {
-            let pending = self.pending_map_scene_upload.take().unwrap();
-            let result = self.replace_scene_with_uploaded(
-                pending.scene,
-                pending.local_name_label_index,
-                pending.textures,
-                pending.texture_indices,
-            );
-            self.finish_map_scene_load(pending.map_id, pending.portal, pending.music_path, result);
-        } else if let Some(window) = self.window.as_ref() {
-            window.request_redraw();
-        }
+            .ok_or_else(|| "graphics are not ready to upload a map".to_owned())
+            .and_then(|renderer| {
+                renderer
+                    .upload_bgra_atlas(&atlas_images)
+                    .map_err(|error| error.to_string())
+            });
+        drop(atlas_images);
+        let (textures, texture_indices) = match result {
+            Ok(textures) => {
+                let texture_indices = pending
+                    .unique_sprite_indices
+                    .iter()
+                    .enumerate()
+                    .map(|(texture_index, sprite_index)| {
+                        (
+                            pending.scene.sprites[*sprite_index].texture_key.clone(),
+                            texture_index,
+                        )
+                    })
+                    .collect();
+                (textures, texture_indices)
+            }
+            Err(error) => {
+                self.finish_map_scene_load(
+                    pending.map_id,
+                    pending.portal,
+                    pending.music_path,
+                    Err(error),
+                );
+                return;
+            }
+        };
+        let result = self.replace_scene_with_uploaded(
+            pending.scene,
+            pending.local_name_label_index,
+            textures,
+            texture_indices,
+        );
+        self.finish_map_scene_load(pending.map_id, pending.portal, pending.music_path, result);
     }
 
     fn finish_map_scene_load(
@@ -428,6 +386,9 @@ impl ClientApp {
                 self.character_info_texture = None;
                 self.cash_shop = None;
                 self.cash_shop_texture = None;
+                self.cash_shop_hit_regions.clear();
+                self.cash_shop_hovered_item = None;
+                self.inventory_tooltip_texture = None;
                 self.show_status = false;
                 self.status_auto_confirmation = false;
                 self.status_waiting_for_stats = false;

@@ -141,7 +141,30 @@ impl ClientApp {
         }
     }
 
+    pub(super) fn open_pet_equipment_panel(&mut self) {
+        self.show_equipment_inventory = true;
+        self.show_pet_equipment = true;
+        self.pet_equipment_scroll_row = 0;
+        let equipment_offset = self.dialog_window_offset(DialogWindow::EquipmentInventory);
+        self.dialog_window_offsets
+            .insert(DialogWindow::PetEquipment, equipment_offset);
+        self.refresh_equipment_inventory_texture();
+        self.refresh_pet_equipment_texture();
+    }
+
+    pub(super) fn toggle_pet_equipment_panel(&mut self) {
+        if self.show_pet_equipment {
+            self.show_pet_equipment = false;
+        } else {
+            self.open_pet_equipment_panel();
+        }
+    }
+
     pub(super) fn refresh_inventory_tooltip_texture(&mut self) {
+        if self.cash_shop.is_some() {
+            self.refresh_cash_shop_tooltip_texture();
+            return;
+        }
         if self.npc_shop.is_some() {
             self.refresh_npc_shop_tooltip_texture();
             return;
@@ -1397,7 +1420,7 @@ impl ClientApp {
             self.close_storage();
             return;
         }
-        if (240.0..435.0).contains(&x) && (91.0..117.0).contains(&y) {
+        if (240.0..449.0).contains(&x) && (91.0..119.0).contains(&y) {
             let tabs = [
                 openstory_protocol::InventoryType::Equip,
                 openstory_protocol::InventoryType::Use,
@@ -1405,12 +1428,16 @@ impl ClientApp {
                 openstory_protocol::InventoryType::Etc,
                 openstory_protocol::InventoryType::Cash,
             ];
-            if let Some(storage) = self.storage.as_mut() {
-                storage.tab = tabs[((x - 240.0) / 39.0) as usize];
-                storage.inventory_scroll = 0;
-                storage.selected_inventory = None;
+            if let Some(index) =
+                (0..5).find(|index| ui_foundation::storage_tab(*index).contains(x, y))
+            {
+                if let Some(storage) = self.storage.as_mut() {
+                    storage.tab = tabs[index];
+                    storage.inventory_scroll = 0;
+                    storage.selected_inventory = None;
+                }
+                self.refresh_storage_texture();
             }
-            self.refresh_storage_texture();
             return;
         }
         if (263.0..367.0).contains(&x) && (52.0..69.0).contains(&y) {

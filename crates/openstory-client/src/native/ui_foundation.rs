@@ -9,7 +9,7 @@ pub(super) const LOGICAL_HEIGHT: f32 = 768.0;
 pub(super) const SKILL_MACRO_BUTTON: UiRect = UiRect::new(122.0, 265.0, 48.0, 18.0);
 pub(super) const REVIVE_BUTTON: UiRect = UiRect::new(482.0, 425.0, 66.0, 27.0);
 
-pub(super) const STATUS_AUTO_BUTTON: UiRect = UiRect::new(98.0, 203.0, 73.0, 35.0);
+pub(super) const STATUS_AUTO_BUTTON: UiRect = UiRect::new(98.0, 201.0, 73.0, 35.0);
 pub(super) const STATUS_DETAIL_BUTTON: UiRect = UiRect::new(124.0, 323.0, 47.0, 18.0);
 
 pub(super) fn status_ap_buttons() -> [(openstory_protocol::AbilityStat, UiRect); 6] {
@@ -123,6 +123,9 @@ pub(super) const INVENTORY_GRID: UiGrid = UiGrid {
 pub(super) const INVENTORY_CLOSE_BUTTON: UiRect = super::ui_dialog::close_button(156.0, 6.0);
 pub(super) const INVENTORY_GATHER_BUTTON: UiRect = UiRect::new(126.0, 6.0, 12.0, 12.0);
 pub(super) const INVENTORY_SORT_BUTTON: UiRect = UiRect::new(141.0, 6.0, 12.0, 12.0);
+pub(super) const EQUIPMENT_PET_BUTTON: UiRect = UiRect::new(115.0, 280.0, 54.0, 18.0);
+pub(super) const PET_EQUIPMENT_CLOSE_BUTTON: UiRect =
+    super::ui_dialog::close_button(super::PET_EQUIPMENT_PANEL_WIDTH as f32 - 19.0, 6.0);
 pub(super) const INVENTORY_MESO_BUTTON: UiRect = UiRect::new(5.0, 253.0, 19.0, 23.0);
 pub(super) const QUEST_LIST_CLOSE_BUTTON: UiRect =
     super::ui_dialog::close_button(super::QUEST_LOG_LIST_WIDTH as f32 - 18.0, 5.0);
@@ -168,7 +171,15 @@ pub(super) const QUICKSLOT_GRID: UiGrid = UiGrid {
 };
 
 pub(super) fn inventory_tab(index: usize) -> UiRect {
-    UiRect::new(5.0 + index as f32 * 31.0, 25.0, 31.0, 17.0)
+    UiRect::new(3.0 + index as f32 * 34.0, 25.0, 33.0, 17.0)
+}
+
+pub(super) fn storage_tab(index: usize) -> UiRect {
+    UiRect::new(240.0 + index as f32 * 42.0, 98.0, 41.0, 21.0)
+}
+
+pub(super) fn npc_shop_sell_tab(index: usize) -> UiRect {
+    UiRect::new(237.0 + index as f32 * 42.0, 95.0, 41.0, 21.0)
 }
 
 /// Scroll offsets are clamped before either rendering or hit testing uses them.
@@ -270,6 +281,64 @@ pub(super) fn measure_text(font: &fontdue::Font, text: &str, size: f32) -> f32 {
         previous = Some(character);
     }
     width
+}
+
+pub(super) fn draw_tab_label(
+    font: &fontdue::Font,
+    pixels: &mut [u8],
+    canvas_width: usize,
+    canvas_height: usize,
+    label: &str,
+    bounds: UiRect,
+) {
+    const SIZE: f32 = 10.0;
+    const LINE_HEIGHT: usize = 12;
+    const OUTLINE: [u8; 3] = [62, 54, 47];
+    const COLOR: [u8; 3] = [255, 255, 255];
+
+    let label_font = bold_font().unwrap_or(font);
+    let label_width = measure_text(label_font, label, SIZE);
+    let x = (bounds.x + ((bounds.width - label_width) / 2.0).max(0.0)).round() as i32;
+    let y = (bounds.y + ((bounds.height - LINE_HEIGHT as f32) / 2.0)).round() as i32;
+    let max_width = bounds.width.ceil().max(1.0) as usize;
+    let max_height = LINE_HEIGHT;
+    for (offset_x, offset_y) in [
+        (-1, -1),
+        (0, -1),
+        (1, -1),
+        (-1, 0),
+        (1, 0),
+        (-1, 1),
+        (0, 1),
+        (1, 1),
+    ] {
+        super::draw_dialogue_text(
+            label_font,
+            pixels,
+            canvas_width,
+            canvas_height,
+            label,
+            x + offset_x,
+            y + offset_y,
+            SIZE,
+            max_width,
+            max_height,
+            OUTLINE,
+        );
+    }
+    super::draw_dialogue_text(
+        label_font,
+        pixels,
+        canvas_width,
+        canvas_height,
+        label,
+        x,
+        y,
+        SIZE,
+        max_width,
+        max_height,
+        COLOR,
+    );
 }
 
 pub(super) fn ellipsize(font: &fontdue::Font, text: &str, size: f32, max_width: f32) -> String {

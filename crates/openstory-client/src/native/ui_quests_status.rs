@@ -312,10 +312,18 @@ fn quest_is_completable(
     inventory: Option<&openstory_protocol::InventorySnapshot>,
     log: &openstory_protocol::QuestLog,
 ) -> bool {
-    let Ok(Some(end_check)) = archive.root().resolve(&format!("Check.img/{}/1", quest.id)) else {
-        return false;
-    };
-    if !quest_prerequisites_met(&end_check, log) {
+    // Some v83 quests omit Check.img/{id}/1 entirely. Cosmic treats that as
+    // an empty completion-requirement set, so an active quest with no end
+    // check is still eligible to turn in.
+    let end_check = archive
+        .root()
+        .resolve(&format!("Check.img/{}/1", quest.id))
+        .ok()
+        .flatten();
+    if let Some(end_check) = &end_check
+        && (!quest_prerequisites_met(end_check, log)
+            || !quest_info_progress_met(end_check, quest, log))
+    {
         return false;
     }
     for (item_id, required) in quest_requirement_pairs(archive, quest.id, 1, "item") {
@@ -338,13 +346,69 @@ fn quest_is_completable(
             return false;
         }
     }
-    let required_meso = quest_node_integer(&end_check, "money").unwrap_or(0);
+    let required_meso = end_check
+        .as_ref()
+        .and_then(|end_check| quest_node_integer(end_check, "money"))
+        .unwrap_or(0);
     if required_meso > 0 {
         if inventory.map_or(0, |snapshot| snapshot.meso) < i64::from(required_meso) {
             return false;
         }
     }
     true
+}
+
+fn quest_info_progress_met(
+    end_check: &openstory_assets::NxNode,
+    quest: &openstory_protocol::QuestEntry,
+    log: &openstory_protocol::QuestLog,
+) -> bool {
+    let Ok(Some(requirements)) = end_check.child("infoex") else {
+        return true;
+    };
+    let Ok(entries) = requirements.children() else {
+        return false;
+    };
+    let mut expected = Vec::with_capacity(entries.len());
+    for requirement in entries {
+        let Ok(name) = requirement.name() else {
+            return false;
+        };
+        let Ok(index) = name.parse::<usize>() else {
+            return false;
+        };
+        let Ok(Some(value)) = requirement.child("value") else {
+            return false;
+        };
+        let Ok(NodeValue::String(value)) = value.value() else {
+            return false;
+        };
+        expected.push((index, value));
+    }
+    if expected.is_empty() {
+        return true;
+    }
+    expected.sort_by_key(|(index, _)| *index);
+
+    // Cosmic stores InfoEx progress under the end-check's infoNumber quest,
+    // and sends that quest's progress string in the ordinary quest update.
+    let progress_quest_id = quest_node_integer(end_check, "infoNumber")
+        .filter(|id| *id > 0)
+        .and_then(|id| i16::try_from(id).ok())
+        .unwrap_or(quest.id);
+    let progress = if progress_quest_id == quest.id {
+        Some(quest.data.as_str())
+    } else {
+        log.started
+            .iter()
+            .find(|entry| entry.id == progress_quest_id)
+            .map(|entry| entry.data.as_str())
+    };
+    let expected = expected
+        .into_iter()
+        .map(|(_, value)| value)
+        .collect::<String>();
+    progress == Some(expected.as_str())
 }
 
 fn quest_job_requirements_met(start_check: &openstory_assets::NxNode, player_job: u16) -> bool {
@@ -705,6 +769,60 @@ fn quest_helper_entries(
         .collect()
 }
 
+#[allow(clippy::too_many_arguments)]
+fn draw_quest_helper_text(
+    font: &fontdue::Font,
+    pixels: &mut [u8],
+    width: usize,
+    height: usize,
+    text: &str,
+    x: i32,
+    y: i32,
+    size: f32,
+    max_width: usize,
+    max_height: usize,
+    color: [u8; 3],
+) {
+    const OUTLINE: [u8; 3] = [246, 237, 216];
+    for (offset_x, offset_y) in [
+        (-1, -1),
+        (0, -1),
+        (1, -1),
+        (-1, 0),
+        (1, 0),
+        (-1, 1),
+        (0, 1),
+        (1, 1),
+    ] {
+        draw_dialogue_text(
+            font,
+            pixels,
+            width,
+            height,
+            text,
+            x + offset_x,
+            y + offset_y,
+            size,
+            max_width,
+            max_height,
+            OUTLINE,
+        );
+    }
+    draw_dialogue_text(
+        font,
+        pixels,
+        width,
+        height,
+        text,
+        x,
+        y,
+        size,
+        max_width,
+        max_height,
+        color,
+    );
+}
+
 fn render_quest_helper_panel(
     font: &fontdue::Font,
     entries: &[QuestHelperDisplayEntry],
@@ -714,7 +832,7 @@ fn render_quest_helper_panel(
     const HEADER_HEIGHT: usize = 25;
     const CONTENT_TOP: usize = 27;
     const ENTRY_NAME_HEIGHT: usize = 18;
-    const OBJECTIVE_HEIGHT: usize = 14;
+    const OBJECTIVE_HEIGHT: usize = 16;
     const ENTRY_GAP: usize = 7;
     const BOTTOM_PADDING: usize = 5;
     const HEADER_CLOSE_BUTTON_X: usize = WIDTH - 14;
@@ -771,18 +889,20 @@ fn render_quest_helper_panel(
     );
 
     let title_font = ui_foundation::bold_font().unwrap_or(font);
-    draw_dialogue_text(
+    let title = format!("Quest Helper ({}/{})", entries.len(), 5);
+    let title = ui_foundation::ellipsize(title_font, &title, 11.0, (WIDTH - 76) as f32);
+    draw_quest_helper_text(
         title_font,
         &mut pixels,
         WIDTH,
         height,
-        &format!("Quest Helper ({}/{})", entries.len(), 5),
+        &title,
         5,
         4,
-        9.0,
+        11.0,
         WIDTH - 76,
-        13,
-        [40, 42, 39],
+        15,
+        [27, 27, 23],
     );
     let _ = composite_nx_ui_bitmap(
         &mut pixels,
@@ -791,7 +911,7 @@ fn render_quest_helper_panel(
         ui_archive,
         "UIWindow.img/QuestAlarm/BtQ/normal/0",
         HEADER_QUEST_BUTTON_X as i32,
-        6,
+        5,
     );
     let _ = composite_nx_ui_bitmap(
         &mut pixels,
@@ -800,7 +920,7 @@ fn render_quest_helper_panel(
         ui_archive,
         "UIWindow.img/QuestAlarm/BtAuto/normal/0",
         HEADER_AUTO_BUTTON_X as i32,
-        6,
+        5,
     );
     let _ = composite_nx_ui_bitmap(
         &mut pixels,
@@ -830,8 +950,8 @@ fn render_quest_helper_panel(
     }
     for entry in entries {
         let name_font = ui_foundation::bold_font().unwrap_or(font);
-        let name = ui_foundation::ellipsize(name_font, &entry.name, 10.0, (WIDTH - 34) as f32);
-        draw_dialogue_text(
+        let name = ui_foundation::ellipsize(name_font, &entry.name, 12.0, (WIDTH - 34) as f32);
+        draw_quest_helper_text(
             name_font,
             &mut pixels,
             WIDTH,
@@ -839,10 +959,10 @@ fn render_quest_helper_panel(
             &name,
             8,
             y,
-            10.0,
+            12.0,
             WIDTH - 34,
-            15,
-            [34, 33, 29],
+            16,
+            [28, 27, 23],
         );
         let _ = composite_nx_ui_bitmap_scaled_to(
             &mut pixels,
@@ -857,18 +977,19 @@ fn render_quest_helper_panel(
         );
         y += ENTRY_NAME_HEIGHT as i32;
         for objective in &entry.objectives {
-            ui_foundation::draw_text_role(
+            let objective = ui_foundation::ellipsize(font, objective, 11.0, (WIDTH - 24) as f32);
+            draw_quest_helper_text(
                 font,
                 &mut pixels,
                 WIDTH,
                 height,
-                objective,
+                &objective,
                 11,
                 y,
-                ui_foundation::UiTextRole::Small,
+                11.0,
                 WIDTH - 24,
-                13,
-                Some([58, 57, 52]),
+                16,
+                [39, 37, 32],
             );
             y += OBJECTIVE_HEIGHT as i32;
         }
@@ -1039,6 +1160,7 @@ fn render_quest_log_panel(
     let active = tab == QuestLogTab::Active;
     let available = tab == QuestLogTab::Available;
     let completed = tab == QuestLogTab::Completed;
+    let tab_labels = ["Available", "In Progress", "Complete"];
     for (index, selected_tab) in [available, active, completed].into_iter().enumerate() {
         let tab_x = 10 + index * 70;
         let tab_state = if selected_tab { "1" } else { "0" };
@@ -1071,18 +1193,13 @@ fn render_quest_log_panel(
             (tab_x + 66) as i32,
             23,
         );
-        let label_state = if selected_tab { "enabled" } else { "disabled" };
-        let label_path = format!("UIWindow.img/Quest/Tab/{label_state}/{index}");
-        let label_width = [45, 51, 45][index];
-        let label_height = [11, 13, 13][index];
-        let _ = composite_nx_ui_bitmap(
+        ui_foundation::draw_tab_label(
+            font,
             &mut pixels,
             WIDTH,
             HEIGHT,
-            ui_archive,
-            &label_path,
-            (tab_x + (70 - label_width) / 2) as i32,
-            21 + (24 - label_height) / 2,
+            tab_labels[index],
+            ui_foundation::UiRect::new(tab_x as f32, 23.0, 70.0, 19.0),
         );
     }
     let title_font = ui_foundation::bold_font().unwrap_or(font);
@@ -1780,15 +1897,6 @@ fn render_status_detail_panel(
             Some([48, 41, 33]),
         );
     }
-    let _ = composite_nx_ui_bitmap(
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        ui_archive,
-        "Basic.img/BtHide/normal/0",
-        154,
-        177,
-    );
     pixels
 }
 

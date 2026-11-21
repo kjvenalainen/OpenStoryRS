@@ -223,21 +223,12 @@ fn character_cap_type(
     archive: &NxArchive,
     look: &openstory_protocol::CharacterLook,
 ) -> Result<AvatarCapType, String> {
-    let mut equips = look.equips.clone();
-    for &(slot, item_id) in &look.masked_equips {
-        if let Some((_, current_id)) = equips
-            .iter_mut()
-            .find(|(current_slot, _)| *current_slot == slot)
-        {
-            *current_id = item_id;
-        } else {
-            equips.push((slot, item_id));
-        }
-    }
+    let equips = character_visual_equips(look);
     let Some((_, item_id)) = equips
         .iter()
         .rev()
         .find(|(_, item_id)| *item_id > 0 && *item_id / 10_000 == 100)
+        .copied()
     else {
         return Ok(AvatarCapType::None);
     };
@@ -370,24 +361,7 @@ fn append_character_equipment(
     cap_type: AvatarCapType,
     cache: &mut MapArtCache,
 ) -> Result<(), String> {
-    let mut equips = look.equips.clone();
-    for &(slot, item_id) in &look.masked_equips {
-        if let Some((_, current_id)) = equips
-            .iter_mut()
-            .find(|(current_slot, _)| *current_slot == slot)
-        {
-            *current_id = item_id;
-        } else {
-            equips.push((slot, item_id));
-        }
-    }
-    if look.weapon_id > 0
-        && !equips
-            .iter()
-            .any(|(_, item_id)| (130..=170).contains(&(item_id / 10_000)))
-    {
-        equips.push((11, look.weapon_id));
-    }
+    let mut equips = character_visual_equips(look);
     equips.sort_by_key(|(slot, item_id)| (*slot, *item_id));
     let two_handed = match stance {
         "stand1" | "walk1" => false,
@@ -458,6 +432,54 @@ fn append_character_equipment(
         }
     }
     Ok(())
+}
+
+/// Returns the visible item for each visual equipment slot. OpenStory's
+/// `CharEquips::add_equip` stores clothing by the item's equip category, so a
+/// later cap/top/weapon replaces what was already in that category. Server
+/// masked equips and cash shop try-ons are applied after regular equips and
+/// therefore take precedence even when their signed inventory slot differs.
+fn character_visual_equips(look: &openstory_protocol::CharacterLook) -> Vec<(i8, i32)> {
+    let mut equips = Vec::new();
+    for &(slot, item_id) in look.equips.iter().chain(&look.masked_equips) {
+        let Some(visual_slot) = character_equip_visual_slot(item_id) else {
+            continue;
+        };
+        equips.retain(|(_, current_id)| {
+            character_equip_visual_slot(*current_id) != Some(visual_slot)
+        });
+        equips.push((slot, item_id));
+    }
+
+    if look.weapon_id > 0
+        && !equips
+            .iter()
+            .any(|(_, item_id)| (130..=170).contains(&(item_id / 10_000)))
+    {
+        equips.push((11, look.weapon_id));
+    }
+    equips
+}
+
+fn character_equip_visual_slot(item_id: i32) -> Option<u8> {
+    match item_id / 10_000 {
+        100 => Some(0),
+        101 => Some(1),
+        102 => Some(2),
+        103 => Some(3),
+        104 | 105 => Some(4),
+        106 => Some(5),
+        107 => Some(6),
+        108 => Some(7),
+        109 => Some(8),
+        110 => Some(9),
+        111 => Some(10),
+        112 => Some(11),
+        113 => Some(12),
+        114 => Some(13),
+        130..=170 => Some(14),
+        _ => None,
+    }
 }
 
 fn character_equip_category(item_id: i32) -> Option<&'static str> {

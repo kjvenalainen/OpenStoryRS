@@ -91,8 +91,9 @@ zero-pitch projectile refill entries stay available for recharge but are omitted
 from the buy list.
 
 The dialog alignment audit centers inventory, skill and shop tab labels using
-NX bitmap dimensions and origins. Pet equipment preserves the native 177px
-overlay border, and NPC names fit their nameplate before centering. AP and SP
+NX bitmap dimensions and origins. Pet equipment opens in a right-side drawer
+attached to the equipment inventory, with separate Equip and Remove actions.
+NPC names fit their nameplate before centering. AP and SP
 allocation hitboxes now match the visible NX buttons; stat value fields, skill
 row gaps and the skill scrollbar no longer allocate points. Keyboard item counts
 use the inventory's NX digit renderer, including complete counts above four

@@ -1472,14 +1472,6 @@ impl ClientApp {
         if self.status_auto_confirmation {
             return;
         }
-        if self.show_status_detail
-            && (STATUS_DETAIL_OFFSET_X + 154.0..STATUS_DETAIL_OFFSET_X + 167.0).contains(&x)
-            && (STATUS_DETAIL_OFFSET_Y + 177.0..STATUS_DETAIL_OFFSET_Y + 189.0).contains(&y)
-        {
-            self.show_status_detail = false;
-            self.refresh_status_texture();
-            return;
-        }
         if (5.0..22.0).contains(&y) && (153.0..174.0).contains(&x) {
             self.show_status = false;
             self.show_status_detail = false;

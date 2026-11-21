@@ -361,25 +361,26 @@ fn align_map_background_to_viewport(
 #[derive(Default)]
 struct MapArtCache {
     entries: HashMap<String, MapArtEntry>,
+    prepared_entries: HashMap<String, Arc<[u8]>>,
     last_access: HashMap<String, u64>,
     access_clock: u64,
     cached_bytes: usize,
 }
 
 impl MapArtCache {
-    fn get(&mut self, path: &str) -> Option<MapArtEntry> {
-        if !self.entries.contains_key(path) {
+    fn get(&mut self, key: &str) -> Option<MapArtEntry> {
+        if !self.entries.contains_key(key) {
             return None;
         }
         let access = self.next_access_stamp();
-        self.last_access.insert(path.to_owned(), access);
-        self.entries.get(path).cloned()
+        self.last_access.insert(key.to_owned(), access);
+        self.entries.get(key).cloned()
     }
 
-    fn insert(&mut self, path: String, entry: MapArtEntry) {
-        if self.entries.contains_key(&path) {
+    fn insert(&mut self, key: String, entry: MapArtEntry) {
+        if self.entries.contains_key(&key) {
             let access = self.next_access_stamp();
-            self.last_access.insert(path, access);
+            self.last_access.insert(key, access);
             return;
         }
         let entry_bytes = entry.3.len();
@@ -389,7 +390,7 @@ impl MapArtCache {
         while self.entries.len() >= MAP_ART_CACHE_MAX_ENTRIES
             || self.cached_bytes.saturating_add(entry_bytes) > MAP_ART_CACHE_MAX_BYTES
         {
-            let Some(evicted_path) = self
+            let Some(evicted_key) = self
                 .last_access
                 .iter()
                 .min_by_key(|(_, access)| *access)
@@ -397,19 +398,28 @@ impl MapArtCache {
             else {
                 break;
             };
-            self.last_access.remove(&evicted_path);
-            if let Some(evicted) = self.entries.remove(&evicted_path) {
+            self.last_access.remove(&evicted_key);
+            if let Some(evicted) = self.entries.remove(&evicted_key) {
                 self.cached_bytes = self.cached_bytes.saturating_sub(evicted.3.len());
             }
         }
         let access = self.next_access_stamp();
-        self.last_access.insert(path.clone(), access);
+        self.last_access.insert(key.clone(), access);
         self.cached_bytes += entry_bytes;
-        self.entries.insert(path, entry);
+        self.entries.insert(key, entry);
+    }
+
+    fn get_prepared(&self, texture_key: &str) -> Option<Arc<[u8]>> {
+        self.prepared_entries.get(texture_key).map(Arc::clone)
+    }
+
+    fn insert_prepared(&mut self, texture_key: String, pixels: Arc<[u8]>) {
+        self.prepared_entries.entry(texture_key).or_insert(pixels);
     }
 
     fn clear(&mut self) {
         self.entries.clear();
+        self.prepared_entries.clear();
         self.last_access.clear();
         self.access_clock = 0;
         self.cached_bytes = 0;

@@ -584,7 +584,7 @@ fn render_game_menu(archive: &NxArchive, font: &fontdue::Font) -> Result<Vec<u8>
 
     for (index, label) in GAME_MENU_ROWS.iter().enumerate() {
         let bounds = game_menu_row(index);
-        composite_nx_ui_tab(&mut pixels, width, height, archive, bounds, true)?;
+        composite_nx_ui_tab(&mut pixels, width, height, archive, bounds, false)?;
         draw_dialogue_text(
             font,
             &mut pixels,
@@ -596,7 +596,7 @@ fn render_game_menu(archive: &NxArchive, font: &fontdue::Font) -> Result<Vec<u8>
             11.0,
             bounds.width as usize - 18,
             16,
-            [255, 255, 255],
+            [48, 48, 48],
         );
     }
     Ok(pixels)

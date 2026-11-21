@@ -619,8 +619,37 @@ impl ClientApp {
         let origin_y = cursor.y - drag.grab_y;
         let clamped = ui_foundation::UiRect::new(origin_x, origin_y, base.width, base.height)
             .clamped_to_canvas();
-        self.dialog_window_offsets
-            .insert(drag.window, (clamped.x - base.x, clamped.y - base.y));
+        if self.show_pet_equipment
+            && self.show_equipment_inventory
+            && matches!(
+                drag.window,
+                DialogWindow::EquipmentInventory | DialogWindow::PetEquipment
+            )
+        {
+            let group_left = if drag.window == DialogWindow::PetEquipment {
+                clamped.x - EQUIPMENT_INVENTORY_PANEL_WIDTH as f32
+            } else {
+                clamped.x
+            };
+            let group = ui_foundation::UiRect::new(
+                group_left,
+                clamped.y,
+                (EQUIPMENT_INVENTORY_PANEL_WIDTH + PET_EQUIPMENT_PANEL_WIDTH) as f32,
+                EQUIPMENT_INVENTORY_PANEL_HEIGHT as f32,
+            )
+            .clamped_to_canvas();
+            let offset = (
+                group.x - EQUIPMENT_INVENTORY_PANEL_X,
+                group.y - EQUIPMENT_INVENTORY_PANEL_Y,
+            );
+            self.dialog_window_offsets
+                .insert(DialogWindow::EquipmentInventory, offset);
+            self.dialog_window_offsets
+                .insert(DialogWindow::PetEquipment, offset);
+        } else {
+            self.dialog_window_offsets
+                .insert(drag.window, (clamped.x - base.x, clamped.y - base.y));
+        }
         true
     }
 

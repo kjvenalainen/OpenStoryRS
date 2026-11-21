@@ -518,10 +518,25 @@ fn render_storage_reference_panel(
         ("UIWindow.img/Trunk/BtOutCoin/normal/0", 424, 293),
     ]);
     let tabs = [openstory_protocol::InventoryType::Equip, openstory_protocol::InventoryType::Use, openstory_protocol::InventoryType::Setup, openstory_protocol::InventoryType::Etc, openstory_protocol::InventoryType::Cash];
+    let tab_labels = ["Equip", "Use", "Setup", "Etc", "Cash"];
     for (index, tab) in tabs.into_iter().enumerate() {
-        let variant = if tab == active_tab { "enabled" } else { "disabled" };
-        let path = format!("UIWindow.img/Trunk/Tab/{variant}/{index}");
-        let _ = composite_nx_ui_bitmap(&mut pixels, WIDTH, HEIGHT, ui_archive, &path, 240 + index as i32 * 39, 98);
+        let bounds = ui_foundation::storage_tab(index);
+        let _ = composite_nx_ui_tab(
+            &mut pixels,
+            WIDTH,
+            HEIGHT,
+            ui_archive,
+            bounds,
+            tab == active_tab,
+        );
+        ui_foundation::draw_tab_label(
+            font,
+            &mut pixels,
+            WIDTH,
+            HEIGHT,
+            tab_labels[index],
+            bounds,
+        );
     }
     let available: Vec<_> = inventory.items.iter().filter(|item| item.inventory_type == active_tab && item.slot > 0).collect();
     for (x, top, rows, count, offset) in [(209, 86, STORAGE_LEFT_ROWS, storage.items.len(), storage_scroll), (440, 126, STORAGE_RIGHT_ROWS, available.len(), inventory_scroll)] {

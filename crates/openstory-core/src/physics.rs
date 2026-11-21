@@ -208,7 +208,7 @@ impl PhysicsEngine {
         }
 
         let left = target_x < body.x;
-        let target_x = if let Some(limit) = self.horizontal_limit(tree, body, target_x, false) {
+        let target_x = if let Some(limit) = self.horizontal_limit(tree, body, target_x, true) {
             body.stop_horizontal();
             limit
         } else {

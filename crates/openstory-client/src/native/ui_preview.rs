@@ -124,9 +124,18 @@ pub(super) fn run(
     };
 
     for name in screens {
+        if *name == "panel-menu-comparison" {
+            write_menu_comparison_preview(
+                output_dir, map, legacy_ui, ui, characters, npcs, skills, etc, items, mobs, quests,
+                strings, font,
+            )?;
+            continue;
+        }
         if name.starts_with("page-cash-shop") {
             let variant = match *name {
                 "page-cash-shop" => "catalog",
+                "page-cash-shop-remove-all" => "remove-all",
+                "page-cash-shop-tooltip" => "catalog-tooltip",
                 "page-cash-shop-locker" => "locker",
                 "page-cash-shop-coupon" => "coupon",
                 "page-cash-shop-coupon-pending" => "coupon-pending",
@@ -190,7 +199,7 @@ pub(super) fn run(
         let scene = if let Some(mode) = detail_animation_mode {
             build_monster_book_detail_scene(map, ui, items, characters, mobs, strings, font, mode)?
         } else if *name == "page-map-name-tags" {
-            build_map_name_tags_preview(map, ui, characters, npcs, strings, font)?
+            build_map_name_tags_preview(map, ui, characters, npcs, items, strings, font)?
         } else if *name == "panel-monster-book" {
             build_monster_book_detail_scene(
                 map,
@@ -911,10 +920,15 @@ pub(super) fn run(
                 "panel-skill-inventory"
                     | "panel-skill-inventory-disabled"
                     | "panel-skill-inventory-beginner"
+                    | "panel-skill-inventory-beginner-job"
                     | "panel-stats"
                     | "panel-stats-auto-assign"
                     | "panel-stats-detail"
                     | "panel-equipment-inventory"
+                    | "panel-pet-equipment"
+                    | "panel-pet-equipment-empty"
+                    | "panel-pet-equipment-worn"
+                    | "panel-pet-equipment-scroll"
             ) {
                 let (x, y, regions) = if *name == "panel-stats-auto-assign" {
                     let dialog = status_auto_assign_dialog_rect();
@@ -929,6 +943,7 @@ pub(super) fn run(
                     "panel-skill-inventory"
                         | "panel-skill-inventory-disabled"
                         | "panel-skill-inventory-beginner"
+                        | "panel-skill-inventory-beginner-job"
                 ) {
                     let mut regions = (0..3).map(ui_foundation::skill_tab).collect::<Vec<_>>();
                     regions
@@ -936,15 +951,28 @@ pub(super) fn run(
                     regions.push(ui_foundation::SKILL_MACRO_BUTTON);
                     (SKILL_BOOK_PANEL_X, SKILL_BOOK_PANEL_Y, regions)
                 } else if *name == "panel-equipment-inventory" {
-                    let regions = (1..=59)
+                    let mut regions = (1..=59)
                         .filter_map(equipment_inventory_slot_position)
                         .map(|(x, y)| ui_foundation::UiRect::new(x as f32, y as f32, 33.0, 33.0))
-                        .collect();
+                        .collect::<Vec<_>>();
+                    regions.push(ui_foundation::EQUIPMENT_PET_BUTTON);
                     (
                         EQUIPMENT_INVENTORY_PANEL_X,
                         EQUIPMENT_INVENTORY_PANEL_Y,
                         regions,
                     )
+                } else if name.starts_with("panel-pet-equipment") {
+                    let mut regions = vec![ui_foundation::PET_EQUIPMENT_CLOSE_BUTTON];
+                    regions.extend((0..PET_EQUIPMENT_VISIBLE_ROWS).map(|index| {
+                        ui_foundation::UiRect::new(
+                            8.0,
+                            PET_EQUIPMENT_GEAR_LIST_Y
+                                + index as f32 * PET_EQUIPMENT_GEAR_ROW_HEIGHT,
+                            PET_EQUIPMENT_PANEL_WIDTH as f32 - 16.0,
+                            PET_EQUIPMENT_GEAR_ROW_HEIGHT - 2.0,
+                        )
+                    }));
+                    (PET_EQUIPMENT_PANEL_X, PET_EQUIPMENT_PANEL_Y, regions)
                 } else {
                     let mut regions = ui_foundation::status_ap_buttons()
                         .map(|(_, rect)| rect)
@@ -1122,6 +1150,266 @@ pub(super) fn run(
 
     println!("UI previews saved in {}", output_dir.display());
     Ok(())
+}
+
+fn write_menu_comparison_preview(
+    output_dir: &Path,
+    map: &NxArchive,
+    legacy_ui: &NxArchive,
+    ui: &NxArchive,
+    characters: &NxArchive,
+    npcs: &NxArchive,
+    skills: &NxArchive,
+    etc: &NxArchive,
+    items: &NxArchive,
+    mobs: &NxArchive,
+    quests: &NxArchive,
+    strings: &NxArchive,
+    font: &fontdue::Font,
+) -> Result<(), String> {
+    const COLUMNS: usize = 3;
+    const ROWS: usize = 3;
+    const CELL_WIDTH: u32 = 680;
+    const CELL_HEIGHT: u32 = 500;
+    const GAP: u32 = 32;
+    const HEADER_HEIGHT: i32 = 28;
+    const PANEL_PADDING: u32 = 20;
+
+    let panels = vec![
+        (
+            "Item Inventory",
+            build_inventory_panel_scene(
+                "panel-item-inventory",
+                map,
+                legacy_ui,
+                characters,
+                items,
+                strings,
+                font,
+            )?,
+            "nx-window:live-inventory",
+        ),
+        (
+            "Equipment Inventory",
+            build_equipment_panel_scene(map, ui, characters, items, font)?,
+            "nx-window:live-equipment",
+        ),
+        (
+            "Pet Equipment",
+            build_pet_equipment_scene(
+                "panel-pet-equipment",
+                map,
+                ui,
+                characters,
+                items,
+                strings,
+                font,
+            )?,
+            "rendered-window:pet-equipment",
+        ),
+        (
+            "Skill Inventory",
+            build_scene(
+                "panel-skill-inventory",
+                map,
+                legacy_ui,
+                ui,
+                characters,
+                items,
+                skills,
+                etc,
+                strings,
+                font,
+            )?,
+            "nx-window:rendered-v83-skills",
+        ),
+        (
+            "Skill Macros",
+            build_scene(
+                "panel-skill-macros",
+                map,
+                legacy_ui,
+                ui,
+                characters,
+                items,
+                skills,
+                etc,
+                strings,
+                font,
+            )?,
+            "skill-macros-preview",
+        ),
+        (
+            "Character Stats",
+            build_scene(
+                "panel-stats",
+                map,
+                legacy_ui,
+                ui,
+                characters,
+                items,
+                skills,
+                etc,
+                strings,
+                font,
+            )?,
+            "rendered-window:status-panel",
+        ),
+        (
+            "Quest Log",
+            build_quest_log_panel_scene(
+                "panel-quests",
+                map,
+                legacy_ui,
+                quests,
+                strings,
+                characters,
+                npcs,
+                font,
+            )?,
+            "nx-window:live-quest-log",
+        ),
+        (
+            "Monster Book",
+            build_monster_book_detail_scene(
+                map,
+                ui,
+                items,
+                characters,
+                mobs,
+                strings,
+                font,
+                usize::MAX,
+            )?,
+            "monster-book-detail-preview",
+        ),
+        (
+            "Key Settings",
+            build_scene(
+                "panel-keyboard-settings",
+                map,
+                legacy_ui,
+                ui,
+                characters,
+                items,
+                skills,
+                etc,
+                strings,
+                font,
+            )?,
+            "key-config-preview",
+        ),
+    ];
+
+    let width = CELL_WIDTH * COLUMNS as u32 + GAP * (COLUMNS as u32 + 1);
+    let height = CELL_HEIGHT * ROWS as u32 + GAP * (ROWS as u32 + 1);
+    let mut pixels = vec![0_u8; width as usize * height as usize * 4];
+    for pixel in pixels.chunks_exact_mut(4) {
+        pixel.copy_from_slice(&[24, 24, 30, 255]);
+    }
+
+    for (index, (title, scene, texture_key)) in panels.into_iter().enumerate() {
+        let row = index / COLUMNS;
+        let column = index % COLUMNS;
+        let cell_x = GAP + column as u32 * (CELL_WIDTH + GAP);
+        let cell_y = GAP + row as u32 * (CELL_HEIGHT + GAP);
+        fill_preview_rect(
+            &mut pixels,
+            width,
+            height,
+            cell_x,
+            cell_y,
+            CELL_WIDTH,
+            CELL_HEIGHT,
+            [42, 40, 36, 255],
+        );
+        fill_preview_rect(
+            &mut pixels,
+            width,
+            height,
+            cell_x,
+            cell_y,
+            CELL_WIDTH,
+            1,
+            [88, 84, 76, 255],
+        );
+        ui_foundation::draw_text_role(
+            font,
+            &mut pixels,
+            width as usize,
+            height as usize,
+            title,
+            (cell_x + 16) as i32,
+            (cell_y + 7) as i32,
+            ui_foundation::UiTextRole::Emphasis,
+            CELL_WIDTH as usize - 32,
+            HEADER_HEIGHT as usize,
+            Some([226, 224, 215]),
+        );
+
+        let sprite = scene
+            .sprites
+            .into_iter()
+            .find(|sprite| sprite.texture_key == texture_key)
+            .ok_or_else(|| format!("menu comparison is missing panel {texture_key:?}"))?;
+        let available_width = CELL_WIDTH.saturating_sub(PANEL_PADDING * 2);
+        let available_height = CELL_HEIGHT.saturating_sub(HEADER_HEIGHT as u32 + PANEL_PADDING);
+        let scale = (available_width as f32 / sprite.rect.width)
+            .min(available_height as f32 / sprite.rect.height)
+            .min(1.0);
+        let draw_width = sprite.rect.width * scale;
+        let draw_height = sprite.rect.height * scale;
+        let draw_x = cell_x as f32 + (CELL_WIDTH as f32 - draw_width) * 0.5;
+        let draw_y =
+            cell_y as f32 + HEADER_HEIGHT as f32 + (available_height as f32 - draw_height) * 0.5;
+        let comparison_sprite = DecodedSprite {
+            texture_key: sprite.texture_key,
+            rect: SpriteRect {
+                x: draw_x,
+                y: draw_y,
+                width: draw_width,
+                height: draw_height,
+                blend_mode: sprite.rect.blend_mode,
+            },
+            depth_order: sprite.depth_order,
+            texture_width: sprite.texture_width,
+            texture_height: sprite.texture_height,
+            pixels: sprite.pixels,
+        };
+        composite_sprite(&mut pixels, width, height, &comparison_sprite);
+    }
+
+    let image_path = output_dir.join("panel-menu-comparison.png");
+    write_png(&image_path, width, height, &pixels)
+        .map_err(|error| format!("could not write {}: {error}", image_path.display()))?;
+    let report = format!(
+        "Screen: panel-menu-comparison\nCanvas: {width}x{height} contact sheet\nPanels: Item Inventory, Equipment Inventory, Pet Equipment, Skill Inventory, Skill Macros, Character Stats, Quest Log, Monster Book, Key Settings\nPanel artwork uses native dimensions, scaled down only when a panel exceeds its comparison cell.\n"
+    );
+    let report_path = output_dir.join("panel-menu-comparison-layout.txt");
+    fs::write(&report_path, report.as_bytes())
+        .map_err(|error| format!("could not write {}: {error}", report_path.display()))?;
+    println!("{report}");
+    Ok(())
+}
+
+fn fill_preview_rect(
+    pixels: &mut [u8],
+    canvas_width: u32,
+    canvas_height: u32,
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+    color: [u8; 4],
+) {
+    let right = x.saturating_add(width).min(canvas_width);
+    let bottom = y.saturating_add(height).min(canvas_height);
+    for row in y.min(canvas_height)..bottom {
+        for column in x.min(canvas_width)..right {
+            let index = (row as usize * canvas_width as usize + column as usize) * 4;
+            pixels[index..index + 4].copy_from_slice(&color);
+        }
+    }
 }
 
 fn preview_guild() -> openstory_protocol::GuildInfo {
@@ -1410,6 +1698,11 @@ fn build_scene(
                         format!("Gained an item: {item_label} (+3)"),
                         [255, 255, 255],
                         item_icon.as_ref(),
+                    ),
+                    (
+                        "You have gained mesos (+2500)".to_owned(),
+                        [255, 255, 255],
+                        None,
                     ),
                     ("+ Bonus EXP (+250)".to_owned(), [255, 220, 44], None),
                     (
@@ -1713,6 +2006,7 @@ fn build_scene(
         | "panel-skill-inventory"
         | "panel-skill-inventory-disabled"
         | "panel-skill-inventory-beginner"
+        | "panel-skill-inventory-beginner-job"
         | "panel-skill-tooltip"
         | "panel-skill-tooltip-unlearned"
         | "panel-skill-tooltip-max-level"
@@ -2298,6 +2592,7 @@ fn build_map_name_tags_preview(
     ui_archive: &NxArchive,
     character_archive: &NxArchive,
     npc_archive: &NxArchive,
+    item_archive: &NxArchive,
     string_archive: &NxArchive,
     font: &fontdue::Font,
 ) -> Result<LoginSceneAssets, String> {
@@ -2314,6 +2609,59 @@ fn build_map_name_tags_preview(
         420.0,
         GAMEPLAY_CAMERA_CENTER_Y,
         MapNameTagKind::Character,
+    );
+
+    let pet_center_x = 560.0;
+    if let Some(pet_item_id) = item_archive
+        .root()
+        .resolve("Pet")
+        .ok()
+        .flatten()
+        .and_then(|pets| pets.children().ok())
+        .and_then(|pets| {
+            pets.into_iter().find_map(|pet| {
+                let name = pet.name().ok()?;
+                name.strip_suffix(".img")?.parse::<i32>().ok()
+            })
+        })
+    {
+        let mut pet_sprites = Vec::new();
+        let pet_animations = append_pet_animations(
+            &mut pet_sprites,
+            item_archive,
+            pet_item_id,
+            &mut MapArtCache::default(),
+        )?;
+        if let Some(frame) = pet_animations
+            .get(&1)
+            .and_then(|frames| frames.first())
+            .or_else(|| {
+                (0..=6)
+                    .find_map(|state| pet_animations.get(&state).and_then(|frames| frames.first()))
+            })
+        {
+            let frame_start = frame.sprites.start;
+            let frame_end = frame.sprites.end;
+            for mut sprite in pet_sprites
+                .into_iter()
+                .skip(frame_start)
+                .take(frame_end - frame_start)
+            {
+                sprite.rect.x += pet_center_x - 512.0;
+                sprites.push(sprite);
+            }
+        }
+    }
+    append_map_name_tag_sprite(
+        &mut sprites,
+        font,
+        ui_archive,
+        None,
+        None,
+        "Bobby",
+        pet_center_x,
+        GAMEPLAY_CAMERA_CENTER_Y,
+        MapNameTagKind::Pet,
     );
 
     let npc_id = fixture_named_id(string_archive, "Npc.img", "Silver", 1_001_000);
@@ -2855,9 +3203,9 @@ fn build_pet_equipment_scene(
     string_archive: &NxArchive,
     font: &fontdue::Font,
 ) -> Result<LoginSceneAssets, String> {
-    let mut inventory = openstory_protocol::InventorySnapshot::default();
+    let mut inventory = preview_equipped_inventory();
     if name != "panel-pet-equipment-empty" {
-        inventory.items = vec![
+        inventory.items.extend([
             openstory_protocol::InventoryItem {
                 inventory_type: openstory_protocol::InventoryType::Cash,
                 slot: 1,
@@ -2882,7 +3230,7 @@ fn build_pet_equipment_scene(
                 item_id: 1_812_000,
                 ..Default::default()
             },
-        ];
+        ]);
     }
     if name == "panel-pet-equipment-worn" {
         for (slot, item_id) in [
@@ -2926,6 +3274,27 @@ fn build_pet_equipment_scene(
         },
     );
     let mut sprites = gameplay_backdrop(map_archive, character_archive, font)?;
+    let equipment_pixels = super::render_equipment_inventory_panel(
+        &inventory,
+        ui_archive,
+        item_archive,
+        character_archive,
+        &mut HashMap::new(),
+    );
+    sprites.push(DecodedSprite {
+        texture_key: "nx-window:equipment-inventory-with-pets".to_owned(),
+        rect: SpriteRect {
+            x: super::EQUIPMENT_INVENTORY_PANEL_X,
+            y: super::EQUIPMENT_INVENTORY_PANEL_Y,
+            width: super::EQUIPMENT_INVENTORY_PANEL_WIDTH as f32,
+            height: super::EQUIPMENT_INVENTORY_PANEL_HEIGHT as f32,
+            blend_mode: BlendMode::Alpha,
+        },
+        depth_order: 0,
+        texture_width: super::EQUIPMENT_INVENTORY_PANEL_WIDTH,
+        texture_height: super::EQUIPMENT_INVENTORY_PANEL_HEIGHT,
+        pixels: Arc::from(equipment_pixels),
+    });
     sprites.push(DecodedSprite {
         texture_key: "rendered-window:pet-equipment".to_owned(),
         rect: SpriteRect {
@@ -2962,31 +3331,40 @@ fn build_npc_shop_panel_scene(
 ) -> Result<LoginSceneAssets, String> {
     let empty = variant == "panel-npc-shop-empty";
     let recharge = variant == "panel-npc-shop-recharge";
+    let recommended = variant == "panel-npc-shop-recommended";
     let no_zero_price_refills = variant == "panel-npc-shop-no-zero-price-refills";
-    let mut shop_items = if empty {
-        Vec::new()
+    let shop_item_ids: &[i32] = if recommended {
+        &[
+            1_002_002, 1_040_002, 1_060_002, 1_072_001, 1_302_000, 1_306_000,
+        ]
     } else {
-        [
+        &[
             2_000_000, 2_000_001, 2_000_002, 2_000_003, 2_000_006, 2_000_004, 2_020_001, 2_020_002,
             2_030_000, 2_050_000, 2_050_001, 2_050_002,
         ]
-        .into_iter()
-        .enumerate()
-        .map(|(index, id)| openstory_protocol::NpcShopItem {
-            item_id: if recharge && index == 0 {
-                2_070_000
-            } else {
-                id
-            },
-            price: [50, 160, 320, 200, 620][index % 5],
-            pitch: 0,
-            time: 0,
-            charge_price: if recharge && index == 0 { 20 } else { 0 },
-            buyable: 100,
-            rechargeable: recharge && index == 0,
-            slot: index as i16,
-        })
-        .collect::<Vec<_>>()
+    };
+    let mut shop_items = if empty {
+        Vec::new()
+    } else {
+        shop_item_ids
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(index, id)| openstory_protocol::NpcShopItem {
+                item_id: if recharge && index == 0 {
+                    2_070_000
+                } else {
+                    id
+                },
+                price: [50, 160, 320, 200, 620][index % 5],
+                pitch: 0,
+                time: 0,
+                charge_price: if recharge && index == 0 { 20 } else { 0 },
+                buyable: 100,
+                rechargeable: recharge && index == 0,
+                slot: index as i16,
+            })
+            .collect::<Vec<_>>()
     };
     if no_zero_price_refills {
         shop_items.insert(
@@ -3011,6 +3389,7 @@ fn build_npc_shop_panel_scene(
         currency_item_id: 0,
         items: shop_items,
     });
+    state.buy_recommended = recommended;
     let mut inventory = if empty {
         openstory_protocol::InventorySnapshot::default()
     } else {
@@ -3074,11 +3453,16 @@ fn build_npc_shop_panel_scene(
     if variant == "panel-npc-shop-large-values" {
         inventory.meso = i64::MAX;
     }
+    let mut character = preview_character();
+    if recommended {
+        character.stats.job = 100;
+        state.update_buy_item_indices(Some(&character), &inventory, characters);
+    }
     let pixels = render_npc_shop_panel(
         font,
         &state,
         &inventory,
-        Some(&fixture_look()),
+        Some(&character),
         ui,
         npcs,
         items,
@@ -3700,7 +4084,8 @@ fn build_native_window_scene(
         "panel-equipment-inventory" => &[],
         "panel-skill-inventory"
         | "panel-skill-inventory-disabled"
-        | "panel-skill-inventory-beginner" => &[
+        | "panel-skill-inventory-beginner"
+        | "panel-skill-inventory-beginner-job" => &[
             // Compose the same scaled v83 Skill window used by the live panel below.
         ],
         name if name.starts_with("panel-skill-tooltip") => &[],
@@ -4456,10 +4841,12 @@ fn build_native_window_scene(
     if name == "panel-skill-inventory"
         || name == "panel-skill-inventory-disabled"
         || name == "panel-skill-inventory-beginner"
+        || name == "panel-skill-inventory-beginner-job"
         || name == "panel-skill-macros-book"
         || name.starts_with("panel-skill-tooltip")
     {
         let beginner_preview = name == "panel-skill-inventory-beginner";
+        let beginner_job_preview = name == "panel-skill-inventory-beginner-job";
         let disabled_preview = name == "panel-skill-inventory-disabled";
         let mut entries = preview_skill_entries();
         if disabled_preview {
@@ -4479,7 +4866,7 @@ fn build_native_window_scene(
             }
             entries[3].requirements = vec![(4_001_002, 3)];
             entries.truncate(4);
-        } else if beginner_preview {
+        } else if beginner_preview || beginner_job_preview {
             for (entry, (id, skill_name)) in entries.iter_mut().zip([
                 (1_000, "Three Snails"),
                 (1_001, "Recovery"),
@@ -4567,6 +4954,25 @@ fn build_native_window_scene(
                 points,
                 0,
                 1,
+            )
+        } else if beginner_job_preview {
+            let advanced_stats = openstory_protocol::CharacterStats {
+                level: 30,
+                job: 110,
+                skill_points: 8,
+                ..Default::default()
+            };
+            let points = super::client_cash_skills::skill_points_for_book(
+                &advanced_stats,
+                0,
+                &HashMap::new(),
+            );
+            (
+                "Beginner's Basics",
+                decode_nx_icon(skill_archive, "000.img/info/icon"),
+                points,
+                0,
+                3,
             )
         } else if name.starts_with("panel-skill-tooltip") && !name.ends_with("-unlearned") {
             (
@@ -4994,14 +5400,17 @@ fn geometry_report(name: &str, scene: &LoginSceneAssets, width: u32, height: u32
             | "panel-skill-inventory"
             | "panel-skill-inventory-disabled"
             | "panel-skill-inventory-beginner"
+            | "panel-skill-inventory-beginner-job"
             | "panel-skill-tooltip"
             | "panel-skill-tooltip-unlearned"
             | "panel-skill-tooltip-max-level"
             | "panel-skill-tooltip-edge"
             | "panel-pet-equipment"
             | "panel-pet-equipment-empty"
+            | "panel-pet-equipment-worn"
             | "panel-pet-equipment-scroll"
             | "page-cash-shop"
+            | "page-cash-shop-tooltip"
             | "panel-monster-book"
             | "panel-stats"
             | "panel-stats-auto-assign"
@@ -5214,3 +5623,7 @@ mod combat_preview_tests;
 #[cfg(test)]
 #[path = "portal_preview_tests.rs"]
 mod portal_preview_tests;
+
+#[cfg(test)]
+#[path = "menu_preview_tests.rs"]
+mod menu_preview_tests;

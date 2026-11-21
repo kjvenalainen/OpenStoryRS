@@ -1081,12 +1081,12 @@ impl ClientApp {
         };
         if !state.entered {
             self.cash_shop = None;
-            self.cash_shop_texture = None;
+            self.refresh_cash_shop_texture();
             return;
         }
         let Some(session) = self.session.as_ref() else {
             self.cash_shop = None;
-            self.cash_shop_texture = None;
+            self.refresh_cash_shop_texture();
             return;
         };
         match session.send_packet(openstory_protocol::exit_cash_shop_packet()) {
@@ -1094,7 +1094,7 @@ impl ClientApp {
             Err(error) => {
                 eprintln!("OpenStoryRS: could not leave the Cash Shop: {error}");
                 self.cash_shop = None;
-                self.cash_shop_texture = None;
+                self.refresh_cash_shop_texture();
                 self.channel_connected = false;
             }
         }
@@ -1701,6 +1701,97 @@ impl ClientApp {
         cash_shop_ui::hit_test(&self.cash_shop_hit_regions, cursor.x, cursor.y)
     }
 
+    pub(super) fn update_cash_shop_hover(&mut self) -> bool {
+        let hovered_item = self
+            .cursor
+            .and_then(|cursor| self.cash_shop_hit_action(cursor))
+            .and_then(cash_shop_ui::ItemHover::from_action);
+        if hovered_item == self.cash_shop_hovered_item {
+            return false;
+        }
+        self.cash_shop_hovered_item = hovered_item;
+        self.refresh_cash_shop_tooltip_texture();
+        if let Some(window) = self.window.as_ref() {
+            window.request_redraw();
+        }
+        true
+    }
+
+    fn cash_shop_tooltip_item(&self) -> Option<openstory_protocol::InventoryItem> {
+        let shop = self.cash_shop.as_ref()?;
+        let (item_id, count, cash, cash_id, expiration) = match self.cash_shop_hovered_item? {
+            cash_shop_ui::ItemHover::Product(index) => {
+                let product = self.cash_products.get(index)?;
+                (product.item_id, product.count.max(1), false, None, 0)
+            }
+            cash_shop_ui::ItemHover::Locker(index) => {
+                let item = shop.locker.get(index)?;
+                if let Some(inventory_item) = self.inventory.as_ref().and_then(|inventory| {
+                    inventory
+                        .items
+                        .iter()
+                        .find(|inventory_item| inventory_item.cash_id == Some(item.instance_id))
+                }) {
+                    return Some(inventory_item.clone());
+                }
+                (
+                    item.item_id,
+                    item.count.max(1),
+                    true,
+                    Some(item.instance_id),
+                    item.expiration,
+                )
+            }
+        };
+        Some(openstory_protocol::InventoryItem {
+            inventory_type: cash_shop_ui::cash_shop_inventory_type(item_id),
+            item_id,
+            count,
+            cash,
+            cash_id,
+            expiration,
+            ..Default::default()
+        })
+    }
+
+    pub(super) fn refresh_cash_shop_tooltip_texture(&mut self) {
+        let Some(item) = self.cash_shop_tooltip_item() else {
+            self.inventory_tooltip_texture = None;
+            return;
+        };
+        let pixels = render_inventory_tooltip(
+            &self.font,
+            &item,
+            &self.legacy_ui_archive,
+            &self.item_archive,
+            &self.character_archive,
+            &self.string_archive,
+            self.active_character
+                .as_ref()
+                .map(|character| &character.stats),
+            self.inventory.as_ref(),
+            &mut self.inventory_icon_cache,
+            &mut self.item_name_cache,
+        );
+        let Some(renderer) = self.renderer.as_ref() else {
+            return;
+        };
+        let result = if let Some(texture) = self.inventory_tooltip_texture.as_ref() {
+            renderer.update_bgra(texture, &pixels).map(|()| None)
+        } else {
+            renderer
+                .upload_bgra(INVENTORY_TOOLTIP_WIDTH, INVENTORY_TOOLTIP_HEIGHT, &pixels)
+                .map(Some)
+        };
+        match result {
+            Ok(Some(texture)) => self.inventory_tooltip_texture = Some(texture),
+            Ok(None) => {}
+            Err(error) => {
+                eprintln!("OpenStoryRS: could not update Cash Shop item tooltip: {error}")
+            }
+        }
+    }
+
     pub(super) fn cash_shop_max_page(&mut self) -> usize {
         let Some(state) = self.cash_shop.as_ref() else {
             return 0;
@@ -2206,6 +2297,7 @@ impl ClientApp {
                 .max(1),
             fly_direction: 0,
             aggro_target: None,
+            aggro_remaining: Duration::ZERO,
         };
         if spawn.control_mode > 0 && mob.motion == MobMotion::Stand {
             mob.choose_next_move();
@@ -2319,13 +2411,16 @@ impl ClientApp {
             None
         } else {
             let mut sprites = Vec::with_capacity(1);
-            append_text_sprite(
+            append_map_name_tag_sprite(
                 &mut sprites,
                 &self.font,
+                &self.ui_archive,
+                None,
+                None,
                 &spawn.name,
-                centered_text_x(&self.font, &spawn.name, 13.0),
-                340.0,
-                13.0,
+                512.0,
+                GAMEPLAY_CAMERA_CENTER_Y,
+                MapNameTagKind::Pet,
             );
             match self.upload_dynamic_sprites(sprites) {
                 Ok(draws) => draws.first().copied(),
@@ -2378,13 +2473,16 @@ impl ClientApp {
             None
         } else {
             let mut sprites = Vec::with_capacity(1);
-            append_text_sprite(
+            append_map_name_tag_sprite(
                 &mut sprites,
                 &self.font,
+                &self.ui_archive,
+                None,
+                None,
                 name,
-                centered_text_x(&self.font, name, 13.0),
-                340.0,
-                13.0,
+                512.0,
+                GAMEPLAY_CAMERA_CENTER_Y,
+                MapNameTagKind::Pet,
             );
             match self.upload_dynamic_sprites(sprites) {
                 Ok(draws) => draws.first().copied(),
@@ -3200,8 +3298,6 @@ impl ClientApp {
             openstory_protocol::OpenUiRequest::SkillBook => {
                 if !self.show_skill_book {
                     self.show_skill_book = true;
-                    self.skill_book_tab = 0;
-                    self.skill_book_scroll_row = 0;
                     self.refresh_skill_book_entries();
                     self.refresh_skill_book_texture();
                 }

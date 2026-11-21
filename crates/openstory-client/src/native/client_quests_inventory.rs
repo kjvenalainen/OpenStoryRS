@@ -860,8 +860,14 @@ impl ClientApp {
         }
         let local_x = cursor.x - EQUIPMENT_INVENTORY_PANEL_X;
         let local_y = cursor.y - EQUIPMENT_INVENTORY_PANEL_Y;
+        if ui_foundation::EQUIPMENT_PET_BUTTON.contains(local_x, local_y) {
+            self.toggle_pet_equipment_panel();
+            return true;
+        }
         if ui_foundation::INVENTORY_CLOSE_BUTTON.contains(local_x, local_y) {
             self.show_equipment_inventory = false;
+            self.show_pet_equipment = false;
+            return true;
         }
         true
     }
@@ -975,35 +981,20 @@ impl ClientApp {
         ) {
             return false;
         }
-        if (PET_EQUIPMENT_PANEL_X + 358.0..PET_EQUIPMENT_PANEL_X + 384.0).contains(&cursor.x)
-            && (PET_EQUIPMENT_PANEL_Y + 8.0..PET_EQUIPMENT_PANEL_Y + 34.0).contains(&cursor.y)
-        {
+        let local_x = cursor.x - PET_EQUIPMENT_PANEL_X;
+        let local_y = cursor.y - PET_EQUIPMENT_PANEL_Y;
+        if ui_foundation::PET_EQUIPMENT_CLOSE_BUTTON.contains(local_x, local_y) {
             self.show_pet_equipment = false;
             return true;
         }
-        let worn = self.inventory.as_ref().and_then(|inventory| {
-            pet_equipment_grid_item_at(
-                inventory,
-                cursor.x - PET_EQUIPMENT_PANEL_X,
-                cursor.y - PET_EQUIPMENT_PANEL_Y,
-            )
-            .map(|item| item.slot)
-        });
-        if let Some(slot) = worn {
-            self.activate_inventory_item(openstory_protocol::InventoryType::Equipped, slot);
-            self.refresh_pet_equipment_texture();
+        let row_y = local_y - PET_EQUIPMENT_GEAR_LIST_Y;
+        if row_y < 0.0 || row_y >= PET_EQUIPMENT_VISIBLE_ROWS as f32 * PET_EQUIPMENT_GEAR_ROW_HEIGHT
+        {
             return true;
         }
-        if !(634.0..992.0).contains(&cursor.x) || !(348.0..593.0).contains(&cursor.y) {
-            return true;
-        }
-        let row_y = cursor.y - 348.0;
-        if row_y % 49.0 >= 44.0 {
-            return true;
-        }
-        let index = (row_y / 49.0).floor() as usize;
+        let index = (row_y / PET_EQUIPMENT_GEAR_ROW_HEIGHT).floor() as usize;
         let selected = self.inventory.as_ref().and_then(|inventory| {
-            pet_equipment_items(inventory)
+            pet_equipment_drawer_items(inventory)
                 .get(self.pet_equipment_scroll_row.saturating_add(index))
                 .map(|item| (item.inventory_type, item.slot))
         });

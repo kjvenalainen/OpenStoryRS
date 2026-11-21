@@ -616,7 +616,7 @@ fn build_mushroom_popup_art(
     for (path, (button_width, button_height, origin_x, origin_y)) in
         button_paths.iter().zip(button_geometry)
     {
-        let button_y = height as f32 - button_height - 22.0;
+        let button_y = height as f32 - button_height - 33.0;
         composite_nx_ui_bitmap(
             &mut pixels,
             width as usize,

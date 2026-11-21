@@ -238,12 +238,12 @@ impl AudioEngine {
         archive: &NxArchive,
         path: &str,
         position: (i16, i16),
-    ) {
+    ) -> bool {
         let dx = f64::from(position.0) - f64::from(self.listener.0);
         let dy = f64::from(position.1) - f64::from(self.listener.1);
         let distance = (dx * dx + dy * dy).sqrt();
         if distance >= SILENT_RANGE || self.sound_volume == 0.0 {
-            return;
+            return false;
         }
         let attenuation = if distance <= FULL_VOLUME_RANGE {
             1.0
@@ -253,21 +253,21 @@ impl AudioEngine {
         let pan = (dx / PAN_RANGE).clamp(-1.0, 1.0) as f32;
         let payload = match self.audio_payload(archive, path) {
             Ok(Some(payload)) => payload,
-            Ok(None) => return,
+            Ok(None) => return false,
             Err(error) => {
                 eprintln!("OpenStory audio: could not load sound {path:?}: {error}");
-                return;
+                return false;
             }
         };
         let source = match Decoder::try_from(Cursor::new(payload)) {
             Ok(source) => source,
             Err(error) => {
                 eprintln!("OpenStory audio: could not decode sound {path:?}: {error}");
-                return;
+                return false;
             }
         };
         let Some(output) = self.output.as_ref() else {
-            return;
+            return false;
         };
 
         // Encode the legacy horizontal pan in a compact spatial coordinate. Manual
@@ -278,6 +278,7 @@ impl AudioEngine {
         player.set_volume(self.sound_volume * attenuation);
         player.append(source);
         player.detach();
+        true
     }
 
     pub(super) fn play_skill_use(
@@ -285,12 +286,12 @@ impl AudioEngine {
         archive: &NxArchive,
         skill_id: i32,
         position: (i16, i16),
-    ) {
+    ) -> bool {
         if skill_id <= 0 {
-            return;
+            return false;
         }
         let skill_name = format!("{skill_id:07}");
-        self.play_world_sound(archive, &format!("Skill.img/{skill_name}/Use"), position);
+        self.play_world_sound(archive, &format!("Skill.img/{skill_name}/Use"), position)
     }
 
     pub(super) fn play_skill_hit(

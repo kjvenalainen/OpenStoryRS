@@ -189,12 +189,30 @@ fn append_map_entity_draws<'a>(
         }
     }
     for (&(owner_id, slot), pet) in &scene.pets {
-        let layer = map_entity_foothold_layer(scene, pet.body.foothold_id, pet.x, pet.y);
+        // The local pet is positioned on the player while climbing, but keeps
+        // the foothold it had on the ground. Keep it with the player and draw
+        // it after the character so it appears on their back.
+        let local_pet_on_ladder = scene.local_ladder.is_some()
+            && !scene.remote_players.contains_key(&owner_id);
+        let layer = if local_pet_on_ladder {
+            local_player_layer
+        } else {
+            map_entity_foothold_layer(scene, pet.body.foothold_id, pet.x, pet.y)
+        };
         if matches!(pass, MapEntityDrawPass::Layer(pass_layer) if pass_layer == layer)
             && pet.frames().get(pet.frame_index()).is_some()
         {
-            let sort_id = owner_id.saturating_mul(3).saturating_add(i32::from(slot));
-            actors.push((pet.y, 3, sort_id, Actor::Pet(pet)));
+            let (sort_priority, sort_id) = if local_pet_on_ladder {
+                // Keep the pet above all character sprites and below positive
+                // character effects, which sort at priority 7.
+                (6, i32::MAX - 3 + i32::from(slot))
+            } else {
+                (
+                    3,
+                    owner_id.saturating_mul(3).saturating_add(i32::from(slot)),
+                )
+            };
+            actors.push((pet.y, sort_priority, sort_id, Actor::Pet(pet)));
         }
     }
     for (&object_id, mob) in &scene.mobs {
@@ -491,22 +509,6 @@ fn append_map_entity_draws<'a>(
                         tint: [1.0, 1.0, 1.0],
                         blend_mode: rect.blend_mode,
                         flip_x: flipped,
-                        opacity: 1.0,
-                    });
-                }
-                if let Some((texture_index, rect)) = pet.name_label
-                    && let Some(texture) = textures.get(texture_index)
-                {
-                    draws.push(SpriteDraw {
-                        texture,
-                        x: rect.x + offset_x,
-                        y: rect.y + offset_y,
-                        width: rect.width,
-                        height: rect.height,
-                        uv: [0.0, 0.0, 1.0, 1.0],
-                        tint: [1.0, 1.0, 1.0],
-                        blend_mode: rect.blend_mode,
-                        flip_x: false,
                         opacity: 1.0,
                     });
                 }

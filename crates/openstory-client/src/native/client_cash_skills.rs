@@ -5,17 +5,23 @@ pub(super) fn skill_points_for_book(
     tab: u8,
     skills: &std::collections::HashMap<i32, openstory_protocol::SkillEntry>,
 ) -> u16 {
-    // The v83 server does not store or report SP for beginner jobs. Their
-    // three novice skills share up to six points earned from levels 2–7.
-    if tab == 0 && matches!(stats.job, 0 | 1000 | 2000) {
-        let skill_id_base = i32::from(stats.job / 1000) * 10_000_000;
-        let spent = (0..3).fold(0_u16, |spent, index| {
-            let level = skills
-                .get(&(skill_id_base + 1_000 + index))
-                .map_or(0, |skill| skill.level.max(0).min(6) as u16);
-            spent.saturating_add(level)
-        });
-        return u16::from(stats.level.saturating_sub(1).min(6)).saturating_sub(spent);
+    if tab == 0 {
+        // The v83 server does not store or report SP for beginner jobs. Their
+        // three novice skills share up to six points earned from levels 2–7.
+        if matches!(stats.job, 0 | 1000 | 2000) {
+            let skill_id_base = i32::from(stats.job / 1000) * 10_000_000;
+            let spent = (0..3).fold(0_u16, |spent, index| {
+                let level = skills
+                    .get(&(skill_id_base + 1_000 + index))
+                    .map_or(0, |skill| skill.level.max(0).min(6) as u16);
+                spent.saturating_add(level)
+            });
+            return u16::from(stats.level.saturating_sub(1).min(6)).saturating_sub(spent);
+        }
+
+        // Once a character has advanced, the server's ordinary SP belongs to
+        // their job skills and must not be offered on the beginner tab.
+        return 0;
     }
 
     stats
@@ -50,9 +56,11 @@ impl ClientApp {
         }
         let empty_inventory = openstory_protocol::InventorySnapshot::default();
         let inventory = self.inventory.as_ref().unwrap_or(&empty_inventory);
-        self.pet_equipment_scroll_row = self
-            .pet_equipment_scroll_row
-            .min(pet_equipment_items(inventory).len().saturating_sub(5));
+        self.pet_equipment_scroll_row = self.pet_equipment_scroll_row.min(
+            pet_equipment_drawer_items(inventory)
+                .len()
+                .saturating_sub(PET_EQUIPMENT_VISIBLE_ROWS),
+        );
         let pixels = render_pet_equipment_panel(
             &self.font,
             inventory,
@@ -67,8 +75,8 @@ impl ClientApp {
         let Some(renderer) = self.renderer.as_ref() else {
             return;
         };
-        const WIDTH: u32 = 390;
-        const HEIGHT: u32 = 480;
+        const WIDTH: u32 = PET_EQUIPMENT_PANEL_WIDTH;
+        const HEIGHT: u32 = PET_EQUIPMENT_PANEL_HEIGHT;
         let result = if let Some(texture) = self.pet_equipment_texture.as_ref() {
             renderer.update_bgra(texture, &pixels).map(|()| None)
         } else {
@@ -88,8 +96,8 @@ impl ClientApp {
         let gear_count = self
             .inventory
             .as_ref()
-            .map_or(0, |inventory| pet_equipment_items(inventory).len());
-        let maximum = gear_count.saturating_sub(5);
+            .map_or(0, |inventory| pet_equipment_drawer_items(inventory).len());
+        let maximum = gear_count.saturating_sub(PET_EQUIPMENT_VISIBLE_ROWS);
         let next = self
             .pet_equipment_scroll_row
             .saturating_add_signed(amount)
@@ -104,6 +112,8 @@ impl ClientApp {
         let Some(state) = self.cash_shop.as_ref() else {
             self.cash_shop_texture = None;
             self.cash_shop_hit_regions.clear();
+            self.cash_shop_hovered_item = None;
+            self.refresh_inventory_tooltip_texture();
             return;
         };
         let scene = match cash_shop_ui::render(
@@ -142,6 +152,12 @@ impl ClientApp {
             }
             Ok(None) => self.cash_shop_hit_regions = scene.hit_regions,
             Err(error) => eprintln!("OpenStoryRS: could not update Cash Shop: {error}"),
+        }
+        if self.cash_shop_texture.is_some() {
+            let hover_changed = self.update_cash_shop_hover();
+            if !hover_changed {
+                self.refresh_cash_shop_tooltip_texture();
+            }
         }
     }
 
@@ -846,6 +862,13 @@ impl ClientApp {
             return;
         };
         let job = character.stats.job;
+        if skill_subjob_for_tab(job, self.skill_book_tab).is_none() {
+            self.skill_book_tab = (0..self.skill_book_tab)
+                .rev()
+                .find(|tab| skill_subjob_for_tab(job, *tab).is_some())
+                .unwrap_or(0);
+            self.skill_book_scroll_row = 0;
+        }
         let Some(subjob) = skill_subjob_for_tab(job, self.skill_book_tab) else {
             self.skill_book_entries.clear();
             return;

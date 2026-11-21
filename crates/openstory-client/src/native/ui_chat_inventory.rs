@@ -449,6 +449,7 @@ fn render_inventory_panel(
             ui_foundation::INVENTORY_CLOSE_BUTTON,
         ),
     ]);
+    let tab_labels = ["Equip", "Use", "Setup", "Etc", "Cash"];
     for (index, tab) in inventory_tabs().into_iter().enumerate() {
         let bounds = ui_foundation::inventory_tab(index);
         let _ = composite_nx_ui_tab(
@@ -459,14 +460,14 @@ fn render_inventory_panel(
             bounds,
             tab == active_tab,
         );
-        let state = if tab == active_tab {
-            "enabled"
-        } else {
-            "disabled"
-        };
-        let path = format!("UIWindow.img/Item/Tab/{state}/{index}");
-        let _ =
-            composite_nx_ui_bitmap_centered(&mut pixels, WIDTH, HEIGHT, ui_archive, &path, bounds);
+        ui_foundation::draw_tab_label(
+            font,
+            &mut pixels,
+            WIDTH,
+            HEIGHT,
+            tab_labels[index],
+            bounds,
+        );
     }
     let maximum_slot = inventory_slot_max(inventory, active_tab);
     for row in 0..INVENTORY_SLOT_ROWS {
@@ -1233,6 +1234,7 @@ fn render_death_notice(font: &fontdue::Font, ui: &NxArchive, respawn_pending: bo
     pixels
 }
 
+#[cfg(test)]
 fn pet_equipment_items(
     inventory: &openstory_protocol::InventorySnapshot,
 ) -> Vec<&openstory_protocol::InventoryItem> {
@@ -1253,8 +1255,29 @@ fn pet_equipment_items(
     items
 }
 
+fn pet_equipment_drawer_items(
+    inventory: &openstory_protocol::InventorySnapshot,
+) -> Vec<&openstory_protocol::InventoryItem> {
+    let mut items: Vec<_> = inventory
+        .items
+        .iter()
+        .filter(|item| {
+            (180..=183).contains(&(item.item_id / 10_000))
+                && matches!(
+                    item.inventory_type,
+                    openstory_protocol::InventoryType::Equip
+                        | openstory_protocol::InventoryType::Cash
+                        | openstory_protocol::InventoryType::Equipped
+                )
+        })
+        .collect();
+    items.sort_by_key(|item| (item.inventory_type as u8, item.slot));
+    items
+}
+
 // The native pet panel labels identify these v83 item categories. Equipped
 // entries are matched by item identity, not by guessed server slot numbers.
+#[cfg(test)]
 fn pet_equipment_grid_position(item_id: i32) -> Option<(usize, usize)> {
     let (column, row) = match item_id {
         1_812_000 => (1, 1),                // Meso Magnet
@@ -1271,6 +1294,7 @@ fn pet_equipment_grid_position(item_id: i32) -> Option<(usize, usize)> {
     Some((12 + column * 33, 34 + row * 33))
 }
 
+#[cfg(test)]
 fn pet_equipment_grid_item_at(
     inventory: &openstory_protocol::InventorySnapshot,
     x: f32,
@@ -1331,10 +1355,16 @@ fn render_equipment_inventory_panel(
 
     let mut dialog = NxDialog::new(&mut pixels, WIDTH, HEIGHT, ui_archive);
     let _ = dialog.frame("UIWindow.img/Equip/backgrnd", 0, 0);
-    let _ = dialog.buttons(&[(
-        ui_dialog::CLOSE_BUTTON_ART,
-        ui_foundation::INVENTORY_CLOSE_BUTTON,
-    )]);
+    let _ = dialog.buttons(&[
+        (
+            ui_dialog::CLOSE_BUTTON_ART,
+            ui_foundation::INVENTORY_CLOSE_BUTTON,
+        ),
+        (
+            "UIWindow.img/Equip/BtPetEquipShow/normal/0",
+            ui_foundation::EQUIPMENT_PET_BUTTON,
+        ),
+    ]);
 
     for item in inventory.equipped() {
         let Some((x, y)) = equipment_inventory_slot_position(item.slot) else {
@@ -1370,74 +1400,29 @@ fn render_pet_equipment_panel(
     name_cache: &mut HashMap<i32, Option<String>>,
     scroll_row: usize,
 ) -> Vec<u8> {
-    const WIDTH: usize = 390;
-    const HEIGHT: usize = 480;
+    const WIDTH: usize = PET_EQUIPMENT_PANEL_WIDTH as usize;
+    const HEIGHT: usize = PET_EQUIPMENT_PANEL_HEIGHT as usize;
     let mut pixels = vec![0_u8; WIDTH * HEIGHT * 4];
-    let _ = NxDialog::new(&mut pixels, WIDTH, HEIGHT, ui_archive).resizable_frame();
-    // The pet grid covers only the top of the equipment frame; clip its
-    // unused doll section before compositing the original art over the frame.
-    // The pet overlay is 177px wide, two pixels wider than the equipment doll.
-    // Preserve its authored right border rather than clipping it to the doll.
-    let mut equipment = vec![0_u8; 177 * 204 * 4];
-    let _ = composite_nx_ui_bitmap(
-        &mut equipment,
-        177,
-        204,
-        ui_archive,
-        "UIWindow.img/Equip/backgrnd",
-        0,
-        0,
-    );
-    let _ = composite_nx_ui_bitmap(
-        &mut equipment,
-        177,
-        204,
-        ui_archive,
-        "UIWindow.img/Equip/pet",
-        0,
-        23,
-    );
-    composite_bgra_pixels(&mut pixels, WIDTH, HEIGHT, &equipment, 177, 204, 0, 0);
-    for item in inventory.equipped() {
-        let Some((x, y)) = pet_equipment_grid_position(item.item_id) else {
-            continue;
-        };
-        if let Some((w, h, icon)) =
-            inventory_item_icon(item.item_id, item_archive, character_archive, icon_cache)
-        {
-            composite_inventory_icon(
-                &mut pixels,
-                WIDTH,
-                HEIGHT,
-                &icon,
-                w as usize,
-                h as usize,
-                x,
-                y,
-                32,
-            );
-        }
-    }
-    let _ = composite_nx_ui_bitmap(
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        ui_archive,
-        "Basic.img/BtClose/normal/0",
-        358,
-        8,
-    );
-
+    // Keep the equipment window's title bar, border, and blue footer.
+    // Replace the baked-in doll grid with the pet and gear rows.
+    let mut dialog = NxDialog::new(&mut pixels, WIDTH, HEIGHT, ui_archive);
+    let _ = dialog.scaled_frame("UIWindow.img/Equip/backgrnd", 0, 0, WIDTH, HEIGHT);
+    let _ = dialog.buttons(&[(
+        ui_dialog::CLOSE_BUTTON_ART,
+        ui_foundation::PET_EQUIPMENT_CLOSE_BUTTON,
+    )]);
+    fill_dialogue_rect(&mut pixels, WIDTH, HEIGHT, 5, 5, WIDTH - 28, 14, [255, 255, 255, 255]);
+    fill_dialogue_rect(&mut pixels, WIDTH, HEIGHT, 6, 26, WIDTH - 12, 246, [250, 247, 244, 255]);
     draw_dialogue_text(
         font,
         &mut pixels,
         WIDTH,
         HEIGHT,
-        "Pets",
-        188,
-        7,
-        12.0,
-        160,
+        "PET EQUIPMENT",
+        8,
+        6,
+        10.0,
+        184,
         17,
         [48, 55, 57],
     );
@@ -1447,104 +1432,24 @@ fn render_pet_equipment_panel(
         .filter(|item| item.pet.is_some())
         .take(3)
         .collect();
-    for index in 0..3 {
-        let y = 42 + index * 51;
-        if let Some(item) = pets.get(index) {
-            if let Some((icon_width, icon_height, icon_pixels)) =
-                inventory_item_icon(item.item_id, item_archive, character_archive, icon_cache)
-            {
-                composite_inventory_icon(
-                    &mut pixels,
-                    WIDTH,
-                    HEIGHT,
-                    &icon_pixels,
-                    icon_width as usize,
-                    icon_height as usize,
-                    190,
-                    y + 5,
-                    36,
-                );
-            }
-            let Some(pet) = item.pet.as_ref() else {
-                continue;
-            };
-            let pet_name = if pet.name.trim().is_empty() {
-                item_name(item.item_id, string_archive, name_cache)
-            } else {
-                pet.name.clone()
-            };
-            let pet_name = ui_foundation::ellipsize(font, &pet_name, 11.0, 135.0);
-            draw_dialogue_text(
-                font,
-                &mut pixels,
-                WIDTH,
-                HEIGHT,
-                &pet_name,
-                232,
-                (y + 4) as i32,
-                11.0,
-                135,
-                15,
-                [43, 48, 48],
-            );
-            draw_dialogue_text(
-                font,
-                &mut pixels,
-                WIDTH,
-                HEIGHT,
-                &format!("Lv {}   Fullness {}%", pet.level, pet.fullness),
-                232,
-                (y + 23) as i32,
-                9.0,
-                135,
-                14,
-                [72, 79, 78],
-            );
-        }
-    }
-    let _ = composite_nx_ui_bitmap_scaled_to(
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        ui_archive,
-        "UIWindow.img/UtilDlgEx/line",
-        8,
-        206,
-        WIDTH - 16,
-        2,
-    );
-    draw_dialogue_text(
-        font,
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        "Other pet gear",
-        16,
-        208,
-        10.0,
-        190,
-        12,
-        [48, 55, 57],
-    );
-    let gear = pet_equipment_items(inventory);
-    let scroll_row = scroll_row.min(gear.len().saturating_sub(5));
-    if gear.is_empty() {
+    if pets.is_empty() {
         draw_dialogue_text(
             font,
             &mut pixels,
             WIDTH,
             HEIGHT,
-            "No other pet equipment.",
-            24,
-            256,
-            11.0,
-            WIDTH - 48,
-            24,
+            "No pets found in cash inventory.",
+            14,
+            38,
+            9.0,
+            WIDTH - 28,
+            16,
             [90, 96, 96],
         );
     }
-    for (index, item) in gear.iter().skip(scroll_row).take(5).enumerate() {
-        let y = 220 + index * 49;
+    for (index, item) in pets.iter().enumerate() {
+        let y = 32 + index * 34;
+        fill_dialogue_rect(&mut pixels, WIDTH, HEIGHT, 9, y, WIDTH - 18, 31, [235, 224, 211, 255]);
         if let Some((icon_width, icon_height, icon_pixels)) =
             inventory_item_icon(item.item_id, item_archive, character_archive, icon_cache)
         {
@@ -1555,31 +1460,130 @@ fn render_pet_equipment_panel(
                 &icon_pixels,
                 icon_width as usize,
                 icon_height as usize,
-                23,
+                12,
+                y + 1,
+                28,
+            );
+        }
+        let Some(pet) = item.pet.as_ref() else {
+            continue;
+        };
+        let pet_name = if pet.name.trim().is_empty() {
+            item_name(item.item_id, string_archive, name_cache)
+        } else {
+            pet.name.clone()
+        };
+        let pet_name = ui_foundation::ellipsize(font, &pet_name, 10.0, 190.0);
+        draw_dialogue_text(
+            font,
+            &mut pixels,
+            WIDTH,
+            HEIGHT,
+            &pet_name,
+            48,
+            (y + 2) as i32,
+            10.0,
+            196,
+            14,
+            [43, 48, 48],
+        );
+        draw_dialogue_text(
+            font,
+            &mut pixels,
+            WIDTH,
+            HEIGHT,
+            &format!("Lv {}   Fullness {}%", pet.level, pet.fullness),
+            48,
+            (y + 16) as i32,
+            8.0,
+            196,
+            12,
+            [72, 79, 78],
+        );
+    }
+    fill_dialogue_rect(
+        &mut pixels,
+        WIDTH,
+        HEIGHT,
+        8,
+        135,
+        WIDTH - 16,
+        1,
+        [187, 161, 131, 255],
+    );
+    draw_dialogue_text(
+        font,
+        &mut pixels,
+        WIDTH,
+        HEIGHT,
+        "Pet gear",
+        16,
+        139,
+        10.0,
+        180,
+        12,
+        [48, 55, 57],
+    );
+    let gear = pet_equipment_drawer_items(inventory);
+    let scroll_row = scroll_row.min(gear.len().saturating_sub(PET_EQUIPMENT_VISIBLE_ROWS));
+    if gear.is_empty() {
+        draw_dialogue_text(
+            font,
+            &mut pixels,
+            WIDTH,
+            HEIGHT,
+            "No pet gear in your inventory.",
+            14,
+            164,
+            11.0,
+            WIDTH - 28,
+            24,
+            [90, 96, 96],
+        );
+    }
+    for (index, item) in gear
+        .iter()
+        .skip(scroll_row)
+        .take(PET_EQUIPMENT_VISIBLE_ROWS)
+        .enumerate()
+    {
+        let y = PET_EQUIPMENT_GEAR_LIST_Y as usize
+            + index * PET_EQUIPMENT_GEAR_ROW_HEIGHT as usize;
+        fill_dialogue_rect(&mut pixels, WIDTH, HEIGHT, 9, y, WIDTH - 18, 37, [235, 224, 211, 255]);
+        if let Some((icon_width, icon_height, icon_pixels)) =
+            inventory_item_icon(item.item_id, item_archive, character_archive, icon_cache)
+        {
+            composite_inventory_icon(
+                &mut pixels,
+                WIDTH,
+                HEIGHT,
+                &icon_pixels,
+                icon_width as usize,
+                icon_height as usize,
+                12,
                 y + 4,
-                36,
+                32,
             );
         }
         let name = item_name(item.item_id, string_archive, name_cache);
-        let name = ui_foundation::ellipsize(font, &name, 11.0, 220.0);
+        let name = ui_foundation::ellipsize(font, &name, 9.0, 119.0);
         draw_dialogue_text(
             font,
             &mut pixels,
             WIDTH,
             HEIGHT,
             &name,
-            68,
-            (y + 7) as i32,
-            11.0,
-            220,
-            17,
+            52,
+            (y + 5) as i32,
+            9.0,
+            119,
+            13,
             [43, 48, 48],
         );
         let location = match item.inventory_type {
-            openstory_protocol::InventoryType::Equipped => "Equipped · click to remove".to_owned(),
-            openstory_protocol::InventoryType::Cash => "Cash inventory".to_owned(),
+            openstory_protocol::InventoryType::Equipped => "Equipped".to_owned(),
             _ if pet_equipment_destination(item.item_id, inventory).is_some() => {
-                "Click to equip".to_owned()
+                "In inventory".to_owned()
             }
             _ => "Cannot equip".to_owned(),
         };
@@ -1589,31 +1593,37 @@ fn render_pet_equipment_panel(
             WIDTH,
             HEIGHT,
             &location,
-            68,
-            (y + 25) as i32,
-            9.0,
-            220,
-            13,
+            52,
+            (y + 21) as i32,
+            8.0,
+            119,
+            12,
             [80, 88, 87],
         );
-        if item.inventory_type != openstory_protocol::InventoryType::Equipped {
-            let path = if item.inventory_type == openstory_protocol::InventoryType::Equip
-                && pet_equipment_destination(item.item_id, inventory).is_none()
-            {
-                "UIWindow.img/ShortCut/BtEquip/disabled/0"
+        let (label, enabled) =
+            if item.inventory_type == openstory_protocol::InventoryType::Equipped {
+                ("Remove", true)
+            } else if pet_equipment_destination(item.item_id, inventory).is_some() {
+                ("Equip", true)
             } else {
-                "UIWindow.img/ShortCut/BtEquip/normal/0"
+                ("Unavailable", false)
             };
-            let _ = composite_nx_ui_bitmap(
-                &mut pixels,
-                WIDTH,
-                HEIGHT,
-                ui_archive,
-                path,
-                294,
-                y as i32 + 9,
-            );
-        }
+        let bounds = ui_foundation::UiRect::new(WIDTH as f32 - 82.0, y as f32 + 9.0, 70.0, 19.0);
+        let _ = composite_nx_ui_tab(&mut pixels, WIDTH, HEIGHT, ui_archive, bounds, false);
+        let label_width = dialogue_text_width(font, label, 11.0);
+        draw_dialogue_text(
+            font,
+            &mut pixels,
+            WIDTH,
+            HEIGHT,
+            label,
+            (bounds.x + (bounds.width - label_width) / 2.0).round() as i32,
+            bounds.y as i32 + 3,
+            11.0,
+            bounds.width as usize,
+            16,
+            if enabled { [48, 48, 48] } else { [103, 103, 103] },
+        );
     }
     if !gear.is_empty() {
         draw_dialogue_text(
@@ -1621,30 +1631,25 @@ fn render_pet_equipment_panel(
             &mut pixels,
             WIDTH,
             HEIGHT,
-            &format!(
-                "{}–{} / {}",
-                scroll_row + 1,
-                (scroll_row + 5).min(gear.len()),
-                gear.len()
-            ),
+            &format!("{}–{} / {}", scroll_row + 1, (scroll_row + PET_EQUIPMENT_VISIBLE_ROWS).min(gear.len()), gear.len()),
             16,
-            465,
+            HEIGHT as i32 - 21,
             9.0,
             150,
             12,
             [80, 88, 87],
         );
-        if gear.len() > 5 {
+        if gear.len() > PET_EQUIPMENT_VISIBLE_ROWS {
             draw_dialogue_text(
                 font,
                 &mut pixels,
                 WIDTH,
                 HEIGHT,
-                "Scroll or Page Up/Down",
-                236,
-                465,
+                "Scroll",
+                WIDTH as i32 - 58,
+                HEIGHT as i32 - 21,
                 9.0,
-                145,
+                45,
                 12,
                 [80, 88, 87],
             );
@@ -1659,12 +1664,14 @@ mod pet_equipment_grid_tests {
     use openstory_protocol::{InventoryItem, InventorySnapshot, InventoryType};
 
     #[test]
-    fn pet_equip_targets_are_positive_and_do_not_replace_unrelated_items() {
+    fn pet_equip_targets_use_the_pet_equipment_slot() {
         let empty = InventorySnapshot::default();
         assert_eq!(pet_equipment_destination(1_822_000, &empty), Some(114));
         let packet = openstory_protocol::move_item_packet(InventoryType::Equip, 3, -114, 1, 0);
         assert_eq!(&packet[9..11], &(-114_i16).to_le_bytes());
-        assert_eq!(pet_equipment_destination(1_812_000, &empty), None);
+        assert_eq!(pet_equipment_destination(1_812_000, &empty), Some(123));
+        let packet = openstory_protocol::move_item_packet(InventoryType::Equip, 3, -123, 1, 0);
+        assert_eq!(&packet[9..11], &(-123_i16).to_le_bytes());
         let mut inventory = empty;
         inventory.items.push(InventoryItem {
             inventory_type: InventoryType::Equipped,
@@ -1673,13 +1680,14 @@ mod pet_equipment_grid_tests {
             ..Default::default()
         });
         assert_eq!(pet_equipment_destination(1_822_000, &inventory), None);
+        assert_eq!(pet_equipment_destination(1_812_000, &inventory), Some(123));
         inventory.items.push(InventoryItem {
             inventory_type: InventoryType::Equipped,
-            slot: 120,
+            slot: 123,
             item_id: 1_812_000,
             ..Default::default()
         });
-        assert_eq!(pet_equipment_destination(1_812_000, &inventory), Some(120));
+        assert_eq!(pet_equipment_destination(1_812_000, &inventory), Some(123));
         assert_eq!(pet_equipment_destination(1_832_000, &inventory), None);
     }
 

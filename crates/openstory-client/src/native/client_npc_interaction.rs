@@ -593,6 +593,92 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    #[ignore = "requires existing local NX assets; checks Dalair title quest turn-ins"]
+    fn dalair_title_quests_allow_valid_turn_ins() {
+        use openstory_protocol::{QuestEntry, QuestLog};
+
+        let directory = AssetDirectory::resolve_and_validate(None).unwrap();
+        let quests = NxArchive::open(directory.root().join("Quest.nx")).unwrap();
+        let empty_index = HashMap::new();
+        for (quest_id, npc_id, scripted) in [
+            (29900, 9000040, true),  // Beginner Adventurer uses an authored end script.
+            (29922, 9000066, false), // Veteran Hunter has no end-side requirements.
+            (29923, 9000066, false), // Legendary Hunter has no end-side requirements.
+        ] {
+            let log = QuestLog {
+                started: vec![QuestEntry {
+                    id: quest_id,
+                    data: String::new(),
+                }],
+                completed: Vec::new(),
+            };
+            let choices = npc_quest_choices(npc_id, &log, &quests, &empty_index, None, None);
+            let choice = choices
+                .iter()
+                .find(|choice| choice.quest_id == quest_id && choice.side == 1)
+                .unwrap_or_else(|| panic!("missing Dalair turn-in choice for quest {quest_id}"));
+            assert!(choice.ready, "quest {quest_id} should be ready to turn in");
+            assert_eq!(
+                quest_requires_script(&quests, quest_id, 1, "endscript"),
+                scripted,
+                "unexpected completion path for quest {quest_id}"
+            );
+        }
+
+        for (quest_id, progress_quest_id, below, met) in [
+            (29931, 7662, "9999", "10000"),
+            (29932, 7760, "49999", "50000"),
+        ] {
+            let make_log = |progress: &str| QuestLog {
+                started: vec![
+                    QuestEntry {
+                        id: quest_id,
+                        data: String::new(),
+                    },
+                    QuestEntry {
+                        id: progress_quest_id,
+                        data: progress.to_owned(),
+                    },
+                ],
+                completed: Vec::new(),
+            };
+            let below_log = make_log(below);
+            assert!(!quest_is_completable(
+                &below_log.started[0],
+                &quests,
+                None,
+                &below_log
+            ));
+            let below_choice =
+                npc_quest_choices(9000066, &below_log, &quests, &empty_index, None, None)
+                    .into_iter()
+                    .find(|choice| choice.quest_id == quest_id && choice.side == 1)
+                    .unwrap();
+            assert!(
+                !below_choice.ready,
+                "quest {quest_id} is below its title target"
+            );
+
+            let met_log = make_log(met);
+            assert!(quest_is_completable(
+                &met_log.started[0],
+                &quests,
+                None,
+                &met_log
+            ));
+            let met_choice =
+                npc_quest_choices(9000066, &met_log, &quests, &empty_index, None, None)
+                    .into_iter()
+                    .find(|choice| choice.quest_id == quest_id && choice.side == 1)
+                    .unwrap();
+            assert!(
+                met_choice.ready,
+                "quest {quest_id} has reached its title target"
+            );
+        }
+    }
 }
 
 pub(super) fn npc_quest_menu(

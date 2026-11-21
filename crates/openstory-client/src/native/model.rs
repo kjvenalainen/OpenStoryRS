@@ -438,6 +438,16 @@ fn avatar_motion_for_stance(stance: u8) -> AvatarMotion {
     }
 }
 
+/// OpenStory advances walking and climbing stances at the character's movement
+/// rate, expressed as milliseconds per 8 ms simulation tick.
+fn character_movement_animation_elapsed(speed: f64) -> Duration {
+    if speed < 1.0 / 8.0 {
+        Duration::ZERO
+    } else {
+        Duration::from_millis((8.0 * speed) as u64)
+    }
+}
+
 fn first_avatar_frame(frames: &[AvatarFrameRuntime], motion: AvatarMotion) -> Option<usize> {
     frames
         .iter()
@@ -2743,6 +2753,7 @@ enum MobAggroTarget {
 }
 
 const MOB_AGGRO_STOP_DISTANCE: f64 = 32.0;
+const MOB_AGGRO_DURATION: Duration = Duration::from_secs(4);
 
 struct MapMobRuntime {
     mob_id: i32,
@@ -2774,6 +2785,7 @@ struct MapMobRuntime {
     random_state: u32,
     fly_direction: i8,
     aggro_target: Option<MobAggroTarget>,
+    aggro_remaining: Duration,
 }
 
 struct MapSummonRuntime {
@@ -2900,15 +2912,38 @@ impl MapPetRuntime {
         self.body.y = y;
     }
 
-    fn follow_local(&mut self, owner: (f64, f64), footholds: Option<&FootholdTree>) {
+    fn follow_local(
+        &mut self,
+        owner: (f64, f64),
+        owner_is_climbing: bool,
+        footholds: Option<&FootholdTree>,
+    ) {
         const WALK_FORCE: f64 = 0.35;
         const FLY_FORCE: f64 = 0.2;
+        const FOLLOW_START_DEADZONE: f64 = 50.0;
+        const FOLLOW_STOP_DEADZONE: f64 = 30.0;
+        const LOOT_START_DEADZONE: f64 = 8.0;
+        const LOOT_STOP_DEADZONE: f64 = 4.0;
+        const WALK_STOP_SPEED: f64 = 0.1;
 
         if !self.command_remaining.is_zero() {
             self.body.horizontal_force = 0.0;
             self.body.vertical_force = 0.0;
             self.body.mode = PhysicsMode::Normal;
             self.body.flags.no_gravity = false;
+            return;
+        }
+
+        if owner_is_climbing {
+            self.set_position(owner.0, owner.1);
+            self.body.horizontal_speed = 0.0;
+            self.body.vertical_speed = 0.0;
+            self.body.horizontal_force = 0.0;
+            self.body.vertical_force = 0.0;
+            self.body.mode = PhysicsMode::Normal;
+            self.body.flags.no_gravity = true;
+            self.body.flags.turn_at_edges = false;
+            self.set_local_motion(6, self.stance & 1 == 1);
             return;
         }
 
@@ -2924,7 +2959,13 @@ impl MapPetRuntime {
         self.body.horizontal_force = 0.0;
         self.body.vertical_force = 0.0;
 
-        match current_state {
+        if current_state == 6 {
+            self.set_local_motion(1, self.stance & 1 == 1);
+            self.body.on_ground = false;
+            self.body.flags.no_gravity = false;
+        }
+
+        match self.state() {
             0 | 1 => {
                 if owner_distance > max_owner_distance {
                     self.set_position(owner.0, owner.1);
@@ -2933,10 +2974,20 @@ impl MapPetRuntime {
                     let destination = self.loot_target.unwrap_or(owner);
                     let delta_x = destination.0 - self.body.x;
                     let delta_y = destination.1 - self.body.y;
+                    let is_walking = current_state == 0
+                        && self.body.horizontal_speed.abs() >= WALK_STOP_SPEED;
                     let deadzone = if self.loot_target.is_some() {
-                        8.0
+                        if is_walking {
+                            LOOT_STOP_DEADZONE
+                        } else {
+                            LOOT_START_DEADZONE
+                        }
                     } else {
-                        50.0
+                        if is_walking {
+                            FOLLOW_STOP_DEADZONE
+                        } else {
+                            FOLLOW_START_DEADZONE
+                        }
                     };
                     if delta_x > deadzone {
                         self.body.horizontal_force = WALK_FORCE;
@@ -2944,6 +2995,10 @@ impl MapPetRuntime {
                     } else if delta_x < -deadzone {
                         self.body.horizontal_force = -WALK_FORCE;
                         self.set_local_motion(0, false);
+                    } else if self.body.horizontal_speed.abs() >= WALK_STOP_SPEED {
+                        // Keep the walk clip through deceleration so a short
+                        // correction does not flash just one walk pose.
+                        self.set_local_motion(0, self.stance & 1 == 1);
                     } else {
                         self.set_local_motion(1, self.stance & 1 == 1);
                     }
@@ -2960,19 +3015,27 @@ impl MapPetRuntime {
             2 => {
                 let destination = self.loot_target.unwrap_or(owner);
                 let delta_x = destination.0 - self.body.x;
-                let deadzone = if self.loot_target.is_some() {
-                    8.0
-                } else {
-                    50.0
-                };
                 if self.body.on_ground {
-                    self.set_local_motion(1, self.stance & 1 == 1);
+                    let deadzone = if self.loot_target.is_some() {
+                        LOOT_START_DEADZONE
+                    } else {
+                        FOLLOW_START_DEADZONE
+                    };
+                    if delta_x > deadzone {
+                        self.body.horizontal_force = WALK_FORCE;
+                        self.set_local_motion(0, true);
+                    } else if delta_x < -deadzone {
+                        self.body.horizontal_force = -WALK_FORCE;
+                        self.set_local_motion(0, false);
+                    } else {
+                        self.set_local_motion(1, self.stance & 1 == 1);
+                    }
                 } else if owner_distance > max_owner_distance {
                     self.set_position(owner.0, owner.1);
-                } else if delta_x > deadzone {
+                } else if delta_x > FOLLOW_START_DEADZONE {
                     self.body.horizontal_force = WALK_FORCE;
                     self.set_local_motion(2, true);
-                } else if delta_x < -deadzone {
+                } else if delta_x < -FOLLOW_START_DEADZONE {
                     self.body.horizontal_force = -WALK_FORCE;
                     self.set_local_motion(2, false);
                 }
@@ -4339,9 +4402,17 @@ impl MapSceneRuntime {
                     remaining.saturating_sub(Duration::from_millis(8 * u64::from(updates)));
                 (!remaining.is_zero()).then_some(remaining)
             });
+            let mut horizontal_animation_elapsed = Duration::ZERO;
+            let mut vertical_animation_elapsed = Duration::ZERO;
             for _ in 0..updates {
-                player.x += (player.target_x - player.x) * 0.18;
-                player.y += (player.target_y - player.y) * 0.18;
+                let horizontal_speed = (player.target_x - player.x) * 0.18;
+                let vertical_speed = (player.target_y - player.y) * 0.18;
+                player.x += horizontal_speed;
+                player.y += vertical_speed;
+                horizontal_animation_elapsed = horizontal_animation_elapsed
+                    .saturating_add(character_movement_animation_elapsed(horizontal_speed.abs()));
+                vertical_animation_elapsed = vertical_animation_elapsed
+                    .saturating_add(character_movement_animation_elapsed(vertical_speed.abs()));
                 if player.recoil_velocity_x.abs() >= 0.05 {
                     player.recoil_offset_x += player.recoil_velocity_x;
                     player.recoil_velocity_x *= 0.82;
@@ -4374,11 +4445,20 @@ impl MapSceneRuntime {
             } else {
                 1.0
             };
+            let stance_elapsed = if player.attack_stance.is_some() {
+                Duration::from_millis(
+                    u64::from((8.0 * speed_factor) as u8) * u64::from(updates),
+                )
+            } else {
+                match desired {
+                    AvatarMotion::Walk => horizontal_animation_elapsed,
+                    AvatarMotion::Ladder | AvatarMotion::Rope => vertical_animation_elapsed,
+                    _ => Duration::from_millis(8 * u64::from(updates)),
+                }
+            };
             player.avatar_elapsed = player
                 .avatar_elapsed
-                .saturating_add(Duration::from_secs_f32(
-                    0.008 * f32::from(updates) * speed_factor,
-                ));
+                .saturating_add(stance_elapsed);
             loop {
                 let Some(active) = player.active_avatar_frame else {
                     break;
@@ -5224,6 +5304,7 @@ impl MapSceneRuntime {
 
     fn advance_pets(&mut self, updates: u8, local_character_id: Option<i32>) -> Vec<Vec<u8>> {
         let owner = (self.player.x, self.player.y);
+        let owner_is_climbing = self.local_ladder.is_some();
         let mut packets = Vec::new();
         for _ in 0..updates {
             if self.pet_loot_cooldown > 0 {
@@ -5237,7 +5318,7 @@ impl MapSceneRuntime {
             for pet in self.pets.values_mut() {
                 pet.advance(1);
                 if Some(pet.owner_id) == local_character_id {
-                    pet.follow_local(owner, footholds);
+                    pet.follow_local(owner, owner_is_climbing, footholds);
                     pet.movement_ticks = pet.movement_ticks.saturating_add(1);
                     if pet.movement_ticks >= 10 {
                         pet.movement_ticks = 0;
@@ -5618,6 +5699,16 @@ impl MapSceneRuntime {
                 if mob.dying {
                     continue;
                 }
+                let mut aggro_expired = false;
+                if !mob.aggro_remaining.is_zero() {
+                    mob.aggro_remaining = mob
+                        .aggro_remaining
+                        .saturating_sub(Duration::from_millis(8));
+                    if mob.aggro_remaining.is_zero() {
+                        mob.aggro_target = None;
+                        aggro_expired = true;
+                    }
+                }
                 let immobilized = mob.is_immobilized();
                 if mob.control_mode <= 0 && !immobilized {
                     continue;
@@ -5645,6 +5736,7 @@ impl MapSceneRuntime {
                 });
                 if mob.aggro_target.is_some() && aggro_position.is_none() {
                     mob.aggro_target = None;
+                    mob.aggro_remaining = Duration::ZERO;
                 }
                 if let Some((target_x, target_y)) = aggro_position {
                     mob.move_toward_aggro_target(target_x, target_y);
@@ -5714,7 +5806,7 @@ impl MapSceneRuntime {
                     packets.push(mob_movement_packet(*object_id, mob, 1));
                 }
 
-                let next = match mob.motion {
+                let normal_next = match mob.motion {
                     MobMotion::Hit => mob.ai_counter > 200,
                     MobMotion::Jump => false,
                     MobMotion::Attack(_) | MobMotion::Skill(_) => {
@@ -5723,6 +5815,9 @@ impl MapSceneRuntime {
                     _ if aggro_position.is_some() => false,
                     _ => animation_ended && mob.ai_counter > 200,
                 };
+                let next = normal_next
+                    || (aggro_expired
+                        && matches!(mob.motion, MobMotion::Move | MobMotion::Stand));
                 if next {
                     if let Some((target_x, target_y)) = aggro_position {
                         mob.finish_aggro_action(target_x, target_y);
@@ -5886,6 +5981,7 @@ impl MapSceneRuntime {
             && !mob.dying
         {
             mob.aggro_target = Some(target);
+            mob.aggro_remaining = MOB_AGGRO_DURATION;
         }
     }
 
@@ -6186,6 +6282,7 @@ impl MapSceneRuntime {
         };
         if spawn.is_new_spawn {
             mob.aggro_target = None;
+            mob.aggro_remaining = Duration::ZERO;
         }
         if mob.control_mode <= 0 {
             mob.x = f64::from(spawn.x);
@@ -6493,7 +6590,7 @@ mod pet_pathing_tests {
             interaction: None,
             speech_bubble_remaining: None,
         };
-        pet.follow_local((-180.0, 0.0), None);
+        pet.follow_local((-180.0, 0.0), false, None);
         assert_eq!(pet.body.x, 0.0);
         assert!(pet.body.horizontal_force > 0.0);
     }

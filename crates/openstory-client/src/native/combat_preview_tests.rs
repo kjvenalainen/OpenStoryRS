@@ -86,6 +86,7 @@ fn scene_with_mob() -> MapSceneRuntime {
             random_state: 1,
             fly_direction: 0,
             aggro_target: None,
+            aggro_remaining: Duration::ZERO,
         },
     );
     scene

@@ -12,15 +12,18 @@ the client at them with
 Core in-game panels use their v83 frames and controls from `UI.nx`, including
 stats, inventory and equipment, skills, quests, chat, map windows, and options.
 Live character and server data is rendered over the NX artwork. NPC shops use the
-v83 NX shop frame, item lists, category tabs, quantity dialog, and transaction controls;
-item and meso balances change only when confirmed by server updates.
+v83 NX shop frame, item lists, category tabs, quantity dialog, and transaction controls.
+Their Recommended tab filters to equipment the current character can equip; item and
+meso balances change only when confirmed by server updates.
 
 The native client opens v83 login and world/channel artwork in a resizable GPU-backed
-window, keeps a 1024x768 logical canvas, and scales with letterboxing. The account and
-password fields accept text; the password is masked. The selected world and channel
+window, keeps a 1024x768 logical canvas, and scales with letterboxing. Enlarged frames
+use sharper cubic reconstruction to keep bitmap text and sprite edges clearer. The
+account and password fields accept text; the password is masked. The selected world and channel
 can be used to request a character list. Characters display name, level, job, and map.
 In the field, the camera keeps the player above the status bar and uses the visible
-field area for map limits. Escape opens the quit confirmation when no panel is handling it.
+field area for map limits. When no other window is open, Escape opens the game menu;
+select Quit Game to open the quit confirmation.
 The login background's six light beams animate independently using their NX frame delays;
 login buttons use their NX disabled, mouse-over, and pressed art. Keyboard focus uses NX
 focus art when available and a gold outline otherwise. Tab cycles through the account field,
@@ -209,8 +212,10 @@ remains available for spaces in the answer; Enter submits it. Up/Down moves the 
 highlight through long lists, which also scroll with the mouse wheel. Space submits number
 prompts. Outside dialogue, Space requests a conversation with the nearest NPC within
 legacy interaction range; both Option keys jump. NPC shops show server-provided buy and sell
-lists, inventory category tabs, scrolling, and item details when hovering either list. Double-click
-a row to open its buy or sell prompt, or select an item and use the matching button. Quantity
+lists, with a Recommended view that filters equipment by the character's level, job, gender,
+stats, and fame requirements. Inventory category tabs, scrolling, and hover details work on
+their respective lists. Double-click a row to open its buy or sell prompt, or select an item
+and use the matching button. Quantity
 prompts, recharge, and leave actions send v83 shop requests; item and currency changes remain
 server-authoritative, and transaction replies unlock the controls and show failures. The
 bottom HUD uses the stock v83 `StatusBar.img` background, gauge, and toolbar sprites, with
@@ -241,8 +246,8 @@ party chat. `/party create`, `/party invite <character>`, `/party join <id>`, `/
 manage party membership; `/party list` toggles the party panel. Press O to show party
 members, channels, and server-reported HP.
 
-When no dialog or panel is open, press Escape to open Options. The panel exposes graphics
-and effects quality, music and sound volume with mute controls, mouse speed, HP/MP warning
+Select System Menu in the game menu to open Options. The panel exposes graphics and
+effects quality, music and sound volume with mute controls, mouse speed, HP/MP warning
 thresholds, screen shake, and the v83 social permissions for whispers, messenger/party/guild/
 alliance/family invitations, buddy/guild/alliance chat, trade and expedition requests, and
 follow requests. Drag a slider or use Tab and the arrow keys. Space toggles the selected
@@ -348,8 +353,9 @@ extend matching bow, crossbow, and claw attack ranges from their NX level values
 that use the regular weapon action and lack a custom hit rectangle use the equipped weapon's
 afterimage range. Hit effects and hit sounds follow each attack delay and projectile flight;
 server mob-death animations and sounds apply immediately when `KILL_MOB` arrives. Attack skills
-play their Use sound before the attack action, and play a weapon sound only when they use the
-regular weapon action. Teleport uses its learned NX range and stops at
+play their authored Use sound before the attack action; when present, it takes precedence over
+the regular-action weapon sound. Skills without an authored Use sound retain the weapon sound
+when they use the regular weapon action. Teleport uses its learned NX range and stops at
 foothold walls or large floor changes; Flash Jump applies its aerial movement locally.
 Using a skill or mastery book now parses the v83 result and shows a success or failure
 message; learned skill levels still come from the server's skill update.
@@ -454,9 +460,10 @@ The v83 move request does not support partial
 stack moves within a bag, while drop and storage quantity prompts remain available. The
 legacy client rejects drags between inventory categories, so slot moves stay within the
 selected bag.
-Assign the Pet equipment action in Keyboard Settings, or use the Pets button in the inventory. It shows pet
-names, level and fullness alongside pet gear in the Equip inventory. Use a gear item while
-the intended pet is summoned; the server inventory update remains authoritative.
+Assign the Pet equipment action in Keyboard Settings, or click **PET EQUIP** at the bottom of
+the equipment inventory to open its right-side drawer. It shows pet names, level and fullness alongside
+pet gear. Click **Equip** or **Remove** on a gear row; the server inventory update remains
+authoritative.
 Use the Stats binding (`S` in the default layout) in the field to open Character Stats. Spend AP with the `+` buttons or use Auto
 to confirm allocation to the character's primary stat; each point is sent to the server and
 the panel waits for the authoritative stat update. Server `FORCED_STAT_SET` updates also

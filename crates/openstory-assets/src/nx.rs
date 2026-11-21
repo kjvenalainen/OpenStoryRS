@@ -1121,6 +1121,16 @@ pub struct Bitmap {
 }
 
 impl Bitmap {
+    /// Returns a process-local identity for this bitmap, stable while its archive is open.
+    pub fn cache_key(&self) -> (usize, u32, u16, u16) {
+        (
+            Arc::as_ptr(&self.archive.inner) as usize,
+            self.index,
+            self.width,
+            self.height,
+        )
+    }
+
     pub fn width(&self) -> u16 {
         self.width
     }
