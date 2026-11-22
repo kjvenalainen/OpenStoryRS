@@ -1,5 +1,26 @@
 use super::*;
 
+fn inventory_tooltip_position(cursor: Point) -> (f32, f32) {
+    let width = INVENTORY_TOOLTIP_WIDTH as f32;
+    let height = INVENTORY_TOOLTIP_HEIGHT as f32;
+    let x = if cursor.x + 18.0 + width > 1024.0 {
+        cursor.x - width - 18.0
+    } else {
+        cursor.x + 18.0
+    }
+    .clamp(0.0, 1024.0 - width);
+    let y = if cursor.y + 18.0 + height > 768.0 {
+        cursor.y - height - 18.0
+    } else {
+        cursor.y + 18.0
+    }
+    .clamp(0.0, 768.0 - height);
+
+    // Cursor coordinates can be fractional after viewport scaling; align the
+    // 1:1 tooltip texture to logical pixels so its text avoids bilinear blur.
+    (x.round(), y.round())
+}
+
 fn map_background_hidden_for_quality(
     scene: &MapSceneRuntime,
     draw_index: usize,
@@ -4767,7 +4788,9 @@ impl ApplicationHandler for ClientApp {
                 let inventory_item_hovered = if npc_shop_open {
                     npc_shop_item_hovered
                 } else {
-                    self.show_inventory && self.inventory_hover_slot.is_some()
+                    (self.show_inventory && self.inventory_hover_slot.is_some())
+                        || (self.show_equipment_inventory
+                            && self.equipped_inventory_hover_slot.is_some())
                 };
                 if (inventory_item_hovered || quickslot_item_hovered)
                     && (npc_shop_open || self.skill_tooltip_key.is_none())
@@ -4781,18 +4804,7 @@ impl ApplicationHandler for ClientApp {
                 {
                     let width = INVENTORY_TOOLTIP_WIDTH as f32;
                     let height = INVENTORY_TOOLTIP_HEIGHT as f32;
-                    let x = if cursor.x + 18.0 + width > 1024.0 {
-                        cursor.x - width - 18.0
-                    } else {
-                        cursor.x + 18.0
-                    }
-                    .clamp(0.0, 1024.0 - width);
-                    let y = if cursor.y + 18.0 + height > 768.0 {
-                        cursor.y - height - 18.0
-                    } else {
-                        cursor.y + 18.0
-                    }
-                    .clamp(0.0, 768.0 - height);
+                    let (x, y) = inventory_tooltip_position(cursor);
                     draws.push(SpriteDraw {
                         texture,
                         x,
@@ -5016,18 +5028,7 @@ impl ApplicationHandler for ClientApp {
                 {
                     let width = INVENTORY_TOOLTIP_WIDTH as f32;
                     let height = INVENTORY_TOOLTIP_HEIGHT as f32;
-                    let x = if cursor.x + 18.0 + width > 1024.0 {
-                        cursor.x - width - 18.0
-                    } else {
-                        cursor.x + 18.0
-                    }
-                    .clamp(0.0, 1024.0 - width);
-                    let y = if cursor.y + 18.0 + height > 768.0 {
-                        cursor.y - height - 18.0
-                    } else {
-                        cursor.y + 18.0
-                    }
-                    .clamp(0.0, 768.0 - height);
+                    let (x, y) = inventory_tooltip_position(cursor);
                     draws.push(SpriteDraw {
                         texture,
                         x,

@@ -150,6 +150,8 @@ impl ClientApp {
             .insert(DialogWindow::PetEquipment, equipment_offset);
         self.refresh_equipment_inventory_texture();
         self.refresh_pet_equipment_texture();
+        self.update_inventory_hover();
+        self.refresh_inventory_tooltip_texture();
     }
 
     pub(super) fn toggle_pet_equipment_panel(&mut self) {
@@ -169,7 +171,14 @@ impl ClientApp {
             self.refresh_npc_shop_tooltip_texture();
             return;
         }
-        let item = if let Some(slot) = self.inventory_hover_slot.filter(|_| self.show_inventory) {
+        let item = if let Some(slot) = self
+            .equipped_inventory_hover_slot
+            .filter(|_| self.show_equipment_inventory)
+        {
+            self.inventory
+                .as_ref()
+                .and_then(|inventory| inventory.equipped().find(|item| item.slot == slot).cloned())
+        } else if let Some(slot) = self.inventory_hover_slot.filter(|_| self.show_inventory) {
             self.inventory.as_ref().and_then(|inventory| {
                 inventory_display_item(
                     inventory,
@@ -230,10 +239,37 @@ impl ClientApp {
     }
 
     pub(super) fn update_inventory_hover(&mut self) -> bool {
+        let equipment_inventory_is_topmost = self.cursor.is_some_and(|cursor| {
+            self.show_equipment_inventory
+                && self.topmost_dialog_window_at(cursor) == Some(DialogWindow::EquipmentInventory)
+        });
         let cursor = self
             .cursor
             .map(|cursor| self.dialog_window_input_cursor(cursor));
-        let hovered_slot = if self.show_inventory && self.inventory_drag_source.is_none() {
+        let equipped_hovered_slot = if equipment_inventory_is_topmost {
+            cursor.and_then(|cursor| {
+                let local_x = cursor.x - EQUIPMENT_INVENTORY_PANEL_X;
+                let local_y = cursor.y - EQUIPMENT_INVENTORY_PANEL_Y;
+                self.inventory.as_ref().and_then(|inventory| {
+                    inventory.equipped().find_map(|item| {
+                        let (x, y) = equipment_inventory_slot_position(item.slot)?;
+                        let left = x as f32 + 1.0;
+                        let top = y as f32 + 1.0;
+                        (local_x >= left
+                            && local_x < left + 32.0
+                            && local_y >= top
+                            && local_y < top + 32.0)
+                            .then_some(item.slot)
+                    })
+                })
+            })
+        } else {
+            None
+        };
+        let hovered_slot = if self.show_inventory
+            && !equipment_inventory_is_topmost
+            && self.inventory_drag_source.is_none()
+        {
             cursor
                 .and_then(|cursor| inventory_slot_at(cursor, self.inventory_scroll_row))
                 .filter(|slot| {
@@ -267,8 +303,10 @@ impl ClientApp {
             .filter(|cursor| self.topmost_dialog_window_at(*cursor).is_none())
             .and_then(|cursor| self.quickslot_at(cursor));
         let changed = self.inventory_hover_slot != hovered_slot
+            || self.equipped_inventory_hover_slot != equipped_hovered_slot
             || self.quickslot_hover_slot != quickslot_hovered_slot;
         self.inventory_hover_slot = hovered_slot;
+        self.equipped_inventory_hover_slot = equipped_hovered_slot;
         self.quickslot_hover_slot = quickslot_hovered_slot;
         changed
     }

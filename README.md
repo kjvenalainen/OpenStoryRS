@@ -13,8 +13,9 @@ Core in-game panels use their v83 frames and controls from `UI.nx`, including
 stats, inventory and equipment, skills, quests, chat, map windows, and options.
 Live character and server data is rendered over the NX artwork. NPC shops use the
 v83 NX shop frame, item lists, category tabs, quantity dialog, and transaction controls.
-Their Recommended tab filters to equipment the current character can equip; item and
-meso balances change only when confirmed by server updates.
+Their Recommended tab checks the character's job, gender, stats, and fame, and shows gear
+from the closest lower multiple of five through the next multiple (levels 15–20 at level 17).
+Item and meso balances change only when confirmed by server updates.
 
 The native client opens v83 login and world/channel artwork in a resizable GPU-backed
 window, keeps a 1024x768 logical canvas, and scales with letterboxing. Enlarged frames
@@ -212,11 +213,14 @@ remains available for spaces in the answer; Enter submits it. Up/Down moves the 
 highlight through long lists, which also scroll with the mouse wheel. Space submits number
 prompts. Outside dialogue, Space requests a conversation with the nearest NPC within
 legacy interaction range; both Option keys jump. NPC shops show server-provided buy and sell
-lists, with a Recommended view that filters equipment by the character's level, job, gender,
-stats, and fame requirements. Inventory category tabs, scrolling, and hover details work on
-their respective lists. Double-click a row to open its buy or sell prompt, or select an item
-and use the matching button. Quantity
-prompts, recharge, and leave actions send v83 shop requests; item and currency changes remain
+lists, with a Recommended view that checks equipment against job, gender, stats, and fame,
+and keeps required levels from the closest lower multiple of five through the next multiple
+(15–20 at level 17). Inventory
+category tabs, scrolling, and hover details work on
+their respective lists. Double-click an equipment row or select it and use the matching
+button to buy or sell one piece. Double-clicking a stackable offer or selling a stack
+opens a quantity prompt when multiple units are available. Recharge is available for
+supported projectile stacks below their charge limit. Item and currency changes remain
 server-authoritative, and transaction replies unlock the controls and show failures. The
 bottom HUD uses the stock v83 `StatusBar.img` background, gauge, and toolbar sprites, with
 live HP, MP, and EXP fills plus character level, name, job, and resource values. HP updates

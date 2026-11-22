@@ -3334,9 +3334,7 @@ fn build_npc_shop_panel_scene(
     let recommended = variant == "panel-npc-shop-recommended";
     let no_zero_price_refills = variant == "panel-npc-shop-no-zero-price-refills";
     let shop_item_ids: &[i32] = if recommended {
-        &[
-            1_002_002, 1_040_002, 1_060_002, 1_072_001, 1_302_000, 1_306_000,
-        ]
+        &[1_332_000, 1_472_000, 1_472_001, 1_472_003, 1_472_004]
     } else {
         &[
             2_000_000, 2_000_001, 2_000_002, 2_000_003, 2_000_006, 2_000_004, 2_020_001, 2_020_002,
@@ -3356,7 +3354,11 @@ fn build_npc_shop_panel_scene(
                 } else {
                     id
                 },
-                price: [50, 160, 320, 200, 620][index % 5],
+                price: if recommended {
+                    [4_000, 3_000, 8_000, 10_000, 12_000][index]
+                } else {
+                    [50, 160, 320, 200, 620][index % 5]
+                },
                 pitch: 0,
                 time: 0,
                 charge_price: if recharge && index == 0 { 20 } else { 0 },
@@ -3385,7 +3387,11 @@ fn build_npc_shop_panel_scene(
         item.slot = slot as i16;
     }
     let mut state = NpcShopUi::new(openstory_protocol::NpcShop {
-        npc_id: fixture_named_id(strings, "Npc.img", "Lina", 1011100),
+        npc_id: if recommended {
+            1_051_000
+        } else {
+            fixture_named_id(strings, "Npc.img", "Lina", 1011100)
+        },
         currency_item_id: 0,
         items: shop_items,
     });
@@ -3395,8 +3401,25 @@ fn build_npc_shop_panel_scene(
     } else {
         preview_inventory()
     };
-    state.tab = openstory_protocol::InventoryType::Use;
-    if !empty {
+    if !recommended {
+        state.tab = openstory_protocol::InventoryType::Use;
+    }
+    if recommended {
+        inventory.meso = 37_508;
+        inventory.items = [1_002_008, 1_002_610, 1_002_610, 1_040_002, 1_040_017]
+            .into_iter()
+            .enumerate()
+            .map(|(index, item_id)| openstory_protocol::InventoryItem {
+                inventory_type: state.tab,
+                slot: index as u16 + 1,
+                item_id,
+                count: 1,
+                ..Default::default()
+            })
+            .collect();
+        state.buy_selection = Some(2);
+        state.sell_selection = Some(1);
+    } else if !empty {
         inventory.items = (0..12)
             .map(|i| openstory_protocol::InventoryItem {
                 inventory_type: state.tab,
@@ -3409,7 +3432,7 @@ fn build_npc_shop_panel_scene(
                     2_000_000 + i32::from(i % 4)
                 },
                 count: if (recharge || no_zero_price_refills) && i == 1 {
-                    8_000
+                    80
                 } else {
                     100 - i * 3
                 },
@@ -3455,7 +3478,10 @@ fn build_npc_shop_panel_scene(
     }
     let mut character = preview_character();
     if recommended {
-        character.stats.job = 100;
+        character.stats.job = 400;
+        character.stats.level = 17;
+        character.stats.dexterity = 40;
+        character.stats.luck = 50;
         state.update_buy_item_indices(Some(&character), &inventory, characters);
     }
     let pixels = render_npc_shop_panel(
@@ -3471,7 +3497,11 @@ fn build_npc_shop_panel_scene(
         &mut HashMap::new(),
         &mut HashMap::new(),
     )?;
-    let mut sprites = gameplay_backdrop(map, characters, font)?;
+    let mut sprites = if recommended {
+        gameplay_backdrop_for_map(map, characters, font, 103_000_001)?
+    } else {
+        gameplay_backdrop(map, characters, font)?
+    };
     sprites.push(DecodedSprite {
         texture_key: "nx-window:live-npc-shop".to_owned(),
         rect: SpriteRect {

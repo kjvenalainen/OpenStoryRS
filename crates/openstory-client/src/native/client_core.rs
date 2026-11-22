@@ -351,6 +351,8 @@ impl ClientApp {
             inventory_tab: openstory_protocol::InventoryType::Equip,
             inventory_scroll_row: 0,
             inventory_hover_slot: None,
+            equipped_inventory_hover_slot: None,
+            last_inventory_equip_click: None,
             inventory_drag_source: None,
             inventory_pending_move: None,
             pending_scroll_slot: None,
@@ -1942,6 +1944,8 @@ impl ClientApp {
         } else {
             self.show_pet_equipment = false;
         }
+        self.update_inventory_hover();
+        self.refresh_inventory_tooltip_texture();
     }
 
     pub(super) fn activate_game_menu_item(&mut self, item: usize) {

@@ -969,8 +969,10 @@ pub(super) fn render_inventory_tooltip(
             detail_rows.push(format!("Other: {overflow}"));
             detail_rows.push(enhancements);
         }
+        const DETAIL_FONT_SIZE: f32 = 10.5;
+        const DETAIL_ROW_HEIGHT: i32 = 12;
         for (row, detail) in detail_rows.iter().enumerate() {
-            let y = 130 + row as i32 * 12;
+            let y = 130 + row as i32 * DETAIL_ROW_HEIGHT;
             for (offset, x, width) in [(0, 1, 2), (1, 0, 4), (2, 0, 4), (3, 1, 2)] {
                 fill_dialogue_rect(
                     &mut pixels,
@@ -983,7 +985,8 @@ pub(super) fn render_inventory_tooltip(
                     [70, 175, 255, 255],
                 );
             }
-            let detail = ui_foundation::ellipsize(font, detail, 9.0, (WIDTH - 29) as f32);
+            let detail =
+                ui_foundation::ellipsize(font, detail, DETAIL_FONT_SIZE, (WIDTH - 29) as f32);
             draw_dialogue_text(
                 font,
                 &mut pixels,
@@ -992,9 +995,9 @@ pub(super) fn render_inventory_tooltip(
                 &detail,
                 19,
                 y,
-                9.0,
+                DETAIL_FONT_SIZE,
                 WIDTH - 29,
-                12,
+                DETAIL_ROW_HEIGHT as usize,
                 [239, 231, 215],
             );
         }
@@ -1308,7 +1311,7 @@ fn pet_equipment_grid_item_at(
     })
 }
 
-fn equipment_inventory_slot_position(slot: u16) -> Option<(usize, usize)> {
+pub(super) fn equipment_inventory_slot_position(slot: u16) -> Option<(usize, usize)> {
     let (x, y) = match slot {
         1 => (43, 27),    // hat
         2 => (43, 60),    // face accessory

@@ -5304,6 +5304,7 @@ impl MapSceneRuntime {
 
     fn advance_pets(&mut self, updates: u8, local_character_id: Option<i32>) -> Vec<Vec<u8>> {
         let owner = (self.player.x, self.player.y);
+        let owner_foothold_id = self.player.foothold_id;
         let owner_is_climbing = self.local_ladder.is_some();
         let mut packets = Vec::new();
         for _ in 0..updates {
@@ -5319,6 +5320,13 @@ impl MapSceneRuntime {
                 pet.advance(1);
                 if Some(pet.owner_id) == local_character_id {
                     pet.follow_local(owner, owner_is_climbing, footholds);
+                    if owner_is_climbing {
+                        // The pet is drawn with the player while climbing, so
+                        // carry the player's foothold through the ladder exit
+                        // as well. Otherwise its stale ground layer can briefly
+                        // hide it when the player reaches the bottom.
+                        pet.body.foothold_id = owner_foothold_id;
+                    }
                     pet.movement_ticks = pet.movement_ticks.saturating_add(1);
                     if pet.movement_ticks >= 10 {
                         pet.movement_ticks = 0;

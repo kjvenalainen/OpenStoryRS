@@ -1,6 +1,31 @@
 use super::*;
 
 impl ClientApp {
+    fn register_inventory_equip_click(
+        &mut self,
+        target: Option<(openstory_protocol::InventoryType, u16)>,
+    ) -> bool {
+        const DOUBLE_CLICK_INTERVAL: Duration = Duration::from_millis(500);
+
+        let Some((openstory_protocol::InventoryType::Equip, slot)) = target else {
+            self.last_inventory_equip_click = None;
+            return false;
+        };
+        let now = Instant::now();
+        if self
+            .last_inventory_equip_click
+            .is_some_and(|(previous_slot, at)| {
+                previous_slot == slot && now.saturating_duration_since(at) <= DOUBLE_CLICK_INTERVAL
+            })
+        {
+            self.last_inventory_equip_click = None;
+            true
+        } else {
+            self.last_inventory_equip_click = Some((slot, now));
+            false
+        }
+    }
+
     pub(super) fn apply_quest_update(&mut self, update: openstory_protocol::QuestUpdate) {
         self.quest_log.apply(update);
         self.refresh_npc_quest_marks();
@@ -895,18 +920,21 @@ impl ClientApp {
         if (close.x..close.x + close.width + 1.0).contains(&local_x)
             && (close.y - 1.0..close.y + close.height + 2.0).contains(&local_y)
         {
+            self.register_inventory_equip_click(None);
             self.show_inventory = false;
             self.inventory_hover_slot = None;
             self.pending_scroll_slot = None;
             return true;
         }
         if ui_foundation::INVENTORY_GATHER_BUTTON.contains(local_x, local_y) {
+            self.register_inventory_equip_click(None);
             if self.inventory_tab != openstory_protocol::InventoryType::Equipped {
                 self.request_inventory_arrange(false);
             }
             return true;
         }
         if ui_foundation::INVENTORY_MESO_BUTTON.contains(local_x, local_y) {
+            self.register_inventory_equip_click(None);
             self.request_meso_drop();
             return true;
         }
@@ -914,12 +942,14 @@ impl ClientApp {
         if (sort.x..sort.x + sort.width + 1.0).contains(&local_x)
             && (sort.y..sort.y + sort.height).contains(&local_y)
         {
+            self.register_inventory_equip_click(None);
             if self.inventory_tab != openstory_protocol::InventoryType::Equipped {
                 self.request_inventory_arrange(true);
             }
             return true;
         }
         if let Some(tab) = inventory_tab_at(cursor) {
+            self.register_inventory_equip_click(None);
             self.inventory_tab = tab;
             self.inventory_scroll_row = 0;
             self.update_inventory_hover();
@@ -938,7 +968,11 @@ impl ClientApp {
                 self.refresh_inventory_drag_texture();
                 self.update_inventory_hover();
                 self.refresh_inventory_texture();
+            } else {
+                self.register_inventory_equip_click(None);
             }
+        } else {
+            self.register_inventory_equip_click(None);
         }
         true
     }
@@ -985,11 +1019,13 @@ impl ClientApp {
         let local_y = cursor.y - PET_EQUIPMENT_PANEL_Y;
         if ui_foundation::PET_EQUIPMENT_CLOSE_BUTTON.contains(local_x, local_y) {
             self.show_pet_equipment = false;
+            self.register_inventory_equip_click(None);
             return true;
         }
         let row_y = local_y - PET_EQUIPMENT_GEAR_LIST_Y;
         if row_y < 0.0 || row_y >= PET_EQUIPMENT_VISIBLE_ROWS as f32 * PET_EQUIPMENT_GEAR_ROW_HEIGHT
         {
+            self.register_inventory_equip_click(None);
             return true;
         }
         let index = (row_y / PET_EQUIPMENT_GEAR_ROW_HEIGHT).floor() as usize;
@@ -999,8 +1035,13 @@ impl ClientApp {
                 .map(|item| (item.inventory_type, item.slot))
         });
         if let Some((inventory_type, slot)) = selected {
-            self.activate_inventory_item(inventory_type, slot);
+            let double_click = self.register_inventory_equip_click(Some((inventory_type, slot)));
+            if inventory_type != openstory_protocol::InventoryType::Equip || double_click {
+                self.activate_inventory_item(inventory_type, slot);
+            }
             self.refresh_pet_equipment_texture();
+        } else {
+            self.register_inventory_equip_click(None);
         }
         true
     }
@@ -1014,6 +1055,7 @@ impl ClientApp {
             compose.awaiting_attachment && compose.kind.uses_item_attachment(compose.item_id)
         });
         if awaiting_attachment {
+            self.register_inventory_equip_click(None);
             let selected_item_id = self.inventory.as_ref().and_then(|inventory| {
                 inventory
                     .items
@@ -1062,6 +1104,9 @@ impl ClientApp {
         }
         let moved = cursor
             .is_none_or(|cursor| (cursor.x - origin.x).abs() + (cursor.y - origin.y).abs() >= 4.0);
+        if moved {
+            self.register_inventory_equip_click(None);
+        }
         if moved && let Some(drop_cursor) = cursor {
             let screen_cursor = self.cursor.unwrap_or(drop_cursor);
             if self.show_key_config
@@ -1121,7 +1166,11 @@ impl ClientApp {
             return;
         }
         if !moved || destination == Some(source_slot) {
-            self.activate_inventory_item(source_type, source_slot);
+            let double_click =
+                self.register_inventory_equip_click(Some((source_type, source_slot)));
+            if source_type != openstory_protocol::InventoryType::Equip || double_click {
+                self.activate_inventory_item(source_type, source_slot);
+            }
             self.refresh_inventory_texture();
             return;
         }

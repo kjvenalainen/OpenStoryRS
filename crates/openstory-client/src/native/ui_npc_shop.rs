@@ -13,6 +13,7 @@ const NPC_SHOP_SCROLL_X: [usize; 2] = [209, 440];
 const NPC_SHOP_SCROLL_WIDTH: usize = 15;
 const NPC_SHOP_SCROLL_ARROW: usize = 13;
 const NPC_SHOP_SCROLL_THUMB: usize = 25;
+const NPC_SHOP_RECOMMENDED_LEVEL_STEP: i64 = 5;
 
 // Buy and sell share a baseline; the upper controls share their right edges.
 // Both painting and hit testing use these anchors and the NX bitmap dimensions.
@@ -157,6 +158,34 @@ impl NpcShopUi {
             self.all_buy_item_indices.clone()
         };
     }
+
+    fn selected_buy_item(&self) -> Option<&openstory_protocol::NpcShopItem> {
+        let index = *self.buy_item_indices.get(self.buy_selection?)?;
+        self.shop.items.get(index)
+    }
+
+    fn selected_sell_item<'a>(
+        &self,
+        inventory: &'a openstory_protocol::InventorySnapshot,
+    ) -> Option<&'a openstory_protocol::InventoryItem> {
+        let slot = self.sell_selection?;
+        inventory
+            .items
+            .iter()
+            .find(|item| item.inventory_type == self.tab && item.slot == slot && item.slot > 0)
+    }
+
+    fn begin_item_action(&mut self, quantity: NpcShopQuantity) -> Option<NpcShopQuantity> {
+        if self.pending {
+            return None;
+        }
+        self.hovered_item = None;
+        if quantity.maximum == 1 {
+            return Some(quantity);
+        }
+        self.quantity = Some(quantity);
+        None
+    }
 }
 
 fn npc_shop_recommended_buy_indices(
@@ -169,6 +198,11 @@ fn npc_shop_recommended_buy_indices(
     let Some(character) = character else {
         return Vec::new();
     };
+    let current_level = i64::from(character.stats.level);
+    let current_level_band =
+        current_level.div_euclid(NPC_SHOP_RECOMMENDED_LEVEL_STEP) * NPC_SHOP_RECOMMENDED_LEVEL_STEP;
+    let recommended_level_range =
+        current_level_band..=current_level_band + NPC_SHOP_RECOMMENDED_LEVEL_STEP;
     buy_item_indices
         .iter()
         .copied()
@@ -176,14 +210,16 @@ fn npc_shop_recommended_buy_indices(
             let Some(item) = shop.items.get(*index) else {
                 return false;
             };
-            item.item_id / 1_000_000 == 1
-                && equipment_block_reason(
+            npc_shop_item_is_equipment(item.item_id)
+                && equipment_recommendation_block_reason(
                     item.item_id,
                     character,
                     inventory,
                     character_archive,
                 )
                 .is_none()
+                && equipment_required_level(item.item_id, character_archive)
+                    .is_some_and(|required_level| recommended_level_range.contains(&required_level))
         })
         .collect()
 }
@@ -218,8 +254,6 @@ fn npc_shop_sell_quantity(item: &openstory_protocol::InventoryItem) -> Option<Np
         buy: false,
         slot: i16::try_from(item.slot).ok()?,
         item_id: item.item_id,
-        // Rechargeable projectiles are stored as a stack of charges, but a
-        // shop transaction sells one complete set at a time.
         maximum,
         input: QuantityInput::new(Some(maximum as u16)),
         invalid: false,
@@ -227,7 +261,8 @@ fn npc_shop_sell_quantity(item: &openstory_protocol::InventoryItem) -> Option<Np
 }
 
 fn npc_shop_sell_maximum(item: &openstory_protocol::InventoryItem) -> i16 {
-    if matches!(item.item_id / 10_000, 207 | 233) {
+    // Rechargeable projectiles sell as a complete set of charges.
+    if npc_shop_item_is_equipment(item.item_id) || matches!(item.item_id / 10_000, 207 | 233) {
         1
     } else {
         i16::try_from(item.count).unwrap_or(i16::MAX)
@@ -238,21 +273,26 @@ fn npc_shop_recharge_slot(
     state: &NpcShopUi,
     inventory: &openstory_protocol::InventorySnapshot,
 ) -> Option<i16> {
-    let slot = state.sell_selection?;
-    let item = inventory
-        .items
-        .iter()
-        .find(|item| item.inventory_type == state.tab && item.slot == slot && item.slot > 0)?;
-    if !matches!(item.item_id / 10_000, 207 | 233)
-        || !state
-            .shop
-            .items
-            .iter()
-            .any(|shop_item| shop_item.item_id == item.item_id && shop_item.rechargeable)
-    {
+    let item = state.selected_sell_item(inventory)?;
+    if !npc_shop_item_needs_recharge(&state.shop, item) {
         return None;
     }
     i16::try_from(item.slot).ok()
+}
+
+fn npc_shop_item_needs_recharge(
+    shop: &openstory_protocol::NpcShop,
+    item: &openstory_protocol::InventoryItem,
+) -> bool {
+    item.inventory_type == openstory_protocol::InventoryType::Use
+        && matches!(item.item_id / 10_000, 207 | 233)
+        && shop.items.iter().any(|offer| {
+            // For rechargeable items, buyable is the character's charge limit.
+            // The server may omit a reply when a stack is already full.
+            offer.item_id == item.item_id
+                && offer.rechargeable
+                && u16::try_from(offer.buyable).is_ok_and(|capacity| item.count < capacity)
+        })
 }
 
 fn npc_shop_auto_recharge_slots(
@@ -263,13 +303,9 @@ fn npc_shop_auto_recharge_slots(
         .items
         .iter()
         .filter(|item| {
-            item.inventory_type == openstory_protocol::InventoryType::Use
-                && item.slot > 0
+            item.slot > 0
                 && item.item_id / 10_000 == 207
-                && shop
-                    .items
-                    .iter()
-                    .any(|shop_item| shop_item.item_id == item.item_id && shop_item.rechargeable)
+                && npc_shop_item_needs_recharge(shop, item)
         })
         .filter_map(|item| i16::try_from(item.slot).ok())
         .collect()
@@ -466,8 +502,10 @@ fn render_npc_shop_panel(
     let mut recharge_button = None;
     for (name, x, y) in NPC_SHOP_BUTTONS {
         let enabled = match name {
-            "BtBuy" => state.buy_selection.is_some() && !state.pending,
-            "BtSell" => state.sell_selection.is_some() && !state.pending,
+            "BtBuy" => !state.pending && state.selected_buy_item().is_some(),
+            "BtSell" => {
+                !state.pending && state.selected_sell_item(inventory).is_some_and(|item| item.count > 0)
+            }
             "BtRecharge" => !state.pending && npc_shop_recharge_slot(state, inventory).is_some(),
             _ => true,
         };
@@ -872,11 +910,19 @@ fn render_npc_shop_quantity(
 
 impl ClientApp {
     fn start_next_npc_shop_auto_recharge(&mut self) {
+        let inventory = self.inventory.as_ref();
         let slot = self.npc_shop.as_mut().and_then(|state| {
             if state.pending || state.auto_recharge_in_flight {
                 return None;
             }
-            let slot = state.auto_recharge_slots.pop_front()?;
+            let inventory = inventory?;
+            let slot = std::iter::from_fn(|| state.auto_recharge_slots.pop_front()).find(|slot| {
+                inventory.items.iter().any(|item| {
+                    item.slot == *slot as u16
+                        && item.item_id / 10_000 == 207
+                        && npc_shop_item_needs_recharge(&state.shop, item)
+                })
+            })?;
             state.pending = true;
             state.auto_recharge_in_flight = true;
             Some(slot)
@@ -1178,36 +1224,23 @@ impl ClientApp {
             }
             if name == "BtBuy" {
                 let selected_item = state
-                    .buy_selection
-                    .and_then(|index| state.buy_item_indices.get(index))
-                    .and_then(|shop_index| state.shop.items.get(*shop_index))
+                    .selected_buy_item()
                     .map(|item| (item.slot, item.item_id));
                 state.hovered_item = None;
+                state.last_buy_click = None;
                 if let Some((slot, item_id)) = selected_item {
-                    self.buy_npc_shop_item(slot, item_id);
-                } else {
-                    self.refresh_npc_shop_texture();
+                    self.send_npc_shop_item_action(slot, item_id, 1, true);
                 }
-                return;
             } else {
-                state.quantity = self
+                let quantity = self
                     .inventory
                     .as_ref()
-                    .and_then(|inv| {
-                        inv.items.iter().find(|i| {
-                            i.inventory_type == state.tab && Some(i.slot) == state.sell_selection
-                        })
-                    })
+                    .and_then(|inventory| state.selected_sell_item(inventory))
                     .and_then(npc_shop_sell_quantity);
-            }
-            state.hovered_item = None;
-            if state
-                .quantity
-                .as_ref()
-                .is_some_and(|quantity| quantity.maximum == 1)
-            {
-                self.confirm_npc_shop_quantity();
-                return;
+                state.last_sell_click = None;
+                if let Some(quantity) = quantity {
+                    self.begin_npc_shop_item_action(quantity);
+                }
             }
             self.refresh_npc_shop_texture();
             return;
@@ -1245,25 +1278,9 @@ impl ClientApp {
                 } else {
                     Some((index, now))
                 };
-                if double_click {
-                    let equipment = state
-                        .buy_item_indices
-                        .get(index)
-                        .and_then(|shop_index| state.shop.items.get(*shop_index))
-                        .filter(|item| npc_shop_item_is_equipment(item.item_id))
-                        .map(|item| (item.slot, item.item_id));
-                    if let Some((slot, item_id)) = equipment {
-                        state.quantity = None;
-                        state.hovered_item = None;
-                        self.buy_npc_shop_item(slot, item_id);
-                        return;
-                    }
-                    state.quantity = state
-                        .buy_item_indices
-                        .get(index)
-                        .and_then(|shop_index| state.shop.items.get(*shop_index))
-                        .map(npc_shop_buy_quantity);
-                    state.hovered_item = None;
+                if double_click && let Some(item) = state.selected_buy_item() {
+                    let quantity = npc_shop_buy_quantity(item);
+                    self.begin_npc_shop_item_action(quantity);
                 }
             } else {
                 state.buy_selection = None;
@@ -1292,17 +1309,14 @@ impl ClientApp {
                 } else {
                     Some((slot, now))
                 };
-                if double_click {
-                    state.quantity =
-                        self.inventory
-                            .as_ref()
-                            .and_then(|inventory| {
-                                inventory.items.iter().find(|item| {
-                                    item.inventory_type == state.tab && item.slot == slot
-                                })
-                            })
-                            .and_then(npc_shop_sell_quantity);
-                    state.hovered_item = None;
+                if double_click
+                    && let Some(quantity) = self
+                        .inventory
+                        .as_ref()
+                        .and_then(|inventory| state.selected_sell_item(inventory))
+                        .and_then(npc_shop_sell_quantity)
+                {
+                    self.begin_npc_shop_item_action(quantity);
                 }
             } else {
                 state.last_sell_click = None;
@@ -1322,54 +1336,17 @@ impl ClientApp {
             );
             return;
         }
-        if state
-            .quantity
-            .as_ref()
-            .is_some_and(|quantity| quantity.maximum == 1)
-        {
-            self.confirm_npc_shop_quantity();
-        }
         self.refresh_npc_shop_texture();
     }
 
-    fn buy_npc_shop_item(&mut self, slot: i16, item_id: i32) {
-        if self.npc_shop.as_ref().is_none_or(|state| state.pending) {
-            return;
+    fn begin_npc_shop_item_action(&mut self, quantity: NpcShopQuantity) {
+        if let Some(quantity) = self
+            .npc_shop
+            .as_mut()
+            .and_then(|state| state.begin_item_action(quantity))
+        {
+            self.send_npc_shop_item_action(quantity.slot, quantity.item_id, 1, quantity.buy);
         }
-
-        let unsupported_currency = self.npc_shop.as_ref().is_some_and(|state| {
-            state
-                .shop
-                .items
-                .iter()
-                .find(|item| item.slot == slot && item.item_id == item_id)
-                .is_some_and(|item| item.price <= 0 && item.pitch <= 0)
-        });
-        if unsupported_currency {
-            self.show_server_notice_popup(
-                "This item requires a special currency that's not supported.",
-            );
-            self.refresh_npc_shop_texture();
-            return;
-        }
-
-        let Some(packet) = openstory_protocol::npc_shop_item_action(slot, item_id, 1, true).ok()
-        else {
-            return;
-        };
-        let Some(session) = self.session.as_ref() else {
-            return;
-        };
-        match session.send_packet(packet) {
-            Ok(()) => {
-                if let Some(state) = self.npc_shop.as_mut() {
-                    state.pending = true;
-                    state.quantity = None;
-                }
-            }
-            Err(error) => eprintln!("OpenStoryRS: shop action failed: {error}"),
-        }
-        self.refresh_npc_shop_texture();
     }
 
     fn confirm_npc_shop_quantity(&mut self) {
@@ -1392,41 +1369,45 @@ impl ClientApp {
             self.refresh_npc_shop_texture();
             return;
         };
-        let unsupported_currency = quantity.buy
+        let (slot, item_id, buy) = (quantity.slot, quantity.item_id, quantity.buy);
+        self.send_npc_shop_item_action(slot, item_id, amount, buy);
+        self.refresh_npc_shop_texture();
+    }
+
+    fn send_npc_shop_item_action(&mut self, slot: i16, item_id: i32, amount: i16, buy: bool) {
+        let Some(state) = self.npc_shop.as_mut().filter(|state| !state.pending) else {
+            return;
+        };
+        let unsupported_currency = buy
             && state
                 .shop
                 .items
                 .iter()
-                .find(|item| item.slot == quantity.slot && item.item_id == quantity.item_id)
+                .find(|item| item.slot == slot && item.item_id == item_id)
                 .is_some_and(|item| item.price <= 0 && item.pitch <= 0);
         if unsupported_currency {
             state.quantity = None;
             self.show_server_notice_popup(
                 "This item requires a special currency that's not supported.",
             );
-            self.refresh_npc_shop_texture();
             return;
         }
         // Validate the selected stack again after any intervening inventory updates.
-        if !quantity.buy
+        if !buy
             && !self.inventory.as_ref().is_some_and(|inv| {
-                inv.items.iter().any(|i| {
-                    i.inventory_type == state.tab
-                        && i.slot == quantity.slot as u16
-                        && i.item_id == quantity.item_id
-                        && i.count >= amount as u16
+                inv.items.iter().any(|item| {
+                    item.inventory_type == state.tab
+                        && item.slot == slot as u16
+                        && item.item_id == item_id
+                        && item.count > 0
+                        && npc_shop_sell_maximum(item) >= amount
                 })
             })
         {
             return;
         }
         if let (Ok(packet), Some(session)) = (
-            openstory_protocol::npc_shop_item_action(
-                quantity.slot,
-                quantity.item_id,
-                amount,
-                quantity.buy,
-            ),
+            openstory_protocol::npc_shop_item_action(slot, item_id, amount, buy),
             self.session.as_ref(),
         ) {
             match session.send_packet(packet) {
@@ -1437,7 +1418,6 @@ impl ClientApp {
                 Err(error) => eprintln!("OpenStoryRS: shop action failed: {error}"),
             }
         }
-        self.refresh_npc_shop_texture();
     }
 
     fn key_npc_shop(&mut self, event: &winit::event::KeyEvent) {
@@ -1501,6 +1481,25 @@ impl ClientApp {
 #[cfg(test)]
 mod npc_shop_tests {
     use super::*;
+    use openstory_protocol::{InventoryItem, InventorySnapshot, InventoryType, NpcShop, NpcShopItem};
+
+    fn shop_with_item(item_id: i32, buyable: i16, rechargeable: bool) -> NpcShopUi {
+        NpcShopUi::new(NpcShop {
+            npc_id: 1_051_000,
+            currency_item_id: 0,
+            items: vec![NpcShopItem {
+                item_id,
+                price: if rechargeable { 0 } else { 3_000 },
+                pitch: 0,
+                time: 0,
+                charge_price: 0,
+                buyable,
+                rechargeable,
+                slot: 0,
+            }],
+        })
+    }
+
     #[test]
     fn rows_stay_inside_authored_slots() {
         assert_eq!(npc_shop_row_at(7.0, 127.0, false), Some(0));
@@ -1509,5 +1508,64 @@ mod npc_shop_tests {
         assert_eq!(npc_shop_row_at(209.0, 127.0, false), None);
         assert_eq!(npc_shop_row_at(237.0, 287.0, true), Some(4));
         assert_eq!(npc_shop_row_at(237.0, 322.0, true), None);
+    }
+
+    #[test]
+    fn full_projectile_stacks_do_not_request_recharge() {
+        let item_id = 2_070_000;
+        let mut state = shop_with_item(item_id, 800, true);
+        state.tab = InventoryType::Use;
+        state.sell_selection = Some(1);
+        let mut inventory = InventorySnapshot {
+            items: vec![InventoryItem {
+                inventory_type: InventoryType::Use,
+                slot: 1,
+                item_id,
+                count: 800,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        assert!(npc_shop_auto_recharge_slots(&state.shop, &inventory).is_empty());
+        assert_eq!(npc_shop_recharge_slot(&state, &inventory), None);
+
+        inventory.items[0].count -= 1;
+        assert_eq!(npc_shop_auto_recharge_slots(&state.shop, &inventory), [1]);
+        assert_eq!(npc_shop_recharge_slot(&state, &inventory), Some(1));
+    }
+
+    #[test]
+    fn equipment_actions_submit_one_without_opening_a_quantity_picker() {
+        let item_id = 1_472_000;
+        let mut state = shop_with_item(item_id, 100, false);
+        let buy = npc_shop_buy_quantity(&state.shop.items[0]);
+        let sell = npc_shop_sell_quantity(&InventoryItem {
+            slot: 1,
+            item_id,
+            count: 2,
+            ..Default::default()
+        })
+        .unwrap();
+
+        for (action, is_buy) in [(buy, true), (sell, false)] {
+            let immediate = state.begin_item_action(action).unwrap();
+            assert_eq!(immediate.maximum, 1);
+            assert_eq!(immediate.buy, is_buy);
+            assert!(state.quantity.is_none());
+        }
+    }
+
+    #[test]
+    fn pending_shop_requests_do_not_open_quantity_pickers() {
+        let mut state = shop_with_item(2_000_000, 100, false);
+        state.pending = true;
+        let quantity = npc_shop_buy_quantity(&state.shop.items[0]);
+        assert!(state.begin_item_action(quantity).is_none());
+        assert!(state.quantity.is_none());
+
+        state.pending = false;
+        let quantity = npc_shop_buy_quantity(&state.shop.items[0]);
+        assert!(state.begin_item_action(quantity).is_none());
+        assert_eq!(state.quantity.unwrap().maximum, 100);
     }
 }

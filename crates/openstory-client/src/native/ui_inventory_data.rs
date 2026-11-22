@@ -127,6 +127,25 @@ fn equipment_block_reason(
     inventory: &openstory_protocol::InventorySnapshot,
     archive: &NxArchive,
 ) -> Option<&'static str> {
+    equipment_block_reason_with_level_check(item_id, character, inventory, archive, true)
+}
+
+fn equipment_recommendation_block_reason(
+    item_id: i32,
+    character: &openstory_protocol::CharacterInfo,
+    inventory: &openstory_protocol::InventorySnapshot,
+    archive: &NxArchive,
+) -> Option<&'static str> {
+    equipment_block_reason_with_level_check(item_id, character, inventory, archive, false)
+}
+
+fn equipment_block_reason_with_level_check(
+    item_id: i32,
+    character: &openstory_protocol::CharacterInfo,
+    inventory: &openstory_protocol::InventorySnapshot,
+    archive: &NxArchive,
+    check_level: bool,
+) -> Option<&'static str> {
     let category = character_equip_category(item_id)?;
     let item_prefix = item_id / 10_000;
     let gender =
@@ -168,13 +187,20 @@ fn equipment_block_reason(
     let total_dexterity = i64::from(character.stats.dexterity) + equipped_bonus(1);
     let total_intelligence = i64::from(character.stats.intelligence) + equipped_bonus(2);
     let total_luck = i64::from(character.stats.luck) + equipped_bonus(3);
-    let requirements_met = i64::from(character.stats.level) >= required_level
+    let requirements_met = (!check_level || i64::from(character.stats.level) >= required_level)
         && total_dexterity >= integer_property(&info, "reqDEX").unwrap_or(0)
         && total_strength >= integer_property(&info, "reqSTR").unwrap_or(0)
         && total_luck >= integer_property(&info, "reqLUK").unwrap_or(0)
         && total_intelligence >= integer_property(&info, "reqINT").unwrap_or(0)
         && i64::from(character.stats.fame) >= integer_property(&info, "reqFAME").unwrap_or(0);
     (!requirements_met).then_some("Your level or stats are too low to equip this item.")
+}
+
+fn equipment_required_level(item_id: i32, archive: &NxArchive) -> Option<i64> {
+    let category = character_equip_category(item_id)?;
+    let info_path = format!("{category}/0{item_id}.img/info");
+    let info = archive.root().resolve(&info_path).ok().flatten()?;
+    Some(integer_property(&info, "reqLevel").unwrap_or(0))
 }
 
 fn job_can_equip(job_id: u16, required_job: u16) -> bool {

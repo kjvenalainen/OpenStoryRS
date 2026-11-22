@@ -268,6 +268,8 @@ struct ClientApp {
     inventory_tab: openstory_protocol::InventoryType,
     inventory_scroll_row: u16,
     inventory_hover_slot: Option<u16>,
+    equipped_inventory_hover_slot: Option<u16>,
+    last_inventory_equip_click: Option<(u16, Instant)>,
     inventory_drag_source: Option<(openstory_protocol::InventoryType, u16, Point)>,
     inventory_pending_move: Option<(openstory_protocol::InventoryType, u16, u16, Instant)>,
     pending_scroll_slot: Option<u16>,

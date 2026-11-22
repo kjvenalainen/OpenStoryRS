@@ -86,9 +86,10 @@ are clipped/truncated or use a fitting numeric face within their fields.
 NPC shop transactions treat throwing stars and bullets as sets: inventory shows
 their charge counts, while selling uses one set per transaction and buying
 quantities count sets. The Recharge button is enabled for a selected projectile
-only when the open shop marks that same item as rechargeable. Zero-meso,
-zero-pitch projectile refill entries stay available for recharge but are omitted
-from the buy list.
+only when the open shop marks that item as rechargeable and the stack is below
+the server-provided charge limit. Automatic throwing-star recharge also skips
+full stacks. Zero-meso, zero-pitch projectile refill entries stay available for
+recharge but are omitted from the buy list.
 
 The dialog alignment audit centers inventory, skill and shop tab labels using
 NX bitmap dimensions and origins. Pet equipment opens in a right-side drawer
