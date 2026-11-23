@@ -330,6 +330,7 @@ pub(super) fn render(
     inventory: &InventorySnapshot,
     look: Option<&CharacterLook>,
     tab: EquipmentTab,
+    active_scroll_item_id: Option<i32>,
     pet: PetSlots,
     ui: &NxArchive,
     items: &NxArchive,
@@ -386,6 +387,13 @@ pub(super) fn render(
     for cell in tab.cells() {
         let item = tab.item_in_cell(inventory, cell);
         let tone = match item {
+            Some(item)
+                if active_scroll_item_id
+                    .and_then(|scroll_id| invalid_scroll_target(scroll_id, item))
+                    == Some(true) =>
+            {
+                SlotTone::InvalidScroll
+            }
             Some(item) if item.cash => SlotTone::Cash,
             None if tab.slot_is_blocked(inventory, cell.slot) => SlotTone::Blocked,
             _ => SlotTone::Normal,
@@ -453,6 +461,51 @@ enum SlotTone {
     Normal,
     Cash,
     Blocked,
+    InvalidScroll,
+}
+
+fn invalid_scroll_target(scroll_id: i32, equipment: &InventoryItem) -> Option<bool> {
+    if scroll_id / 10_000 != 204 {
+        return None;
+    }
+
+    let item_category = equipment.item_id / 10_000;
+    let target = match scroll_id {
+        2_049_000..=2_049_099 => return None,
+        2_049_100 => ScrollTarget::AnyEquipment,
+        2_049_110..=2_049_119 => ScrollTarget::Category(108),
+        2_049_200..=2_049_299 => ScrollTarget::Accessory,
+        _ => match (scroll_id % 10_000) / 100 {
+            group @ 0..=49 => ScrollTarget::Category(100 + group),
+            80 => ScrollTarget::PetEquipment,
+            _ => return None,
+        },
+    };
+
+    if equipment.cash {
+        return Some(true);
+    }
+    let Some(equip) = equipment.equip.as_ref() else {
+        return Some(true);
+    };
+    if equip.upgrade_slots == 0 {
+        return Some(true);
+    }
+
+    Some(match target {
+        ScrollTarget::Category(category) => item_category != category,
+        ScrollTarget::Accessory => !matches!(item_category, 111..=113),
+        ScrollTarget::PetEquipment => !matches!(item_category, 180..=183),
+        ScrollTarget::AnyEquipment => false,
+    })
+}
+
+#[derive(Clone, Copy)]
+enum ScrollTarget {
+    Category(i32),
+    Accessory,
+    PetEquipment,
+    AnyEquipment,
 }
 
 struct EquipmentContent<'a> {
@@ -546,6 +599,7 @@ impl EquipmentContent<'_> {
     ) {
         let (edge, fill) = match (tone, id.is_some()) {
             (SlotTone::Blocked, _) => ([149, 139, 177, 186], [171, 161, 203, 131]),
+            (SlotTone::InvalidScroll, _) => ([44, 44, 232, 255], [68, 68, 204, 110]),
             (SlotTone::Cash, _) => ([182, 157, 140, 187], [211, 187, 168, 153]),
             (_, true) => ([174, 151, 132, 191], [208, 187, 166, 147]),
             (_, false) => ([187, 170, 152, 153], [221, 203, 187, 120]),
@@ -584,6 +638,8 @@ impl EquipmentContent<'_> {
             10,
             if matches!(tone, SlotTone::Blocked) {
                 [110, 71, 91]
+            } else if matches!(tone, SlotTone::InvalidScroll) {
+                [194, 38, 44]
             } else {
                 [52, 74, 97]
             },

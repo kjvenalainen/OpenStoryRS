@@ -217,7 +217,15 @@ pub(super) fn run(
             build_inventory_panel_scene(name, map, legacy_ui, characters, items, strings, font)?
         } else if let Some(tab) = equipment_preview_tab(name) {
             build_equipment_panel_scene(
-                name, tab, map, legacy_ui, characters, items, strings, font,
+                name,
+                tab,
+                (*name == "panel-equipment-inventory-scroll-drop").then_some(2_043_000),
+                map,
+                legacy_ui,
+                characters,
+                items,
+                strings,
+                font,
             )?
         } else if name.starts_with("panel-merchant-") || *name == "panel-personal-shop" {
             build_merchant_panel_scene(name, map, legacy_ui, characters, items, strings, font)?
@@ -257,6 +265,7 @@ pub(super) fn run(
                 | "panel-npc-chat-tutorial"
                 | "panel-npc-chat-menu"
                 | "panel-npc-chat-option"
+                | "panel-npc-chat-multiline-options"
                 | "panel-npc-chat-quiz"
                 | "panel-npc-chat-feedback"
                 | "panel-npc-chat-navigation"
@@ -290,6 +299,8 @@ pub(super) fn run(
                     }
                     "panel-npc-chat-option" => (fixture_named_id(strings, "Npc.img", "Robin", 2007), 4, None,
                         "That is correct! You can only start raising your HP and MP using your AP after making the first job advancement. You can't do that right now. Next question! You may be a beginner right now, but after you reach a certain level, you can make a job advancement. Normally, you have to be at Level 10 to choose a job. Which one do you want?\\n\\n#L0#Warrior#l\\n#L1#Magician#l\\n#L2#Bowman#l\\n#L3#Thief#l".to_owned()),
+                    "panel-npc-chat-multiline-options" => (fixture_named_id(strings, "Npc.img", "Robin", 2007), 4, None,
+                        "Choose a topic:\\n#L0#The Reason Behind the Mushroom\\nStudies#l\\n#L1#Talk#l".to_owned()),
                     "panel-npc-chat-quiz" => (2003, 4, None,
                         quest_dialogue_pages(quests, "Say.img/1036/1")[2].clone()),
                     "panel-npc-chat-feedback" => (12101, 0, None,
@@ -326,7 +337,7 @@ pub(super) fn run(
                     npc_id
                 };
                 let number_bounds = (*name == "panel-npc-chat-number-input").then_some((1, 1, 7));
-                let (pixels, panel, _, _) = render_npc_dialogue(
+                let (pixels, panel, _, _, _) = render_npc_dialogue(
                     font,
                     legacy_ui,
                     npcs,
@@ -1181,6 +1192,22 @@ fn write_menu_comparison_preview(
             build_equipment_panel_scene(
                 "panel-equipment-inventory",
                 EquipmentTab::Equip,
+                None,
+                map,
+                ui,
+                characters,
+                items,
+                strings,
+                font,
+            )?,
+            "nx-window:live-equipment",
+        ),
+        (
+            "Equipment Inventory (Scroll Drop)",
+            build_equipment_panel_scene(
+                "panel-equipment-inventory-scroll-drop",
+                EquipmentTab::Equip,
+                Some(2_043_000),
                 map,
                 ui,
                 characters,
@@ -1195,6 +1222,7 @@ fn write_menu_comparison_preview(
             build_equipment_panel_scene(
                 "panel-equipment-inventory-pet",
                 EquipmentTab::Pet,
+                None,
                 map,
                 legacy_ui,
                 characters,
@@ -2006,6 +2034,7 @@ fn build_scene(
         | "hud-quickslot"
         | "hud-quickslot-item-tooltip"
         | "hud-quickslot-skill-tooltip"
+        | "hud-active-skill-tooltip"
         | "hud-quickslot-cooldown"
         | "panel-skill-macros"
         | "panel-skill-macros-drag"
@@ -2014,6 +2043,7 @@ fn build_scene(
         | "panel-inventory-drop"
         | "panel-meso-drop"
         | "panel-equipment-inventory"
+        | "panel-equipment-inventory-scroll-drop"
         | "panel-skill-inventory"
         | "panel-skill-inventory-disabled"
         | "panel-skill-inventory-beginner"
@@ -2338,6 +2368,7 @@ fn build_minimap_scene(
             x: -data.center_x + 32.0 * units,
             y: -data.center_y + 26.0 * units,
             facing_left: false,
+            name: None,
             sprite: None,
         },
         minimap::Marker {
@@ -2345,6 +2376,7 @@ fn build_minimap_scene(
             x: -data.center_x + 26.0 * units,
             y: -data.center_y + 29.0 * units,
             facing_left: false,
+            name: Some("Maple Guide"),
             sprite: None,
         },
         minimap::Marker {
@@ -2352,6 +2384,7 @@ fn build_minimap_scene(
             x: -data.center_x + 42.0 * units,
             y: -data.center_y + 18.0 * units,
             facing_left: true,
+            name: None,
             sprite: None,
         },
     ];
@@ -2375,21 +2408,46 @@ fn build_minimap_scene(
         &markers,
         font,
     )?;
-    Ok(LoginSceneAssets {
-        sprites: vec![DecodedSprite {
-            texture_key: format!("minimap-preview:{name}"),
+    let mut sprites = vec![DecodedSprite {
+        texture_key: format!("minimap-preview:{name}"),
+        rect: SpriteRect {
+            x: panel.x,
+            y: panel.y,
+            width: panel.width as f32,
+            height: panel.height as f32,
+            blend_mode: BlendMode::Alpha,
+        },
+        depth_order: 0,
+        texture_width: panel.width,
+        texture_height: panel.height,
+        pixels: Arc::from(panel.pixels),
+    }];
+    if let Some(npc_region) = panel.npc_hit_regions.first()
+        && let Ok(tooltip) = minimap::render_npc_tooltip(&npc_region.name, font)
+    {
+        let (x, y) = minimap::npc_tooltip_position(
+            npc_region.bounds,
+            tooltip.width,
+            tooltip.height,
+            LogicalSize::LEGACY_1024X768,
+        );
+        sprites.push(DecodedSprite {
+            texture_key: format!("minimap-preview:{name}:npc-tooltip"),
             rect: SpriteRect {
-                x: panel.x,
-                y: panel.y,
-                width: panel.width as f32,
-                height: panel.height as f32,
+                x,
+                y,
+                width: tooltip.width as f32,
+                height: tooltip.height as f32,
                 blend_mode: BlendMode::Alpha,
             },
-            depth_order: 0,
-            texture_width: panel.width,
-            texture_height: panel.height,
-            pixels: Arc::from(panel.pixels),
-        }],
+            depth_order: 1,
+            texture_width: tooltip.width,
+            texture_height: tooltip.height,
+            pixels: Arc::from(tooltip.pixels),
+        });
+    }
+    Ok(LoginSceneAssets {
+        sprites,
         actions: Vec::new(),
         map_scene: None,
         animated_art: Vec::new(),
@@ -3697,7 +3755,9 @@ fn build_item_tooltip_scene(
 
 fn equipment_preview_tab(name: &str) -> Option<EquipmentTab> {
     Some(match name {
-        "panel-equipment-inventory" => EquipmentTab::Equip,
+        "panel-equipment-inventory" | "panel-equipment-inventory-scroll-drop" => {
+            EquipmentTab::Equip
+        }
         "panel-equipment-inventory-deco" => EquipmentTab::Deco,
         "panel-equipment-inventory-beauty" => EquipmentTab::Beauty,
         "panel-equipment-inventory-pet" | "panel-equipment-inventory-pet-empty" => {
@@ -3761,7 +3821,14 @@ fn preview_equipment_tabs_inventory(name: &str) -> openstory_protocol::Inventory
     // The base and cash layers include items in the same hat and top slots.
     let items = [
         (5, 1_050_058),
-        (11, 1_442_005),
+        (
+            11,
+            if name == "panel-equipment-inventory-scroll-drop" {
+                1_302_000
+            } else {
+                1_442_005
+            },
+        ),
         (12, 1_112_001),
         (13, 1_112_002),
         (15, 1_112_000),
@@ -3793,13 +3860,22 @@ fn preview_equipment_tabs_inventory(name: &str) -> openstory_protocol::Inventory
         .extend(
             items
                 .into_iter()
-                .map(|(slot, item_id)| openstory_protocol::InventoryItem {
-                    inventory_type: openstory_protocol::InventoryType::Equipped,
-                    slot,
-                    item_id,
-                    count: 1,
-                    cash: slot > 100,
-                    ..Default::default()
+                .map(|(slot, item_id)| {
+                    let mut item = openstory_protocol::InventoryItem {
+                        inventory_type: openstory_protocol::InventoryType::Equipped,
+                        slot,
+                        item_id,
+                        count: 1,
+                        cash: slot > 100,
+                        ..Default::default()
+                    };
+                    if name == "panel-equipment-inventory-scroll-drop" {
+                        item.equip = Some(openstory_protocol::EquipInventoryData {
+                            upgrade_slots: 2,
+                            ..Default::default()
+                        });
+                    }
+                    item
                 }),
         );
     inventory
@@ -3808,6 +3884,7 @@ fn preview_equipment_tabs_inventory(name: &str) -> openstory_protocol::Inventory
 fn build_equipment_panel_scene(
     name: &str,
     tab: EquipmentTab,
+    active_scroll_item_id: Option<i32>,
     map_archive: &NxArchive,
     ui_archive: &NxArchive,
     character_archive: &NxArchive,
@@ -3830,6 +3907,7 @@ fn build_equipment_panel_scene(
         &inventory,
         Some(&fixture_look()),
         tab,
+        active_scroll_item_id,
         pet,
         ui_archive,
         item_archive,
@@ -4192,6 +4270,7 @@ fn build_native_window_scene(
         "hud-quickslot"
         | "hud-quickslot-item-tooltip"
         | "hud-quickslot-skill-tooltip"
+        | "hud-active-skill-tooltip"
         | "hud-quickslot-cooldown"
         | "panel-skill-macros"
         | "panel-skill-macros-drag"
@@ -4908,6 +4987,54 @@ fn build_native_window_scene(
                 pixels: Arc::from(pixels),
             });
         }
+    }
+
+    if name == "hud-active-skill-tooltip" {
+        let mut skill = preview_skill_entry();
+        skill.id = 1_001_004;
+        skill.name = "Power Guard".to_owned();
+        if let Some((width, height, pixels)) = decode_nx_icon(
+            skill_archive,
+            &format!("{:03}.img/skill/{:07}/icon", skill.id / 10_000, skill.id),
+        ) {
+            sprites.push(DecodedSprite {
+                texture_key: "buff-icon:active-preview".to_owned(),
+                rect: SpriteRect {
+                    x: 989.0,
+                    y: 24.0,
+                    width: 32.0,
+                    height: 32.0,
+                    blend_mode: BlendMode::Alpha,
+                },
+                depth_order: 0,
+                texture_width: width,
+                texture_height: height,
+                pixels: Arc::from(pixels),
+            });
+        }
+        let cursor = Point { x: 1005.0, y: 40.0 };
+        let (height, pixels) = skill_tooltip::render_with_remaining(
+            font,
+            &skill,
+            skill_archive,
+            string_archive,
+            Some("1:23"),
+        );
+        let position = skill_tooltip::position(cursor, height);
+        sprites.push(DecodedSprite {
+            texture_key: "skill-tooltip:tooltip-active-preview".to_owned(),
+            rect: SpriteRect {
+                x: position.x,
+                y: position.y,
+                width: skill_tooltip::WIDTH as f32,
+                height: height as f32,
+                blend_mode: BlendMode::Alpha,
+            },
+            depth_order: 0,
+            texture_width: skill_tooltip::WIDTH,
+            texture_height: height,
+            pixels: Arc::from(pixels),
+        });
     }
 
     if name.starts_with("panel-keyboard-settings") {

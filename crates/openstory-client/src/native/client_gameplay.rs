@@ -476,6 +476,7 @@ impl ClientApp {
 
     pub(super) fn refresh_buff_list_texture(&mut self, now: Instant) {
         self.buff_list_refreshed_at = Some(now);
+        self.buff_list_skill_ids.clear();
         if self.map_scene.is_none() || self.active_character.is_none() {
             self.buff_list_texture = None;
             return;
@@ -501,6 +502,9 @@ impl ClientApp {
             let remaining = buff
                 .expires_at
                 .map(|expires_at| expires_at.saturating_duration_since(now));
+            if self.buff_list_skill_ids.len() < 31 {
+                self.buff_list_skill_ids.push(buff_id);
+            }
             icons.push((
                 width,
                 height,
@@ -618,18 +622,24 @@ impl ClientApp {
             self.minimap_texture = None;
             self.minimap_bounds = None;
             self.minimap_hit_regions.clear();
+            self.minimap_npc_hit_regions.clear();
+            self.update_minimap_hover(None);
             return;
         };
         let Some(scene) = self.map_scene.as_ref() else {
             self.minimap_texture = None;
             self.minimap_bounds = None;
             self.minimap_hit_regions.clear();
+            self.minimap_npc_hit_regions.clear();
+            self.update_minimap_hover(None);
             return;
         };
         let Some(data) = scene.minimap.as_ref().filter(|data| !data.hidden) else {
             self.minimap_texture = None;
             self.minimap_bounds = None;
             self.minimap_hit_regions.clear();
+            self.minimap_npc_hit_regions.clear();
+            self.update_minimap_hover(None);
             return;
         };
 
@@ -641,15 +651,34 @@ impl ClientApp {
             x: scene.player.x as f32,
             y: scene.player.y as f32,
             facing_left: !scene.facing_right,
+            name: None,
             sprite: None,
         });
-        markers.extend(scene.npcs.values().map(|npc| minimap::Marker {
-            kind: minimap::MarkerKind::Npc,
-            x: npc.x as f32,
-            y: npc.y as f32,
-            facing_left: npc.flipped,
-            sprite: None,
-        }));
+        let npc_names: Vec<_> = scene
+            .npcs
+            .values()
+            .map(|npc| {
+                nx_string_value(
+                    &self.string_archive,
+                    &format!("Npc.img/{}/name", npc.npc_id),
+                )
+                .unwrap_or_else(|| format!("NPC {}", npc.npc_id))
+            })
+            .collect();
+        markers.extend(
+            scene
+                .npcs
+                .values()
+                .zip(&npc_names)
+                .map(|(npc, name)| minimap::Marker {
+                    kind: minimap::MarkerKind::Npc,
+                    x: npc.x as f32,
+                    y: npc.y as f32,
+                    facing_left: npc.flipped,
+                    name: Some(name),
+                    sprite: None,
+                }),
+        );
         markers.extend(
             scene
                 .mobs
@@ -660,6 +689,7 @@ impl ClientApp {
                     x: mob.body.x as f32,
                     y: mob.body.y as f32,
                     facing_left: !mob.faces_right,
+                    name: None,
                     sprite: None,
                 }),
         );
@@ -668,6 +698,7 @@ impl ClientApp {
             x: player.x as f32,
             y: player.y as f32,
             facing_left: player.facing_left,
+            name: None,
             sprite: None,
         }));
 
@@ -699,6 +730,8 @@ impl ClientApp {
                 self.minimap_texture = None;
                 self.minimap_bounds = None;
                 self.minimap_hit_regions.clear();
+                self.minimap_npc_hit_regions.clear();
+                self.update_minimap_hover(None);
                 return;
             }
         };
@@ -734,14 +767,74 @@ impl ClientApp {
                     height: panel.height as f32,
                 });
                 self.minimap_hit_regions = panel.hit_regions;
+                self.minimap_npc_hit_regions = panel.npc_hit_regions;
             }
             Err(error) => {
                 eprintln!("OpenStoryRS: could not upload minimap: {error}");
                 self.minimap_texture = None;
                 self.minimap_bounds = None;
                 self.minimap_hit_regions.clear();
+                self.minimap_npc_hit_regions.clear();
             }
         }
+        self.update_minimap_hover(self.cursor);
+    }
+
+    pub(super) fn update_minimap_hover(&mut self, cursor: Option<Point>) -> bool {
+        let target = cursor.and_then(|cursor| {
+            self.minimap_npc_hit_regions
+                .iter()
+                .rev()
+                .find(|region| region.bounds.contains(cursor.x, cursor.y))
+                .map(|region| (region.name.clone(), region.bounds))
+        });
+        let target_changed = self.minimap_hovered_npc != target;
+        if target_changed || (target.is_some() && self.minimap_npc_tooltip_texture.is_none()) {
+            self.minimap_hovered_npc = target.clone();
+            self.minimap_npc_tooltip_texture = None;
+            self.minimap_npc_tooltip_size = None;
+            if let Some((name, _)) = target.as_ref() {
+                match minimap::render_npc_tooltip(name, &self.font) {
+                    Ok(tooltip) => {
+                        self.minimap_npc_tooltip_size = Some((tooltip.width, tooltip.height));
+                        if let Some(renderer) = self.renderer.as_ref() {
+                            match renderer.upload_bgra(
+                                tooltip.width,
+                                tooltip.height,
+                                &tooltip.pixels,
+                            ) {
+                                Ok(texture) => self.minimap_npc_tooltip_texture = Some(texture),
+                                Err(error) => eprintln!(
+                                    "OpenStoryRS: could not upload minimap NPC tooltip: {error}"
+                                ),
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        eprintln!("OpenStoryRS: could not render minimap NPC tooltip: {error}")
+                    }
+                }
+            }
+        }
+        let tooltip_bounds = target.as_ref().zip(self.minimap_npc_tooltip_size).map(
+            |((_, target_bounds), (width, height))| {
+                let (x, y) = minimap::npc_tooltip_position(
+                    *target_bounds,
+                    width,
+                    height,
+                    LogicalSize::LEGACY_1024X768,
+                );
+                minimap::HitRect {
+                    x,
+                    y,
+                    width: width as f32,
+                    height: height as f32,
+                }
+            },
+        );
+        let position_changed = self.minimap_npc_tooltip_bounds != tooltip_bounds;
+        self.minimap_npc_tooltip_bounds = tooltip_bounds;
+        target_changed || position_changed
     }
 
     pub(super) fn toggle_minimap(&mut self) {

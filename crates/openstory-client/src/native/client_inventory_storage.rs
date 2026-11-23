@@ -118,6 +118,22 @@ impl ClientApp {
         }
         let empty_inventory = openstory_protocol::InventorySnapshot::default();
         let inventory = self.inventory.as_ref().unwrap_or(&empty_inventory);
+        let active_scroll_item_id = self
+            .inventory_drag_source
+            .and_then(|(inventory_type, slot, _)| {
+                if inventory_type != openstory_protocol::InventoryType::Use {
+                    return None;
+                }
+                self.inventory
+                    .as_ref()?
+                    .items
+                    .iter()
+                    .find(|item| {
+                        item.inventory_type == inventory_type && item.slot == slot
+                    })
+                    .map(|item| item.item_id)
+                    .filter(|item_id| item_id / 10_000 == 204)
+            });
         let pixels = ui_equipment::render(
             &self.font,
             inventory,
@@ -125,6 +141,7 @@ impl ClientApp {
                 .as_ref()
                 .map(|character| &character.look),
             self.equipment_tab,
+            active_scroll_item_id,
             self.equipment_pet_slots(),
             &self.legacy_ui_archive,
             &self.item_archive,

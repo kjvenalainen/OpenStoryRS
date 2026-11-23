@@ -162,6 +162,7 @@ impl ApplicationHandler for ClientApp {
             WindowEvent::CursorLeft { .. } => {
                 self.cursor = None;
                 self.cursor_physical = None;
+                self.update_minimap_hover(None);
                 self.update_npc_shop_hover();
                 self.update_cash_shop_hover();
                 if self.update_inventory_hover() {
@@ -191,6 +192,11 @@ impl ApplicationHandler for ClientApp {
                         y: position.y as f32,
                     })
                 });
+                if self.update_minimap_hover(self.cursor)
+                    && let Some(window) = self.window.as_ref()
+                {
+                    window.request_redraw();
+                }
                 if let Some(cursor) = self.cursor
                     && self.drag_quantity_slider(cursor)
                 {
@@ -1574,6 +1580,12 @@ impl ApplicationHandler for ClientApp {
                         window.request_redraw();
                     }
                 } else if self.cash_shop.is_some()
+                    && cursor.is_some_and(|cursor| self.scroll_cash_shop_inventory(cursor, amount))
+                {
+                    if let Some(window) = self.window.as_ref() {
+                        window.request_redraw();
+                    }
+                } else if self.cash_shop.is_some()
                     && cursor.is_some_and(|cursor| {
                         (198.0..1004.0).contains(&cursor.x) && (78.0..610.0).contains(&cursor.y)
                     })
@@ -1798,6 +1810,22 @@ impl ApplicationHandler for ClientApp {
                 }
                 if self.wedding_panel_open {
                     return;
+                }
+                if self.focused_dialog_window() == Some(DialogWindow::QuestLog)
+                    && event.state == ElementState::Pressed
+                {
+                    let direction = match event.physical_key {
+                        PhysicalKey::Code(KeyCode::ArrowUp) => Some(-1),
+                        PhysicalKey::Code(KeyCode::ArrowDown) => Some(1),
+                        _ => None,
+                    };
+                    if let Some(direction) = direction {
+                        self.move_quest_log_selection(direction);
+                        if let Some(window) = self.window.as_ref() {
+                            window.request_redraw();
+                        }
+                        return;
+                    }
                 }
                 if self.event_list_open {
                     if event.state == ElementState::Pressed && !event.repeat {
@@ -3422,10 +3450,34 @@ impl ApplicationHandler for ClientApp {
                         continue;
                     }
                     if let Some(texture) = self.sprite_textures.get(*texture_index) {
+                        // Keep tiled edges on logical pixel boundaries as camera offsets move.
+                        let (x, y) = self
+                            .map_scene
+                            .as_ref()
+                            .and_then(|scene| {
+                                scene
+                                    .map_backgrounds
+                                    .iter()
+                                    .find(|background| background.sprites.contains(&draw_index))
+                            })
+                            .map_or((rect.x, rect.y), |background| {
+                                (
+                                    if background.horizontal_tiled {
+                                        rect.x.round()
+                                    } else {
+                                        rect.x
+                                    },
+                                    if background.vertical_tiled {
+                                        rect.y.round()
+                                    } else {
+                                        rect.y
+                                    },
+                                )
+                            });
                         draws.push(SpriteDraw {
                             texture,
-                            x: rect.x,
-                            y: rect.y,
+                            x,
+                            y,
                             width: rect.width,
                             height: rect.height,
                             uv: [0.0, 0.0, 1.0, 1.0],
@@ -4478,6 +4530,25 @@ impl ApplicationHandler for ClientApp {
                 if self.cash_shop.is_none()
                     && let (Some(texture), Some(bounds)) =
                         (self.minimap_texture.as_ref(), self.minimap_bounds)
+                {
+                    draws.push(SpriteDraw {
+                        texture,
+                        x: bounds.x,
+                        y: bounds.y,
+                        width: bounds.width,
+                        height: bounds.height,
+                        uv: [0.0, 0.0, 1.0, 1.0],
+                        tint: [1.0, 1.0, 1.0],
+                        blend_mode: BlendMode::Alpha,
+                        flip_x: false,
+                        opacity: 1.0,
+                    });
+                }
+                if self.cash_shop.is_none()
+                    && let (Some(texture), Some(bounds)) = (
+                        self.minimap_npc_tooltip_texture.as_ref(),
+                        self.minimap_npc_tooltip_bounds,
+                    )
                 {
                     draws.push(SpriteDraw {
                         texture,

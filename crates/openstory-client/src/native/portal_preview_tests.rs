@@ -120,6 +120,7 @@ fn check_portal(map_id: i32, anchor: (f64, f64), floor_y: f64, destination: i32)
                 x: scene.player.x as f32,
                 y: scene.player.y as f32,
                 facing_left: false,
+                name: None,
                 sprite: None,
             }],
             &font,

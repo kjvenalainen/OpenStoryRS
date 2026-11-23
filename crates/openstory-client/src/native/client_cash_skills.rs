@@ -118,6 +118,132 @@ impl ClientApp {
         }
     }
 
+    pub(super) fn handle_cash_shop_preview_key(
+        &mut self,
+        key: PhysicalKey,
+        state: ElementState,
+        repeat: bool,
+    ) -> bool {
+        let Some(shop) = self.cash_shop.as_ref() else {
+            return false;
+        };
+        if shop.confirmation || shop.coupon_open || shop.search_focused || shop.coupon_focused {
+            return false;
+        }
+
+        let binding = gameplay_key_binding(self.server_keymap.as_deref(), key);
+        let action = match binding {
+            Some(binding) if binding.kind == 5 => Some(binding.action),
+            Some(binding) if binding.kind != 0 => None,
+            _ => match key {
+                PhysicalKey::Code(KeyCode::ArrowLeft) => Some(200),
+                PhysicalKey::Code(KeyCode::ArrowRight) => Some(201),
+                PhysicalKey::Code(KeyCode::ArrowUp) => Some(202),
+                PhysicalKey::Code(KeyCode::ArrowDown) => Some(203),
+                _ => None,
+            },
+        };
+        let Some(action @ (53 | 200..=203)) = action else {
+            return false;
+        };
+
+        let pressed = state == ElementState::Pressed;
+        let mut changed = false;
+        if let Some(shop) = self.cash_shop.as_mut() {
+            match action {
+                200 | 201 if pressed => {
+                    shop.preview_on_ladder = false;
+                    shop.preview_y = cash_shop_ui::PREVIEW_FLOOR_Y;
+                    shop.preview_facing_right = action == 201;
+                    let direction = if action == 200 { -1.0 } else { 1.0 };
+                    shop.preview_x = (shop.preview_x + direction * cash_shop_ui::PREVIEW_STEP)
+                        .clamp(
+                            cash_shop_ui::PREVIEW_LEFT_BOUND,
+                            cash_shop_ui::PREVIEW_RIGHT_BOUND,
+                        );
+                    if shop.preview_motion == AvatarMotion::Walk {
+                        shop.preview_frame_index = shop.preview_frame_index.saturating_add(1);
+                    } else {
+                        shop.preview_frame_index = 0;
+                    }
+                    shop.preview_motion = AvatarMotion::Walk;
+                    changed = true;
+                }
+                200 | 201 if shop.preview_motion == AvatarMotion::Walk => {
+                    shop.preview_motion = AvatarMotion::Stand;
+                    shop.preview_frame_index = 0;
+                    changed = true;
+                }
+                202 if pressed => {
+                    if shop.preview_on_ladder
+                        || (shop.preview_x - cash_shop_ui::PREVIEW_LADDER_X).abs() <= 16.0
+                    {
+                        shop.preview_on_ladder = true;
+                        shop.preview_x = cash_shop_ui::PREVIEW_LADDER_X;
+                        shop.preview_y = (shop.preview_y - cash_shop_ui::PREVIEW_STEP)
+                            .max(cash_shop_ui::PREVIEW_LADDER_TOP_Y);
+                        if shop.preview_motion == AvatarMotion::Ladder {
+                            shop.preview_frame_index = shop.preview_frame_index.saturating_add(1);
+                        } else {
+                            shop.preview_frame_index = 0;
+                        }
+                        shop.preview_motion = AvatarMotion::Ladder;
+                        changed = true;
+                    }
+                }
+                203 if pressed => {
+                    if shop.preview_on_ladder {
+                        let next_y = shop.preview_y + cash_shop_ui::PREVIEW_STEP;
+                        if next_y >= cash_shop_ui::PREVIEW_FLOOR_Y {
+                            shop.preview_y = cash_shop_ui::PREVIEW_FLOOR_Y;
+                            shop.preview_on_ladder = false;
+                            shop.preview_motion = AvatarMotion::Stand;
+                            shop.preview_frame_index = 0;
+                        } else {
+                            shop.preview_y = next_y;
+                            if shop.preview_motion == AvatarMotion::Ladder {
+                                shop.preview_frame_index =
+                                    shop.preview_frame_index.saturating_add(1);
+                            } else {
+                                shop.preview_frame_index = 0;
+                            }
+                            shop.preview_motion = AvatarMotion::Ladder;
+                        }
+                        changed = true;
+                    } else {
+                        shop.preview_motion = AvatarMotion::Crouch;
+                        shop.preview_frame_index = 0;
+                        changed = true;
+                    }
+                }
+                202 | 203 if !pressed && shop.preview_motion == AvatarMotion::Crouch => {
+                    shop.preview_motion = AvatarMotion::Stand;
+                    shop.preview_frame_index = 0;
+                    changed = true;
+                }
+                53 if pressed && !repeat => {
+                    shop.preview_on_ladder = false;
+                    shop.preview_y = (cash_shop_ui::PREVIEW_FLOOR_Y - 22.0)
+                        .max(cash_shop_ui::PREVIEW_LADDER_TOP_Y);
+                    shop.preview_motion = AvatarMotion::Jump;
+                    shop.preview_frame_index = 0;
+                    changed = true;
+                }
+                53 if !pressed && shop.preview_motion == AvatarMotion::Jump => {
+                    shop.preview_y = cash_shop_ui::PREVIEW_FLOOR_Y;
+                    shop.preview_motion = AvatarMotion::Stand;
+                    shop.preview_frame_index = 0;
+                    changed = true;
+                }
+                _ => {}
+            }
+        }
+        if changed {
+            self.refresh_cash_shop_texture();
+        }
+        true
+    }
+
     pub(super) fn refresh_owl_texture(&mut self) {
         let Some(owl) = self.owl_search.as_ref() else {
             self.owl_texture = None;

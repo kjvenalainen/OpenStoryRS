@@ -192,6 +192,7 @@ impl ClientApp {
             skill_book_texture: None,
             skill_tooltip_texture: None,
             skill_tooltip_key: None,
+            skill_tooltip_remaining: None,
             skill_tooltip_height: 0,
             quickslot_tooltip_skill_id: None,
             quest_log_texture: None,
@@ -217,6 +218,11 @@ impl ClientApp {
             minimap_texture: None,
             minimap_bounds: None,
             minimap_hit_regions: Vec::new(),
+            minimap_npc_hit_regions: Vec::new(),
+            minimap_hovered_npc: None,
+            minimap_npc_tooltip_texture: None,
+            minimap_npc_tooltip_size: None,
+            minimap_npc_tooltip_bounds: None,
             next_minimap_refresh: Instant::now(),
             party_search: None,
             party_search_texture: None,
@@ -417,6 +423,7 @@ impl ClientApp {
             gm_hidden: false,
             map_hud_texture: None,
             buff_list_texture: None,
+            buff_list_skill_ids: Vec::new(),
             buff_list_refreshed_at: None,
             status_bar_draw_indices: Vec::new(),
             status_bar_gauges: [None; 3],
@@ -2056,6 +2063,7 @@ impl ClientApp {
 
     pub(super) fn open_quest_log(&mut self) {
         self.show_quest_log = true;
+        self.raise_dialog_window(DialogWindow::QuestLog);
         self.quest_log_tab = QuestLogTab::Active;
         self.quest_log_detail_open = true;
         self.quest_log_scroll = 0;
@@ -3803,6 +3811,9 @@ impl ClientApp {
             return true;
         }
         if self.cash_shop.is_some() {
+            if self.handle_cash_shop_preview_key(key, state, repeat) {
+                return true;
+            }
             if pressed && !repeat {
                 match key {
                     PhysicalKey::Code(KeyCode::Escape) => {
@@ -3997,8 +4008,15 @@ impl ClientApp {
             login_buttons,
             save_id_indicator_draws,
         } = scene;
+        let minimap_presentation = self
+            .map_scene
+            .as_ref()
+            .map(|scene| scene.minimap_presentation);
         let mut map_scene = map_scene.map(|scene| MapSceneRuntime::new(scene, &mut draws));
         if let Some(scene) = map_scene.as_mut() {
+            if let Some(presentation) = minimap_presentation {
+                scene.minimap_presentation = presentation;
+            }
             scene.local_name_label_draw_index = local_name_label_index;
             scene.local_name_label =
                 local_name_label_index.and_then(|index| draws.get(index).copied());

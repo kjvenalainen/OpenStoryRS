@@ -1411,28 +1411,43 @@ impl ClientApp {
         stat: openstory_protocol::AbilityStat,
         count: u16,
     ) {
+        self.send_ability_point_allocations(&[(stat, count)]);
+    }
+
+    fn send_ability_point_allocations(
+        &mut self,
+        allocations: &[(openstory_protocol::AbilityStat, u16)],
+    ) {
         let available = self
             .active_character
             .as_ref()
             .map_or(0, |character| character.stats.ability_points);
-        let count = count.min(available);
-        if count == 0 {
+        if available == 0 {
             return;
         }
         let Some(session) = self.session.as_ref() else {
             return;
         };
         let start_tick = self.client_started_at.elapsed().as_millis() as u32;
-        for offset in 0..count {
-            let client_tick = start_tick.wrapping_add(u32::from(offset)) as i32;
-            let packet = openstory_protocol::spend_ability_point_packet(stat, client_tick);
-            if let Err(error) = session.send_packet(packet) {
-                eprintln!("OpenStoryRS: could not spend ability point: {error}");
-                self.channel_connected = false;
-                self.status_waiting_for_stats = false;
-                self.refresh_status_texture();
-                return;
+        let mut remaining = available;
+        let mut sent = 0_u32;
+        for (stat, count) in allocations {
+            for _ in 0..(*count).min(remaining) {
+                let client_tick = start_tick.wrapping_add(sent) as i32;
+                let packet = openstory_protocol::spend_ability_point_packet(*stat, client_tick);
+                if let Err(error) = session.send_packet(packet) {
+                    eprintln!("OpenStoryRS: could not spend ability point: {error}");
+                    self.channel_connected = false;
+                    self.status_waiting_for_stats = false;
+                    self.refresh_status_texture();
+                    return;
+                }
+                sent += 1;
+                remaining -= 1;
             }
+        }
+        if sent == 0 {
+            return;
         }
         self.status_waiting_for_stats = true;
         self.refresh_status_texture();
@@ -1441,10 +1456,8 @@ impl ClientApp {
     pub(super) fn resolve_status_auto_allocate(&mut self, accepted: bool) {
         self.status_auto_confirmation = false;
         if accepted {
-            if let Some(character) = self.active_character.as_ref() {
-                let primary = primary_ability_stat(character);
-                let points = character.stats.ability_points;
-                self.send_ability_point_requests(primary, points);
+            if let Some(allocations) = self.active_character.as_ref().map(status_auto_assign_plan) {
+                self.send_ability_point_allocations(&allocations);
             }
         }
         self.refresh_status_texture();

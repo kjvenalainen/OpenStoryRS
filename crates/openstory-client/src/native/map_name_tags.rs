@@ -29,13 +29,41 @@ fn append_map_name_tag_sprite(
     anchor_y: f32,
     kind: MapNameTagKind,
 ) -> Option<usize> {
+    append_map_name_tag_sprite_scaled(
+        sprites,
+        font,
+        ui_archive,
+        character_archive,
+        look,
+        name,
+        center_x,
+        anchor_y,
+        kind,
+        1.0,
+    )
+}
+
+fn append_map_name_tag_sprite_scaled(
+    sprites: &mut Vec<DecodedSprite>,
+    font: &fontdue::Font,
+    ui_archive: &NxArchive,
+    character_archive: Option<&NxArchive>,
+    look: Option<&openstory_protocol::CharacterLook>,
+    name: &str,
+    center_x: f32,
+    anchor_y: f32,
+    kind: MapNameTagKind,
+    scale: f32,
+) -> Option<usize> {
     let name = name.trim();
-    if name.is_empty() {
+    if name.is_empty() || !scale.is_finite() || scale <= 0.0 {
         return None;
     }
-    let measured_width = measured_text_width(font, name, MAP_NAME_TAG_FONT_SIZE)
+    let font_size = MAP_NAME_TAG_FONT_SIZE * scale;
+    let measured_width = measured_text_width(font, name, font_size)
         .ceil()
-        .clamp(1.0, (MAP_NAME_TAG_MAX_WIDTH - 16) as f32) as usize;
+        .clamp(1.0, (MAP_NAME_TAG_MAX_WIDTH as f32 * scale - 16.0 * scale).max(1.0))
+        as usize;
 
     let style = look
         .zip(character_archive)
@@ -47,25 +75,27 @@ fn append_map_name_tag_sprite(
         if let Some(style) = style {
             let half_text_width = measured_width as f32 / 2.0;
             let name_center_x = 0.0_f32;
-            let tag_y = 5.0_f32;
-            let w_x = name_center_x - half_text_width - style.w.origin_x as f32;
-            let c_x = name_center_x - half_text_width - style.c.origin_x as f32;
-            let e_x = name_center_x + half_text_width - style.e.origin_x as f32;
-            let w_y = tag_y - style.w.origin_y as f32;
-            let c_y = tag_y - style.c.origin_y as f32;
-            let e_y = tag_y - style.e.origin_y as f32;
+            let tag_y = 5.0_f32 * scale;
+            let w_x = name_center_x - half_text_width - style.w.origin_x as f32 * scale;
+            let c_x = name_center_x - half_text_width - style.c.origin_x as f32 * scale;
+            let e_x = name_center_x + half_text_width - style.e.origin_x as f32 * scale;
+            let w_y = tag_y - style.w.origin_y as f32 * scale;
+            let c_y = tag_y - style.c.origin_y as f32 * scale;
+            let e_y = tag_y - style.e.origin_y as f32 * scale;
             let min_x = w_x.min(c_x).min(e_x).floor() as i32;
             let min_y = w_y.min(c_y).min(e_y).floor() as i32;
-            let max_x = (w_x + style.w.width as f32)
+            let max_x = (w_x + style.w.width as f32 * scale)
                 .max(c_x + measured_width as f32)
-                .max(e_x + style.e.width as f32)
+                .max(e_x + style.e.width as f32 * scale)
                 .ceil() as i32;
-            let max_y = (w_y + style.w.height as f32)
-                .max(c_y + style.c.height as f32)
-                .max(e_y + style.e.height as f32)
+            let max_y = (w_y + style.w.height as f32 * scale)
+                .max(c_y + style.c.height as f32 * scale)
+                .max(e_y + style.e.height as f32 * scale)
                 .ceil() as i32;
-            let width = (max_x - min_x).clamp(1, MAP_NAME_TAG_MAX_WIDTH as i32) as usize;
-            let height = (max_y - min_y).clamp(1, 40) as usize;
+            let max_width = (MAP_NAME_TAG_MAX_WIDTH as f32 * scale).round() as i32;
+            let max_height = (40.0 * scale).round() as i32;
+            let width = (max_x - min_x).clamp(1, max_width.max(1)) as usize;
+            let height = (max_y - min_y).clamp(1, max_height.max(1)) as usize;
             let mut pixels = vec![0_u8; width * height * 4];
             blit_map_name_tag_bitmap(
                 &mut pixels,
@@ -74,7 +104,8 @@ fn append_map_name_tag_sprite(
                 &style.w,
                 w_x.floor() as i32 - min_x,
                 w_y.floor() as i32 - min_y,
-                None,
+                (style.w.width as f32 * scale).round().max(1.0) as usize,
+                (style.w.height as f32 * scale).round().max(1.0) as usize,
             );
             blit_map_name_tag_bitmap(
                 &mut pixels,
@@ -83,7 +114,8 @@ fn append_map_name_tag_sprite(
                 &style.c,
                 c_x.floor() as i32 - min_x,
                 c_y.floor() as i32 - min_y,
-                Some(measured_width),
+                measured_width.max(1),
+                (style.c.height as f32 * scale).round().max(1.0) as usize,
             );
             blit_map_name_tag_bitmap(
                 &mut pixels,
@@ -92,9 +124,10 @@ fn append_map_name_tag_sprite(
                 &style.e,
                 e_x.floor() as i32 - min_x,
                 e_y.floor() as i32 - min_y,
-                None,
+                (style.e.width as f32 * scale).round().max(1.0) as usize,
+                (style.e.height as f32 * scale).round().max(1.0) as usize,
             );
-            let text_baseline = map_name_tag_text_baseline(height);
+            let text_baseline = map_name_tag_text_baseline(height, font_size);
             (
                 width,
                 height,
@@ -110,18 +143,19 @@ fn append_map_name_tag_sprite(
                 MapNameTagKind::Character | MapNameTagKind::Pet => (255, 255, 255),
                 MapNameTagKind::Npc => (255, 255, 0),
             };
-            let width = (measured_width + 8).min(MAP_NAME_TAG_MAX_WIDTH);
-            let height = 22;
+            let width = (measured_width + (8.0 * scale).round() as usize)
+                .min((MAP_NAME_TAG_MAX_WIDTH as f32 * scale).round() as usize);
+            let height = (22.0 * scale).round().max(1.0) as usize;
             let mut pixels = vec![0_u8; width * height * 4];
             for pixel in pixels.chunks_exact_mut(4) {
                 pixel.copy_from_slice(&[0, 0, 0, 150]);
             }
-            let baseline = map_name_tag_text_baseline(height);
+            let baseline = map_name_tag_text_baseline(height, font_size);
             (
                 width,
                 height,
                 -(width as i32 / 2),
-                2,
+                (2.0 * scale).round() as i32,
                 pixels,
                 (r, g, b, 255),
                 "default".to_owned(),
@@ -135,17 +169,17 @@ fn append_map_name_tag_sprite(
         height,
         font,
         name,
-        MAP_NAME_TAG_FONT_SIZE,
+        font_size,
         text_color,
         text_baseline,
     );
     let panel_y_offset = match kind {
-        MapNameTagKind::Character | MapNameTagKind::Pet => CHARACTER_NAME_TAG_Y_OFFSET,
+        MapNameTagKind::Character | MapNameTagKind::Pet => CHARACTER_NAME_TAG_Y_OFFSET * scale,
         MapNameTagKind::Npc => 0.0,
     };
     let texture_key = format!(
-        "map-name-tag:{style_key}:{}-{}-{}-{}:{name}",
-        text_color.0, text_color.1, text_color.2, text_color.3
+        "map-name-tag:{style_key}:{}-{}-{}-{}:{scale}:{name}",
+        text_color.0, text_color.1, text_color.2, text_color.3,
     );
     let index = sprites.len();
     sprites.push(DecodedSprite {
@@ -165,9 +199,9 @@ fn append_map_name_tag_sprite(
     Some(index)
 }
 
-fn map_name_tag_text_baseline(height: usize) -> i32 {
-    ((height as f32 + MAP_NAME_TAG_FONT_SIZE) / 2.0).round() as i32
-        + MAP_NAME_TAG_TEXT_BASELINE_NUDGE
+fn map_name_tag_text_baseline(height: usize, font_size: f32) -> i32 {
+    ((height as f32 + font_size) / 2.0).round() as i32
+        + (MAP_NAME_TAG_TEXT_BASELINE_NUDGE as f32 * font_size / MAP_NAME_TAG_FONT_SIZE).round() as i32
 }
 
 struct LoadedMapNameTagStyle {
@@ -184,6 +218,7 @@ fn equipped_name_tag_styles(
 ) -> Vec<i32> {
     look.equips
         .iter()
+        .chain(look.masked_equips.iter())
         .filter(|(slot, _)| matches!(slot.unsigned_abs(), 12 | 13 | 15 | 16))
         .filter_map(|(_, item_id)| {
             let path = format!("Ring/0{item_id:07}.img/info");
@@ -254,14 +289,17 @@ fn blit_map_name_tag_bitmap(
     bitmap: &MapNameTagBitmap,
     x: i32,
     y: i32,
-    target_width: Option<usize>,
+    target_width: usize,
+    target_height: usize,
 ) {
-    let target_width = target_width.unwrap_or(bitmap.width).max(1);
+    let target_width = target_width.max(1);
+    let target_height = target_height.max(1);
     for dest_x in 0..target_width {
         let source_x = dest_x * bitmap.width / target_width;
-        for source_y in 0..bitmap.height {
+        for dest_y in 0..target_height {
+            let source_y = dest_y * bitmap.height / target_height;
             let canvas_x = x + dest_x as i32;
-            let canvas_y = y + source_y as i32;
+            let canvas_y = y + dest_y as i32;
             if canvas_x < 0
                 || canvas_y < 0
                 || canvas_x >= canvas_width as i32

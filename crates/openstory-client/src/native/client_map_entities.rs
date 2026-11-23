@@ -1058,7 +1058,7 @@ impl ClientApp {
         } else {
             ""
         };
-        let (pixels, panel, buttons, text_max_scroll) = render_npc_dialogue(
+        let (pixels, panel, buttons, text_max_scroll, text_view_height) = render_npc_dialogue(
             &self.font,
             &self.legacy_ui_archive,
             &self.npc_archive,
@@ -1101,6 +1101,7 @@ impl ClientApp {
                     reveal_elapsed: Duration::ZERO,
                     text_scroll: 0,
                     text_max_scroll,
+                    text_view_height,
                     inline_icons,
                     selections,
                     selected_selection: 0,
@@ -1724,6 +1725,17 @@ impl ClientApp {
                     state.search_focused = false;
                 }
             }
+            cash_shop_ui::HitAction::CashInventoryScroll => {
+                let maximum = self
+                    .inventory
+                    .as_ref()
+                    .map_or(0, cash_shop_ui::cash_inventory_scroll_max);
+                if let Some(state) = self.cash_shop.as_mut() {
+                    state.cash_inventory_scroll_row =
+                        cash_shop_ui::cash_inventory_scroll_from_click(cursor.y, maximum);
+                    state.search_focused = false;
+                }
+            }
             cash_shop_ui::HitAction::CouponInput => {
                 if let Some(state) = self.cash_shop.as_mut() {
                     state.coupon_focused = !state.coupon_pending;
@@ -1768,6 +1780,34 @@ impl ClientApp {
     ) -> Option<cash_shop_ui::HitAction> {
         self.cash_shop.as_ref()?;
         cash_shop_ui::hit_test(&self.cash_shop_hit_regions, cursor.x, cursor.y)
+    }
+
+    pub(super) fn scroll_cash_shop_inventory(&mut self, cursor: Point, amount: f32) -> bool {
+        if !self.cash_shop.as_ref().is_some_and(|_| {
+            cash_shop_ui::cash_inventory_scroll_area().contains(cursor.x, cursor.y)
+        }) {
+            return false;
+        }
+        let maximum = self
+            .inventory
+            .as_ref()
+            .map_or(0, cash_shop_ui::cash_inventory_scroll_max);
+        let Some(state) = self.cash_shop.as_mut() else {
+            return false;
+        };
+        let current = state.cash_inventory_scroll_row.min(maximum);
+        let next = if amount > 0.0 {
+            current.saturating_sub(1)
+        } else if amount < 0.0 {
+            current.saturating_add(1).min(maximum)
+        } else {
+            current
+        };
+        if next != state.cash_inventory_scroll_row {
+            state.cash_inventory_scroll_row = next;
+            self.refresh_cash_shop_texture();
+        }
+        true
     }
 
     pub(super) fn update_cash_shop_hover(&mut self) -> bool {
@@ -1864,7 +1904,7 @@ impl ClientApp {
         } else {
             dialogue_text.chars().take(ui.visible_text_chars).collect()
         };
-        let (pixels, panel, buttons, text_max_scroll) = render_npc_dialogue(
+        let (pixels, panel, buttons, text_max_scroll, text_view_height) = render_npc_dialogue(
             &self.font,
             &self.legacy_ui_archive,
             &self.npc_archive,
@@ -1894,6 +1934,7 @@ impl ClientApp {
             Ok(texture) => {
                 if let Some(ui) = self.npc_dialogue.as_mut() {
                     ui.text_max_scroll = text_max_scroll;
+                    ui.text_view_height = text_view_height;
                     ui.text_scroll = ui.text_scroll.min(ui.text_max_scroll);
                     ui.texture = texture;
                     ui.panel = panel;
@@ -2059,13 +2100,13 @@ impl ClientApp {
                 || !(dialogue.panel.y + NpcDialogueLayout::TEXT_Y as f32
                     ..dialogue.panel.y
                         + NpcDialogueLayout::TEXT_Y as f32
-                        + npc_dialogue_text_view_height(dialogue.state.message_type) as f32)
+                        + dialogue.text_view_height as f32)
                     .contains(&cursor.y)
             {
                 return None;
             }
             let fraction = ((cursor.y - (dialogue.panel.y + NpcDialogueLayout::TEXT_Y as f32))
-                / npc_dialogue_text_view_height(dialogue.state.message_type) as f32)
+                / dialogue.text_view_height.max(1) as f32)
                 .clamp(0.0, 1.0);
             Some((fraction * dialogue.text_max_scroll as f32).round() as usize)
         });

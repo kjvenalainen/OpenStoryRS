@@ -2262,6 +2262,7 @@ struct NpcDialogueUi {
     reveal_elapsed: Duration,
     text_scroll: usize,
     text_max_scroll: usize,
+    text_view_height: usize,
     inline_icons: NpcInlineIcons,
     selections: Vec<(i32, String)>,
     selected_selection: usize,
@@ -2533,6 +2534,13 @@ struct CashShopUi {
     view: CashShopView,
     category: usize,
     page: usize,
+    cash_inventory_scroll_row: usize,
+    preview_x: f32,
+    preview_y: f32,
+    preview_facing_right: bool,
+    preview_on_ladder: bool,
+    preview_motion: AvatarMotion,
+    preview_frame_index: usize,
     selected_sn: Option<i32>,
     try_on_items: BTreeMap<i8, i32>,
     query: String,
@@ -2618,6 +2626,13 @@ impl CashShopUi {
             view: CashShopView::Catalog,
             category: 0,
             page: 0,
+            cash_inventory_scroll_row: 0,
+            preview_x: cash_shop_ui::PREVIEW_START_X,
+            preview_y: cash_shop_ui::PREVIEW_FLOOR_Y,
+            preview_facing_right: false,
+            preview_on_ladder: false,
+            preview_motion: AvatarMotion::Stand,
+            preview_frame_index: 0,
             selected_sn: None,
             try_on_items: BTreeMap::new(),
             query: String::new(),
@@ -2665,7 +2680,6 @@ enum NpcDialogueAction {
 }
 
 struct MapDropRuntime {
-    item_id: i32,
     meso: bool,
     x: f64,
     y: f64,
@@ -2683,7 +2697,6 @@ struct MapDropRuntime {
 #[derive(Clone, Copy)]
 struct LootDropSnapshot {
     object_id: i32,
-    item_id: i32,
     meso: bool,
     x: f64,
     y: f64,
@@ -2847,14 +2860,11 @@ fn drop_can_fit_inventory(drop: &LootDropSnapshot, inventory_has_space: [bool; 5
     if drop.meso {
         return true;
     }
-    match drop.item_id / 1_000_000 {
-        1 => inventory_has_space[0],
-        2 => inventory_has_space[1],
-        3 => inventory_has_space[2],
-        4 => inventory_has_space[3],
-        5 => inventory_has_space[4],
-        _ => true,
-    }
+    let has_space = inventory_has_space.into_iter().any(|available| available);
+    // A first request may still merge into an existing stack. If the server
+    // leaves the drop on the map, don't keep retrying it while every item tab
+    // is full. A changed inventory snapshot makes it eligible again.
+    has_space || drop.pet_pickup_attempt.is_none()
 }
 
 fn drop_pickup_is_available(
@@ -2905,11 +2915,11 @@ fn search_pet_drops(
 
     for pet in pets {
         let available = drops.iter().filter(|drop| {
-            drop.picked_up
-                || reserved.contains(&drop.object_id)
-                || !drop_can_fit_inventory(drop, inventory_has_space)
-                || drop.pet_pickup_attempt.is_some_and(|last| {
-                    now.saturating_duration_since(last) < Duration::from_secs(2)
+            !drop.picked_up
+                && !reserved.contains(&drop.object_id)
+                && drop_can_fit_inventory(drop, inventory_has_space)
+                && drop.pet_pickup_attempt.is_none_or(|last| {
+                    now.saturating_duration_since(last) >= Duration::from_secs(2)
                 })
         });
         let mut pickup: Option<(f64, i32)> = None;
@@ -5420,7 +5430,6 @@ impl MapSceneRuntime {
             body.vertical_speed = 0.0;
         }
         let mut drop = MapDropRuntime {
-            item_id: spawn.item_id,
             meso: spawn.meso,
             x: f64::from(spawn.source_x),
             y: f64::from(spawn.source_y) - 4.0,
@@ -5499,7 +5508,6 @@ impl MapSceneRuntime {
             .iter()
             .map(|(&object_id, drop)| LootDropSnapshot {
                 object_id,
-                item_id: drop.item_id,
                 meso: drop.meso,
                 x: drop.x,
                 y: drop.y,
@@ -5537,7 +5545,6 @@ impl MapSceneRuntime {
         let drop = self.drops.get(&object_id)?;
         let snapshot = LootDropSnapshot {
             object_id,
-            item_id: drop.item_id,
             meso: drop.meso,
             x: drop.x,
             y: drop.y,
@@ -6176,7 +6183,6 @@ impl MapSceneRuntime {
                 };
                 let snapshot = LootDropSnapshot {
                     object_id,
-                    item_id: drop.item_id,
                     meso: drop.meso,
                     x: drop.x,
                     y: drop.y,
@@ -6208,7 +6214,6 @@ impl MapSceneRuntime {
                 let drop = self.drops.get(&object_id)?;
                 let snapshot = LootDropSnapshot {
                     object_id,
-                    item_id: drop.item_id,
                     meso: drop.meso,
                     x: drop.x,
                     y: drop.y,
@@ -6225,7 +6230,22 @@ impl MapSceneRuntime {
                     .then_some((drop.x, drop.y))
             });
             if decision.pickup.is_some() && !pickup_valid {
-                pet.loot_target = None;
+                pet.loot_target = decision.pickup.and_then(|object_id| {
+                    let drop = self.drops.get(&object_id)?;
+                    let snapshot = LootDropSnapshot {
+                        object_id,
+                        meso: drop.meso,
+                        x: drop.x,
+                        y: drop.y,
+                        picked_up: matches!(drop.motion, DropMotion::PickedUp { .. }),
+                        pickup_attempt: drop.pickup_attempt,
+                        pet_pickup_attempt: drop.pet_pickup_attempt,
+                    };
+                    (!snapshot.picked_up
+                        && drop_can_fit_inventory(&snapshot, inventory_has_space)
+                        && (drop.x - player.0).abs() + (drop.y - player.1).abs() < 200.0)
+                        .then_some((drop.x, drop.y))
+                });
                 continue;
             }
             if target.is_some() {

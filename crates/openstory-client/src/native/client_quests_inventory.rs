@@ -51,6 +51,42 @@ impl ClientApp {
         }
     }
 
+    fn send_equipment_scroll(&mut self, scroll_slot: u16, target_slot: u16) {
+        let Some(inventory) = self.inventory.as_ref() else {
+            return;
+        };
+        let scroll_exists = inventory.items.iter().any(|item| {
+            item.inventory_type == openstory_protocol::InventoryType::Use
+                && item.slot == scroll_slot
+                && item.item_id / 10_000 == 204
+        });
+        let target_exists = inventory.equipped().any(|item| item.slot == target_slot);
+        if !scroll_exists || !target_exists {
+            return;
+        }
+        if !self.channel_connected {
+            eprintln!("OpenStoryRS: cannot apply a scroll while disconnected from the field");
+            return;
+        }
+        let (Ok(scroll_slot), Ok(target_slot)) =
+            (i16::try_from(scroll_slot), i16::try_from(target_slot))
+        else {
+            return;
+        };
+        let client_tick = self.client_started_at.elapsed().as_millis() as i32;
+        let Some(packet) =
+            openstory_protocol::scroll_equip_packet(scroll_slot, target_slot, client_tick)
+        else {
+            return;
+        };
+        if let Some(session) = self.session.as_ref()
+            && let Err(error) = session.send_packet(packet)
+        {
+            eprintln!("OpenStoryRS: could not apply equipment scroll: {error}");
+            self.channel_connected = false;
+        }
+    }
+
     pub(super) fn apply_quest_update(&mut self, update: openstory_protocol::QuestUpdate) {
         self.quest_log.apply(update);
         self.refresh_npc_quest_marks();
@@ -228,6 +264,45 @@ impl ClientApp {
             )
             .get(self.quest_log_selected)
             .is_some()
+    }
+
+    pub(super) fn move_quest_log_selection(&mut self, direction: isize) {
+        let quest_count = quest_ids_for_tab(
+            &self.quest_log,
+            &self.available_quests,
+            self.quest_log_tab,
+            &self.quest_archive,
+            &self.font,
+        )
+        .len();
+        if quest_count == 0 {
+            return;
+        }
+
+        let selected = self
+            .quest_log_selected
+            .saturating_add_signed(direction)
+            .min(quest_count - 1);
+        if selected == self.quest_log_selected {
+            return;
+        }
+        self.quest_log_selected = selected;
+        if self.quest_log_selected < self.quest_log_scroll {
+            self.quest_log_scroll = self.quest_log_selected;
+        } else if self.quest_log_selected
+            >= self
+                .quest_log_scroll
+                .saturating_add(QUEST_LOG_VISIBLE_ROWS)
+        {
+            self.quest_log_scroll = self
+                .quest_log_selected
+                .saturating_add(1)
+                .saturating_sub(QUEST_LOG_VISIBLE_ROWS)
+                .min(quest_count.saturating_sub(QUEST_LOG_VISIBLE_ROWS));
+        }
+        self.quest_detail_scroll = 0;
+        self.quest_reward_selected = 0;
+        self.refresh_quest_log_texture();
     }
 
     pub(super) fn click_quest_log(&mut self, cursor: Point) -> bool {
@@ -1281,6 +1356,27 @@ impl ClientApp {
             {
                 if let Some(slot) = self.equipment_auto_potion_at(drop_cursor) {
                     self.assign_equipment_auto_potion(slot, source_type, source_slot);
+                } else if source_type == openstory_protocol::InventoryType::Use {
+                    let target_slot = self.inventory.as_ref().and_then(|inventory| {
+                        let is_scroll = inventory.items.iter().any(|item| {
+                            item.inventory_type == openstory_protocol::InventoryType::Use
+                                && item.slot == source_slot
+                                && item.item_id / 10_000 == 204
+                        });
+                        if !is_scroll {
+                            return None;
+                        }
+                        self.equipment_tab
+                            .worn_at(
+                                inventory,
+                                drop_cursor.x - EQUIPMENT_INVENTORY_PANEL_X,
+                                drop_cursor.y - EQUIPMENT_INVENTORY_PANEL_Y,
+                            )
+                            .map(|item| item.slot)
+                    });
+                    if let Some(target_slot) = target_slot {
+                        self.send_equipment_scroll(source_slot, target_slot);
+                    }
                 }
                 self.refresh_inventory_texture();
                 return;

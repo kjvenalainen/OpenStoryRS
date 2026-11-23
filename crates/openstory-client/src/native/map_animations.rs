@@ -1054,7 +1054,7 @@ fn attack_hit_delays(
     let action = character_skill_action_name(skill_archive, look, skill_id, skill_level)
         .ok()
         .flatten();
-    let hit_delays_ms = if let Some(action) = action {
+    let mut hit_delays_ms = if let Some(action) = action {
         body_action_hit_delays_ms(character_archive, &action).unwrap_or_default()
     } else {
         vec![
@@ -1069,6 +1069,24 @@ fn attack_hit_delays(
             hit_count
         ]
     };
+    // Multi-hit skills can share one animation hit frame. Separate those hits
+    // so their projectiles and impact sounds don't overlap.
+    if skill_id > 0 && hit_count > 1 {
+        const HIT_SEPARATION_MS: u32 = 90;
+        if hit_delays_ms.is_empty() {
+            hit_delays_ms.push(0);
+        }
+        for index in 1..hit_count {
+            let previous = hit_delays_ms[index - 1];
+            let candidate = hit_delays_ms.get(index).copied().unwrap_or(0);
+            let delay = candidate.max(previous.saturating_add(HIT_SEPARATION_MS));
+            if index < hit_delays_ms.len() {
+                hit_delays_ms[index] = delay;
+            } else {
+                hit_delays_ms.push(delay);
+            }
+        }
+    }
     let real_speed = (1.7_f32 - f32::from(attack_speed) / 10.0).max(0.01);
     (0..hit_count)
         .map(|index| {

@@ -135,11 +135,25 @@ pub(super) fn render(
     skill_archive: &NxArchive,
     string_archive: &NxArchive,
 ) -> (u32, Vec<u8>) {
+    render_with_remaining(font, skill, skill_archive, string_archive, None)
+}
+
+pub(super) fn render_with_remaining(
+    font: &fontdue::Font,
+    skill: &SkillUiEntry,
+    skill_archive: &NxArchive,
+    string_archive: &NxArchive,
+    remaining: Option<&str>,
+) -> (u32, Vec<u8>) {
     let key = SkillTooltipKey::from_entry(skill);
-    let description = nx_string_value(string_archive, &format!("Skill.img/{:07}/desc", skill.id))
-        .map(|text| description(&text))
-        .filter(|text| !text.is_empty())
-        .unwrap_or_else(|| "Description unavailable in local skill data.".to_owned());
+    let mut description =
+        nx_string_value(string_archive, &format!("Skill.img/{:07}/desc", skill.id))
+            .map(|text| description(&text))
+            .filter(|text| !text.is_empty())
+            .unwrap_or_else(|| "Description unavailable in local skill data.".to_owned());
+    if let Some(remaining) = remaining {
+        description = format!("Time remaining: {remaining}\n\n{description}");
+    }
     let mut sections = Vec::new();
     if key.level > 0 {
         sections.push((
@@ -327,6 +341,32 @@ impl ClientApp {
     // Re-evaluate before drawing so scrolling, server level updates, dialog
     // stacking, dragging, and resizing also work with a stationary pointer.
     pub(super) fn refresh_skill_tooltip(&mut self) {
+        let buff_hover = self
+            .cursor
+            .filter(|cursor| {
+                self.current_field.is_some()
+                    && self.cash_shop.is_none()
+                    && self.npc_shop.is_none()
+                    && self.dialog_window_drag.is_none()
+                    && self.inventory_drag_source.is_none()
+                    && !self.skill_macro_editor.has_skill_drag()
+                    && self.inventory_drop_prompt.is_none()
+                    && !self.quit_confirmation
+                    && !self.wedding_panel_open
+                    && self.server_notice_popup.is_none()
+                    && self.rps_game.is_none()
+                    && (24.0..56.0).contains(&cursor.y)
+            })
+            .and_then(|cursor| {
+                self.buff_list_skill_ids
+                    .iter()
+                    .enumerate()
+                    .find(|(index, _)| {
+                        let x = 1024.0 - 35.0 - 32.0 * *index as f32;
+                        (x..x + 32.0).contains(&cursor.x)
+                    })
+                    .map(|(_, skill_id)| *skill_id)
+            });
         let quickslot_skill_id = self
             .quickslot_hover_slot
             .filter(|_| {
@@ -346,12 +386,24 @@ impl ClientApp {
             .and_then(|slot| self.current_quickslot_binding(slot))
             .filter(|binding| binding.kind == 1)
             .map(|binding| binding.action);
-        if quickslot_skill_id.is_some() && quickslot_skill_id == self.quickslot_tooltip_skill_id {
-            return;
-        }
-        let quickslot_skill = quickslot_skill_id.and_then(|id| self.skill_ui_entry_by_id(id));
         self.quickslot_tooltip_skill_id = quickslot_skill_id;
-        let hovered = quickslot_skill.or_else(|| {
+        let now = Instant::now();
+        let buff_remaining = buff_hover.and_then(|skill_id| {
+            let buff = self
+                .active_buffs
+                .values()
+                .copied()
+                .find(|buff| buff.skill_id == skill_id && buff.is_active_at(now))?;
+            Some(match buff.expires_at {
+                Some(expires_at) => format_remaining(expires_at.saturating_duration_since(now)),
+                None => "Unlimited".to_owned(),
+            })
+        });
+        let buff_skill = buff_hover
+            .filter(|_| buff_remaining.is_some())
+            .and_then(|id| self.skill_ui_entry_by_id(id));
+        let quickslot_skill = quickslot_skill_id.and_then(|id| self.skill_ui_entry_by_id(id));
+        let skillbook_hover = if buff_skill.is_none() && quickslot_skill.is_none() {
             self.cursor
                 .filter(|cursor| {
                     self.current_field.is_some()
@@ -381,17 +433,33 @@ impl ClientApp {
                         .get(self.skill_book_scroll_row.saturating_add(row))
                         .cloned()
                 })
-        });
+        } else {
+            None
+        };
+        let has_buff_tooltip = buff_skill.is_some();
+        let hovered = buff_skill.or(quickslot_skill).or(skillbook_hover);
+        let remaining = if has_buff_tooltip {
+            buff_remaining
+        } else {
+            None
+        };
         let key = hovered.as_ref().map(SkillTooltipKey::from_entry);
-        if key == self.skill_tooltip_key {
+        if key == self.skill_tooltip_key && remaining == self.skill_tooltip_remaining {
             return;
         }
         self.skill_tooltip_key = key;
+        self.skill_tooltip_remaining = remaining.clone();
         self.skill_tooltip_texture = None;
         let (Some(skill), Some(renderer)) = (hovered.as_ref(), self.renderer.as_ref()) else {
             return;
         };
-        let (height, pixels) = render(&self.font, skill, &self.skill_archive, &self.string_archive);
+        let (height, pixels) = render_with_remaining(
+            &self.font,
+            skill,
+            &self.skill_archive,
+            &self.string_archive,
+            remaining.as_deref(),
+        );
         match renderer.upload_bgra(WIDTH, height, &pixels) {
             Ok(texture) => {
                 self.skill_tooltip_texture = Some(texture);
@@ -399,5 +467,19 @@ impl ClientApp {
             }
             Err(error) => eprintln!("OpenStoryRS: could not update skill tooltip: {error}"),
         }
+    }
+}
+
+fn format_remaining(remaining: Duration) -> String {
+    let total_seconds = remaining
+        .as_secs()
+        .saturating_add(u64::from(remaining.subsec_nanos() > 0));
+    let hours = total_seconds / 3_600;
+    let minutes = (total_seconds / 60) % 60;
+    let seconds = total_seconds % 60;
+    if hours > 0 {
+        format!("{hours}:{minutes:02}:{seconds:02}")
+    } else {
+        format!("{}:{seconds:02}", total_seconds / 60)
     }
 }

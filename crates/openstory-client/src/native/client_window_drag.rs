@@ -555,6 +555,13 @@ impl ClientApp {
             .find(|window| self.dialog_window_hit_test(*window, cursor))
     }
 
+    pub(super) fn focused_dialog_window(&self) -> Option<DialogWindow> {
+        self.dialog_window_order().into_iter().find(|window| {
+            !matches!(*window, DialogWindow::QuestHelper | DialogWindow::Minimap)
+                && self.dialog_window_rect(*window).is_some()
+        })
+    }
+
     pub(super) fn raise_dialog_window(&mut self, window: DialogWindow) -> bool {
         let Some(index) = self
             .raised_dialog_windows

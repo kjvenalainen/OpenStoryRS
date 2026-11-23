@@ -20,6 +20,15 @@ const GRID_COLUMNS: usize = 2;
 const GRID_ROWS: usize = 5;
 pub(super) const CATALOG_PAGE_SIZE: usize = GRID_COLUMNS * GRID_ROWS;
 pub(super) const LOCKER_PAGE_SIZE: usize = 8;
+const INVENTORY_COLUMNS: usize = 4;
+const INVENTORY_VISIBLE_ROWS: usize = 3;
+pub(super) const PREVIEW_START_X: f32 = 43.0;
+pub(super) const PREVIEW_FLOOR_Y: f32 = 156.0;
+pub(super) const PREVIEW_LADDER_X: f32 = 136.0;
+pub(super) const PREVIEW_LADDER_TOP_Y: f32 = 52.0;
+pub(super) const PREVIEW_LEFT_BOUND: f32 = 22.0;
+pub(super) const PREVIEW_RIGHT_BOUND: f32 = 186.0;
+pub(super) const PREVIEW_STEP: f32 = 12.0;
 
 /// A logical-coordinate region used by both the Cash Shop view and input code.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -66,6 +75,7 @@ pub(super) enum HitAction {
     PreviousPage,
     NextPage,
     LockerItem(usize),
+    CashInventoryScroll,
     CouponInput,
     CouponSubmit,
     CouponCancel,
@@ -109,6 +119,48 @@ pub(super) fn hit_test(regions: &[HitRegion], x: f32, y: f32) -> Option<HitActio
         .map(|region| region.action)
 }
 
+pub(super) fn cash_inventory_scroll_area() -> Rect {
+    let scale_x = WIDTH as f32 / CASH_SHOP_WIDTH as f32;
+    let scale_y = HEIGHT as f32 / CASH_SHOP_HEIGHT as f32;
+    Rect {
+        x: 0.0,
+        y: 455.0 * scale_y,
+        width: 220.0 * scale_x,
+        height: (CASH_SHOP_HEIGHT as f32 - 455.0) * scale_y,
+    }
+}
+
+pub(super) fn cash_inventory_scroll_max(
+    inventory: &openstory_protocol::InventorySnapshot,
+) -> usize {
+    cash_inventory_items(inventory)
+        .len()
+        .div_ceil(INVENTORY_COLUMNS)
+        .saturating_sub(INVENTORY_VISIBLE_ROWS)
+}
+
+pub(super) fn cash_inventory_scroll_from_click(y: f32, maximum: usize) -> usize {
+    let scale_y = HEIGHT as f32 / CASH_SHOP_HEIGHT as f32;
+    let track_top = 484.0 * scale_y;
+    let track_height = 104.0 * scale_y;
+    let fraction = ((y - track_top) / track_height).clamp(0.0, 1.0);
+    (fraction * maximum as f32).round() as usize
+}
+
+fn cash_inventory_items(
+    inventory: &openstory_protocol::InventorySnapshot,
+) -> Vec<&openstory_protocol::InventoryItem> {
+    let mut items = inventory
+        .items
+        .iter()
+        .filter(|item| {
+            item.inventory_type == openstory_protocol::InventoryType::Cash && item.slot > 0
+        })
+        .collect::<Vec<_>>();
+    items.sort_by_key(|item| item.slot);
+    items
+}
+
 /// Draws the catalog or locker using the legacy CashShopGL art and a stable
 /// logical layout. The host owns input focus, network requests, and state
 /// mutation; `hit_test` identifies the requested action.
@@ -128,6 +180,8 @@ pub(super) fn render(
     const X: usize = CASH_SHOP_X;
     const Y: usize = CASH_SHOP_Y;
     let mut pixels = vec![0; WIDTH * HEIGHT * 4];
+    let mut text_pixels = vec![0; WIDTH * HEIGHT * 4];
+    let mut dialog_text_pixels = vec![0; WIDTH * HEIGHT * 4];
     let mut hit_regions = Vec::new();
     draw_asset(
         &mut pixels,
@@ -161,30 +215,8 @@ pub(super) fn render(
         preview
     });
     if let Some(character) = preview_character.as_ref() {
-        let mut avatar = Vec::new();
-        super::append_character_preview(
-            &mut avatar,
-            character_archive,
-            &character.look,
-            43.0,
-            156.0,
-            1.0,
-            false,
-            &mut super::MapArtCache::default(),
-        )?;
         let mut stage = vec![0; 212 * 165 * 4];
-        for sprite in avatar {
-            super::composite_bgra_pixels(
-                &mut stage,
-                212,
-                165,
-                &sprite.pixels,
-                sprite.texture_width as usize,
-                sprite.texture_height as usize,
-                sprite.rect.x.round() as i32,
-                sprite.rect.y.round() as i32,
-            );
-        }
+        draw_cash_shop_preview_avatar(&mut stage, state, &character.look, character_archive)?;
         super::composite_bgra_pixels(
             &mut pixels,
             WIDTH,
@@ -199,7 +231,7 @@ pub(super) fn render(
         let name = super::ui_foundation::ellipsize(font, &character.stats.name, 11.0, 130.0);
         add_text(
             font,
-            &mut pixels,
+            &mut text_pixels,
             &name,
             (X + 100) as i32,
             (Y + 271) as i32,
@@ -222,7 +254,7 @@ pub(super) fn render(
         )?;
         add_text(
             font,
-            &mut pixels,
+            &mut text_pixels,
             label,
             left as i32 + 4,
             (Y + 40) as i32,
@@ -246,7 +278,7 @@ pub(super) fn render(
     };
     add_text(
         font,
-        &mut pixels,
+        &mut text_pixels,
         query,
         (X + 282) as i32,
         (Y + 76) as i32,
@@ -359,11 +391,14 @@ pub(super) fn render(
         ));
     }
     if let Some(inventory) = inventory {
-        for (index, item) in inventory
-            .items
+        let inventory_items = cash_inventory_items(inventory);
+        let total_rows = inventory_items.len().div_ceil(INVENTORY_COLUMNS);
+        let max_scroll = total_rows.saturating_sub(INVENTORY_VISIBLE_ROWS);
+        let scroll_row = state.cash_inventory_scroll_row.min(max_scroll);
+        for (index, item) in inventory_items
             .iter()
-            .filter(|item| item.slot > 0)
-            .take(12)
+            .skip(scroll_row * INVENTORY_COLUMNS)
+            .take(INVENTORY_COLUMNS * INVENTORY_VISIBLE_ROWS)
             .enumerate()
         {
             if let Some((w, h, icon)) = super::inventory_item_icon(
@@ -385,6 +420,28 @@ pub(super) fn render(
                 );
             }
         }
+        let scroll_x = X + 159;
+        let scroll_y = Y + 484;
+        let scroll_height = 104;
+        let fraction =
+            super::ui_foundation::scroll_fraction(scroll_row, total_rows, INVENTORY_VISIBLE_ROWS);
+        super::ui_foundation::draw_scrollbar(
+            &mut pixels,
+            WIDTH,
+            HEIGHT,
+            ui_archive,
+            scroll_x as i32,
+            scroll_y as i32,
+            scroll_height,
+            fraction,
+        );
+        hit_regions.push(logical_region(
+            scroll_x as f32,
+            scroll_y as f32,
+            15.0,
+            scroll_height as f32,
+            HitAction::CashInventoryScroll,
+        ));
     }
     let filtered = super::cash_filtered_indices(products, state, string_archive, name_cache);
     let count = if state.view == super::CashShopView::Locker {
@@ -446,7 +503,7 @@ pub(super) fn render(
         let name = super::ui_foundation::ellipsize(font, &name, 11.0, 121.0);
         add_text(
             font,
-            &mut pixels,
+            &mut text_pixels,
             &name,
             left as i32 + 76,
             top as i32 + 6,
@@ -460,7 +517,7 @@ pub(super) fn render(
             .unwrap_or_else(|| "Cash locker".to_owned());
         add_text(
             font,
-            &mut pixels,
+            &mut text_pixels,
             &value,
             left as i32 + 76,
             top as i32 + 30,
@@ -510,7 +567,7 @@ pub(super) fn render(
         }
         add_text(
             font,
-            &mut pixels,
+            &mut text_pixels,
             &format!("{} NX", grouped_number(product.price)),
             (X + 700) as i32,
             (Y + 206 + index * 70) as i32,
@@ -522,7 +579,7 @@ pub(super) fn render(
     }
     add_text(
         font,
-        &mut pixels,
+        &mut text_pixels,
         &format!("{} / {pages}", page + 1),
         (X + 480) as i32,
         (Y + 516) as i32,
@@ -553,7 +610,7 @@ pub(super) fn render(
         let top = Y + 537 + row * 14;
         add_text(
             font,
-            &mut pixels,
+            &mut text_pixels,
             &value,
             (X + 482) as i32 - width,
             top as i32,
@@ -588,7 +645,7 @@ pub(super) fn render(
     {
         add_text(
             font,
-            &mut pixels,
+            &mut text_pixels,
             notice,
             X as i32,
             (Y + 610) as i32,
@@ -608,17 +665,132 @@ pub(super) fn render(
             string_archive,
             name_cache,
             &mut pixels,
+            &mut dialog_text_pixels,
             &mut hit_regions,
         )?;
     } else if state.coupon_open {
         hit_regions.clear();
-        draw_coupon_dialog(ui_archive, font, state, &mut pixels, &mut hit_regions)?;
+        draw_coupon_dialog(
+            ui_archive,
+            font,
+            state,
+            &mut pixels,
+            &mut dialog_text_pixels,
+            &mut hit_regions,
+        )?;
     }
+    // Keep NX art on its authored 800x600 raster, then composite text rendered
+    // at the final 1024x768 logical resolution.
     scale_cash_shop_to_canvas(&mut pixels, &mut hit_regions);
+    let mut nameplate_pixels = vec![0; WIDTH * HEIGHT * 4];
+    if let Some(character) = preview_character.as_ref() {
+        draw_cash_shop_nameplates(
+            &mut nameplate_pixels,
+            font,
+            ui_archive,
+            character_archive,
+            character,
+            inventory,
+            string_archive,
+            name_cache,
+            state.preview_x,
+            state.preview_y,
+        );
+    }
+    let dim_under_dialog = state.confirmation || state.coupon_open;
+    composite_cash_shop_layer(&mut pixels, &nameplate_pixels, dim_under_dialog);
+    composite_cash_shop_layer(&mut pixels, &text_pixels, dim_under_dialog);
+    composite_cash_shop_layer(&mut pixels, &dialog_text_pixels, false);
     Ok(Scene {
         pixels,
         hit_regions,
     })
+}
+
+fn draw_cash_shop_preview_avatar(
+    stage: &mut [u8],
+    state: &super::CashShopUi,
+    look: &openstory_protocol::CharacterLook,
+    character_archive: &NxArchive,
+) -> Result<(), String> {
+    const STAGE_WIDTH: usize = 212;
+    const STAGE_HEIGHT: usize = 165;
+    let mut sprites = Vec::new();
+    let two_handed = super::character_weapon_id(look).is_some_and(super::is_two_handed_weapon);
+    let stand = if two_handed { "stand2" } else { "stand1" };
+    let walk = if two_handed { "walk2" } else { "walk1" };
+    let motion = match state.preview_motion {
+        super::AvatarMotion::Walk => walk,
+        super::AvatarMotion::Jump => "jump",
+        super::AvatarMotion::Ladder => "ladder",
+        super::AvatarMotion::Crouch => "prone",
+        _ => stand,
+    };
+    let mut candidates = vec![motion];
+    if motion != stand {
+        candidates.push(stand);
+    }
+    for stance in candidates {
+        let stance_path = format!("000020{:02}.img/{stance}", look.skin);
+        let Some(stance_node) = character_archive
+            .root()
+            .resolve(&stance_path)
+            .map_err(|error| error.to_string())?
+        else {
+            continue;
+        };
+        let frames = super::numeric_children(&stance_node)?;
+        if frames.is_empty() {
+            continue;
+        }
+        let frame_index = if stance == motion {
+            state.preview_frame_index % frames.len()
+        } else {
+            0
+        };
+        let frame_id = frames[frame_index]
+            .name()
+            .map_err(|error| error.to_string())?
+            .parse::<u8>()
+            .map_err(|error| format!("invalid Cash Shop avatar frame id: {error}"))?;
+        super::append_character_avatar(
+            &mut sprites,
+            character_archive,
+            look,
+            stance,
+            frame_id,
+            state.preview_x,
+            state.preview_y,
+            &mut super::MapArtCache::default(),
+        )?;
+        if !sprites.is_empty() {
+            break;
+        }
+    }
+
+    for sprite in &mut sprites {
+        if state.preview_facing_right {
+            sprite.rect.x = state.preview_x * 2.0 - (sprite.rect.x + sprite.rect.width);
+            sprite.pixels = super::prepare_map_pixels(
+                &sprite.pixels,
+                sprite.texture_width,
+                sprite.texture_height,
+                255,
+                true,
+            );
+        }
+        super::composite_bgra_pixels(
+            stage,
+            STAGE_WIDTH,
+            STAGE_HEIGHT,
+            &sprite.pixels,
+            sprite.texture_width as usize,
+            sprite.texture_height as usize,
+            sprite.rect.x.round() as i32,
+            sprite.rect.y.round() as i32,
+        );
+    }
+    Ok(())
 }
 
 fn scale_cash_shop_to_canvas(pixels: &mut Vec<u8>, hit_regions: &mut [HitRegion]) {
@@ -641,6 +813,31 @@ fn scale_cash_shop_to_canvas(pixels: &mut Vec<u8>, hit_regions: &mut [HitRegion]
         region.bounds.y = (region.bounds.y - CASH_SHOP_Y as f32) * scale_y;
         region.bounds.width *= scale_x;
         region.bounds.height *= scale_y;
+    }
+}
+
+fn composite_cash_shop_layer(destination: &mut [u8], source: &[u8], dim: bool) {
+    if destination.len() != source.len() {
+        return;
+    }
+    const DIALOG_REMAINDER: u32 = 255 - 176;
+    for (destination, source) in destination.chunks_exact_mut(4).zip(source.chunks_exact(4)) {
+        if source[3] == 0 {
+            continue;
+        }
+        let dimmed;
+        let source = if dim {
+            dimmed = [
+                (u32::from(source[0]) * DIALOG_REMAINDER / 255) as u8,
+                (u32::from(source[1]) * DIALOG_REMAINDER / 255) as u8,
+                (u32::from(source[2]) * DIALOG_REMAINDER / 255) as u8,
+                source[3],
+            ];
+            &dimmed
+        } else {
+            source
+        };
+        blend_pixel(destination, source);
     }
 }
 
@@ -682,6 +879,86 @@ fn draw_equipped_pets(
         }
     }
     Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_cash_shop_nameplates(
+    pixels: &mut [u8],
+    font: &fontdue::Font,
+    ui_archive: &NxArchive,
+    character_archive: &NxArchive,
+    character: &openstory_protocol::CharacterInfo,
+    inventory: Option<&openstory_protocol::InventorySnapshot>,
+    string_archive: &NxArchive,
+    name_cache: &mut HashMap<i32, Option<String>>,
+    avatar_x: f32,
+    avatar_y: f32,
+) {
+    let scale = WIDTH as f32 / CASH_SHOP_WIDTH as f32;
+    let stage_x = 22.0 * scale;
+    let stage_y = 41.0 * scale;
+    let mut sprites = Vec::new();
+    super::append_map_name_tag_sprite_scaled(
+        &mut sprites,
+        font,
+        ui_archive,
+        Some(character_archive),
+        Some(&character.look),
+        &character.stats.name,
+        stage_x + avatar_x * scale,
+        stage_y + avatar_y * scale,
+        super::MapNameTagKind::Character,
+        scale,
+    );
+
+    let pet_ids = character
+        .look
+        .pet_ids
+        .iter()
+        .copied()
+        .filter(|item_id| *item_id > 0)
+        .collect::<Vec<_>>();
+    let first_pet_offset = -((pet_ids.len().saturating_sub(1)) as f32) * 32.0 * scale / 2.0;
+    for (index, item_id) in pet_ids.into_iter().enumerate() {
+        let pet_name = inventory
+            .into_iter()
+            .flat_map(|inventory| inventory.items.iter())
+            .find(|item| {
+                item.inventory_type == openstory_protocol::InventoryType::Cash
+                    && item.item_id == item_id
+                    && item.pet.is_some()
+            })
+            .and_then(|item| item.pet.as_ref())
+            .map(|pet| pet.name.trim())
+            .filter(|name| !name.is_empty())
+            .map(str::to_owned)
+            .unwrap_or_else(|| super::item_name(item_id, string_archive, name_cache));
+        super::append_map_name_tag_sprite_scaled(
+            &mut sprites,
+            font,
+            ui_archive,
+            None,
+            None,
+            &pet_name,
+            stage_x + 160.0 * scale + first_pet_offset + index as f32 * 32.0 * scale,
+            stage_y + 156.0 * scale,
+            super::MapNameTagKind::Pet,
+            scale,
+        );
+    }
+
+    for sprite in sprites {
+        super::composite_bgra_pixels(
+            pixels,
+            WIDTH,
+            HEIGHT,
+            &sprite.pixels,
+            sprite.texture_width as usize,
+            sprite.texture_height as usize,
+            sprite.rect.x.round() as i32,
+            sprite.rect.y.round() as i32,
+        );
+    }
 }
 
 pub(super) fn add_try_on_item(state: &mut super::CashShopUi, item_id: i32) {
@@ -771,6 +1048,7 @@ pub(super) fn render_preview(
         add_try_on_item(&mut state, product.item_id);
     }
     state.notice = Some("Offline preview data; no server is connected.".to_owned());
+    let preview_inventory = cash_shop_preview_inventory();
 
     match variant {
         "catalog" | "catalog-tooltip" => state.category = 0,
@@ -821,7 +1099,7 @@ pub(super) fn render_preview(
         character_archive,
         string_archive,
         Some(&preview_character),
-        Some(&super::ui_preview::preview_inventory()),
+        Some(&preview_inventory),
         &mut icon_cache,
         &mut name_cache,
     )?;
@@ -841,7 +1119,7 @@ pub(super) fn render_preview(
                 character_archive,
                 string_archive,
                 Some(&preview_character.stats),
-                Some(&super::ui_preview::preview_inventory()),
+                Some(&preview_inventory),
                 &mut icon_cache,
                 &mut name_cache,
             );
@@ -857,6 +1135,33 @@ pub(super) fn render_preview(
         }
     }
     Ok(scene)
+}
+
+fn cash_shop_preview_inventory() -> openstory_protocol::InventorySnapshot {
+    let mut inventory = super::ui_preview::preview_inventory();
+    if let Some(pet) = inventory.items.iter_mut().find(|item| {
+        item.inventory_type == openstory_protocol::InventoryType::Cash && item.item_id == 5_000_000
+    }) {
+        pet.pet = Some(openstory_protocol::PetInventoryData {
+            name: "Bobby".to_owned(),
+            ..Default::default()
+        });
+    }
+    let cash_items = inventory
+        .items
+        .iter()
+        .filter(|item| item.inventory_type == openstory_protocol::InventoryType::Cash)
+        .cloned()
+        .collect::<Vec<_>>();
+    if cash_items.is_empty() {
+        return inventory;
+    }
+    for slot in cash_items.len()..20 {
+        let mut item = cash_items[slot % cash_items.len()].clone();
+        item.slot = slot as u16 + 1;
+        inventory.items.push(item);
+    }
+    inventory
 }
 
 pub(super) fn cash_shop_inventory_type(item_id: i32) -> openstory_protocol::InventoryType {
@@ -878,6 +1183,7 @@ fn draw_purchase_confirmation(
     string_archive: &NxArchive,
     name_cache: &mut HashMap<i32, Option<String>>,
     pixels: &mut [u8],
+    text_pixels: &mut [u8],
     hit_regions: &mut Vec<HitRegion>,
 ) -> Result<(), String> {
     blend_rect(pixels, 0, 0, WIDTH, HEIGHT, [0, 0, 0, 176]);
@@ -894,7 +1200,7 @@ fn draw_purchase_confirmation(
         let name = super::ui_foundation::ellipsize(font, &name, 11.0, 170.0);
         add_text(
             font,
-            pixels,
+            text_pixels,
             &format!("Buy {name}?"),
             410,
             343,
@@ -906,7 +1212,7 @@ fn draw_purchase_confirmation(
         let currency = ["NX Credit", "Maple Points", "NX Prepaid"][state.currency.min(2)];
         add_text(
             font,
-            pixels,
+            text_pixels,
             &format!("Price: {} {currency}", grouped_number(product.price)),
             410,
             365,
@@ -927,7 +1233,7 @@ fn draw_purchase_confirmation(
         };
         add_text(
             font,
-            pixels,
+            text_pixels,
             &format!("{gender} · {duration}"),
             410,
             385,
@@ -939,7 +1245,7 @@ fn draw_purchase_confirmation(
     } else {
         add_text(
             font,
-            pixels,
+            text_pixels,
             "Select a product first",
             410,
             343,
@@ -965,6 +1271,7 @@ fn draw_coupon_dialog(
     font: &fontdue::Font,
     state: &super::CashShopUi,
     pixels: &mut [u8],
+    text_pixels: &mut [u8],
     hit_regions: &mut Vec<HitRegion>,
 ) -> Result<(), String> {
     blend_rect(pixels, 0, 0, WIDTH, HEIGHT, [0, 0, 0, 176]);
@@ -975,7 +1282,7 @@ fn draw_coupon_dialog(
     )?;
     add_text(
         font,
-        pixels,
+        text_pixels,
         if state.coupon_pending {
             "Redeeming coupon…"
         } else {
@@ -989,14 +1296,24 @@ fn draw_coupon_dialog(
         [35, 35, 35],
     );
     let code = super::ui_foundation::ellipsize(font, &state.coupon_code, 11.0, 206.0);
-    add_text(font, pixels, &code, 409, 372, 11.0, 206, 16, [35, 35, 35]);
+    add_text(
+        font,
+        text_pixels,
+        &code,
+        409,
+        372,
+        11.0,
+        206,
+        16,
+        [35, 35, 35],
+    );
     if !state.coupon_pending
         && let Some(notice) = state.notice.as_deref()
     {
         let notice = super::ui_foundation::ellipsize(font, notice, 10.0, 218.0);
         add_text(
             font,
-            pixels,
+            text_pixels,
             &notice,
             403,
             394,
@@ -1197,8 +1514,22 @@ fn add_text(
     max_height: usize,
     color: [u8; 3],
 ) {
+    let scale_x = WIDTH as f32 / CASH_SHOP_WIDTH as f32;
+    let scale_y = HEIGHT as f32 / CASH_SHOP_HEIGHT as f32;
+    let x = ((x as f32 - CASH_SHOP_X as f32) * scale_x).round() as i32;
+    let y = ((y as f32 - CASH_SHOP_Y as f32) * scale_y).round() as i32;
     super::draw_dialogue_text(
-        font, pixels, WIDTH, HEIGHT, text, x, y, size, max_width, max_height, color,
+        font,
+        pixels,
+        WIDTH,
+        HEIGHT,
+        text,
+        x,
+        y,
+        size * scale_y,
+        (max_width as f32 * scale_x).round() as usize,
+        (max_height as f32 * scale_y).round() as usize,
+        color,
     );
 }
 

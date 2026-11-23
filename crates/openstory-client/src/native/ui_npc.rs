@@ -451,9 +451,10 @@ impl NpcDialogueLayout {
     const NUMBER_VALUE_X: i32 = Self::TEXT_X + 105;
     const NUMBER_PLUS_X: i32 = Self::TEXT_X + 174;
     const NUMBER_MAX_X: i32 = Self::TEXT_X + 218;
-    const SELECTION_ROW_STEP: i32 = 25;
     const SELECTION_HEIGHT: usize = 23;
-    const SELECTION_TEXT_GAP: i32 = 0;
+    const SELECTION_ROW_GAP: i32 = 4;
+    const SELECTION_TEXT_GAP: i32 = 4;
+    const SELECTION_TEXT_INSET: i32 = 2;
     const CLOSE_X: i32 = 9;
     const YES_X: i32 = 400;
     const NO_X: i32 = 465;
@@ -463,9 +464,7 @@ impl NpcDialogueLayout {
     const SELECTION_BOTTOM_Y: i32 = Self::BOTTOM_Y as i32;
     const SELECTION_TEXT_VIEW_HEIGHT: usize = (Self::SELECTION_BOTTOM_Y
         - Self::TEXT_Y
-        - Self::SELECTION_TEXT_GAP
-        - Self::SELECTION_ROW_STEP
-        - Self::SELECTION_HEIGHT as i32) as usize;
+        - 48) as usize;
     const BUTTON_Y: i32 = 236;
 }
 
@@ -605,20 +604,86 @@ fn npc_dialogue_text_view_height(message_type: i8) -> usize {
     }
 }
 
-fn npc_dialogue_selection_visible_rows(text_view_height: usize) -> usize {
-    let first_row_y = NpcDialogueLayout::TEXT_Y
-        + if text_view_height == 0 {
-            0
-        } else {
-            text_view_height as i32 + NpcDialogueLayout::SELECTION_TEXT_GAP
-        };
-    let available_height = NpcDialogueLayout::SELECTION_BOTTOM_Y - first_row_y;
-    let row_height = NpcDialogueLayout::SELECTION_HEIGHT as i32;
-    let row_step = NpcDialogueLayout::SELECTION_ROW_STEP;
-    if available_height < row_height {
+fn npc_dialogue_selection_row_height(
+    font: &fontdue::Font,
+    label: &str,
+    size: f32,
+    inline_icons: &NpcInlineIcons,
+) -> i32 {
+    let line_count = wrap_dialogue_text(
+        font,
+        label,
+        size,
+        NpcDialogueLayout::TEXT_WIDTH - 26,
+        inline_icons,
+    )
+    .lines()
+    .count()
+    .max(1);
+    let line_height = size.ceil() as i32 + 4;
+    (line_count as i32 * line_height + NpcDialogueLayout::SELECTION_TEXT_INSET * 2)
+        .max(NpcDialogueLayout::SELECTION_HEIGHT as i32)
+}
+
+fn npc_dialogue_selection_text_view_height(
+    text_content_height: usize,
+    selections: &[(i32, String)],
+    first_visible_selection: usize,
+    font: &fontdue::Font,
+    size: f32,
+    inline_icons: &NpcInlineIcons,
+) -> usize {
+    if text_content_height == 0 {
         return 0;
     }
-    (1 + (available_height - row_height) / row_step).clamp(0, 5) as usize
+    let reserved_rows = selections
+        .iter()
+        .skip(first_visible_selection)
+        .take(2)
+        .map(|(_, label)| {
+            npc_dialogue_selection_row_height(font, label, size, inline_icons)
+        })
+        .sum::<i32>();
+    let reserved_gaps = selections
+        .iter()
+        .skip(first_visible_selection)
+        .take(2)
+        .count()
+        .saturating_sub(1) as i32
+        * NpcDialogueLayout::SELECTION_ROW_GAP;
+    let available_for_text = (NpcDialogueLayout::SELECTION_BOTTOM_Y
+        - NpcDialogueLayout::TEXT_Y
+        - NpcDialogueLayout::SELECTION_TEXT_GAP
+        - reserved_rows
+        - reserved_gaps)
+        .max(0) as usize;
+    text_content_height
+        .min(available_for_text)
+        .min(NpcDialogueLayout::SELECTION_TEXT_VIEW_HEIGHT)
+}
+
+fn npc_dialogue_selection_visible_rows(
+    text_view_height: usize,
+    selections: &[(i32, String)],
+    first_visible_selection: usize,
+    font: &fontdue::Font,
+    size: f32,
+    inline_icons: &NpcInlineIcons,
+) -> usize {
+    let first_row_y = NpcDialogueLayout::TEXT_Y
+        + text_view_height as i32
+        + NpcDialogueLayout::SELECTION_TEXT_GAP;
+    let mut available_height = NpcDialogueLayout::SELECTION_BOTTOM_Y - first_row_y;
+    let mut visible_rows = 0;
+    for (_, label) in selections.iter().skip(first_visible_selection) {
+        let row_height = npc_dialogue_selection_row_height(font, label, size, inline_icons);
+        if row_height > available_height {
+            break;
+        }
+        visible_rows += 1;
+        available_height -= row_height + NpcDialogueLayout::SELECTION_ROW_GAP;
+    }
+    visible_rows
 }
 
 #[cfg(test)]
@@ -731,7 +796,7 @@ fn render_npc_dialogue(
     first_visible_selection: usize,
     hovered_selection: Option<usize>,
     input: &str,
-) -> (Vec<u8>, SpriteRect, Vec<NpcDialogueButton>, usize) {
+) -> (Vec<u8>, SpriteRect, Vec<NpcDialogueButton>, usize, usize) {
     let (width, height) = (NpcDialogueLayout::WIDTH, NpcDialogueLayout::HEIGHT);
     let (panel_x, panel_y) = (NpcDialogueLayout::PANEL_X, NpcDialogueLayout::PANEL_Y);
     let mut pixels = vec![0_u8; width * height * 4];
@@ -815,11 +880,14 @@ fn render_npc_dialogue(
         )
     };
     let text_view_height = if message_type == 4 {
-        if text.trim().is_empty() {
-            0
-        } else {
-            text_content_height.min(npc_dialogue_text_view_height(4))
-        }
+        npc_dialogue_selection_text_view_height(
+            text_content_height,
+            selections,
+            first_visible_selection,
+            font,
+            body_style.size,
+            inline_icons,
+        )
     } else {
         npc_dialogue_text_view_height(message_type)
     };
@@ -853,20 +921,31 @@ fn render_npc_dialogue(
 
     let mut buttons = Vec::new();
     if message_type == 4 {
-        for (row, (index, (selection, label))) in selections
+        let visible_rows = npc_dialogue_selection_visible_rows(
+            text_view_height,
+            selections,
+            first_visible_selection,
+            font,
+            body_style.size,
+            inline_icons,
+        );
+        let mut row_offset = 0;
+        for (index, (selection, label)) in selections
             .iter()
             .enumerate()
             .skip(first_visible_selection)
-            .take(npc_dialogue_selection_visible_rows(text_view_height))
-            .enumerate()
+            .take(visible_rows)
         {
             let local_y = NpcDialogueLayout::TEXT_Y
-                + if text_view_height == 0 {
-                    0
-                } else {
-                    text_view_height as i32 + NpcDialogueLayout::SELECTION_TEXT_GAP
-                }
-                + row as i32 * NpcDialogueLayout::SELECTION_ROW_STEP;
+                + text_view_height as i32
+                + NpcDialogueLayout::SELECTION_TEXT_GAP
+                + row_offset;
+            let row_height = npc_dialogue_selection_row_height(
+                font,
+                label,
+                body_style.size,
+                inline_icons,
+            );
             let body_size = body_style.size;
             let label_width = dialogue_text_width(font, label, body_size)
                 .ceil()
@@ -876,7 +955,7 @@ fn render_npc_dialogue(
                 x: panel_x + (label_x - 14) as f32,
                 y: panel_y + local_y as f32,
                 width: (label_width + 20.0).min(NpcDialogueLayout::TEXT_WIDTH as f32 - 8.0),
-                height: NpcDialogueLayout::SELECTION_HEIGHT as f32,
+                height: row_height as f32,
                 blend_mode: BlendMode::Alpha,
             };
             let hovered = hovered_selection == Some(index);
@@ -903,14 +982,25 @@ fn render_npc_dialogue(
                 height,
                 label,
                 label_x,
-                local_y + 2,
+                local_y + NpcDialogueLayout::SELECTION_TEXT_INSET,
                 body_size,
                 NpcDialogueLayout::TEXT_WIDTH - 26,
-                NpcDialogueLayout::SELECTION_HEIGHT,
+                row_height as usize,
                 link_color,
                 inline_icons,
             );
             let underline_width = label_width.ceil() as usize;
+            let label_lines = wrap_dialogue_text(
+                font,
+                label,
+                body_size,
+                NpcDialogueLayout::TEXT_WIDTH - 26,
+                inline_icons,
+            )
+            .lines()
+            .count()
+            .max(1);
+            let line_height = body_size.ceil() as i32 + 4;
             let _ = composite_nx_ui_bitmap_scaled_to(
                 &mut pixels,
                 width,
@@ -918,7 +1008,11 @@ fn render_npc_dialogue(
                 ui_archive,
                 "UIWindow.img/UtilDlgEx/line",
                 label_x.max(0) as usize,
-                (local_y + 20).max(0) as usize,
+                (local_y
+                    + NpcDialogueLayout::SELECTION_TEXT_INSET
+                    + label_lines as i32 * line_height
+                    - 1)
+                    .max(0) as usize,
                 underline_width,
                 if hovered { 2 } else { 1 },
             );
@@ -926,6 +1020,7 @@ fn render_npc_dialogue(
                 rect,
                 action: NpcDialogueAction::Select(*selection),
             });
+            row_offset += row_height + NpcDialogueLayout::SELECTION_ROW_GAP;
         }
         push_nx_dialogue_button(
             &mut pixels,
@@ -1177,6 +1272,7 @@ fn render_npc_dialogue(
         },
         buttons,
         text_max_scroll,
+        text_view_height,
     )
 }
 
@@ -1259,7 +1355,7 @@ pub(super) fn render_npc_dialogue_preview(
     npc_archive: &NxArchive,
     string_archive: &NxArchive,
 ) -> (Vec<u8>, (f32, f32, f32, f32)) {
-    let (pixels, panel, _, _) = render_npc_dialogue(
+    let (pixels, panel, _, _, _) = render_npc_dialogue(
         font,
         ui_archive,
         npc_archive,

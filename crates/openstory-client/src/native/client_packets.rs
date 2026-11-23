@@ -1,22 +1,19 @@
 use super::*;
 
-fn inventory_update_touches_move(
+fn inventory_update_touches_slot(
     update: &openstory_protocol::InventoryUpdate,
     inventory_type: openstory_protocol::InventoryType,
-    source: u16,
-    destination: u16,
+    slot: u16,
 ) -> bool {
     let touches_slot = |kind, position: i16| {
-        kind == inventory_type
-            && (position.unsigned_abs() == source || position.unsigned_abs() == destination)
+        kind == inventory_type && position.unsigned_abs() == slot
     };
     update
         .modifications
         .iter()
         .any(|modification| match modification {
             openstory_protocol::InventoryModification::Add(item) => {
-                item.inventory_type == inventory_type
-                    && (item.slot == source || item.slot == destination)
+                item.inventory_type == inventory_type && item.slot == slot
             }
             openstory_protocol::InventoryModification::ChangeCount {
                 inventory_type,
@@ -36,6 +33,30 @@ fn inventory_update_touches_move(
                     || touches_slot(*inventory_type, *other_position)
             }
         })
+}
+
+fn inventory_update_touches_move(
+    update: &openstory_protocol::InventoryUpdate,
+    inventory_type: openstory_protocol::InventoryType,
+    source: u16,
+    destination: u16,
+) -> bool {
+    inventory_update_touches_slot(update, inventory_type, source)
+        || inventory_update_touches_slot(update, inventory_type, destination)
+}
+
+fn inventory_drag_item_matches(
+    before: &openstory_protocol::InventoryItem,
+    after: &openstory_protocol::InventoryItem,
+) -> bool {
+    if after.count == 0 {
+        return false;
+    }
+    let mut before = before.clone();
+    let mut after = after.clone();
+    before.count = 0;
+    after.count = 0;
+    before == after
 }
 
 impl ClientApp {
@@ -1430,6 +1451,18 @@ impl ClientApp {
                 match openstory_protocol::parse_inventory_update(packet) {
                     Ok(update) => {
                         self.key_config_actions_dirty = true;
+                        let inventory_drag_touched = self.inventory_drag_source.is_some_and(
+                            |(inventory_type, source, _)| {
+                                inventory_update_touches_slot(&update, inventory_type, source)
+                            },
+                        );
+                        let inventory_drag_item_before = self.inventory_drag_source.and_then(
+                            |(inventory_type, source, _)| {
+                                self.inventory.as_ref()?.items.iter().find(|item| {
+                                    item.inventory_type == inventory_type && item.slot == source
+                                }).cloned()
+                            },
+                        );
                         if self.inventory_pending_move.is_some_and(
                             |(inventory_type, source, destination, _)| {
                                 inventory_update_touches_move(
@@ -1442,9 +1475,35 @@ impl ClientApp {
                         ) {
                             self.inventory_pending_move = None;
                         }
+                        let mut refresh_inventory_drag_icon = false;
                         if let Some(inventory) = self.inventory.as_mut() {
-                            self.inventory_drag_source = None;
                             inventory.apply(update);
+                            if inventory_drag_touched {
+                                let dragged_item_remains = self.inventory_drag_source.is_some_and(
+                                    |(inventory_type, source, _)| {
+                                        let Some(before) = inventory_drag_item_before.as_ref()
+                                        else {
+                                            return false;
+                                        };
+                                        inventory
+                                            .items
+                                            .iter()
+                                            .find(|item| {
+                                                item.inventory_type == inventory_type
+                                                    && item.slot == source
+                                            })
+                                            .is_some_and(|after| {
+                                                inventory_drag_item_matches(before, after)
+                                            })
+                                    },
+                                );
+                                if dragged_item_remains {
+                                    refresh_inventory_drag_icon = true;
+                                } else {
+                                    self.inventory_drag_source = None;
+                                    self.inventory_drag_texture = None;
+                                }
+                            }
                             self.resolve_pending_storage_restores();
                             self.sync_equipped_look();
                             self.refresh_inventory_texture();
@@ -1456,6 +1515,9 @@ impl ClientApp {
                         } else {
                             eprintln!("OpenStory: received inventory update before field entry");
                         }
+                        if refresh_inventory_drag_icon {
+                            self.refresh_inventory_drag_texture();
+                        }
                     }
                     Err(error) => eprintln!("OpenStory: invalid inventory update: {error}"),
                 }
@@ -1463,7 +1525,6 @@ impl ClientApp {
             openstory_protocol::OPCODE_INVENTORY_GROW => {
                 match openstory_protocol::parse_inventory_capacity_update(packet) {
                     Ok(update) => {
-                        self.inventory_drag_source = None;
                         self.inventory_pending_move = None;
                         if let Some(inventory) = self.inventory.as_mut() {
                             inventory

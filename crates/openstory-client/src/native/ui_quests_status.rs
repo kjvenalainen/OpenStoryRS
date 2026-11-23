@@ -99,6 +99,76 @@ fn quest_dialogue_pages(archive: &NxArchive, path: &str) -> Vec<String> {
     pages.into_iter().map(|(_, text)| text).collect()
 }
 
+fn resolve_quest_dialogue_references(text: &str, string_archive: &NxArchive) -> String {
+    let characters = text.chars().collect::<Vec<_>>();
+    let mut output = String::with_capacity(text.len());
+    let mut index = 0;
+    while index < characters.len() {
+        let character = characters[index];
+        if character == 'M'
+            && characters.get(index + 1) == Some(&'a')
+            && characters.get(index + 2) == Some(&'p')
+            && characters.get(index + 3) == Some(&' ')
+        {
+            let id_start = index + 4;
+            let id_end = id_start
+                + characters[id_start..]
+                    .iter()
+                    .take_while(|value| value.is_ascii_digit())
+                    .count();
+            let token_ends = id_end > id_start
+                && characters
+                    .get(id_end)
+                    .is_none_or(|next| !next.is_ascii_alphanumeric() && *next != '_');
+            if token_ends
+                && let Ok(map_id) = characters[id_start..id_end]
+                    .iter()
+                    .collect::<String>()
+                    .parse::<i32>()
+                && let Some(name) = map_string_name(string_archive, map_id)
+            {
+                output.push_str(&name);
+                index = id_end;
+                continue;
+            }
+        }
+        if character == '#'
+            && let Some(code @ ('m' | 'p')) = characters.get(index + 1).copied()
+        {
+            let id_start = index + 2;
+            let Some(id_tail) = characters.get(id_start..) else {
+                output.push(character);
+                index += 1;
+                continue;
+            };
+            let Some(relative_end) = id_tail.iter().position(|value| *value == '#') else {
+                output.push(character);
+                index += 1;
+                continue;
+            };
+            let id_end = id_start + relative_end;
+            let id = characters[id_start..id_end].iter().collect::<String>();
+            if !id.is_empty() && id.chars().all(|value| value.is_ascii_digit()) {
+                let name = if code == 'm' {
+                    id.parse::<i32>()
+                        .ok()
+                        .and_then(|map_id| map_string_name(string_archive, map_id))
+                        .unwrap_or_else(|| format!("Map {id}"))
+                } else {
+                    nx_string_value(string_archive, &format!("Npc.img/{id}/name"))
+                        .unwrap_or_else(|| format!("NPC {id}"))
+                };
+                output.push_str(&name);
+                index = id_end + 1;
+                continue;
+            }
+        }
+        output.push(character);
+        index += 1;
+    }
+    output
+}
+
 fn quest_start_items_met(
     archive: &NxArchive,
     quest_id: i16,
@@ -1485,13 +1555,60 @@ fn render_quest_log_panel(
             15,
             [225, 235, 244],
         );
-        if let Some(npc_id) = archive
+        if let Some(level) = archive
             .root()
             .resolve(&format!("Check.img/{id}/0"))
             .ok()
             .flatten()
-            .and_then(|node| quest_node_integer(&node, "npc"))
+            .and_then(|node| quest_node_integer(&node, "lvmin"))
+            .filter(|level| *level > 0)
         {
+            draw_dialogue_text(
+                font,
+                &mut pixels,
+                WIDTH,
+                HEIGHT,
+                &format!("Level {level}+"),
+                DETAIL_X as i32 + 39,
+                78,
+                10.0,
+                150,
+                15,
+                [225, 235, 244],
+            );
+        }
+
+        let preferred_dialogue_side = if available { 0 } else { 1 };
+        let dialogue = [preferred_dialogue_side, 1 - preferred_dialogue_side]
+            .into_iter()
+            .find_map(|side| {
+                quest_dialogue_pages(archive, &format!("Say.img/{id}/{side}"))
+                    .into_iter()
+                    .next()
+                    .map(|line| {
+                        (
+                            clean_npc_markup(&resolve_quest_dialogue_references(
+                                &line,
+                                string_archive,
+                            )),
+                            side,
+                        )
+                    })
+            })
+            .filter(|(line, _)| !line.trim().is_empty());
+        let npc_side = dialogue
+            .as_ref()
+            .map_or(preferred_dialogue_side, |(_, side)| *side);
+        let npc_id = [npc_side, 1 - npc_side].into_iter().find_map(|side| {
+            archive
+                .root()
+                .resolve(&format!("Check.img/{id}/{side}"))
+                .ok()
+                .flatten()
+                .and_then(|node| quest_node_integer(&node, "npc"))
+                .filter(|npc_id| *npc_id > 0)
+        });
+        if let Some(npc_id) = npc_id {
             let path = format!("{npc_id:07}.img/stand/0");
             if let Ok(Some(npc)) = npc_archive.root().resolve(&path) {
                 const PORTRAIT_BOX: usize = 60;
@@ -1512,6 +1629,33 @@ fn render_quest_log_panel(
                     );
                 }
             }
+            if let Some(name) = string_archive
+                .root()
+                .resolve(&format!("Npc.img/{npc_id}/name"))
+                .ok()
+                .flatten()
+                .and_then(|node| match node.value().ok()? {
+                    NodeValue::String(name) if !name.trim().is_empty() => {
+                        Some(clean_npc_markup(&name))
+                    }
+                    _ => None,
+                })
+            {
+                let name = ui_foundation::ellipsize(font, &name, 9.0, 110.0);
+                draw_dialogue_text(
+                    font,
+                    &mut pixels,
+                    WIDTH,
+                    HEIGHT,
+                    &name,
+                    DETAIL_X as i32 + 155,
+                    94,
+                    9.0,
+                    110,
+                    13,
+                    [225, 196, 122],
+                );
+            }
         }
         let description = if active || completed {
             quest_info_text(archive, id, "1")
@@ -1527,16 +1671,21 @@ fn render_quest_log_panel(
         let description = description.map(|description| clean_npc_markup(&description));
         let body_bottom = quest_detail_body_bottom(tab);
         let body_height = body_bottom.saturating_sub(QUEST_DETAIL_BODY_TOP);
-        let description_height = description.as_deref().map_or(0, |text| {
-            dialogue_text_content_height(
-                font,
-                text,
-                10.0,
-                text_width,
-                &EMPTY_NPC_INLINE_ICONS,
-            )
+        let dialogue_text = dialogue.map(|(line, _)| format!("“{line}”"));
+        let dialogue_height = dialogue_text.as_deref().map_or(0, |text| {
+            dialogue_text_content_height(font, text, 10.0, text_width, &EMPTY_NPC_INLINE_ICONS)
         });
-        let description_bottom = QUEST_DETAIL_BODY_TOP.saturating_add(description_height);
+        let dialogue_bottom = QUEST_DETAIL_BODY_TOP.saturating_add(dialogue_height);
+        let description_y = if dialogue_text.is_some() {
+            dialogue_bottom.saturating_add(8)
+        } else {
+            QUEST_DETAIL_BODY_TOP
+        };
+        let description_height = description.as_deref().map_or(0, |text| {
+            dialogue_text_content_height(font, text, 10.0, text_width, &EMPTY_NPC_INLINE_ICONS)
+        });
+        let description_bottom = description_y.saturating_add(description_height);
+        let intro_bottom = description_bottom.max(dialogue_bottom);
         let note = if completed {
             quest_info_text(archive, id, "2")
                 .filter(|note| quest_description_is_displayable(note))
@@ -1544,17 +1693,11 @@ fn render_quest_log_panel(
         } else {
             None
         };
-        let note_y = (QUEST_DETAIL_BODY_TOP + description_height + 8).max(220) as i32;
+        let note_y = (intro_bottom + 8).max(220) as i32;
         let note_height = note.as_deref().map_or(0, |text| {
-            dialogue_text_content_height(
-                font,
-                text,
-                10.0,
-                text_width,
-                &EMPTY_NPC_INLINE_ICONS,
-            )
+            dialogue_text_content_height(font, text, 10.0, text_width, &EMPTY_NPC_INLINE_ICONS)
         });
-        let objective_heading_y = (QUEST_DETAIL_BODY_TOP + description_height + 8).max(177) as i32;
+        let objective_heading_y = (intro_bottom + 8).max(177) as i32;
         let objectives = if completed {
             Vec::new()
         } else {
@@ -1569,7 +1712,7 @@ fn render_quest_log_panel(
             )
         };
         let mut objective_rows = Vec::new();
-        let mut content_bottom = description_bottom;
+        let mut content_bottom = intro_bottom;
         if completed {
             content_bottom = content_bottom.max(note_y as usize + note_height);
         } else {
@@ -1619,6 +1762,24 @@ fn render_quest_log_panel(
         let content_height = content_bottom.saturating_sub(QUEST_DETAIL_BODY_TOP);
         detail_scroll_max = content_height.saturating_sub(body_height);
         let detail_scroll = detail_scroll.min(detail_scroll_max);
+        if let Some(dialogue) = dialogue_text.as_deref() {
+            draw_dialogue_text_with_icons_scrolled_in_viewport(
+                font,
+                &mut pixels,
+                WIDTH,
+                HEIGHT,
+                dialogue,
+                text_x,
+                QUEST_DETAIL_BODY_TOP as i32,
+                QUEST_DETAIL_BODY_TOP as i32,
+                10.0,
+                text_width,
+                body_height,
+                [49, 75, 93],
+                &EMPTY_NPC_INLINE_ICONS,
+                detail_scroll,
+            );
+        }
         if let Some(description) = description.as_deref() {
             draw_dialogue_text_with_icons_scrolled_in_viewport(
                 font,
@@ -1627,7 +1788,7 @@ fn render_quest_log_panel(
                 HEIGHT,
                 description,
                 text_x,
-                QUEST_DETAIL_BODY_TOP as i32,
+                description_y as i32,
                 QUEST_DETAIL_BODY_TOP as i32,
                 10.0,
                 text_width,
@@ -1824,6 +1985,113 @@ fn primary_ability_stat(
     }
 }
 
+fn status_auto_assign_plan(
+    character: &openstory_protocol::CharacterInfo,
+) -> [(openstory_protocol::AbilityStat, u16); 4] {
+    use openstory_protocol::AbilityStat as Stat;
+
+    let points = character.stats.ability_points;
+    let level = u16::from(character.stats.level);
+    match character.stats.job / 100 {
+        5 if character.stats.dexterity > character.stats.strength => {
+            let strength_points = points.min(level.saturating_sub(character.stats.strength));
+            [
+                (Stat::Strength, strength_points),
+                (Stat::Dexterity, points - strength_points),
+                (Stat::Intelligence, 0),
+                (Stat::Luck, 0),
+            ]
+        }
+        5 => {
+            let dexterity_points = points.min(level.saturating_sub(character.stats.dexterity));
+            [
+                (Stat::Dexterity, dexterity_points),
+                (Stat::Strength, points - dexterity_points),
+                (Stat::Intelligence, 0),
+                (Stat::Luck, 0),
+            ]
+        }
+        4 | 14 => {
+            let target_dexterity = level.saturating_mul(2);
+            let dexterity_points =
+                points.min(target_dexterity.saturating_sub(character.stats.dexterity));
+            [
+                (Stat::Dexterity, dexterity_points),
+                (Stat::Luck, points - dexterity_points),
+                (Stat::Strength, 0),
+                (Stat::Intelligence, 0),
+            ]
+        }
+        2 | 12 | 22 => {
+            let luck_points =
+                points.min(level.saturating_add(3).saturating_sub(character.stats.luck));
+            [
+                (Stat::Luck, luck_points),
+                (Stat::Intelligence, points - luck_points),
+                (Stat::Strength, 0),
+                (Stat::Dexterity, 0),
+            ]
+        }
+        1 | 11 | 21 => {
+            let target_dexterity = level.saturating_mul(2).min(80);
+            let dexterity_points =
+                points.min(target_dexterity.saturating_sub(character.stats.dexterity));
+            [
+                (Stat::Dexterity, dexterity_points),
+                (Stat::Strength, points - dexterity_points),
+                (Stat::Intelligence, 0),
+                (Stat::Luck, 0),
+            ]
+        }
+        3 | 13 => {
+            let strength_points = points.min(
+                level
+                    .saturating_add(5)
+                    .saturating_sub(character.stats.strength),
+            );
+            [
+                (Stat::Strength, strength_points),
+                (Stat::Dexterity, points - strength_points),
+                (Stat::Intelligence, 0),
+                (Stat::Luck, 0),
+            ]
+        }
+        _ => {
+            let mut allocations = [
+                (Stat::Strength, 0),
+                (Stat::Dexterity, 0),
+                (Stat::Intelligence, 0),
+                (Stat::Luck, 0),
+            ];
+            match primary_ability_stat(character) {
+                Stat::Strength => allocations[0].1 = points,
+                Stat::Dexterity => allocations[1].1 = points,
+                Stat::Intelligence => allocations[2].1 = points,
+                Stat::Luck => allocations[3].1 = points,
+                Stat::Hp | Stat::Mp => {}
+            }
+            allocations
+        }
+    }
+}
+
+fn status_auto_assign_additions(character: &openstory_protocol::CharacterInfo) -> [u16; 4] {
+    let mut additions = [0; 4];
+    for (stat, amount) in status_auto_assign_plan(character) {
+        let index = match stat {
+            openstory_protocol::AbilityStat::Strength => Some(0),
+            openstory_protocol::AbilityStat::Dexterity => Some(1),
+            openstory_protocol::AbilityStat::Intelligence => Some(2),
+            openstory_protocol::AbilityStat::Luck => Some(3),
+            openstory_protocol::AbilityStat::Hp | openstory_protocol::AbilityStat::Mp => None,
+        };
+        if let Some(index) = index {
+            additions[index] = amount;
+        }
+    }
+    additions
+}
+
 fn character_job_name(job: u16) -> String {
     // v83 uses Rogue for job 400 in its character-selection stat sheet.
     if job == 400 {
@@ -2004,14 +2272,7 @@ fn render_status_auto_assign_dialog(
         NxButton::new("Basic.img/BtCancel2", ButtonState::Normal),
     )?;
 
-    let points = character.stats.ability_points;
-    let additions = match primary_ability_stat(character) {
-        openstory_protocol::AbilityStat::Strength => [points, 0, 0, 0],
-        openstory_protocol::AbilityStat::Dexterity => [0, points, 0, 0],
-        openstory_protocol::AbilityStat::Intelligence => [0, 0, points, 0],
-        openstory_protocol::AbilityStat::Luck => [0, 0, 0, points],
-        openstory_protocol::AbilityStat::Hp | openstory_protocol::AbilityStat::Mp => [0; 4],
-    };
+    let additions = status_auto_assign_additions(character);
     for (index, (label, amount)) in ["STR", "DEX", "INT", "LUK"]
         .into_iter()
         .zip(additions)

@@ -22,6 +22,7 @@ const MAX_PORTALS: usize = 512;
 const MAX_MAP_LABEL_CHARS: usize = 80;
 const MAP_LABEL_SIZE: f32 = 13.0;
 const MAP_LABEL_OUTLINE: [u8; 3] = [20, 24, 32];
+const NPC_TOOLTIP_SIZE: f32 = 12.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(super) enum MarkerKind {
@@ -49,6 +50,7 @@ pub(super) struct Marker<'a> {
     pub x: f32,
     pub y: f32,
     pub facing_left: bool,
+    pub name: Option<&'a str>,
     /// Optional caller-owned actor frame. When present, the legacy minimap actor
     /// scale is applied; otherwise a small `MapHelper.img/minimap` icon is used.
     pub sprite: Option<MarkerSprite<'a>>,
@@ -96,6 +98,19 @@ pub(super) struct Panel {
     pub height: u32,
     pub pixels: Vec<u8>,
     pub hit_regions: Vec<HitRegion>,
+    pub npc_hit_regions: Vec<NpcHitRegion>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct NpcHitRegion {
+    pub bounds: HitRect,
+    pub name: String,
+}
+
+pub(super) struct Tooltip {
+    pub width: u32,
+    pub height: u32,
+    pub pixels: Vec<u8>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -443,6 +458,7 @@ pub(super) fn render(
     let x = DEFAULT_X.min((viewport.width - 8.0).max(0.0));
     let y = DEFAULT_Y.min((viewport.height - 8.0).max(0.0));
     let mut hit_regions = Vec::new();
+    let mut npc_hit_regions = Vec::new();
     let (panel_width, panel_height, pixels) = match presentation {
         Presentation::Collapsed => {
             let collapsed_name_width = measure_text(label_font, &label, 11.0);
@@ -638,14 +654,31 @@ pub(super) fn render(
                     );
                 } else {
                     let icon = data.icon(marker.kind);
+                    let icon_x = anchor_x - icon.width as f32 * 0.5;
+                    let icon_y = anchor_y - icon.height as f32;
                     canvas.draw_image(
                         icon,
-                        anchor_x - icon.width as f32 * 0.5,
-                        anchor_y - icon.height as f32,
+                        icon_x,
+                        icon_y,
                         icon.width as f32,
                         icon.height as f32,
                         false,
                     );
+                    if marker.kind == MarkerKind::Npc
+                        && let Some(name) =
+                            marker.name.map(str::trim).filter(|name| !name.is_empty())
+                    {
+                        let padding = 2.0;
+                        npc_hit_regions.push(NpcHitRegion {
+                            bounds: HitRect {
+                                x: x + icon_x - padding,
+                                y: y + icon_y - padding,
+                                width: icon.width as f32 + padding * 2.0,
+                                height: icon.height as f32 + padding * 2.0,
+                            },
+                            name: name.chars().take(MAX_MAP_LABEL_CHARS).collect(),
+                        });
+                    }
                 }
             }
             if expanded {
@@ -715,7 +748,60 @@ pub(super) fn render(
         height: panel_height,
         pixels,
         hit_regions,
+        npc_hit_regions,
     })
+}
+
+pub(super) fn render_npc_tooltip(name: &str, font: &Font) -> Result<Tooltip, String> {
+    let label: String = name.chars().take(MAX_MAP_LABEL_CHARS).collect();
+    let width =
+        (measure_text(font, &label, NPC_TOOLTIP_SIZE).ceil() + 14.0).clamp(28.0, 360.0) as u32;
+    let height = 24_u32;
+    let mut canvas = Canvas::new(width, height)?;
+    canvas.fill_rect(0.0, 0.0, width as f32, height as f32, [219, 241, 248, 245]);
+    canvas.draw_outline_clipped(
+        0.0,
+        0.0,
+        width as f32 - 1.0,
+        height as f32 - 1.0,
+        0.0,
+        0.0,
+        width as f32,
+        height as f32,
+        [44, 60, 74, 255],
+    );
+    canvas.draw_text(
+        font,
+        &label,
+        7.0,
+        3.0,
+        NPC_TOOLTIP_SIZE,
+        [36, 31, 25],
+        width as f32 - 14.0,
+    );
+    Ok(Tooltip {
+        width,
+        height,
+        pixels: canvas.into_pixels(),
+    })
+}
+
+pub(super) fn npc_tooltip_position(
+    target: HitRect,
+    tooltip_width: u32,
+    tooltip_height: u32,
+    viewport: LogicalSize,
+) -> (f32, f32) {
+    let width = tooltip_width as f32;
+    let height = tooltip_height as f32;
+    let mut x = target.x + target.width + 4.0;
+    if x + width + 2.0 > viewport.width {
+        x = target.x - width - 4.0;
+    }
+    let mut y = target.y + (target.height - height) * 0.5;
+    x = x.clamp(2.0, (viewport.width - width - 2.0).max(2.0));
+    y = y.clamp(2.0, (viewport.height - height - 2.0).max(2.0));
+    (x, y)
 }
 
 fn load_portals(map: &NxNode, map_path: &str) -> Result<Vec<MapPortal>, String> {
@@ -1091,6 +1177,22 @@ impl Canvas {
 
     fn into_pixels(self) -> Vec<u8> {
         self.pixels
+    }
+
+    fn fill_rect(&mut self, x: f32, y: f32, width: f32, height: f32, color: [u8; 4]) {
+        if ![x, y, width, height].into_iter().all(f32::is_finite) || width <= 0.0 || height <= 0.0 {
+            return;
+        }
+        let left = x.floor().max(0.0) as usize;
+        let top = y.floor().max(0.0) as usize;
+        let right = (x + width).ceil().min(self.width as f32).max(0.0) as usize;
+        let bottom = (y + height).ceil().min(self.height as f32).max(0.0) as usize;
+        for pixel_y in top..bottom {
+            for pixel_x in left..right {
+                let index = (pixel_y * self.width + pixel_x) * 4;
+                blend_bgra(&mut self.pixels[index..index + 4], &color);
+            }
+        }
     }
 
     fn draw_image(
