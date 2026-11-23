@@ -1299,7 +1299,6 @@ impl ClientApp {
             return;
         }
         self.show_status = !self.show_status;
-        self.show_status_detail = false;
         self.status_auto_confirmation = false;
         if self.show_status {
             self.refresh_status_texture();
@@ -1482,7 +1481,6 @@ impl ClientApp {
         }
         if ui_foundation::STATUS_CLOSE_BUTTON.contains(x, y) {
             self.show_status = false;
-            self.show_status_detail = false;
             return;
         }
         if ui_foundation::STATUS_DETAIL_BUTTON.contains(x, y) {

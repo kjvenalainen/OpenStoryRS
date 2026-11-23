@@ -5,8 +5,10 @@ impl ClientApp {
         if !std::mem::take(&mut self.inventory_ui_refresh_pending) {
             return;
         }
-        if std::mem::take(&mut self.equipped_look_refresh_pending) {
+        let equipped_items_changed = std::mem::take(&mut self.equipped_look_refresh_pending);
+        if equipped_items_changed {
             self.sync_equipped_look();
+            self.refresh_status_texture();
         }
         self.refresh_inventory_texture();
         self.refresh_storage_texture();

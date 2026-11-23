@@ -86,7 +86,7 @@ impl ClientApp {
             _ => None,
         };
         self.npc_dialogue = None;
-        self.npc_dialogue_scroll_dragging = false;
+        self.npc_dialogue_scroll_dragging = None;
         match selected {
             Some(NpcMenuAction::Quest(choice)) => {
                 // Re-evaluate after the menu: inventory or quest state can change while open.

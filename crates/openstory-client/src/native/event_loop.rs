@@ -160,7 +160,35 @@ impl ApplicationHandler for ClientApp {
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::Focused(false) => {
+                self.window_focused = false;
+                self.audio.set_music_volume(self.effective_music_volume());
+                self.npc_dialogue_scroll_dragging = None;
+                if let Some(shop) = self.npc_shop.as_mut() {
+                    shop.scroll_dragging = None;
+                }
+                if self.finish_quantity_drag()
+                    && let Some(window) = self.window.as_ref()
+                {
+                    window.request_redraw();
+                }
+                if self.skill_macro_editor.has_skill_drag() {
+                    self.skill_macro_editor.finish_skill_drag(None, &[]);
+                    self.skill_macro_drag_texture = None;
+                    self.refresh_skill_macro_texture();
+                }
+                self.skill_book_drag = None;
+                self.skill_book_last_click = None;
+                self.skill_macro_drag_texture = None;
                 self.gameplay_input = GameplayInput::default();
+                self.key_config_pointer_start = None;
+                self.quickslot_pointer_binding = None;
+                if self.inventory_drag_source.take().is_some() {
+                    self.inventory_drag_texture = None;
+                    self.refresh_inventory_texture();
+                    if let Some(window) = self.window.as_ref() {
+                        window.request_redraw();
+                    }
+                }
             }
             WindowEvent::CursorLeft { .. } => {
                 self.cursor = None;
@@ -237,6 +265,18 @@ impl ApplicationHandler for ClientApp {
                     window.request_redraw();
                 }
                 self.update_npc_shop_hover();
+                if let Some(cursor) = self.cursor {
+                    let (offset_x, offset_y) = self.dialog_window_offset(DialogWindow::NpcShop);
+                    let cursor = Point {
+                        x: cursor.x - offset_x,
+                        y: cursor.y - offset_y,
+                    };
+                    if self.update_npc_shop_scroll_drag(cursor)
+                        && let Some(window) = self.window.as_ref()
+                    {
+                        window.request_redraw();
+                    }
+                }
                 self.update_cash_shop_hover();
                 if self.update_rps_game_hover()
                     && let Some(window) = self.window.as_ref()
@@ -258,16 +298,15 @@ impl ApplicationHandler for ClientApp {
                         window.request_redraw();
                     }
                 }
-                if self.npc_dialogue_scroll_dragging
+                if self.npc_dialogue_scroll_dragging.is_some()
                     && let Some(cursor) = self.cursor
-                    && let Some(panel) = self.npc_dialogue.as_ref().map(|dialogue| dialogue.panel)
                 {
-                    let cursor = self.dialog_window_input_cursor(cursor);
-                    let scroll_cursor = Point {
-                        x: panel.x + NpcDialogueLayout::SCROLL_X as f32 + 6.0,
-                        y: cursor.y,
+                    let (offset_x, offset_y) = self.dialog_window_offset(DialogWindow::NpcDialogue);
+                    let cursor = Point {
+                        x: cursor.x - offset_x,
+                        y: cursor.y - offset_y,
                     };
-                    if self.set_npc_dialogue_scroll_from_cursor(scroll_cursor)
+                    if self.update_npc_dialogue_scroll_drag(cursor)
                         && let Some(window) = self.window.as_ref()
                     {
                         window.request_redraw();
@@ -358,7 +397,10 @@ impl ApplicationHandler for ClientApp {
                     return;
                 }
                 self.messenger_drag_offset = None;
-                self.npc_dialogue_scroll_dragging = false;
+                self.npc_dialogue_scroll_dragging = None;
+                if let Some(shop) = self.npc_shop.as_mut() {
+                    shop.scroll_dragging = None;
+                }
                 if self.pressed_login_button.take().is_some()
                     && self.refresh_login_button_visuals()
                     && let Some(window) = self.window.as_ref()
@@ -3443,30 +3485,9 @@ impl ApplicationHandler for ClientApp {
                     self.insert_text(&text);
                 }
             }
-            WindowEvent::Focused(false) => {
-                if self.finish_quantity_drag()
-                    && let Some(window) = self.window.as_ref()
-                {
-                    window.request_redraw();
-                }
-                if self.skill_macro_editor.has_skill_drag() {
-                    self.skill_macro_editor.finish_skill_drag(None, &[]);
-                    self.skill_macro_drag_texture = None;
-                    self.refresh_skill_macro_texture();
-                }
-                self.skill_book_drag = None;
-                self.skill_book_last_click = None;
-                self.skill_macro_drag_texture = None;
-                self.gameplay_input = GameplayInput::default();
-                self.key_config_pointer_start = None;
-                self.quickslot_pointer_binding = None;
-                if self.inventory_drag_source.take().is_some() {
-                    self.inventory_drag_texture = None;
-                    self.refresh_inventory_texture();
-                    if let Some(window) = self.window.as_ref() {
-                        window.request_redraw();
-                    }
-                }
+            WindowEvent::Focused(true) => {
+                self.window_focused = true;
+                self.audio.set_music_volume(self.effective_music_volume());
             }
             WindowEvent::Resized(size) => {
                 if let Some(renderer) = self.renderer.as_mut() {

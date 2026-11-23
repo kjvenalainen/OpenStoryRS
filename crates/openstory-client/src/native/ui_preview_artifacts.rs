@@ -118,9 +118,9 @@ fn reference_crop(
             QUEST_HELPER_PANEL_X as u32,
             QUEST_HELPER_PANEL_Y as u32,
             QUEST_HELPER_PANEL_WIDTH,
-            216,
+            252,
             QUEST_HELPER_PANEL_WIDTH,
-            216,
+            252,
         ),
         "panel-quests" => (
             QUEST_LOG_PANEL_X as u32 - 14,

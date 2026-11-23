@@ -2275,6 +2275,18 @@ struct NpcDialogueUi {
     buttons: Vec<NpcDialogueButton>,
 }
 
+#[derive(Clone, Copy)]
+enum NpcDialogueScrollTarget {
+    Text,
+    Selection,
+}
+
+#[derive(Clone, Copy)]
+struct NpcDialogueScrollDrag {
+    target: NpcDialogueScrollTarget,
+    grab_offset: f32,
+}
+
 struct LocalQuestConversation {
     pages: Vec<String>,
     page: usize,
@@ -3265,7 +3277,6 @@ fn pet_jump_speed_toward(
         body.foothold_layer,
         destination.0,
         going_right,
-        Some(target_floor_id),
         footholds,
     ) {
         return None;
@@ -3304,16 +3315,6 @@ fn pet_jump_speed_toward(
     if !(0.0..=TAKEOFF_DISTANCE).contains(&distance_to_edge)
         || (destination.0 - edge_x) * direction <= 0.0
     {
-        return None;
-    }
-    if pet_has_walkable_foothold_continuation(
-        floor,
-        body.foothold_layer,
-        destination.0,
-        going_right,
-        None,
-        footholds,
-    ) {
         return None;
     }
     if target_floor_id == floor.id {
@@ -3367,7 +3368,6 @@ fn pet_has_walkable_foothold_continuation(
     foothold_layer: u8,
     target_x: f64,
     going_right: bool,
-    target_floor_id: Option<u16>,
     footholds: &FootholdTree,
 ) -> bool {
     const MAX_LINKED_STEP_GAP: f64 = 1.0;
@@ -3389,9 +3389,6 @@ fn pet_has_walkable_foothold_continuation(
 
     footholds.footholds().iter().any(|candidate| {
         if candidate.id == floor.id || candidate.is_wall() {
-            return false;
-        }
-        if target_floor_id.is_some_and(|target_id| candidate.id != target_id) {
             return false;
         }
         let linked = candidate.id == linked_id;

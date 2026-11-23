@@ -403,8 +403,39 @@ pub(super) fn draw_text_role(
     color: Option<[u8; 3]>,
 ) {
     let style = role.style();
+    draw_text_role_at_size(
+        font,
+        pixels,
+        width,
+        height,
+        text,
+        x,
+        y,
+        role,
+        style.size,
+        max_width,
+        max_height.min(style.line_height.ceil() as usize),
+        color,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn draw_text_role_at_size(
+    font: &fontdue::Font,
+    pixels: &mut [u8],
+    width: usize,
+    height: usize,
+    text: &str,
+    x: i32,
+    y: i32,
+    role: UiTextRole,
+    size: f32,
+    max_width: usize,
+    max_height: usize,
+    color: Option<[u8; 3]>,
+) {
+    let style = role.style();
     let color = color.unwrap_or(style.color);
-    let max_height = max_height.min(style.line_height.ceil() as usize);
     let x = snap(x as f32) as i32;
     let y = snap(y as f32) as i32;
     let face = if style.weight == UiTextWeight::Bold {
@@ -412,9 +443,9 @@ pub(super) fn draw_text_role(
     } else {
         font
     };
-    let text = ellipsize(face, text, style.size, max_width as f32);
+    let text = ellipsize(face, text, size, max_width as f32);
     super::draw_dialogue_text(
-        face, pixels, width, height, &text, x, y, style.size, max_width, max_height, color,
+        face, pixels, width, height, &text, x, y, size, max_width, max_height, color,
     );
 }
 

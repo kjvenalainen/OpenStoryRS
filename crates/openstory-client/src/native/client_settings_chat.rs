@@ -78,8 +78,7 @@ impl ClientApp {
         self.input_settings = self.input_settings_original;
         self.gameplay_settings = self.gameplay_settings_original;
         self.social_settings = self.social_settings_original;
-        self.audio
-            .set_music_volume(self.settings.effective_music_volume());
+        self.audio.set_music_volume(self.effective_music_volume());
         self.audio
             .set_sound_volume(self.settings.effective_effects_volume());
         self.show_settings = false;
@@ -125,13 +124,11 @@ impl ClientApp {
             }
             OptionControl::Music => {
                 self.settings.music_volume = value.min(100);
-                self.audio
-                    .set_music_volume(self.settings.effective_music_volume());
+                self.audio.set_music_volume(self.effective_music_volume());
             }
             OptionControl::MuteMusic => {
                 self.settings.mute_music = value >= 50;
-                self.audio
-                    .set_music_volume(self.settings.effective_music_volume());
+                self.audio.set_music_volume(self.effective_music_volume());
             }
             OptionControl::SoundEffects => {
                 self.settings.effects_volume = value.min(100);

@@ -320,7 +320,15 @@ fn parse_npc_selections(text: &str) -> (String, Vec<(i32, String)>) {
 
 fn clean_npc_markup(text: &str) -> String {
     let mut output = String::with_capacity(text.len());
-    let mut chars = text.chars().peekable();
+    // Quest and NPC NX strings commonly store escaped CR line endings. Convert
+    // them before stripping markup so the quest-log excerpt renders like live dialogue.
+    let normalized = text
+        .replace("\\r\\n", "\n")
+        .replace("\\n", "\n")
+        .replace("\\r", "\n")
+        .replace("\r\n", "\n")
+        .replace('\r', "\n");
+    let mut chars = normalized.chars().peekable();
     while let Some(character) = chars.next() {
         if character == '\\' && chars.peek() == Some(&'n') {
             chars.next();

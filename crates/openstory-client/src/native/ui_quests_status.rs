@@ -955,8 +955,8 @@ fn render_quest_helper_panel(
     const WIDTH: usize = QUEST_HELPER_PANEL_WIDTH as usize;
     const HEADER_HEIGHT: usize = 25;
     const CONTENT_TOP: usize = 27;
-    const ENTRY_NAME_HEIGHT: usize = 18;
-    const OBJECTIVE_HEIGHT: usize = 16;
+    const ENTRY_NAME_HEIGHT: usize = 21;
+    const OBJECTIVE_HEIGHT: usize = 18;
     const ENTRY_GAP: usize = 7;
     const BOTTOM_PADDING: usize = 5;
     const HEADER_CLOSE_BUTTON_X: usize = WIDTH - 14;
@@ -1011,9 +1011,15 @@ fn render_quest_helper_panel(
         WIDTH,
         5,
     );
+    const BACKGROUND_ALPHA_LIFT_PERCENT: u32 = 45;
+    // Keep the NX panel colors, but make the composed chrome obscure more of the map.
+    for pixel in pixels.chunks_exact_mut(4) {
+        let alpha = u32::from(pixel[3]);
+        pixel[3] = (alpha + (255 - alpha) * BACKGROUND_ALPHA_LIFT_PERCENT / 100) as u8;
+    }
 
     let title = format!("Quest Helper ({}/{})", entries.len(), 5);
-    ui_foundation::draw_text_role(
+    ui_foundation::draw_text_role_at_size(
         font,
         &mut pixels,
         WIDTH,
@@ -1022,6 +1028,7 @@ fn render_quest_helper_panel(
         5,
         4,
         ui_foundation::UiTextRole::Small,
+        10.0,
         WIDTH - 76,
         15,
         Some([27, 27, 23]),
@@ -1056,7 +1063,7 @@ fn render_quest_helper_panel(
 
     let mut y = CONTENT_TOP as i32;
     if entries.is_empty() {
-        ui_foundation::draw_text_role(
+        ui_foundation::draw_text_role_at_size(
             font,
             &mut pixels,
             WIDTH,
@@ -1065,13 +1072,14 @@ fn render_quest_helper_panel(
             15,
             y,
             ui_foundation::UiTextRole::Small,
+            12.0,
             WIDTH - 28,
-            14,
+            16,
             Some([75, 72, 65]),
         );
     }
     for entry in entries {
-        ui_foundation::draw_text_role(
+        ui_foundation::draw_text_role_at_size(
             font,
             &mut pixels,
             WIDTH,
@@ -1080,8 +1088,9 @@ fn render_quest_helper_panel(
             8,
             y,
             ui_foundation::UiTextRole::Label,
+            13.0,
             WIDTH - 34,
-            16,
+            ENTRY_NAME_HEIGHT,
             Some([28, 27, 23]),
         );
         let _ = composite_nx_ui_bitmap_scaled_to(
@@ -1097,7 +1106,7 @@ fn render_quest_helper_panel(
         );
         y += ENTRY_NAME_HEIGHT as i32;
         for objective in &entry.objectives {
-            ui_foundation::draw_text_role(
+            ui_foundation::draw_text_role_at_size(
                 font,
                 &mut pixels,
                 WIDTH,
@@ -1106,8 +1115,9 @@ fn render_quest_helper_panel(
                 11,
                 y,
                 ui_foundation::UiTextRole::Value,
+                12.0,
                 WIDTH - 24,
-                16,
+                OBJECTIVE_HEIGHT,
                 Some([39, 37, 32]),
             );
             y += OBJECTIVE_HEIGHT as i32;
@@ -2054,10 +2064,76 @@ fn status_auto_assign_additions(character: &openstory_protocol::CharacterInfo) -
 }
 
 fn character_job_name(job: u16) -> String {
-    // v83 uses Rogue for job 400 in its character-selection stat sheet.
-    if job == 400 {
-        return "Rogue".to_owned();
+    // Use the actual advancement names for known jobs. The branch name plus
+    // numeric ID fallback below obscures second, third, and fourth jobs.
+    let advancement_name = match job {
+        100 => "Swordsman",
+        110 => "Fighter",
+        111 => "Crusader",
+        112 => "Hero",
+        120 => "Page",
+        121 => "White Knight",
+        122 => "Paladin",
+        130 => "Spearman",
+        131 => "Dragon Knight",
+        132 => "Dark Knight",
+        200 => "Magician",
+        210 => "Wizard (F/P)",
+        211 => "Mage (F/P)",
+        212 => "Archmage (F/P)",
+        220 => "Wizard (I/L)",
+        221 => "Mage (I/L)",
+        222 => "Archmage (I/L)",
+        230 => "Cleric",
+        231 => "Priest",
+        232 => "Bishop",
+        300 => "Archer",
+        310 => "Hunter",
+        311 => "Ranger",
+        312 => "Bowmaster",
+        320 => "Crossbowman",
+        321 => "Sniper",
+        322 => "Marksman",
+        400 => "Rogue",
+        410 => "Assassin",
+        411 => "Hermit",
+        412 => "Night Lord",
+        420 => "Bandit",
+        421 => "Chief Bandit",
+        422 => "Shadower",
+        500 => "Pirate",
+        510 => "Brawler",
+        511 => "Marauder",
+        512 => "Buccaneer",
+        520 => "Gunslinger",
+        521 => "Outlaw",
+        522 => "Corsair",
+        600 => "Sage",
+        610 => "Elementalist",
+        611 => "Arcanum",
+        612 => "Archsage",
+        700 => "Necromancer",
+        710 => "Dark Acolyte",
+        711 => "Soul Reaper",
+        712 => "Lich King",
+        800 => "Summoner",
+        810 => "Beastmaster",
+        811 => "Warcaller",
+        812 => "Primal Alpha",
+        910 => "SuperGM",
+        1100 | 1110 | 1111 | 1112 => "Dawn Warrior",
+        1200 | 1210 | 1211 | 1212 => "Blaze Wizard",
+        1300 | 1310 | 1311 | 1312 => "Wind Archer",
+        1400 | 1410 | 1411 | 1412 => "Night Walker",
+        1500 | 1510 | 1511 | 1512 => "Thunder Breaker",
+        2100 | 2110 | 2111 | 2112 => "Aran",
+        2001 | 2200..=2218 | 3000 => "Evan",
+        _ => "",
+    };
+    if !advancement_name.is_empty() {
+        return advancement_name.to_owned();
     }
+
     let branch = match job / 100 {
         0 => "Beginner",
         1 => "Warrior",
@@ -2077,7 +2153,7 @@ fn character_job_name(job: u16) -> String {
         90 => "GM",
         _ => return format!("Job {job}"),
     };
-    if job == 0 || job == 1000 || job == 2000 || job == 3000 || job == 900 {
+    if job == 0 || job == 1000 || job == 2000 || job == 900 {
         branch.to_owned()
     } else {
         format!("{branch} ({job})")

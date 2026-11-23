@@ -221,6 +221,7 @@ impl ClientApp {
             self.refresh_local_mount(&look);
         }
         self.refresh_map_hud();
+        self.refresh_status_texture();
     }
 
     pub(super) fn show_mob_disease_effect(
@@ -262,6 +263,7 @@ impl ClientApp {
             self.refresh_local_mount(&look);
         }
         self.refresh_map_hud();
+        self.refresh_status_texture();
     }
 
     pub(super) fn active_buff_value(
@@ -286,6 +288,7 @@ impl ClientApp {
         let map_loading = self.map_loading_started_at.is_some();
         if self.active_buffs.len() != initial_count && !map_loading {
             self.refresh_map_hud();
+            self.refresh_status_texture();
         }
         if !map_loading
             && self.buff_list_refreshed_at.is_none_or(|last| {

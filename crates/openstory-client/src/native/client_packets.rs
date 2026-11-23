@@ -662,7 +662,7 @@ impl ClientApp {
                             self.inventory_drag_source = None;
                             self.settings_dragging = None;
                             self.messenger_drag_offset = None;
-                            self.npc_dialogue_scroll_dragging = false;
+                            self.npc_dialogue_scroll_dragging = None;
                         }
                         if let Some(window) = self.window.as_ref() {
                             window.request_redraw();

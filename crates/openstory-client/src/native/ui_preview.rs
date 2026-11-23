@@ -2961,7 +2961,6 @@ fn build_inventory_tabs_scene(
             strings,
             &mut HashMap::new(),
             &mut HashMap::new(),
-            false,
         );
         scene.sprites.push(DecodedSprite {
             texture_key: format!("inventory-tab:{index}"),
@@ -3068,7 +3067,6 @@ fn build_inventory_panel_scene(
         string_archive,
         &mut HashMap::new(),
         &mut HashMap::new(),
-        false,
     );
     let mut sprites = gameplay_backdrop(map_archive, character_archive, font)?;
     sprites.push(DecodedSprite {

@@ -1,6 +1,14 @@
 use super::*;
 
 impl ClientApp {
+    pub(super) fn effective_music_volume(&self) -> u8 {
+        if self.window_focused {
+            self.settings.effective_music_volume()
+        } else {
+            0
+        }
+    }
+
     pub(super) fn new(
         scene: LoginSceneAssets,
         font: fontdue::Font,
@@ -385,6 +393,7 @@ impl ClientApp {
             server_ui_disabled: false,
             debug_event_loop_logged: false,
             audio,
+            window_focused: true,
             map_archive,
             legacy_ui_archive,
             ui_archive,
@@ -412,7 +421,7 @@ impl ClientApp {
             maple_tv_text_texture: None,
             maple_tv_broadcast: None,
             npc_dialogue: None,
-            npc_dialogue_scroll_dragging: false,
+            npc_dialogue_scroll_dragging: None,
             hired_merchant_room: None,
             trade_room: None,
             character_info: None,

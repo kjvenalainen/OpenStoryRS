@@ -1,5 +1,92 @@
 use super::*;
 
+#[derive(Clone, Copy)]
+struct NpcDialogueScrollbarGeometry {
+    track_y: f32,
+    track_height: usize,
+    thumb_top: f32,
+    thumb_height: usize,
+    maximum: usize,
+    offset: usize,
+    page_step: usize,
+}
+
+fn npc_dialogue_scrollbar_geometry(
+    dialogue: &NpcDialogueUi,
+    target: NpcDialogueScrollTarget,
+) -> Option<NpcDialogueScrollbarGeometry> {
+    match target {
+        NpcDialogueScrollTarget::Text => {
+            let track_height = dialogue.text_view_height;
+            let maximum = dialogue.text_max_scroll;
+            if maximum == 0 || !(51..=2048).contains(&track_height) {
+                return None;
+            }
+            let thumb_height = 25;
+            let offset = dialogue.text_scroll.min(maximum);
+            let travel = track_height - 51;
+            let thumb_top = dialogue.panel.y
+                + NpcDialogueLayout::TEXT_Y as f32
+                + 13.0
+                + (travel as f32 * offset as f32 / maximum as f32).round();
+            Some(NpcDialogueScrollbarGeometry {
+                track_y: dialogue.panel.y + NpcDialogueLayout::TEXT_Y as f32,
+                track_height,
+                thumb_top,
+                thumb_height,
+                maximum,
+                offset,
+                page_step: track_height.saturating_sub(26).max(1),
+            })
+        }
+        NpcDialogueScrollTarget::Selection => {
+            let visible = dialogue
+                .buttons
+                .iter()
+                .filter(|button| matches!(button.action, NpcDialogueAction::Select(_)))
+                .count();
+            let total = dialogue.selections.len();
+            if visible == 0 || total <= visible {
+                return None;
+            }
+            let selection_start_y = NpcDialogueLayout::TEXT_Y as usize
+                + dialogue.text_view_height
+                + NpcDialogueLayout::SELECTION_TEXT_GAP as usize;
+            let track_height = (NpcDialogueLayout::SELECTION_BOTTOM_Y as usize)
+                .saturating_sub(selection_start_y)
+                .max(51);
+            if track_height > 2048 {
+                return None;
+            }
+            let track_y = NpcDialogueLayout::SELECTION_BOTTOM_Y as f32 - track_height as f32;
+            let inner_height = track_height - 26;
+            let thumb_height = ((inner_height as f32 * visible.min(total) as f32 / total as f32)
+                .round() as usize)
+                .clamp(8.min(inner_height), inner_height);
+            let maximum = total.saturating_sub(visible);
+            let offset = dialogue.first_visible_selection.min(maximum);
+            let travel = inner_height - thumb_height;
+            let thumb_top = dialogue.panel.y
+                + track_y
+                + 13.0
+                + if maximum == 0 {
+                    0.0
+                } else {
+                    (travel as f32 * offset as f32 / maximum as f32).round()
+                };
+            Some(NpcDialogueScrollbarGeometry {
+                track_y: dialogue.panel.y + track_y,
+                track_height,
+                thumb_top,
+                thumb_height,
+                maximum,
+                offset,
+                page_step: visible.max(1),
+            })
+        }
+    }
+}
+
 fn append_mob_nameplate_sprite(
     sprites: &mut Vec<DecodedSprite>,
     font: &fontdue::Font,
@@ -1028,7 +1115,7 @@ impl ClientApp {
         }
         self.pending_npc_talk = None;
         self.gameplay_input = GameplayInput::default();
-        self.npc_dialogue_scroll_dragging = false;
+        self.npc_dialogue_scroll_dragging = None;
         let player_name = self
             .active_character
             .as_ref()
@@ -1960,7 +2047,7 @@ impl ClientApp {
             let Some(mut conversation) = ui.local_quest.take() else {
                 return;
             };
-            self.npc_dialogue_scroll_dragging = false;
+            self.npc_dialogue_scroll_dragging = None;
             let step = match action {
                 NpcDialogueAction::More(response) => conversation.respond(response),
                 NpcDialogueAction::Select(selection) => conversation.select(selection),
@@ -2035,15 +2122,14 @@ impl ClientApp {
                     }
                 }
                 self.npc_dialogue = None;
-                self.npc_dialogue_scroll_dragging = false;
+                self.npc_dialogue_scroll_dragging = None;
             }
             Err(error) => eprintln!("OpenStory: invalid NPC dialogue response: {error}"),
         }
     }
 
     pub(super) fn click_npc_dialogue(&mut self, cursor: Point) {
-        if self.set_npc_dialogue_scroll_from_cursor(cursor) {
-            self.npc_dialogue_scroll_dragging = true;
+        if self.click_npc_dialogue_scrollbar(cursor) {
             return;
         }
         if self.fast_forward_npc_dialogue_text() {
@@ -2091,33 +2177,134 @@ impl ClientApp {
         true
     }
 
-    pub(super) fn set_npc_dialogue_scroll_from_cursor(&mut self, cursor: Point) -> bool {
-        let scroll_to = self.npc_dialogue.as_ref().and_then(|dialogue| {
-            if dialogue.text_max_scroll == 0
-                || !(dialogue.panel.x + NpcDialogueLayout::SCROLL_X as f32
-                    ..dialogue.panel.x + NpcDialogueLayout::SCROLL_X as f32 + 12.0)
-                    .contains(&cursor.x)
-                || !(dialogue.panel.y + NpcDialogueLayout::TEXT_Y as f32
-                    ..dialogue.panel.y
-                        + NpcDialogueLayout::TEXT_Y as f32
-                        + dialogue.text_view_height as f32)
-                    .contains(&cursor.y)
+    pub(super) fn click_npc_dialogue_scrollbar(&mut self, cursor: Point) -> bool {
+        let Some(dialogue) = self.npc_dialogue.as_ref() else {
+            return false;
+        };
+        let scrollbar_x = dialogue.panel.x + NpcDialogueLayout::SCROLL_X as f32;
+        if !(scrollbar_x..scrollbar_x + 15.0).contains(&cursor.x) {
+            return false;
+        }
+
+        for target in [
+            NpcDialogueScrollTarget::Text,
+            NpcDialogueScrollTarget::Selection,
+        ] {
+            let Some(geometry) = npc_dialogue_scrollbar_geometry(dialogue, target) else {
+                continue;
+            };
+            let track_bottom = geometry.track_y + geometry.track_height as f32;
+            if !(geometry.track_y..track_bottom).contains(&cursor.y) {
+                continue;
+            }
+            let track_top = geometry.track_y + 13.0;
+            let arrow_bottom = track_bottom - 13.0;
+            let arrow_step = match target {
+                NpcDialogueScrollTarget::Text => NPC_DIALOGUE_SCROLL_STEP,
+                NpcDialogueScrollTarget::Selection => 1,
+            };
+            if cursor.y < track_top {
+                self.set_npc_dialogue_scroll_offset(
+                    target,
+                    geometry.offset.saturating_sub(arrow_step),
+                );
+                return true;
+            }
+            if cursor.y >= arrow_bottom {
+                self.set_npc_dialogue_scroll_offset(
+                    target,
+                    geometry.offset.saturating_add(arrow_step),
+                );
+                return true;
+            }
+            if (geometry.thumb_top..geometry.thumb_top + geometry.thumb_height as f32)
+                .contains(&cursor.y)
             {
-                return None;
+                self.npc_dialogue_scroll_dragging = Some(NpcDialogueScrollDrag {
+                    target,
+                    grab_offset: cursor.y - geometry.thumb_top,
+                });
+                return true;
             }
-            let fraction = ((cursor.y - (dialogue.panel.y + NpcDialogueLayout::TEXT_Y as f32))
-                / dialogue.text_view_height.max(1) as f32)
-                .clamp(0.0, 1.0);
-            Some((fraction * dialogue.text_max_scroll as f32).round() as usize)
-        });
-        if let Some(scroll) = scroll_to {
-            if let Some(dialogue) = self.npc_dialogue.as_mut() {
-                dialogue.text_scroll = scroll;
-            }
-            self.rebuild_npc_dialogue();
+            let next = if cursor.y < geometry.thumb_top {
+                geometry.offset.saturating_sub(geometry.page_step)
+            } else {
+                geometry.offset.saturating_add(geometry.page_step)
+            };
+            self.set_npc_dialogue_scroll_offset(target, next);
             return true;
         }
         false
+    }
+
+    pub(super) fn update_npc_dialogue_scroll_drag(&mut self, cursor: Point) -> bool {
+        let Some(drag) = self.npc_dialogue_scroll_dragging else {
+            return false;
+        };
+        let Some(geometry) = self
+            .npc_dialogue
+            .as_ref()
+            .and_then(|dialogue| npc_dialogue_scrollbar_geometry(dialogue, drag.target))
+        else {
+            self.npc_dialogue_scroll_dragging = None;
+            return false;
+        };
+        let travel = match drag.target {
+            NpcDialogueScrollTarget::Text => geometry.track_height.saturating_sub(51),
+            NpcDialogueScrollTarget::Selection => geometry
+                .track_height
+                .saturating_sub(26 + geometry.thumb_height),
+        };
+        if travel == 0 || geometry.maximum == 0 {
+            return false;
+        }
+        let thumb_top_min = geometry.track_y + 13.0;
+        let thumb_top =
+            (cursor.y - drag.grab_offset).clamp(thumb_top_min, thumb_top_min + travel as f32);
+        let fraction = (thumb_top - thumb_top_min) / travel as f32;
+        let offset = (fraction * geometry.maximum as f32).round() as usize;
+        self.set_npc_dialogue_scroll_offset(drag.target, offset)
+    }
+
+    fn set_npc_dialogue_scroll_offset(
+        &mut self,
+        target: NpcDialogueScrollTarget,
+        offset: usize,
+    ) -> bool {
+        let Some(dialogue) = self.npc_dialogue.as_mut() else {
+            return false;
+        };
+        match target {
+            NpcDialogueScrollTarget::Text => {
+                let next = offset.min(dialogue.text_max_scroll);
+                if dialogue.text_scroll == next {
+                    return false;
+                }
+                dialogue.text_scroll = next;
+            }
+            NpcDialogueScrollTarget::Selection => {
+                let visible = dialogue
+                    .buttons
+                    .iter()
+                    .filter(|button| matches!(button.action, NpcDialogueAction::Select(_)))
+                    .count()
+                    .max(1);
+                let maximum = dialogue.selections.len().saturating_sub(visible);
+                let next = offset.min(maximum);
+                if dialogue.first_visible_selection == next {
+                    return false;
+                }
+                dialogue.first_visible_selection = next;
+                let selection_end = next
+                    .saturating_add(visible)
+                    .saturating_sub(1)
+                    .min(dialogue.selections.len().saturating_sub(1));
+                dialogue.selected_selection =
+                    dialogue.selected_selection.clamp(next, selection_end);
+            }
+        }
+        self.rebuild_npc_dialogue();
+        true
     }
 
     pub(super) fn scroll_npc_dialogue_text(&mut self, direction: isize) {

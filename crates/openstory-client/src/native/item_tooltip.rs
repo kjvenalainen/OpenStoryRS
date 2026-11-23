@@ -787,11 +787,11 @@ pub(super) fn comparison_positions(
     (primary, comparison)
 }
 
-pub(super) fn draw_comparison(
-    primary: &GpuTexture,
-    comparison: &GpuTexture,
+pub(super) fn draw_comparison<'a>(
+    primary: &'a GpuTexture,
+    comparison: &'a GpuTexture,
     cursor: Point,
-) -> [SpriteDraw<'_>; 2] {
+) -> [SpriteDraw<'a>; 2] {
     let (primary_point, comparison_point) = comparison_positions(
         cursor,
         primary.width(),
@@ -830,10 +830,12 @@ fn update_tooltip_texture(
             renderer
                 .update_bgra(texture, &tooltip.pixels)
                 .map(|()| None)
+                .map_err(|error| error.to_string())
         }
         _ => renderer
             .upload_bgra(tooltip.width, tooltip.height, &tooltip.pixels)
             .map(Some)
+            .map_err(|error| error.to_string()),
     }
 }
 

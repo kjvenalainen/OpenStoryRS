@@ -15,6 +15,18 @@ const NPC_SHOP_SCROLL_ARROW: usize = 13;
 const NPC_SHOP_SCROLL_THUMB: usize = 25;
 const NPC_SHOP_RECOMMENDED_LEVEL_STEP: i64 = 5;
 
+#[derive(Clone, Copy)]
+enum NpcShopScrollSide {
+    Buy,
+    Sell,
+}
+
+#[derive(Clone, Copy)]
+struct NpcShopScrollDrag {
+    side: NpcShopScrollSide,
+    grab_offset: f32,
+}
+
 // Buy and sell share a baseline; the upper controls share their right edges.
 // Both painting and hit testing use these anchors and the NX bitmap dimensions.
 const NPC_SHOP_BUTTONS: [(&str, i32, i32); 4] = [
@@ -41,6 +53,7 @@ struct NpcShopUi {
     quantity_texture: Option<GpuTexture>,
     hovered_button: Option<&'static str>,
     hovered_item: Option<NpcShopItemHover>,
+    scroll_dragging: Option<NpcShopScrollDrag>,
     last_buy_click: Option<(usize, Instant)>,
     last_sell_click: Option<(u16, Instant)>,
     auto_recharge_slots: VecDeque<i16>,
@@ -132,6 +145,7 @@ impl NpcShopUi {
             quantity_texture: None,
             hovered_button: None,
             hovered_item: None,
+            scroll_dragging: None,
             last_buy_click: None,
             last_sell_click: None,
             auto_recharge_slots: VecDeque::new(),
@@ -1060,9 +1074,95 @@ impl ClientApp {
         self.refresh_inventory_texture();
     }
 
+    fn click_npc_shop_scrollbar(&mut self, x: f32, y: f32) -> bool {
+        let Some(side) = NPC_SHOP_SCROLL_X
+            .iter()
+            .enumerate()
+            .find_map(|(index, &left)| {
+                (left as f32..(left + NPC_SHOP_SCROLL_WIDTH) as f32)
+                    .contains(&x)
+                    .then_some(if index == 0 {
+                        NpcShopScrollSide::Buy
+                    } else {
+                        NpcShopScrollSide::Sell
+                    })
+            })
+        else {
+            return false;
+        };
+        if !(NPC_SHOP_GRID_TOP as f32..NPC_SHOP_SCROLL_BOTTOM as f32).contains(&y) {
+            return false;
+        }
+        let Some(state) = self.npc_shop.as_ref() else {
+            return false;
+        };
+        if state.quantity.is_some() {
+            return false;
+        }
+        let count = match side {
+            NpcShopScrollSide::Buy => state.buy_item_indices.len(),
+            NpcShopScrollSide::Sell => self
+                .inventory
+                .as_ref()
+                .map_or(0, |inventory| npc_shop_sell_items(inventory, state.tab).len()),
+        };
+        let maximum = count.saturating_sub(NPC_SHOP_ROWS);
+        let current = match side {
+            NpcShopScrollSide::Buy => state.buy_scroll,
+            NpcShopScrollSide::Sell => state.sell_scroll,
+        }
+        .min(maximum);
+        if maximum == 0 {
+            return true;
+        }
+
+        let track_top = NPC_SHOP_GRID_TOP + NPC_SHOP_SCROLL_ARROW;
+        let track_bottom = NPC_SHOP_SCROLL_BOTTOM - NPC_SHOP_SCROLL_ARROW;
+        let thumb_travel = track_bottom - track_top - NPC_SHOP_SCROLL_THUMB;
+        let thumb_top = track_top + thumb_travel * current / maximum;
+        let next = if y < track_top as f32 {
+            Some(current.saturating_sub(1))
+        } else if y >= track_bottom as f32 {
+            Some(current.saturating_add(1).min(maximum))
+        } else if (thumb_top as f32..(thumb_top + NPC_SHOP_SCROLL_THUMB) as f32).contains(&y) {
+            None
+        } else if y < thumb_top as f32 {
+            Some(current.saturating_sub(NPC_SHOP_ROWS))
+        } else {
+            Some(current.saturating_add(NPC_SHOP_ROWS).min(maximum))
+        };
+        if let Some(state) = self.npc_shop.as_mut() {
+            match side {
+                NpcShopScrollSide::Buy => state.buy_scroll = current,
+                NpcShopScrollSide::Sell => state.sell_scroll = current,
+            }
+            if let Some(next) = next {
+                match side {
+                    NpcShopScrollSide::Buy => state.buy_scroll = next,
+                    NpcShopScrollSide::Sell => state.sell_scroll = next,
+                }
+                state.scroll_dragging = None;
+            } else {
+                state.scroll_dragging = Some(NpcShopScrollDrag {
+                    side,
+                    grab_offset: y - thumb_top as f32,
+                });
+            }
+            state.last_buy_click = None;
+            state.last_sell_click = None;
+            state.hovered_item = None;
+        }
+        self.refresh_npc_shop_texture();
+        self.update_npc_shop_hover();
+        true
+    }
+
     fn click_npc_shop(&mut self, cursor: Point) {
         let x = cursor.x - NPC_SHOP_X;
         let y = cursor.y - NPC_SHOP_Y;
+        if self.click_npc_shop_scrollbar(x, y) {
+            return;
+        }
         let Some(state) = self.npc_shop.as_mut() else {
             return;
         };
@@ -1348,22 +1448,87 @@ impl ClientApp {
         {
             return;
         }
+        let buy_side = x < 230.0;
+        let maximum = self.npc_shop.as_ref().map_or(0, |state| {
+            let count = if buy_side {
+                state.buy_item_indices.len()
+            } else {
+                self.inventory
+                    .as_ref()
+                    .map_or(0, |inventory| npc_shop_sell_items(inventory, state.tab).len())
+            };
+            count.saturating_sub(NPC_SHOP_ROWS)
+        });
         if let Some(state) = self.npc_shop.as_mut() {
             if state.quantity.is_some() {
                 return;
             }
-            let offset = if x < 230.0 {
+            let offset = if buy_side {
                 &mut state.buy_scroll
             } else {
                 &mut state.sell_scroll
             };
-            *offset = offset.saturating_add_signed(if amount > 0.0 { -1 } else { 1 });
+            *offset = offset
+                .saturating_add_signed(if amount > 0.0 { -1 } else { 1 })
+                .min(maximum);
             state.last_buy_click = None;
             state.last_sell_click = None;
             state.hovered_item = None;
         }
         self.refresh_npc_shop_texture();
         self.update_npc_shop_hover();
+    }
+
+    fn update_npc_shop_scroll_drag(&mut self, cursor: Point) -> bool {
+        let Some(state) = self.npc_shop.as_ref() else {
+            return false;
+        };
+        let Some(drag) = state.scroll_dragging else {
+            return false;
+        };
+        if state.quantity.is_some() {
+            return false;
+        }
+        let count = match drag.side {
+            NpcShopScrollSide::Buy => state.buy_item_indices.len(),
+            NpcShopScrollSide::Sell => self
+                .inventory
+                .as_ref()
+                .map_or(0, |inventory| npc_shop_sell_items(inventory, state.tab).len()),
+        };
+        let maximum = count.saturating_sub(NPC_SHOP_ROWS);
+        if maximum == 0 {
+            return false;
+        }
+        let track_top = (NPC_SHOP_GRID_TOP + NPC_SHOP_SCROLL_ARROW) as f32;
+        let track_bottom = (NPC_SHOP_SCROLL_BOTTOM - NPC_SHOP_SCROLL_ARROW) as f32;
+        let travel = (track_bottom as usize)
+            .saturating_sub(track_top as usize)
+            .saturating_sub(NPC_SHOP_SCROLL_THUMB);
+        if travel == 0 {
+            return false;
+        }
+        let local_y = cursor.y - NPC_SHOP_Y;
+        let thumb_top = (local_y - drag.grab_offset).clamp(track_top, track_top + travel as f32);
+        let offset = (((thumb_top - track_top) / travel as f32) * maximum as f32).round() as usize;
+        let Some(state) = self.npc_shop.as_mut() else {
+            return false;
+        };
+        let scroll = match drag.side {
+            NpcShopScrollSide::Buy => &mut state.buy_scroll,
+            NpcShopScrollSide::Sell => &mut state.sell_scroll,
+        };
+        let next = offset.min(maximum);
+        if *scroll == next {
+            return false;
+        }
+        *scroll = next;
+        state.last_buy_click = None;
+        state.last_sell_click = None;
+        state.hovered_item = None;
+        self.refresh_npc_shop_texture();
+        self.update_npc_shop_hover();
+        true
     }
 }
 
