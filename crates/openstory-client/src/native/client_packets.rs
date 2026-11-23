@@ -697,6 +697,7 @@ impl ClientApp {
             openstory_protocol::OPCODE_CHAT_RECEIVED => {
                 match openstory_protocol::parse_chat_received(packet) {
                     Ok(chat) => {
+                        let message = self.unfurl_chat_mob_references(&chat.message);
                         let name = self
                             .active_character
                             .as_ref()
@@ -710,9 +711,9 @@ impl ClientApp {
                                     .map(|character| character.name.clone())
                             })
                             .unwrap_or_else(|| format!("Character {}", chat.character_id));
-                        self.show_character_speech(chat.character_id, &chat.message);
+                        self.show_character_speech(chat.character_id, &message);
                         self.push_chat_line(
-                            format!("{name}: {}", chat.message),
+                            format!("{name}: {message}"),
                             public_chat_color(chat.chat_type, chat.gm),
                         );
                     }
@@ -870,6 +871,7 @@ impl ClientApp {
                         gain,
                         bonus,
                     })) => {
+                        self.remember_experience_gain(gain, bonus);
                         let sign = if gain < 0 { "-" } else { "+" };
                         self.show_status_message(
                             format!("You have gained experience ({sign}{})", gain.unsigned_abs()),
@@ -1449,11 +1451,7 @@ impl ClientApp {
                             self.refresh_storage_texture();
                             self.refresh_npc_shop_texture();
                             self.refresh_inventory_drop_prompt_texture();
-                            self.refresh_pet_equipment_texture();
                             self.refresh_key_config_texture();
-                            if self.show_quest_log {
-                                self.refresh_quest_log_texture();
-                            }
                             self.refresh_npc_quest_marks();
                         } else {
                             eprintln!("OpenStory: received inventory update before field entry");
@@ -1571,9 +1569,11 @@ impl ClientApp {
                             self.refresh_monster_book_texture();
                         }
                         self.quest_log = quest_log.unwrap_or_default();
+                        self.reset_quest_helper_tracking();
                         self.quest_log_tab = QuestLogTab::Active;
                         self.quest_log_selected = 0;
                         self.quest_log_scroll = 0;
+                        self.quest_detail_scroll = 0;
                         self.quest_reward_selected = 0;
                         self.quest_forfeit_confirmation = None;
                         self.show_status = false;
@@ -1626,11 +1626,27 @@ impl ClientApp {
             openstory_protocol::OPCODE_SPAWN_PET_RECEIVED => {
                 match openstory_protocol::parse_pet_spawn(packet) {
                     Ok(openstory_protocol::PetSpawnEvent::Spawn(spawn)) => {
+                        let local = self
+                            .active_character
+                            .as_ref()
+                            .is_some_and(|character| character.id == spawn.character_id);
                         self.spawn_pet(spawn);
+                        if local {
+                            self.refresh_equipment_pet_slots();
+                        }
                     }
                     Ok(openstory_protocol::PetSpawnEvent::Remove {
                         character_id, slot, ..
-                    }) => self.remove_pet(character_id, slot),
+                    }) => {
+                        self.remove_pet(character_id, slot);
+                        if self
+                            .active_character
+                            .as_ref()
+                            .is_some_and(|character| character.id == character_id)
+                        {
+                            self.refresh_equipment_pet_slots();
+                        }
+                    }
                     Err(error) => eprintln!("OpenStoryRS: invalid pet spawn update: {error}"),
                 }
             }
@@ -1686,7 +1702,7 @@ impl ClientApp {
                 match openstory_protocol::parse_left_knockback(packet) {
                     Ok(()) => {
                         if let Some(scene) = self.map_scene.as_mut() {
-                            scene.player.horizontal_speed = -4.0;
+                            scene.apply_local_player_knockback(-4.0, 0.0);
                         }
                     }
                     Err(error) => {
@@ -1955,7 +1971,11 @@ impl ClientApp {
                                     let position = (rounded_i16(mob.x), rounded_i16(mob.y));
                                     let projectile_travel = if has_projectile {
                                         attacker_position.map_or(Duration::ZERO, |(source_x, _)| {
-                                            projectile_flight_duration(source_x, mob.x)
+                                            projectile_flight_duration(
+                                                source_x,
+                                                mob.x,
+                                                attack.speed,
+                                            )
                                         })
                                     } else {
                                         Duration::ZERO
@@ -2353,13 +2373,17 @@ impl ClientApp {
             }
             openstory_protocol::OPCODE_AUTO_HP_POT => {
                 match openstory_protocol::parse_auto_hp_pot(packet) {
-                    Ok(item_id) => self.auto_hp_potion_id = item_id,
+                    Ok(item_id) => {
+                        self.apply_auto_potion(openstory_protocol::AutoPotionSlot::Hp, item_id)
+                    }
                     Err(error) => eprintln!("OpenStory: invalid auto-HP potion update: {error}"),
                 }
             }
             openstory_protocol::OPCODE_AUTO_MP_POT => {
                 match openstory_protocol::parse_auto_mp_pot(packet) {
-                    Ok(item_id) => self.auto_mp_potion_id = item_id,
+                    Ok(item_id) => {
+                        self.apply_auto_potion(openstory_protocol::AutoPotionSlot::Mp, item_id)
+                    }
                     Err(error) => eprintln!("OpenStory: invalid auto-MP potion update: {error}"),
                 }
             }
@@ -2987,9 +3011,11 @@ impl ClientApp {
             self.apply_skill_cooldown(cooldown.skill_id, cooldown.duration_seconds);
         }
         self.quest_log = snapshot.quest_log.clone();
+        self.reset_quest_helper_tracking();
         self.quest_log_tab = QuestLogTab::Active;
         self.quest_log_selected = 0;
         self.quest_log_scroll = 0;
+        self.quest_detail_scroll = 0;
         self.quest_reward_selected = 0;
         self.quest_forfeit_confirmation = None;
         self.monster_book.card_updates.clear();
@@ -3013,7 +3039,6 @@ impl ClientApp {
         self.status_waiting_for_stats = false;
         self.sync_equipped_look();
         self.refresh_inventory_texture();
-        self.refresh_pet_equipment_texture();
         self.refresh_skill_book_entries();
         self.refresh_skill_book_texture();
         self.refresh_map_hud();

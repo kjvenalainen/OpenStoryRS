@@ -1,5 +1,7 @@
 const EVENT_LIST_PANEL_WIDTH: usize = 480;
 const EVENT_LIST_PANEL_HEIGHT: usize = 440;
+const EVENT_LIST_CLOSE: ui_foundation::UiRect =
+    ui_dialog::inventory_close(EVENT_LIST_PANEL_WIDTH as f32);
 
 struct EventListPanel {
     pixels: Vec<u8>,
@@ -31,37 +33,17 @@ fn build_event_list_panel(
         EVENT_LIST_PANEL_HEIGHT,
         archive,
     );
-    dialog.resizable_frame()?;
-    dialog.buttons(&[(
-        "UIWindow.img/EventWindow/backgrnd/BtClose/normal/0",
-        ui_dialog::close_button(EVENT_LIST_PANEL_WIDTH as f32 - 28.0, 7.0),
-    )])?;
-    draw_dialogue_text(
+    dialog.inventory_window(
+        ui_foundation::UiRect::new(
+            0.0,
+            0.0,
+            EVENT_LIST_PANEL_WIDTH as f32,
+            EVENT_LIST_PANEL_HEIGHT as f32,
+        ),
         font,
-        &mut pixels,
-        EVENT_LIST_PANEL_WIDTH,
-        EVENT_LIST_PANEL_HEIGHT,
         "Event List",
-        18,
-        7,
-        15.0,
-        EVENT_LIST_PANEL_WIDTH - 56,
-        20,
-        [35, 33, 29],
-    );
-    draw_dialogue_text(
-        font,
-        &mut pixels,
-        EVENT_LIST_PANEL_WIDTH,
-        EVENT_LIST_PANEL_HEIGHT,
-        "Current server events and rewards",
-        18,
-        25,
-        10.0,
-        EVENT_LIST_PANEL_WIDTH - 36,
-        14,
-        [104, 101, 94],
-    );
+        EVENT_LIST_CLOSE,
+    )?;
 
     let row_top = 48_i32;
     let row_step = 91_i32;

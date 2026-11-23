@@ -378,7 +378,7 @@ fn append_character_equipment(
         };
         let image_path = format!("{category}/0{item_id}.img");
         let Some((frame_path, frame_node)) =
-            resolve_equipment_frame(archive, &image_path, stance, frame)?
+            resolve_equipment_frame(archive, &image_path, item_id, stance, frame)?
         else {
             continue;
         };
@@ -437,8 +437,9 @@ fn append_character_equipment(
 /// Returns the visible item for each visual equipment slot. OpenStory's
 /// `CharEquips::add_equip` stores clothing by the item's equip category, so a
 /// later cap/top/weapon replaces what was already in that category. Server
-/// masked equips and cash shop try-ons are applied after regular equips and
-/// therefore take precedence even when their signed inventory slot differs.
+/// masked equips, cash shop try-ons, and the weapon sticker are applied after
+/// regular equips and therefore take precedence even when their signed
+/// inventory slot differs.
 fn character_visual_equips(look: &openstory_protocol::CharacterLook) -> Vec<(i8, i32)> {
     let mut equips = Vec::new();
     for &(slot, item_id) in look.equips.iter().chain(&look.masked_equips) {
@@ -451,7 +452,10 @@ fn character_visual_equips(look: &openstory_protocol::CharacterLook) -> Vec<(i8,
         equips.push((slot, item_id));
     }
 
-    if look.weapon_id > 0
+    if (130..=170).contains(&(look.weapon_sticker_id / 10_000)) {
+        equips.retain(|(_, item_id)| !(130..=170).contains(&(item_id / 10_000)));
+        equips.push((-111, look.weapon_sticker_id));
+    } else if look.weapon_id > 0
         && !equips
             .iter()
             .any(|(_, item_id)| (130..=170).contains(&(item_id / 10_000)))
@@ -503,6 +507,7 @@ fn character_equip_category(item_id: i32) -> Option<&'static str> {
 fn resolve_equipment_frame(
     archive: &NxArchive,
     image_path: &str,
+    item_id: i32,
     stance: &str,
     frame: u8,
 ) -> Result<Option<(String, openstory_assets::NxNode)>, String> {
@@ -520,6 +525,37 @@ fn resolve_equipment_frame(
             .map_err(|error| error.to_string())?
         {
             return Ok(Some((path, node)));
+        }
+    }
+
+    // Cash weapon images group their stance data beneath numeric action nodes
+    // (for example `Weapon/01702000.img/33/stand1/0/weapon`) instead of placing
+    // it at the image root like regular weapons.
+    if item_id / 10_000 == 170
+        && let Some(item) = archive
+            .root()
+            .resolve(image_path)
+            .map_err(|error| error.to_string())?
+    {
+        for action in item.children().map_err(|error| error.to_string())? {
+            let action_name = action.name().map_err(|error| error.to_string())?;
+            if action_name.parse::<u16>().is_err() {
+                continue;
+            }
+            for path in [
+                format!("{image_path}/{action_name}/{stance}/{frame}"),
+                format!("{image_path}/{action_name}/{stance}/0"),
+                format!("{image_path}/{action_name}/stand1/{frame}"),
+                format!("{image_path}/{action_name}/stand1/0"),
+            ] {
+                if let Some(node) = archive
+                    .root()
+                    .resolve(&path)
+                    .map_err(|error| error.to_string())?
+                {
+                    return Ok(Some((path, node)));
+                }
+            }
         }
     }
     Ok(None)

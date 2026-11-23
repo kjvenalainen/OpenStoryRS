@@ -42,7 +42,8 @@ fn for_each_damage_glyph(
         if number.critical {
             return;
         }
-        let Some(glyph) = glyphs.get(80) else {
+        let miss_glyph = if number.player_damage { 81 } else { 80 };
+        let Some(glyph) = glyphs.get(miss_glyph) else {
             return;
         };
         emit(

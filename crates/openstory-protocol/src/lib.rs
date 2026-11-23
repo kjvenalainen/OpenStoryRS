@@ -222,9 +222,9 @@ pub use inventory::{
     use_item_packet, use_maple_tv_packet, use_megaphone_packet, use_pet_name_tag_packet,
 };
 pub use keymap::{
-    KEYMAP_ENTRY_COUNT, KeyBinding, KeyMapUpdate, OPCODE_CHANGE_KEYMAP, OPCODE_KEYMAP,
-    OPCODE_QUICKSLOT_INIT, QUICKSLOT_KEY_COUNT, QuickSlotInit, change_keymap_packet, parse_keymap,
-    parse_quickslot_init,
+    AutoPotionSlot, KEYMAP_ENTRY_COUNT, KeyBinding, KeyMapUpdate, OPCODE_CHANGE_KEYMAP,
+    OPCODE_KEYMAP, OPCODE_QUICKSLOT_INIT, QUICKSLOT_KEY_COUNT, QuickSlotInit,
+    change_auto_potion_packet, change_keymap_packet, parse_keymap, parse_quickslot_init,
 };
 pub use legacy_requests::{
     AdminMapOperation, Gender, OPCODE_ADMIN_COMMAND_SEND, OPCODE_MONSTER_BOOK_COVER_SEND,

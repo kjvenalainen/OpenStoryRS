@@ -931,6 +931,7 @@ struct MapSceneRuntime {
     dragons: HashMap<i32, MapDragonRuntime>,
     pets: HashMap<(i32, u8), MapPetRuntime>,
     pet_loot_cooldown: u8,
+    loot_search: LootSearchWorker,
     character_effects: Vec<MapCharacterSkillEffect>,
     screen_effect: Option<MapScreenEffect>,
     reactors: HashMap<i32, MapReactorRuntime>,
@@ -944,7 +945,7 @@ struct MapSceneRuntime {
     regular_portal_elapsed: Duration,
     hidden_portal_frame_index: usize,
     hidden_portal_elapsed: Duration,
-    portal_entry_blocked: bool,
+    automatic_portal_entry_blocked: bool,
     portal_cooldown: u8,
     teleport_cooldown: u8,
     touch_damage_cooldown: Duration,
@@ -955,6 +956,7 @@ struct MapSceneRuntime {
     local_map_seat: Option<(i16, i16)>,
     damage_numbers: Vec<MobDamageNumber>,
     pending_mob_attack_impacts: Vec<PendingMobAttackImpact>,
+    pending_mob_kills: HashMap<i32, PendingMobKill>,
     quest_clear_effect: Option<QuestClearEffectRuntime>,
     projectiles: Vec<MapProjectileRuntime>,
     layer_insert_indices: [usize; 8],
@@ -1086,11 +1088,19 @@ struct PendingMobAttackImpact {
     damage: Option<MobDamageNumber>,
 }
 
+struct PendingMobKill {
+    animation: i8,
+    remaining: Duration,
+}
+
+const RANGED_TARGET_ANGLE_PENALTY_PX_PER_RADIAN: f64 = 64.0;
+
 struct MapProjectileRuntime {
     frames: Vec<ProjectileFrameRuntime>,
     frame_index: usize,
     frame_elapsed: Duration,
     launch_delay: Duration,
+    velocity_scale: f64,
     x: f64,
     y: f64,
     target_x: f64,
@@ -1106,22 +1116,30 @@ fn projectile_horizontal_step(dx: f64) -> f64 {
     }
 }
 
-fn projectile_flight_duration(source_x: f64, target_x: f64) -> Duration {
+fn projectile_speed_scale(attack_speed: i8) -> f64 {
+    (1.7 - f64::from(attack_speed) / 10.0).clamp(0.2, 3.0)
+}
+
+fn projectile_flight_duration(source_x: f64, target_x: f64, attack_speed: i8) -> Duration {
     if !source_x.is_finite() || !target_x.is_finite() {
         return Duration::ZERO;
     }
+    let velocity_scale = projectile_speed_scale(attack_speed);
     let mut x = source_x + if target_x < source_x { -30.0 } else { 30.0 };
-    let max_updates = ((target_x - x).abs() / 3.0).ceil() as u64 + 1;
+    let max_updates = ((target_x - x).abs() / (3.0 * velocity_scale)).ceil() as u64 + 1;
     let mut updates = 0_u64;
     while updates < max_updates {
         let dx = target_x - x;
         if dx.abs() < 10.0 {
             break;
         }
-        x += projectile_horizontal_step(dx);
+        x += projectile_horizontal_step(dx) * velocity_scale;
         updates += 1;
     }
-    Duration::from_millis(updates.saturating_mul(8))
+    // The projectile is removed on the update after its final movement, when
+    // it enters the target's hit radius. Keep impact presentation in step with
+    // that terminal update instead of starting it one frame early.
+    Duration::from_millis(updates.saturating_add(1).saturating_mul(8))
 }
 
 #[derive(Clone)]
@@ -2250,6 +2268,7 @@ struct NpcDialogueUi {
     first_visible_selection: usize,
     hovered_selection: Option<usize>,
     input: String,
+    number_input_selected: bool,
     texture: GpuTexture,
     panel: SpriteRect,
     buttons: Vec<NpcDialogueButton>,
@@ -2515,6 +2534,7 @@ struct CashShopUi {
     category: usize,
     page: usize,
     selected_sn: Option<i32>,
+    try_on_items: BTreeMap<i8, i32>,
     query: String,
     search_focused: bool,
     coupon_code: String,
@@ -2599,6 +2619,7 @@ impl CashShopUi {
             category: 0,
             page: 0,
             selected_sn: None,
+            try_on_items: BTreeMap::new(),
             query: String::new(),
             search_focused: false,
             coupon_code: String::new(),
@@ -2644,6 +2665,8 @@ enum NpcDialogueAction {
 }
 
 struct MapDropRuntime {
+    item_id: i32,
+    meso: bool,
     x: f64,
     y: f64,
     destination_x: f64,
@@ -2655,6 +2678,333 @@ struct MapDropRuntime {
     motion: DropMotion,
     pickup_attempt: Option<Instant>,
     pet_pickup_attempt: Option<Instant>,
+}
+
+#[derive(Clone, Copy)]
+struct LootDropSnapshot {
+    object_id: i32,
+    item_id: i32,
+    meso: bool,
+    x: f64,
+    y: f64,
+    picked_up: bool,
+    pickup_attempt: Option<Instant>,
+    pet_pickup_attempt: Option<Instant>,
+}
+
+#[derive(Clone, Copy)]
+struct LootPetSnapshot {
+    slot: u8,
+    unique_id: i32,
+    x: f64,
+    y: f64,
+}
+
+#[derive(Clone, Copy)]
+struct PetLootDecision {
+    slot: u8,
+    unique_id: i32,
+    pickup: Option<i32>,
+    target: Option<(i32, f64, f64)>,
+}
+
+enum LootSearchRequest {
+    Player {
+        player: (f64, f64),
+        drops: Vec<LootDropSnapshot>,
+        now: Instant,
+    },
+    Pets {
+        player: (f64, f64),
+        pets: Vec<LootPetSnapshot>,
+        drops: Vec<LootDropSnapshot>,
+        inventory_has_space: [bool; 5],
+        now: Instant,
+    },
+}
+
+enum LootSearchResult {
+    Player(Option<(i32, (f64, f64))>),
+    Pets(Vec<PetLootDecision>),
+}
+
+struct LootSearchWorker {
+    requests: Option<std::sync::mpsc::Sender<LootSearchRequest>>,
+    results: std::sync::mpsc::Receiver<LootSearchResult>,
+    player_pending: bool,
+    pet_pending: bool,
+    player_result: Option<Option<(i32, (f64, f64))>>,
+    pet_result: Option<Vec<PetLootDecision>>,
+}
+
+impl LootSearchWorker {
+    fn new() -> Self {
+        let (request_sender, request_receiver) = std::sync::mpsc::channel();
+        let (result_sender, result_receiver) = std::sync::mpsc::channel();
+        let request_sender = match std::thread::Builder::new()
+            .name("map-loot-search".to_owned())
+            .spawn(move || loot_search_worker(request_receiver, result_sender))
+        {
+            Ok(_) => Some(request_sender),
+            Err(error) => {
+                eprintln!("OpenStoryRS: could not start loot search worker: {error}");
+                None
+            }
+        };
+        Self {
+            requests: request_sender,
+            results: result_receiver,
+            player_pending: false,
+            pet_pending: false,
+            player_result: None,
+            pet_result: None,
+        }
+    }
+
+    fn poll(&mut self) {
+        while let Ok(result) = self.results.try_recv() {
+            match result {
+                LootSearchResult::Player(candidate) => {
+                    self.player_pending = false;
+                    self.player_result = Some(candidate);
+                }
+                LootSearchResult::Pets(decisions) => {
+                    self.pet_pending = false;
+                    self.pet_result = Some(decisions);
+                }
+            }
+        }
+    }
+
+    fn request_player(&mut self, request: LootSearchRequest) {
+        if self.player_pending {
+            return;
+        }
+        let Some(requests) = self.requests.as_ref() else {
+            return;
+        };
+        if requests.send(request).is_ok() {
+            self.player_pending = true;
+        }
+    }
+
+    fn request_pets(&mut self, request: LootSearchRequest) -> bool {
+        if self.pet_pending {
+            return false;
+        }
+        let Some(requests) = self.requests.as_ref() else {
+            return false;
+        };
+        if requests.send(request).is_ok() {
+            self.pet_pending = true;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn take_player_result(&mut self) -> Option<Option<(i32, (f64, f64))>> {
+        self.player_result.take()
+    }
+
+    fn take_pet_result(&mut self) -> Option<Vec<PetLootDecision>> {
+        self.pet_result.take()
+    }
+}
+
+fn loot_search_worker(
+    requests: std::sync::mpsc::Receiver<LootSearchRequest>,
+    results: std::sync::mpsc::Sender<LootSearchResult>,
+) {
+    while let Ok(request) = requests.recv() {
+        let result = match request {
+            LootSearchRequest::Player {
+                player,
+                drops,
+                now,
+            } => LootSearchResult::Player(search_player_drop(player, &drops, now)),
+            LootSearchRequest::Pets {
+                player,
+                pets,
+                drops,
+                inventory_has_space,
+                now,
+            } => LootSearchResult::Pets(search_pet_drops(
+                player,
+                &pets,
+                &drops,
+                inventory_has_space,
+                now,
+            )),
+        };
+        if results.send(result).is_err() {
+            break;
+        }
+    }
+}
+
+fn drop_can_fit_inventory(drop: &LootDropSnapshot, inventory_has_space: [bool; 5]) -> bool {
+    if drop.meso {
+        return true;
+    }
+    match drop.item_id / 1_000_000 {
+        1 => inventory_has_space[0],
+        2 => inventory_has_space[1],
+        3 => inventory_has_space[2],
+        4 => inventory_has_space[3],
+        5 => inventory_has_space[4],
+        _ => true,
+    }
+}
+
+fn drop_pickup_is_available(
+    drop: &LootDropSnapshot,
+    now: Instant,
+) -> bool {
+    !drop.picked_up
+        && drop.pickup_attempt.is_none_or(|last| {
+            now.saturating_duration_since(last) >= Duration::from_secs(2)
+        })
+}
+
+fn search_player_drop(
+    player: (f64, f64),
+    drops: &[LootDropSnapshot],
+    now: Instant,
+) -> Option<(i32, (f64, f64))> {
+    drops
+        .iter()
+        .filter(|drop| {
+            drop_pickup_is_available(drop, now)
+                && player.0 >= drop.x
+                && player.0 <= drop.x + 32.0
+                && player.1 >= drop.y
+                && player.1 <= drop.y + 32.0
+        })
+        .min_by(|left, right| {
+            let left_distance = (left.x + 16.0 - player.0).powi(2)
+                + (left.y + 16.0 - player.1).powi(2);
+            let right_distance = (right.x + 16.0 - player.0).powi(2)
+                + (right.y + 16.0 - player.1).powi(2);
+            left_distance
+                .total_cmp(&right_distance)
+                .then_with(|| left.object_id.cmp(&right.object_id))
+        })
+        .map(|drop| (drop.object_id, (drop.x, drop.y)))
+}
+
+fn search_pet_drops(
+    player: (f64, f64),
+    pets: &[LootPetSnapshot],
+    drops: &[LootDropSnapshot],
+    inventory_has_space: [bool; 5],
+    now: Instant,
+) -> Vec<PetLootDecision> {
+    let mut decisions = Vec::with_capacity(pets.len());
+    let mut reserved = HashSet::new();
+
+    for pet in pets {
+        let available = drops.iter().filter(|drop| {
+            drop.picked_up
+                || reserved.contains(&drop.object_id)
+                || !drop_can_fit_inventory(drop, inventory_has_space)
+                || drop.pet_pickup_attempt.is_some_and(|last| {
+                    now.saturating_duration_since(last) < Duration::from_secs(2)
+                })
+        });
+        let mut pickup: Option<(f64, i32)> = None;
+        let mut nearest: Option<(f64, i32, f64, f64)> = None;
+
+        for drop in available {
+            let pet_dx = (drop.x - pet.x).abs();
+            let pet_dy = (drop.y - pet.y).abs();
+            if pet_dx <= 30.0 && pet_dy <= 25.0 {
+                let distance = pet_dx + pet_dy;
+                if pickup.is_none_or(|(best_distance, best_id)| {
+                    distance < best_distance || (distance == best_distance && drop.object_id < best_id)
+                }) {
+                    pickup = Some((distance, drop.object_id));
+                }
+            }
+            if (drop.x - player.0).abs() + (drop.y - player.1).abs() < 200.0 {
+                let distance = pet_dx + pet_dy;
+                if nearest.is_none_or(|(best_distance, best_id, _, _)| {
+                    distance < best_distance || (distance == best_distance && drop.object_id < best_id)
+                }) {
+                    nearest = Some((distance, drop.object_id, drop.x, drop.y));
+                }
+            }
+        }
+
+        let (pickup_id, target) = if let Some((_, pickup_id)) = pickup {
+            reserved.insert(pickup_id);
+            let next_target = drops
+                .iter()
+                .filter(|drop| {
+                    !drop.picked_up
+                        && !reserved.contains(&drop.object_id)
+                        && drop_can_fit_inventory(drop, inventory_has_space)
+                        && drop.pet_pickup_attempt.is_none_or(|last| {
+                            now.saturating_duration_since(last) >= Duration::from_secs(2)
+                        })
+                        && (drop.x - player.0).abs() + (drop.y - player.1).abs() < 200.0
+                })
+                .min_by(|left, right| {
+                    let left_distance = (left.x - pet.x).abs() + (left.y - pet.y).abs();
+                    let right_distance = (right.x - pet.x).abs() + (right.y - pet.y).abs();
+                    left_distance
+                        .total_cmp(&right_distance)
+                        .then_with(|| left.object_id.cmp(&right.object_id))
+                })
+                .map(|drop| (drop.object_id, drop.x, drop.y));
+            if let Some((target_id, _, _)) = next_target {
+                reserved.insert(target_id);
+            }
+            (Some(pickup_id), next_target)
+        } else if let Some((_, target_id, x, y)) = nearest {
+            reserved.insert(target_id);
+            (None, Some((target_id, x, y)))
+        } else {
+            (None, None)
+        };
+
+        decisions.push(PetLootDecision {
+            slot: pet.slot,
+            unique_id: pet.unique_id,
+            pickup: pickup_id,
+            target,
+        });
+    }
+
+    decisions
+}
+
+fn inventory_has_free_slots(
+    inventory: Option<&openstory_protocol::InventorySnapshot>,
+) -> [bool; 5] {
+    let Some(inventory) = inventory else {
+        return [true; 5];
+    };
+    let mut occupied: [HashSet<u16>; 5] = std::array::from_fn(|_| HashSet::new());
+    for item in &inventory.items {
+        let index = match item.inventory_type {
+            openstory_protocol::InventoryType::Equip => Some(0),
+            openstory_protocol::InventoryType::Use => Some(1),
+            openstory_protocol::InventoryType::Setup => Some(2),
+            openstory_protocol::InventoryType::Etc => Some(3),
+            openstory_protocol::InventoryType::Cash => Some(4),
+            openstory_protocol::InventoryType::Equipped => None,
+        };
+        if let Some(index) = index
+            && item.slot > 0
+            && item.slot <= u16::from(inventory.slot_maxima[index])
+        {
+            occupied[index].insert(item.slot);
+        }
+    }
+    std::array::from_fn(|index| {
+        occupied[index].len() < usize::from(inventory.slot_maxima[index])
+    })
 }
 
 struct DropFrameRuntime {
@@ -2772,6 +3122,7 @@ struct MapMobRuntime {
     elapsed: Duration,
     animations: HashMap<MobMotion, Vec<MobFrameRuntime>>,
     skill_actions: HashMap<(u8, u8), (u8, i8)>,
+    nameplate: Option<(usize, SpriteRect)>,
     hit_effects: Vec<MapMobHitEffect>,
     dying: bool,
     fade_remaining: Option<Duration>,
@@ -2823,6 +3174,7 @@ struct MapPetRuntime {
     y: f64,
     body: PhysicsBody,
     loot_target: Option<(f64, f64)>,
+    loot_excursion: bool,
     movement_ticks: u8,
     last_sent_movement: Option<(i16, i16, u8)>,
     stance: u8,
@@ -2838,6 +3190,180 @@ struct PetInteractionRuntime {
     frames: Vec<ProjectileFrameRuntime>,
     frame_index: usize,
     elapsed: Duration,
+}
+
+fn pet_loot_jump_speed(
+    body: &PhysicsBody,
+    destination: (f64, f64),
+    footholds: &FootholdTree,
+) -> Option<f64> {
+    const TAKEOFF_DISTANCE: f64 = 52.0;
+    const EMERGENCY_TAKEOFF_DISTANCE: f64 = 4.0;
+    const MIN_TAKEOFF_SPEED: f64 = 2.2;
+    const MIN_JUMP_SPEED: f64 = 2.5;
+    const MAX_JUMP_SPEED: f64 = 3.5;
+    const JUMP_SPEED: f64 = 5.5;
+    const GRAVITY: f64 = 0.14;
+    const MIN_PLATFORM_GAP: f64 = 12.0;
+    const MAX_PLATFORM_HEIGHT: f64 = 90.0;
+    const MAX_PLATFORM_DROP: f64 = 80.0;
+
+    if !body.on_ground {
+        return None;
+    }
+    let floor = footholds.get(body.foothold_id)?;
+    let (target_floor_id, target_ground_y) = footholds.find_below(destination.0, destination.1)?;
+    let takeoff_y = floor.ground_y(body.x)?;
+
+    // Items can sit on a higher platform that overlaps the pet's current
+    // floor. In that case there is no platform edge to run toward: jump from
+    // here and aim for a reachable point on the target floor.
+    if target_floor_id != floor.id
+        && let Some(target_floor) = footholds.get(target_floor_id)
+    {
+        let vertical_delta = target_ground_y - takeoff_y;
+        if (-MAX_PLATFORM_HEIGHT..=-1.0).contains(&vertical_delta) {
+            let discriminant = JUMP_SPEED * JUMP_SPEED + 2.0 * GRAVITY * vertical_delta;
+            if discriminant >= 0.0 {
+                let flight_ticks = (JUMP_SPEED + discriminant.sqrt()) / GRAVITY;
+                let landing_x = destination.0.clamp(
+                    f64::from(target_floor.left()),
+                    f64::from(target_floor.right()),
+                );
+                let horizontal_speed = (landing_x - body.x) / flight_ticks;
+                if horizontal_speed.abs() <= MAX_JUMP_SPEED {
+                    return Some(horizontal_speed);
+                }
+            }
+        }
+    }
+
+    let going_right = destination.0 > body.x;
+    let direction = if going_right { 1.0 } else { -1.0 };
+    let edge_x = f64::from(if going_right {
+        floor.right()
+    } else {
+        floor.left()
+    });
+    let distance_to_edge = (edge_x - body.x) * direction;
+    if !(0.0..=TAKEOFF_DISTANCE).contains(&distance_to_edge)
+        || (destination.0 - edge_x) * direction <= 0.0
+    {
+        return None;
+    }
+    if pet_has_walkable_foothold_continuation(
+        floor,
+        body.foothold_layer,
+        destination.0,
+        going_right,
+        footholds,
+    ) {
+        return None;
+    }
+
+    if target_floor_id == floor.id {
+        return None;
+    }
+    let takeoff_y = floor.ground_y(edge_x)?;
+    let speed_toward_target = (body.horizontal_speed * direction).clamp(0.0, MAX_JUMP_SPEED);
+    let speed_for_range = speed_toward_target.max(MIN_JUMP_SPEED);
+    let can_land_toward_target = footholds.footholds().iter().any(|candidate| {
+        if candidate.id == floor.id
+            || (candidate.layer != floor.layer && candidate.id != target_floor_id)
+            || candidate.is_wall()
+        {
+            return false;
+        }
+        let landing_x = f64::from(if going_right {
+            candidate.left()
+        } else {
+            candidate.right()
+        });
+        let gap = (landing_x - edge_x) * direction;
+        let remaining = (destination.0 - landing_x) * direction;
+        if gap <= MIN_PLATFORM_GAP || remaining < 0.0 {
+            return false;
+        }
+        let Some(landing_y) = candidate.ground_y(landing_x) else {
+            return false;
+        };
+        let vertical_delta = landing_y - takeoff_y;
+        if !(-MAX_PLATFORM_HEIGHT..=MAX_PLATFORM_DROP).contains(&vertical_delta) {
+            return false;
+        }
+        let discriminant = JUMP_SPEED * JUMP_SPEED + 2.0 * GRAVITY * vertical_delta;
+        if discriminant < 0.0 {
+            return false;
+        }
+        let flight_ticks = (JUMP_SPEED + discriminant.sqrt()) / GRAVITY;
+        let jump_distance = distance_to_edge + gap.max(0.0) + 4.0;
+        jump_distance <= speed_for_range * flight_ticks
+    });
+    if !can_land_toward_target {
+        return None;
+    }
+
+    (speed_toward_target >= MIN_TAKEOFF_SPEED || distance_to_edge <= EMERGENCY_TAKEOFF_DISTANCE)
+        .then_some(speed_for_range * direction)
+}
+
+fn pet_has_walkable_foothold_continuation(
+    floor: &Foothold,
+    foothold_layer: u8,
+    target_x: f64,
+    going_right: bool,
+    footholds: &FootholdTree,
+) -> bool {
+    const MAX_LINKED_STEP_GAP: f64 = 1.0;
+    let direction = if going_right { 1.0 } else { -1.0 };
+    let edge_x = f64::from(if going_right {
+        floor.right()
+    } else {
+        floor.left()
+    });
+    let Some(edge_y) = floor.ground_y(edge_x) else {
+        return false;
+    };
+    let target_distance = (target_x - edge_x) * direction;
+    let linked_id = if going_right {
+        floor.next
+    } else {
+        floor.previous
+    };
+
+    footholds.footholds().iter().any(|candidate| {
+        if candidate.id == floor.id || candidate.is_wall() {
+            return false;
+        }
+        let linked = candidate.id == linked_id;
+        if !linked && candidate.layer != foothold_layer {
+            return false;
+        }
+        let entry_x = f64::from(if going_right {
+            candidate.left()
+        } else {
+            candidate.right()
+        });
+        let exit_x = f64::from(if going_right {
+            candidate.right()
+        } else {
+            candidate.left()
+        });
+        let entry_gap = (entry_x - edge_x) * direction;
+        let continues_forward = (exit_x - edge_x) * direction > 0.0;
+        if !continues_forward || entry_gap > target_distance {
+            return false;
+        }
+        let Some(entry_y) = candidate.ground_y(entry_x) else {
+            return false;
+        };
+        let height = entry_y - edge_y;
+        if linked {
+            entry_gap.abs() <= MAX_LINKED_STEP_GAP && (-1.0..=24.0).contains(&height)
+        } else {
+            entry_gap == 0.0 && height.abs() <= 1.0
+        }
+    })
 }
 
 impl MapPetRuntime {
@@ -2915,6 +3441,7 @@ impl MapPetRuntime {
     fn follow_local(
         &mut self,
         owner: (f64, f64),
+        owner_foothold_id: u16,
         owner_is_climbing: bool,
         footholds: Option<&FootholdTree>,
     ) {
@@ -2950,14 +3477,56 @@ impl MapPetRuntime {
         let owner_delta_x = owner.0 - self.body.x;
         let owner_delta_y = owner.1 - self.body.y;
         let owner_distance = owner_delta_x.hypot(owner_delta_y);
-        let max_owner_distance = if self.loot_target.is_some() {
-            250.0
+        let owner_is_on_higher_foothold = footholds.is_some_and(|tree| {
+            let Some(pet_ground) = tree
+                .get(self.body.foothold_id)
+                .and_then(|floor| floor.ground_y(self.body.x))
+            else {
+                return false;
+            };
+            tree.get(owner_foothold_id)
+                .and_then(|floor| floor.ground_y(owner.0))
+                .is_some_and(|owner_ground| owner_ground < pet_ground - 1.0)
+        });
+        let owner_is_above = owner_delta_y < -40.0 || owner_is_on_higher_foothold;
+        let owner_is_on_lower_foothold = footholds.is_some_and(|tree| {
+            let Some(pet_ground) = tree
+                .get(self.body.foothold_id)
+                .and_then(|floor| floor.ground_y(self.body.x))
+            else {
+                return false;
+            };
+            tree.get(owner_foothold_id)
+                .and_then(|floor| floor.ground_y(self.body.x))
+                .is_some_and(|owner_ground| owner_ground > pet_ground + 1.0)
+        });
+        const NORMAL_OWNER_LEASH: f64 = 150.0;
+        const LOOT_OWNER_LEASH: f64 = 400.0;
+        if self.loot_target.is_some() {
+            self.loot_excursion = true;
+        } else if self.loot_excursion && owner_distance <= NORMAL_OWNER_LEASH - 30.0 {
+            self.loot_excursion = false;
+        }
+        let max_owner_distance = if self.loot_excursion {
+            LOOT_OWNER_LEASH
         } else {
-            150.0
+            NORMAL_OWNER_LEASH
         };
         let current_state = self.state();
         self.body.horizontal_force = 0.0;
         self.body.vertical_force = 0.0;
+        let mut loot_jump_started = false;
+
+        if owner_distance <= max_owner_distance
+            && matches!(current_state, 0 | 1 | 2)
+            && !owner_is_above
+            && let (Some(target), Some(footholds)) = (self.loot_target, footholds)
+            && let Some(horizontal_speed) = pet_loot_jump_speed(&self.body, target, footholds)
+        {
+            self.body.horizontal_speed = horizontal_speed;
+            self.body.vertical_speed = -5.5;
+            loot_jump_started = true;
+        }
 
         if current_state == 6 {
             self.set_local_motion(1, self.stance & 1 == 1);
@@ -2967,16 +3536,30 @@ impl MapPetRuntime {
 
         match self.state() {
             0 | 1 => {
+                if self.body.on_ground && owner_is_on_lower_foothold {
+                    // The owner selected a lower foothold by dropping through
+                    // the platform. Step off this floor so gravity carries the
+                    // pet down to the same level.
+                    self.body.y += 1.0;
+                    self.body.vertical_speed = 0.0;
+                    self.body.on_ground = false;
+                    self.body.jump_down_enabled = false;
+                    self.set_local_motion(2, self.stance & 1 == 1);
+                }
                 if owner_distance > max_owner_distance {
                     self.set_position(owner.0, owner.1);
                     self.loot_target = None;
+                    self.loot_excursion = false;
                 } else {
-                    let destination = self.loot_target.unwrap_or(owner);
+                    let destination = if owner_is_above {
+                        owner
+                    } else {
+                        self.loot_target.unwrap_or(owner)
+                    };
                     let delta_x = destination.0 - self.body.x;
-                    let delta_y = destination.1 - self.body.y;
-                    let is_walking = current_state == 0
-                        && self.body.horizontal_speed.abs() >= WALK_STOP_SPEED;
-                    let deadzone = if self.loot_target.is_some() {
+                    let is_walking =
+                        current_state == 0 && self.body.horizontal_speed.abs() >= WALK_STOP_SPEED;
+                    let deadzone = if self.loot_target.is_some() && !owner_is_above {
                         if is_walking {
                             LOOT_STOP_DEADZONE
                         } else {
@@ -3002,7 +3585,7 @@ impl MapPetRuntime {
                     } else {
                         self.set_local_motion(1, self.stance & 1 == 1);
                     }
-                    if self.body.on_ground && -delta_y > 40.0 && delta_x.abs() < 70.0 {
+                    if self.body.on_ground && owner_is_above && delta_x.abs() < 70.0 {
                         self.body.vertical_speed = -5.5;
                     }
                     if !self.body.on_ground {
@@ -3013,10 +3596,14 @@ impl MapPetRuntime {
                 self.body.flags.no_gravity = false;
             }
             2 => {
-                let destination = self.loot_target.unwrap_or(owner);
+                let destination = if owner_is_above {
+                    owner
+                } else {
+                    self.loot_target.unwrap_or(owner)
+                };
                 let delta_x = destination.0 - self.body.x;
                 if self.body.on_ground {
-                    let deadzone = if self.loot_target.is_some() {
+                    let deadzone = if self.loot_target.is_some() && !owner_is_above {
                         LOOT_START_DEADZONE
                     } else {
                         FOLLOW_START_DEADZONE
@@ -3032,6 +3619,8 @@ impl MapPetRuntime {
                     }
                 } else if owner_distance > max_owner_distance {
                     self.set_position(owner.0, owner.1);
+                    self.loot_target = None;
+                    self.loot_excursion = false;
                 } else if delta_x > FOLLOW_START_DEADZONE {
                     self.body.horizontal_force = WALK_FORCE;
                     self.set_local_motion(2, true);
@@ -3075,6 +3664,9 @@ impl MapPetRuntime {
             }
         }
 
+        if loot_jump_started {
+            self.body.horizontal_force = 0.0;
+        }
         if let Some(footholds) = footholds {
             PhysicsEngine.move_body(footholds, &mut self.body);
             self.x = self.body.x;
@@ -3150,6 +3742,7 @@ struct MobTraits {
     fly_speed: f64,
     physical_attack: i32,
     level: i32,
+    accuracy: i32,
     physical_defense: f64,
     magic_defense: f64,
     avoid: f64,
@@ -3546,11 +4139,11 @@ impl MapSceneRuntime {
                 touched: false,
             })
             .collect();
-        let portal_entry_blocked = select_portal(
+        let automatic_portal_entry_blocked = select_portal(
             &portals,
             scene.spawn.0,
             scene.spawn.1,
-            true,
+            false,
             &regular_portal_frames,
         )
         .is_some();
@@ -3647,6 +4240,7 @@ impl MapSceneRuntime {
             dragons: HashMap::new(),
             pets: HashMap::new(),
             pet_loot_cooldown: 0,
+            loot_search: LootSearchWorker::new(),
             character_effects: Vec::with_capacity(8),
             screen_effect: None,
             reactors: HashMap::new(),
@@ -3660,7 +4254,7 @@ impl MapSceneRuntime {
             regular_portal_elapsed: Duration::ZERO,
             hidden_portal_frame_index: 0,
             hidden_portal_elapsed: Duration::ZERO,
-            portal_entry_blocked,
+            automatic_portal_entry_blocked,
             portal_cooldown: 0,
             teleport_cooldown: 0,
             touch_damage_cooldown: Duration::ZERO,
@@ -3671,6 +4265,7 @@ impl MapSceneRuntime {
             local_map_seat: None,
             damage_numbers: Vec::with_capacity(64),
             pending_mob_attack_impacts: Vec::with_capacity(64),
+            pending_mob_kills: HashMap::new(),
             quest_clear_effect: None,
             projectiles: Vec::with_capacity(8),
             layer_insert_indices: scene.layer_insert_indices,
@@ -3699,6 +4294,36 @@ impl MapSceneRuntime {
 
     fn advance_climb_cooldown(&mut self, updates: u8) {
         self.climb_cooldown = self.climb_cooldown.saturating_sub(updates);
+    }
+
+    pub(super) fn apply_local_player_knockback(
+        &mut self,
+        horizontal_speed: f64,
+        vertical_knockback: f64,
+    ) {
+        let was_climbing = self.local_ladder.take().is_some();
+        if was_climbing {
+            self.player.mode = PhysicsMode::Normal;
+            self.player.on_ground = false;
+            self.player.vertical_speed = 0.0;
+            self.player.foothold_layer = self
+                .footholds
+                .as_ref()
+                .and_then(|tree| tree.get(self.player.foothold_id))
+                .map_or(0, |foothold| foothold.layer);
+            self.climb_cooldown = 32;
+            self.last_movement = None;
+        }
+
+        self.player.horizontal_speed = horizontal_speed;
+        if was_climbing {
+            // Fixated movement ignores forces, so convert the normal hit force
+            // into an airborne impulse when the hit releases a rope or ladder.
+            self.player.vertical_force = 0.0;
+            self.player.vertical_speed = vertical_knockback;
+        } else {
+            self.player.vertical_force += vertical_knockback;
+        }
     }
 
     fn sit_on_nearby_map_seat(&mut self, draws: &mut [(usize, SpriteRect)]) -> bool {
@@ -3847,16 +4472,16 @@ impl MapSceneRuntime {
             if !can_use_portal || self.portal_cooldown != 0 {
                 continue;
             }
-            if self.portal_entry_blocked {
-                self.portal_entry_blocked = select_portal(
+            if self.automatic_portal_entry_blocked {
+                self.automatic_portal_entry_blocked = select_portal(
                     &self.portals,
                     self.player.x,
                     self.player.y,
-                    true,
+                    false,
                     &self.regular_portal_frames,
                 )
                 .is_some();
-                if self.portal_entry_blocked {
+                if self.automatic_portal_entry_blocked && !up_pressed {
                     continue;
                 }
             }
@@ -3890,6 +4515,17 @@ impl MapSceneRuntime {
             });
         }
         None
+    }
+
+    fn is_touch_portal_at_player(&self) -> bool {
+        select_portal(
+            &self.portals,
+            self.player.x,
+            self.player.y,
+            false,
+            &self.regular_portal_frames,
+        )
+        .is_some()
     }
 
     fn apply_use_movement(
@@ -4032,11 +4668,11 @@ impl MapSceneRuntime {
         self.player.on_ground = foothold_id != 0;
         self.player.mode = PhysicsMode::Normal;
         self.last_movement = None;
-        self.portal_entry_blocked = select_portal(
+        self.automatic_portal_entry_blocked = select_portal(
             &self.portals,
             self.player.x,
             self.player.y,
-            true,
+            false,
             &self.regular_portal_frames,
         )
         .is_some();
@@ -4225,6 +4861,7 @@ impl MapSceneRuntime {
                         source_y,
                         source_x + if attack.to_left { -400.0 } else { 400.0 },
                         source_y - 26.0,
+                        attack.speed,
                         hit_delays.get(hit_index).copied().unwrap_or_default(),
                     );
                 }
@@ -4237,6 +4874,7 @@ impl MapSceneRuntime {
                             source_y,
                             target_x,
                             target_y,
+                            attack.speed,
                             hit_delays.get(hit_index).copied().unwrap_or_default(),
                         );
                     }
@@ -4252,7 +4890,7 @@ impl MapSceneRuntime {
                             .map(|mob| (mob.x, mob.y)),
                     )
                     .map_or(Duration::ZERO, |((source_x, _), (target_x, _))| {
-                        projectile_flight_duration(source_x, target_x)
+                        projectile_flight_duration(source_x, target_x, attack.speed)
                     })
             } else {
                 Duration::ZERO
@@ -4782,6 +5420,8 @@ impl MapSceneRuntime {
             body.vertical_speed = 0.0;
         }
         let mut drop = MapDropRuntime {
+            item_id: spawn.item_id,
+            meso: spawn.meso,
             x: f64::from(spawn.source_x),
             y: f64::from(spawn.source_y) - 4.0,
             destination_x: f64::from(spawn.destination_x),
@@ -4811,6 +5451,22 @@ impl MapSceneRuntime {
     }
 
     fn remove_drop(&mut self, update: openstory_protocol::MapDropRemove) {
+        if update.looted_by_pet || update.mode == 5 {
+            // Pet pickups use removal mode 5. Fade the confirmed drop locally
+            // instead of deleting it outright so the pickup is visible.
+            if let Some(drop) = self.drops.get_mut(&update.object_id) {
+                drop.body.mode = PhysicsMode::Fixated;
+                drop.body.horizontal_speed = 0.0;
+                drop.body.vertical_speed = 0.0;
+                drop.motion = DropMotion::PickedUp {
+                    mode: 0,
+                    looter_id: None,
+                    elapsed: Duration::ZERO,
+                };
+            }
+            return;
+        }
+
         match update.mode {
             1 => {
                 self.drops.remove(&update.object_id);
@@ -4823,9 +5479,7 @@ impl MapSceneRuntime {
                     }
                     drop.motion = DropMotion::PickedUp {
                         mode: update.mode,
-                        looter_id: (!update.looted_by_pet)
-                            .then_some(update.looter_id)
-                            .flatten(),
+                        looter_id: update.looter_id,
                         elapsed: Duration::ZERO,
                     };
                 }
@@ -4834,34 +5488,69 @@ impl MapSceneRuntime {
         }
     }
 
-    fn nearest_drop(&self) -> Option<i32> {
-        let now = Instant::now();
-        self.drops
-            .iter()
-            .filter(|(_, drop)| {
-                !matches!(drop.motion, DropMotion::PickedUp { .. })
-                    && drop.pickup_attempt.is_none_or(|last| {
-                        now.saturating_duration_since(last) >= Duration::from_secs(2)
-                    })
-                    && self.player.x >= drop.x
-                    && self.player.x <= drop.x + 32.0
-                    && self.player.y >= drop.y
-                    && self.player.y <= drop.y + 32.0
-            })
-            .min_by(|(_, left), (_, right)| {
-                let left_distance = (left.x + 16.0 - self.player.x).powi(2)
-                    + (left.y + 16.0 - self.player.y).powi(2);
-                let right_distance = (right.x + 16.0 - self.player.x).powi(2)
-                    + (right.y + 16.0 - self.player.y).powi(2);
-                left_distance.total_cmp(&right_distance)
-            })
-            .map(|(object_id, _)| *object_id)
-    }
-
     fn mark_drop_pickup_attempt(&mut self, object_id: i32) {
         if let Some(drop) = self.drops.get_mut(&object_id) {
             drop.pickup_attempt = Some(Instant::now());
         }
+    }
+
+    fn loot_drop_snapshots(&self) -> Vec<LootDropSnapshot> {
+        self.drops
+            .iter()
+            .map(|(&object_id, drop)| LootDropSnapshot {
+                object_id,
+                item_id: drop.item_id,
+                meso: drop.meso,
+                x: drop.x,
+                y: drop.y,
+                picked_up: matches!(drop.motion, DropMotion::PickedUp { .. }),
+                pickup_attempt: drop.pickup_attempt,
+                pet_pickup_attempt: drop.pet_pickup_attempt,
+            })
+            .collect()
+    }
+
+    fn request_player_pickup_search(&mut self) {
+        if self.loot_search.player_pending {
+            return;
+        }
+        let now = Instant::now();
+        let player = (self.player.x, self.player.y);
+        let drops = self.loot_drop_snapshots();
+        if self.loot_search.requests.is_none() {
+            self.loot_search.player_result = Some(search_player_drop(player, &drops, now));
+            return;
+        }
+        self.loot_search.request_player(LootSearchRequest::Player {
+            player,
+            drops,
+            now,
+        });
+    }
+
+    fn take_player_pickup_search_result(&mut self) -> Option<Option<(i32, (f64, f64))>> {
+        self.loot_search.take_player_result()
+    }
+
+    fn player_pickup_candidate_is_valid(&self, object_id: i32) -> Option<(f64, f64)> {
+        let now = Instant::now();
+        let drop = self.drops.get(&object_id)?;
+        let snapshot = LootDropSnapshot {
+            object_id,
+            item_id: drop.item_id,
+            meso: drop.meso,
+            x: drop.x,
+            y: drop.y,
+            picked_up: matches!(drop.motion, DropMotion::PickedUp { .. }),
+            pickup_attempt: drop.pickup_attempt,
+            pet_pickup_attempt: drop.pet_pickup_attempt,
+        };
+        (drop_pickup_is_available(&snapshot, now)
+            && self.player.x >= drop.x
+            && self.player.x <= drop.x + 32.0
+            && self.player.y >= drop.y
+            && self.player.y <= drop.y + 32.0)
+            .then_some((drop.x, drop.y))
     }
 
     fn nearest_attack_targets(
@@ -4870,7 +5559,7 @@ impl MapSceneRuntime {
         range: [i16; 4],
         horizontal_range_multiplier: f64,
         horizontal_range_bonus: i16,
-        mirror_upward_mob_bounds: bool,
+        ranged_attack: bool,
     ) -> Vec<(i32, MobTraits, (f64, f64))> {
         if maximum_targets == 0 {
             return Vec::new();
@@ -4893,22 +5582,45 @@ impl MapSceneRuntime {
                 // Mob sprites are usually anchored at their feet, so their
                 // bounds naturally give attacks extra reach downward. Mirror
                 // that offset for elevated mobs to balance ranged reach.
-                let (mob_top, mob_bottom) =
-                    if mirror_upward_mob_bounds && mob.y < self.player.y {
-                        (2.0 * mob.y - mob_bottom, 2.0 * mob.y - mob_top)
-                    } else {
-                        (mob_top, mob_bottom)
-                    };
+                let (mob_top, mob_bottom) = if ranged_attack && mob.y < self.player.y {
+                    (2.0 * mob.y - mob_bottom, 2.0 * mob.y - mob_top)
+                } else {
+                    (mob_top, mob_bottom)
+                };
                 let dx = mob.x - self.player.x;
                 let dy = mob.y - self.player.y;
+                let rank = if ranged_attack {
+                    // Favor flatter shots while retaining a distance
+                    // preference, using the rendered projectile's path.
+                    let projectile_x = self.player.x
+                        + if mob.x < self.player.x { -30.0 } else { 30.0 };
+                    let projectile_y = self.player.y - 26.0;
+                    let target_y = mob.y - 24.0;
+                    let trajectory_dx = (mob.x - projectile_x).abs();
+                    let trajectory_dy = (target_y - projectile_y).abs();
+                    let trajectory_length = trajectory_dx.hypot(trajectory_dy);
+                    let trajectory_angle = trajectory_dy.atan2(trajectory_dx);
+                    (
+                        trajectory_length
+                            + trajectory_angle * RANGED_TARGET_ANGLE_PENALTY_PX_PER_RADIAN,
+                        trajectory_length,
+                    )
+                } else {
+                    (dx * dx + dy * dy, 0.0)
+                };
                 (range_left <= mob_right
                     && range_right >= mob_left
                     && range_top <= mob_bottom
                     && range_bottom >= mob_top)
-                    .then_some((*object_id, mob.traits, (mob.x, mob.y), dx * dx + dy * dy))
+                    .then_some((*object_id, mob.traits, (mob.x, mob.y), rank))
             })
             .collect::<Vec<_>>();
-        targets.sort_by(|left, right| left.3.total_cmp(&right.3));
+        targets.sort_by(|left, right| {
+            left.3
+                .0
+                .total_cmp(&right.3.0)
+                .then_with(|| left.3.1.total_cmp(&right.3.1))
+        });
         targets
             .into_iter()
             .take(maximum_targets.min(15))
@@ -4916,7 +5628,13 @@ impl MapSceneRuntime {
             .collect()
     }
 
-    fn check_mob_touch(&mut self, elapsed: Duration, protected: bool) -> Option<MobTouchAttack> {
+    fn check_mob_touch(
+        &mut self,
+        elapsed: Duration,
+        protected: bool,
+        player_level: i32,
+        player_avoidability: i32,
+    ) -> Option<MobTouchAttack> {
         self.touch_damage_cooldown = self.touch_damage_cooldown.saturating_sub(elapsed);
         self.local_invincibility_remaining =
             self.local_invincibility_remaining.saturating_sub(elapsed);
@@ -4944,17 +5662,32 @@ impl MapSceneRuntime {
                 overlaps.then_some((
                     *object_id,
                     mob.mob_id,
-                    mob.traits.physical_attack,
+                    mob.traits,
                     mob.x,
                     (mob.x - self.player.x).powi(2) + (mob.y - self.player.y).powi(2),
                 ))
             })
             .min_by(|left, right| left.4.total_cmp(&right.4));
-        let (object_id, mob_id, physical_attack, origin_x, _) = candidate?;
-        let minimum = (f64::from(physical_attack) * 0.8) as i32;
-        let damage_span = physical_attack.saturating_sub(minimum).saturating_add(1);
-        let damage = minimum
-            .saturating_add((self.next_attack_random() * f64::from(damage_span.max(1))) as i32);
+        let (object_id, mob_id, traits, origin_x, _) = candidate?;
+        let hit_chance = combat_hit_chance(
+            traits.accuracy,
+            traits.level,
+            player_level,
+            f64::from(player_avoidability),
+        );
+        let hit = self.next_attack_random() < hit_chance;
+        let damage = if hit {
+            let minimum = (f64::from(traits.physical_attack) * 0.8) as i32;
+            let damage_span = traits
+                .physical_attack
+                .saturating_sub(minimum)
+                .saturating_add(1);
+            minimum.saturating_add(
+                (self.next_attack_random() * f64::from(damage_span.max(1))) as i32,
+            )
+        } else {
+            0
+        };
         self.touch_damage_cooldown = Duration::from_millis(500);
         Some(MobTouchAttack {
             object_id,
@@ -5159,6 +5892,7 @@ impl MapSceneRuntime {
         frames: Vec<ProjectileFrameRuntime>,
         target_x: f64,
         target_y: f64,
+        attack_speed: i8,
         launch_delay: Duration,
     ) {
         let (source_x, source_y) = (self.player.x, self.player.y);
@@ -5168,6 +5902,7 @@ impl MapSceneRuntime {
             source_y,
             target_x,
             target_y,
+            attack_speed,
             launch_delay,
         );
     }
@@ -5179,6 +5914,7 @@ impl MapSceneRuntime {
         source_y: f64,
         target_x: f64,
         target_y: f64,
+        attack_speed: i8,
         launch_delay: Duration,
     ) {
         if frames.is_empty() {
@@ -5193,6 +5929,7 @@ impl MapSceneRuntime {
             frame_index: 0,
             frame_elapsed: Duration::ZERO,
             launch_delay,
+            velocity_scale: projectile_speed_scale(attack_speed),
             x: source_x + if facing_left { -30.0 } else { 30.0 },
             y: source_y - 26.0,
             target_x,
@@ -5226,7 +5963,7 @@ impl MapSceneRuntime {
                 if dx.abs() < 10.0 {
                     return false;
                 }
-                let horizontal_speed = projectile_horizontal_step(dx);
+                let horizontal_speed = projectile_horizontal_step(dx) * projectile.velocity_scale;
                 projectile.x += horizontal_speed;
                 projectile.y += horizontal_speed * dy / dx;
                 projectile.facing_left = horizontal_speed < 0.0;
@@ -5302,24 +6039,30 @@ impl MapSceneRuntime {
         }
     }
 
-    fn advance_pets(&mut self, updates: u8, local_character_id: Option<i32>) -> Vec<Vec<u8>> {
+    fn advance_pets(
+        &mut self,
+        updates: u8,
+        local_character_id: Option<i32>,
+        inventory: Option<&openstory_protocol::InventorySnapshot>,
+    ) -> Vec<Vec<u8>> {
+        self.loot_search.poll();
         let owner = (self.player.x, self.player.y);
         let owner_foothold_id = self.player.foothold_id;
         let owner_is_climbing = self.local_ladder.is_some();
-        let mut packets = Vec::new();
+        let mut packets = self.apply_pet_loot_search_result(local_character_id, inventory);
         for _ in 0..updates {
             if self.pet_loot_cooldown > 0 {
                 self.pet_loot_cooldown -= 1;
             }
             if self.pet_loot_cooldown == 0 {
                 self.pet_loot_cooldown = 10;
-                packets.extend(self.update_local_pet_loot(local_character_id));
+                self.request_pet_loot_search(local_character_id, inventory);
             }
             let footholds = self.footholds.as_ref();
             for pet in self.pets.values_mut() {
                 pet.advance(1);
                 if Some(pet.owner_id) == local_character_id {
-                    pet.follow_local(owner, owner_is_climbing, footholds);
+                    pet.follow_local(owner, owner_foothold_id, owner_is_climbing, footholds);
                     if owner_is_climbing {
                         // The pet is drawn with the player while climbing, so
                         // carry the player's foothold through the ladder exit
@@ -5354,67 +6097,142 @@ impl MapSceneRuntime {
         packets
     }
 
-    fn update_local_pet_loot(&mut self, local_character_id: Option<i32>) -> Vec<Vec<u8>> {
+    fn request_pet_loot_search(
+        &mut self,
+        local_character_id: Option<i32>,
+        inventory: Option<&openstory_protocol::InventorySnapshot>,
+    ) {
         let Some(local_character_id) = local_character_id else {
+            return;
+        };
+        if self.loot_search.pet_pending {
+            return;
+        }
+        let pets = (0..3)
+            .filter_map(|slot| {
+                self.pets
+                    .get(&(local_character_id, slot))
+                    .map(|pet| LootPetSnapshot {
+                        slot,
+                        unique_id: pet.unique_id,
+                        x: pet.x,
+                        y: pet.y,
+                    })
+            })
+            .collect::<Vec<_>>();
+        if pets.is_empty() {
+            return;
+        }
+        let now = Instant::now();
+        let player = (self.player.x, self.player.y);
+        let drops = self.loot_drop_snapshots();
+        let inventory_has_space = inventory_has_free_slots(inventory);
+        if self.loot_search.requests.is_none() {
+            self.loot_search.pet_result = Some(search_pet_drops(
+                player,
+                &pets,
+                &drops,
+                inventory_has_space,
+                now,
+            ));
+            return;
+        }
+        self.loot_search.request_pets(LootSearchRequest::Pets {
+            player,
+            pets,
+            drops,
+            inventory_has_space,
+            now,
+        });
+    }
+
+    fn apply_pet_loot_search_result(
+        &mut self,
+        local_character_id: Option<i32>,
+        inventory: Option<&openstory_protocol::InventorySnapshot>,
+    ) -> Vec<Vec<u8>> {
+        let Some(local_character_id) = local_character_id else {
+            self.loot_search.take_pet_result();
+            return Vec::new();
+        };
+        let Some(decisions) = self.loot_search.take_pet_result() else {
             return Vec::new();
         };
         let player = (self.player.x, self.player.y);
-        let drops = &mut self.drops;
-        let pets = &mut self.pets;
-        let mut cooldown = self.pet_loot_cooldown;
-        let mut packets = Vec::new();
-        let mut reserved = HashSet::new();
+        let inventory_has_space = inventory_has_free_slots(inventory);
         let now = Instant::now();
-
-        for slot in 0..3 {
-            let Some(pet) = pets.get_mut(&(local_character_id, slot)) else {
+        let mut packets = Vec::new();
+        for decision in decisions {
+            let Some(pet) = self.pets.get_mut(&(local_character_id, decision.slot)) else {
                 continue;
             };
-            let mut pickup: Option<i32> = None;
-            let mut nearest: Option<(f64, i32, (f64, f64))> = None;
-            for (&object_id, drop) in drops.iter() {
-                if !matches!(drop.motion, DropMotion::Floating { .. })
-                    || reserved.contains(&object_id)
-                    || drop.pet_pickup_attempt.is_some_and(|last| {
-                        now.saturating_duration_since(last) < Duration::from_secs(2)
-                    })
-                {
-                    continue;
-                }
-                let pet_dx = (drop.x - pet.x).abs();
-                let pet_dy = (drop.y - pet.y).abs();
-                if pet_dx <= 30.0 && pet_dy <= 25.0 {
-                    pickup = Some(pickup.map_or(object_id, |current| current.min(object_id)));
-                }
-                let player_distance = (drop.x - player.0).abs() + (drop.y - player.1).abs();
-                if player_distance < 200.0
-                    && nearest.is_none_or(|(best_distance, best_id, _)| {
-                        player_distance < best_distance
-                            || (player_distance == best_distance && object_id < best_id)
-                    })
-                {
-                    nearest = Some((player_distance, object_id, (drop.x, drop.y)));
-                }
+            if pet.unique_id != decision.unique_id {
+                continue;
             }
-            if let Some(object_id) = pickup {
-                if let Some(drop) = drops.get_mut(&object_id) {
+
+            let pickup_valid = decision.pickup.is_some_and(|object_id| {
+                let Some(drop) = self.drops.get(&object_id) else {
+                    return false;
+                };
+                let snapshot = LootDropSnapshot {
+                    object_id,
+                    item_id: drop.item_id,
+                    meso: drop.meso,
+                    x: drop.x,
+                    y: drop.y,
+                    picked_up: matches!(drop.motion, DropMotion::PickedUp { .. }),
+                    pickup_attempt: drop.pickup_attempt,
+                    pet_pickup_attempt: drop.pet_pickup_attempt,
+                };
+                !snapshot.picked_up
+                    && drop_can_fit_inventory(&snapshot, inventory_has_space)
+                    && drop.pet_pickup_attempt.is_none_or(|last| {
+                        now.saturating_duration_since(last) >= Duration::from_secs(2)
+                    })
+                    && (drop.x - pet.x).abs() <= 30.0
+                    && (drop.y - pet.y).abs() <= 25.0
+            });
+
+            if let Some(object_id) = decision.pickup.filter(|_| pickup_valid) {
+                if let Some(drop) = self.drops.get_mut(&object_id) {
                     drop.pet_pickup_attempt = Some(now);
                 }
-                reserved.insert(object_id);
+                pet.loot_excursion = true;
                 packets.push(openstory_protocol::pet_loot_packet(
                     pet.unique_id,
                     object_id,
                 ));
-                pet.loot_target = None;
-                cooldown = 60;
-            } else if let Some((_, object_id, target)) = nearest {
-                reserved.insert(object_id);
-                pet.loot_target = Some(target);
-            } else {
-                pet.loot_target = None;
             }
+
+            let target = decision.target.and_then(|(object_id, _, _)| {
+                let drop = self.drops.get(&object_id)?;
+                let snapshot = LootDropSnapshot {
+                    object_id,
+                    item_id: drop.item_id,
+                    meso: drop.meso,
+                    x: drop.x,
+                    y: drop.y,
+                    picked_up: matches!(drop.motion, DropMotion::PickedUp { .. }),
+                    pickup_attempt: drop.pickup_attempt,
+                    pet_pickup_attempt: drop.pet_pickup_attempt,
+                };
+                (!snapshot.picked_up
+                    && drop_can_fit_inventory(&snapshot, inventory_has_space)
+                    && drop.pet_pickup_attempt.is_none_or(|last| {
+                        now.saturating_duration_since(last) >= Duration::from_secs(2)
+                    })
+                    && (drop.x - player.0).abs() + (drop.y - player.1).abs() < 200.0)
+                    .then_some((drop.x, drop.y))
+            });
+            if decision.pickup.is_some() && !pickup_valid {
+                pet.loot_target = None;
+                continue;
+            }
+            if target.is_some() {
+                pet.loot_excursion = true;
+            }
+            pet.loot_target = target;
         }
-        self.pet_loot_cooldown = cooldown;
         packets
     }
 
@@ -5607,6 +6425,9 @@ impl MapSceneRuntime {
                 hit_damage,
                 damage,
             });
+        if let Some(kill) = self.pending_mob_kills.get_mut(&object_id) {
+            kill.remaining = kill.remaining.max(delay);
+        }
     }
 
     fn apply_mob_attack_impact(
@@ -5656,6 +6477,16 @@ impl MapSceneRuntime {
                     hit_damage: impact.hit_damage,
                     damage: impact.damage.take(),
                 });
+                false
+            } else {
+                true
+            }
+        });
+        let mut due_kills = Vec::new();
+        self.pending_mob_kills.retain(|object_id, kill| {
+            kill.remaining = kill.remaining.saturating_sub(elapsed);
+            if kill.remaining.is_zero() {
+                due_kills.push((*object_id, kill.animation));
                 false
             } else {
                 true
@@ -5847,6 +6678,9 @@ impl MapSceneRuntime {
                 impact.damage,
                 impact.cancel_if_target_missing,
             );
+        }
+        for (object_id, animation) in due_kills {
+            self.apply_mob_kill_animation(object_id, animation);
         }
         packets
     }
@@ -6285,6 +7119,12 @@ impl MapSceneRuntime {
     }
 
     fn refresh_existing_mob(&mut self, spawn: &openstory_protocol::MapMobSpawn) -> bool {
+        if !self.mobs.contains_key(&spawn.object_id) {
+            return false;
+        }
+        self.pending_mob_kills.remove(&spawn.object_id);
+        self.pending_mob_attack_impacts
+            .retain(|impact| impact.object_id != spawn.object_id);
         let Some(mob) = self.mobs.get_mut(&spawn.object_id) else {
             return false;
         };
@@ -6330,6 +7170,23 @@ impl MapSceneRuntime {
 
     fn kill_mob(&mut self, object_id: i32, animation: i8) {
         if !self.mobs.contains_key(&object_id) {
+            return;
+        }
+        let impact_delay = self
+            .pending_mob_attack_impacts
+            .iter()
+            .filter(|impact| impact.object_id == object_id)
+            .map(|impact| impact.remaining)
+            .max()
+            .unwrap_or_default();
+        if !impact_delay.is_zero() {
+            self.pending_mob_kills.insert(
+                object_id,
+                PendingMobKill {
+                    animation,
+                    remaining: impact_delay,
+                },
+            );
             return;
         }
         self.apply_mob_kill_animation(object_id, animation);
@@ -6588,6 +7445,7 @@ mod pet_pathing_tests {
             y: 0.0,
             body,
             loot_target: Some((100.0, -50.0)),
+            loot_excursion: true,
             movement_ticks: 0,
             last_sent_movement: None,
             stance: 4,
@@ -6598,7 +7456,7 @@ mod pet_pathing_tests {
             interaction: None,
             speech_bubble_remaining: None,
         };
-        pet.follow_local((-180.0, 0.0), false, None);
+        pet.follow_local((-180.0, 0.0), 0, false, None);
         assert_eq!(pet.body.x, 0.0);
         assert!(pet.body.horizontal_force > 0.0);
     }

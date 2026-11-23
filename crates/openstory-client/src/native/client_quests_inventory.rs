@@ -1,6 +1,31 @@
 use super::*;
 
 impl ClientApp {
+    pub(super) fn reset_quest_helper_tracking(&mut self) {
+        self.quest_helper_order = self
+            .quest_log
+            .started
+            .iter()
+            .map(|quest| quest.id)
+            .collect();
+        self.quest_helper_progress = self
+            .quest_log
+            .started
+            .iter()
+            .map(|quest| {
+                (
+                    quest.id,
+                    quest_helper_progress_snapshot(
+                        quest,
+                        &self.quest_archive,
+                        self.inventory.as_ref(),
+                    ),
+                )
+            })
+            .collect();
+        self.quest_helper_tracking_initialized = true;
+    }
+
     fn register_inventory_equip_click(
         &mut self,
         target: Option<(openstory_protocol::InventoryType, u16)>,
@@ -83,6 +108,75 @@ impl ClientApp {
             }
         }
         self.refresh_quest_log_texture();
+    }
+
+    fn teleport_to_selected_quest_npc(&mut self) {
+        if self.quest_log_tab != QuestLogTab::Active {
+            return;
+        }
+        let Some(quest_id) = quest_ids_for_tab(
+            &self.quest_log,
+            &self.available_quests,
+            self.quest_log_tab,
+            &self.quest_archive,
+            &self.font,
+        )
+        .get(self.quest_log_selected)
+        .copied() else {
+            return;
+        };
+        let Some(quest) = self
+            .quest_log
+            .started
+            .iter()
+            .find(|quest| quest.id == quest_id)
+        else {
+            return;
+        };
+        if !quest_is_completable(
+            quest,
+            &self.quest_archive,
+            self.inventory.as_ref(),
+            &self.quest_log,
+        ) {
+            return;
+        }
+        if !self.channel_connected {
+            self.push_chat_line(
+                "[Quest] Not connected to a game channel.".to_owned(),
+                [255, 105, 105],
+            );
+            return;
+        }
+        let Some(session) = self.session.as_ref() else {
+            self.push_chat_line(
+                "[Quest] Not connected to a game channel.".to_owned(),
+                [255, 105, 105],
+            );
+            return;
+        };
+        let command = format!("@teleportToNpcForQuestCompletion {quest_id}");
+        let packet = match openstory_protocol::general_chat_packet(&command, true) {
+            Ok(packet) => packet,
+            Err(error) => {
+                self.push_chat_line(
+                    format!("[Quest] Could not request NPC teleport: {error}"),
+                    [255, 105, 105],
+                );
+                return;
+            }
+        };
+        if let Err(error) = session.send_packet(packet) {
+            eprintln!("OpenStory: could not request quest NPC teleport: {error}");
+            self.channel_connected = false;
+            self.push_chat_line(
+                format!("[Quest] Could not request NPC teleport: {error}"),
+                [255, 105, 105],
+            );
+            return;
+        }
+
+        self.show_quest_log = false;
     }
 
     pub(super) fn change_selected_quest_reward(&mut self, direction: isize) {
@@ -176,31 +270,29 @@ impl ClientApp {
         }
         if has_detail && ui_foundation::QUEST_DETAIL_CLOSE_BUTTON.contains(x, y) {
             self.quest_log_detail_open = false;
+            self.quest_detail_scroll = 0;
             self.refresh_quest_log_texture();
             return true;
         }
-        if (5.0..20.0).contains(&y) && (207.0..240.0).contains(&x) {
+        if ui_foundation::QUEST_LIST_CLOSE_BUTTON.contains(x, y) {
             self.show_quest_log = false;
             return true;
         }
-        if (21.0..48.0).contains(&y) {
-            let tab = if (10.0..76.0).contains(&x) {
-                Some(QuestLogTab::Available)
-            } else if (78.0..148.0).contains(&x) {
-                Some(QuestLogTab::Active)
-            } else if (150.0..220.0).contains(&x) {
-                Some(QuestLogTab::Completed)
-            } else {
-                None
-            };
-            if let Some(tab) = tab {
-                self.quest_log_tab = tab;
-                self.quest_log_detail_open = true;
-                self.quest_log_selected = 0;
-                self.quest_log_scroll = 0;
-                self.quest_reward_selected = 0;
-                self.refresh_quest_log_texture();
-            }
+        let tabs = [
+            QuestLogTab::Available,
+            QuestLogTab::Active,
+            QuestLogTab::Completed,
+        ];
+        if let Some(index) =
+            (0..tabs.len()).find(|index| ui_foundation::quest_tab(*index).contains(x, y))
+        {
+            self.quest_log_tab = tabs[index];
+            self.quest_detail_scroll = 0;
+            self.quest_log_detail_open = true;
+            self.quest_log_selected = 0;
+            self.quest_log_scroll = 0;
+            self.quest_reward_selected = 0;
+            self.refresh_quest_log_texture();
             return true;
         }
         if let Some(row) = ui_foundation::QUEST_GRID.hit(x, y) {
@@ -215,12 +307,30 @@ impl ClientApp {
                 )
                 .len()
             {
+                self.quest_detail_scroll = 0;
                 self.quest_log_selected = index;
                 self.quest_log_detail_open = true;
                 self.quest_reward_selected = 0;
                 self.refresh_quest_log_texture();
             }
             return true;
+        }
+        if has_detail && self.quest_detail_scroll_max > 0 {
+            let scrollbar_x = QUEST_LOG_DETAIL_X as f32 + QUEST_LOG_DETAIL_WIDTH as f32
+                - QUEST_SCROLLBAR_WIDTH as f32
+                - QUEST_DETAIL_SCROLLBAR_INSET as f32;
+            let body_top = QUEST_DETAIL_BODY_TOP as f32;
+            let body_height = quest_detail_body_bottom(self.quest_log_tab)
+                .saturating_sub(QUEST_DETAIL_BODY_TOP) as f32;
+            if (scrollbar_x..scrollbar_x + QUEST_SCROLLBAR_WIDTH as f32).contains(&x)
+                && (body_top..body_top + body_height).contains(&y)
+            {
+                let fraction = ((y - body_top) / body_height).clamp(0.0, 1.0);
+                self.quest_detail_scroll =
+                    (fraction * self.quest_detail_scroll_max as f32).round() as usize;
+                self.refresh_quest_log_texture();
+                return true;
+            }
         }
         if self.quest_log_tab == QuestLogTab::Active
             && (300.0..335.0).contains(&y)
@@ -240,6 +350,8 @@ impl ClientApp {
                 self.quest_helper_dismissed = false;
                 self.refresh_quest_helper_texture();
             }
+        } else if has_detail && ui_foundation::QUEST_TELEPORT_BUTTON.contains(x, y) {
+            self.teleport_to_selected_quest_npc();
         } else if self.quest_log_tab == QuestLogTab::Active {
             if ui_foundation::QUEST_FORFEIT_BUTTON.contains(x, y)
                 && let Some(quest_id) = quest_ids_for_tab(
@@ -277,9 +389,7 @@ impl ClientApp {
         let pending_skill_click = self.skill_book_last_click.take();
         let local_x = cursor.x - PANEL_X;
         let local_y = cursor.y - PANEL_Y;
-        if (SKILL_BOOK_PANEL_WIDTH as f32 - 24.0..SKILL_BOOK_PANEL_WIDTH as f32).contains(&local_x)
-            && (4.0..25.0).contains(&local_y)
-        {
+        if ui_foundation::SKILL_CLOSE_BUTTON.contains(local_x, local_y) {
             self.show_skill_book = false;
             return true;
         }
@@ -374,7 +484,7 @@ impl ClientApp {
         }
         let now = Instant::now();
         match self.skill_cooldowns.get(&skill.id).copied() {
-            Some(expires_at) if expires_at > now => {
+            Some(cooldown) if cooldown.expires_at > now => {
                 self.push_chat_line(
                     "You cannot use this skill as it is on cooldown.".to_owned(),
                     [255, 105, 105],
@@ -808,7 +918,8 @@ impl ClientApp {
                 let Ok(source) = i16::try_from(item.slot) else {
                     return;
                 };
-                let Some(destination) = equip_slot_for_item(item.item_id, inventory) else {
+                let Some(destination) = equip_slot_for_item(item.item_id, item.cash, inventory)
+                else {
                     eprintln!("OpenStory: this item has no supported equipment slot");
                     return;
                 };
@@ -870,6 +981,105 @@ impl ClientApp {
         }
     }
 
+    pub(super) fn equipment_auto_potion_at(
+        &self,
+        cursor: Point,
+    ) -> Option<openstory_protocol::AutoPotionSlot> {
+        self.equipment_tab.potion_at(
+            cursor.x - EQUIPMENT_INVENTORY_PANEL_X,
+            cursor.y - EQUIPMENT_INVENTORY_PANEL_Y,
+        )
+    }
+
+    fn assign_equipment_auto_potion(
+        &mut self,
+        slot: openstory_protocol::AutoPotionSlot,
+        source_type: openstory_protocol::InventoryType,
+        source_slot: u16,
+    ) {
+        use openstory_protocol::{AutoPotionSlot, InventoryType};
+        let item = self.inventory.as_ref().and_then(|inventory| {
+            inventory.items.iter().find(|item| {
+                source_type == InventoryType::Use
+                    && item.inventory_type == source_type
+                    && item.slot == source_slot
+                    && item.count > 0
+            })
+        });
+        let (label, properties) = match slot {
+            AutoPotionSlot::Hp => ("HP", ["hp", "hpR"]),
+            AutoPotionSlot::Mp => ("MP", ["mp", "mpR"]),
+        };
+        let id = item.map(|item| item.item_id).filter(|id| {
+            self.item_archive
+                .root()
+                .resolve(&format!("Consume/{:04}.img/{:08}/spec", id / 10_000, id))
+                .ok()
+                .flatten()
+                .is_some_and(|spec| {
+                    properties.iter().any(|property| {
+                        integer_property(&spec, property).is_some_and(|amount| amount > 0)
+                    })
+                })
+        });
+        if let Some(id) = id {
+            self.send_auto_potion_assignment(slot, id);
+        } else {
+            self.push_chat_line(
+                format!("[Pet] Drag a Use item that restores {label} into this slot."),
+                [255, 215, 128],
+            );
+        }
+    }
+
+    pub(super) fn send_auto_potion_assignment(
+        &mut self,
+        slot: openstory_protocol::AutoPotionSlot,
+        item_id: i32,
+    ) {
+        let assigned = match slot {
+            openstory_protocol::AutoPotionSlot::Hp => self.auto_hp_potion_id,
+            openstory_protocol::AutoPotionSlot::Mp => self.auto_mp_potion_id,
+        };
+        if assigned == item_id {
+            return;
+        }
+        let Some(session) = self.session.as_ref().filter(|_| self.channel_connected) else {
+            return;
+        };
+        let packet = openstory_protocol::change_auto_potion_packet(slot, item_id);
+        if let Err(error) = session.send_packet(packet) {
+            eprintln!("OpenStoryRS: could not assign a pet auto-potion: {error}");
+            self.channel_connected = false;
+            return;
+        }
+        // v83 does not echo this edit. Login-time updates restore the server binding.
+        self.apply_auto_potion(slot, item_id);
+    }
+
+    pub(super) fn right_click_equipment_slot(&mut self, cursor: Point) -> bool {
+        if let Some(slot) = self.equipment_auto_potion_at(cursor) {
+            self.send_auto_potion_assignment(slot, 0);
+            return true;
+        }
+        if self.equipment_tab != EquipmentTab::Pet || self.pending_scroll_slot.is_some() {
+            return false;
+        }
+        let slot = self.inventory.as_ref().and_then(|inventory| {
+            let x = cursor.x - EQUIPMENT_INVENTORY_PANEL_X;
+            let y = cursor.y - EQUIPMENT_INVENTORY_PANEL_Y;
+            self.equipment_tab
+                .worn_at(inventory, x, y)
+                .map(|item| item.slot)
+        });
+        if let Some(slot) = slot {
+            self.activate_inventory_item(openstory_protocol::InventoryType::Equipped, slot);
+            true
+        } else {
+            false
+        }
+    }
+
     pub(super) fn begin_equipment_inventory_pointer(&mut self, cursor: Point) -> bool {
         if !rect_contains(
             SpriteRect {
@@ -885,14 +1095,18 @@ impl ClientApp {
         }
         let local_x = cursor.x - EQUIPMENT_INVENTORY_PANEL_X;
         let local_y = cursor.y - EQUIPMENT_INVENTORY_PANEL_Y;
-        if ui_foundation::EQUIPMENT_PET_BUTTON.contains(local_x, local_y) {
-            self.toggle_pet_equipment_panel();
-            return true;
-        }
-        if ui_foundation::INVENTORY_CLOSE_BUTTON.contains(local_x, local_y) {
-            self.show_equipment_inventory = false;
-            self.show_pet_equipment = false;
-            return true;
+        if ui_equipment::CLOSE.contains(local_x, local_y) {
+            self.toggle_equipment_inventory();
+        } else if let Some(tab) = EquipmentTab::ALL
+            .into_iter()
+            .find(|tab| tab.bounds().contains(local_x, local_y))
+        {
+            if self.equipment_tab != tab {
+                self.equipment_tab = tab;
+                self.refresh_equipment_inventory_texture();
+                self.update_inventory_hover();
+                self.refresh_inventory_tooltip_texture();
+            }
         }
         true
     }
@@ -916,10 +1130,7 @@ impl ClientApp {
         self.inventory_drag_source = None;
         let local_x = cursor.x - INVENTORY_PANEL_X;
         let local_y = cursor.y - INVENTORY_PANEL_Y;
-        let close = ui_foundation::INVENTORY_CLOSE_BUTTON;
-        if (close.x..close.x + close.width + 1.0).contains(&local_x)
-            && (close.y - 1.0..close.y + close.height + 2.0).contains(&local_y)
-        {
+        if ui_foundation::INVENTORY_CLOSE_BUTTON.contains(local_x, local_y) {
             self.register_inventory_equip_click(None);
             self.show_inventory = false;
             self.inventory_hover_slot = None;
@@ -1002,50 +1213,6 @@ impl ClientApp {
         }
     }
 
-    pub(super) fn begin_pet_equipment_pointer(&mut self, cursor: Point) -> bool {
-        if !rect_contains(
-            SpriteRect {
-                x: PET_EQUIPMENT_PANEL_X,
-                y: PET_EQUIPMENT_PANEL_Y,
-                width: PET_EQUIPMENT_PANEL_WIDTH as f32,
-                height: PET_EQUIPMENT_PANEL_HEIGHT as f32,
-                blend_mode: BlendMode::Alpha,
-            },
-            cursor,
-        ) {
-            return false;
-        }
-        let local_x = cursor.x - PET_EQUIPMENT_PANEL_X;
-        let local_y = cursor.y - PET_EQUIPMENT_PANEL_Y;
-        if ui_foundation::PET_EQUIPMENT_CLOSE_BUTTON.contains(local_x, local_y) {
-            self.show_pet_equipment = false;
-            self.register_inventory_equip_click(None);
-            return true;
-        }
-        let row_y = local_y - PET_EQUIPMENT_GEAR_LIST_Y;
-        if row_y < 0.0 || row_y >= PET_EQUIPMENT_VISIBLE_ROWS as f32 * PET_EQUIPMENT_GEAR_ROW_HEIGHT
-        {
-            self.register_inventory_equip_click(None);
-            return true;
-        }
-        let index = (row_y / PET_EQUIPMENT_GEAR_ROW_HEIGHT).floor() as usize;
-        let selected = self.inventory.as_ref().and_then(|inventory| {
-            pet_equipment_drawer_items(inventory)
-                .get(self.pet_equipment_scroll_row.saturating_add(index))
-                .map(|item| (item.inventory_type, item.slot))
-        });
-        if let Some((inventory_type, slot)) = selected {
-            let double_click = self.register_inventory_equip_click(Some((inventory_type, slot)));
-            if inventory_type != openstory_protocol::InventoryType::Equip || double_click {
-                self.activate_inventory_item(inventory_type, slot);
-            }
-            self.refresh_pet_equipment_texture();
-        } else {
-            self.register_inventory_equip_click(None);
-        }
-        true
-    }
-
     pub(super) fn finish_inventory_pointer(&mut self, cursor: Option<Point>) {
         let Some((source_type, source_slot, origin)) = self.inventory_drag_source.take() else {
             return;
@@ -1109,6 +1276,15 @@ impl ClientApp {
         }
         if moved && let Some(drop_cursor) = cursor {
             let screen_cursor = self.cursor.unwrap_or(drop_cursor);
+            if self.topmost_dialog_window_at(screen_cursor)
+                == Some(DialogWindow::EquipmentInventory)
+            {
+                if let Some(slot) = self.equipment_auto_potion_at(drop_cursor) {
+                    self.assign_equipment_auto_potion(slot, source_type, source_slot);
+                }
+                self.refresh_inventory_texture();
+                return;
+            }
             if self.show_key_config
                 && self.topmost_dialog_window_at(screen_cursor) == Some(DialogWindow::KeyConfig)
             {
@@ -1660,6 +1836,9 @@ impl ClientApp {
         let mut equips = Vec::new();
         let mut weapon_id = 0;
         for item in inventory.equipped() {
+            if (180..=183).contains(&(item.item_id / 10_000)) {
+                continue;
+            }
             let Ok(positive_slot) = i8::try_from(item.slot) else {
                 continue;
             };
@@ -1671,10 +1850,13 @@ impl ClientApp {
                 weapon_id = item.item_id;
             }
         }
-        equips.sort_unstable();
-        let look_changed = character.look.equips != equips || character.look.weapon_id != weapon_id;
+        equips.sort_unstable_by_key(|(slot, _)| slot.unsigned_abs());
+        let look_changed = character.look.equips != equips
+            || !character.look.masked_equips.is_empty()
+            || character.look.weapon_id != weapon_id;
         if look_changed && let Some(character) = self.active_character.as_mut() {
             character.look.equips = equips;
+            character.look.masked_equips.clear();
             character.look.weapon_id = weapon_id;
         }
         look_changed

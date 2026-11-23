@@ -4,6 +4,7 @@ mod cash_shop_ui;
 mod channel_switch;
 mod hardware_info;
 mod item_megaphone;
+mod item_tooltip;
 mod keyboard_settings;
 mod messenger;
 mod minimap;
@@ -16,6 +17,7 @@ mod skill_tooltip;
 mod ui_catalog;
 mod ui_clock;
 mod ui_dialog;
+mod ui_equipment;
 mod ui_foundation;
 mod ui_preview;
 mod weather;
@@ -23,6 +25,7 @@ mod world_map;
 
 use super::session;
 use ui_dialog::NxDialog;
+use ui_equipment::EquipmentTab;
 
 use openstory_core::buffs::{BuffGroup, BuffKey, CharacterBuffs};
 use openstory_core::combat::{

@@ -50,64 +50,6 @@ pub(super) fn can_spend_skill_point(
 }
 
 impl ClientApp {
-    pub(super) fn refresh_pet_equipment_texture(&mut self) {
-        if !self.show_pet_equipment {
-            return;
-        }
-        let empty_inventory = openstory_protocol::InventorySnapshot::default();
-        let inventory = self.inventory.as_ref().unwrap_or(&empty_inventory);
-        self.pet_equipment_scroll_row = self.pet_equipment_scroll_row.min(
-            pet_equipment_drawer_items(inventory)
-                .len()
-                .saturating_sub(PET_EQUIPMENT_VISIBLE_ROWS),
-        );
-        let pixels = render_pet_equipment_panel(
-            &self.font,
-            inventory,
-            &self.legacy_ui_archive,
-            &self.item_archive,
-            &self.character_archive,
-            &self.string_archive,
-            &mut self.inventory_icon_cache,
-            &mut self.item_name_cache,
-            self.pet_equipment_scroll_row,
-        );
-        let Some(renderer) = self.renderer.as_ref() else {
-            return;
-        };
-        const WIDTH: u32 = PET_EQUIPMENT_PANEL_WIDTH;
-        const HEIGHT: u32 = PET_EQUIPMENT_PANEL_HEIGHT;
-        let result = if let Some(texture) = self.pet_equipment_texture.as_ref() {
-            renderer.update_bgra(texture, &pixels).map(|()| None)
-        } else {
-            renderer.upload_bgra(WIDTH, HEIGHT, &pixels).map(Some)
-        };
-        match result {
-            Ok(Some(texture)) => self.pet_equipment_texture = Some(texture),
-            Ok(None) => {}
-            Err(error) => eprintln!("OpenStory: could not update pet equipment panel: {error}"),
-        }
-    }
-
-    pub(super) fn scroll_pet_equipment_by(&mut self, amount: isize) {
-        if amount == 0 {
-            return;
-        }
-        let gear_count = self
-            .inventory
-            .as_ref()
-            .map_or(0, |inventory| pet_equipment_drawer_items(inventory).len());
-        let maximum = gear_count.saturating_sub(PET_EQUIPMENT_VISIBLE_ROWS);
-        let next = self
-            .pet_equipment_scroll_row
-            .saturating_add_signed(amount)
-            .min(maximum);
-        if next != self.pet_equipment_scroll_row {
-            self.pet_equipment_scroll_row = next;
-            self.refresh_pet_equipment_texture();
-        }
-    }
-
     pub(super) fn refresh_cash_shop_texture(&mut self) {
         let Some(state) = self.cash_shop.as_ref() else {
             self.cash_shop_texture = None;
@@ -116,6 +58,21 @@ impl ClientApp {
             self.refresh_inventory_tooltip_texture();
             return;
         };
+        let mut preview_character = self.active_character.clone();
+        if let (Some(character), Some(scene)) =
+            (preview_character.as_mut(), self.map_scene.as_ref())
+        {
+            let mut pet_ids = [0; 3];
+            for (&(owner_id, slot), pet) in &scene.pets {
+                let slot = usize::from(slot);
+                if owner_id == character.id && slot < pet_ids.len() {
+                    pet_ids[slot] = pet.item_id;
+                }
+            }
+            if pet_ids.iter().any(|item_id| *item_id > 0) {
+                character.look.pet_ids = pet_ids;
+            }
+        }
         let scene = match cash_shop_ui::render(
             &self.ui_archive,
             &self.font,
@@ -124,7 +81,7 @@ impl ClientApp {
             &self.item_archive,
             &self.character_archive,
             &self.string_archive,
-            self.active_character.as_ref(),
+            preview_character.as_ref(),
             self.inventory.as_ref(),
             &mut self.inventory_icon_cache,
             &mut self.item_name_cache,
@@ -575,7 +532,6 @@ impl ClientApp {
                 | openstory_protocol::PlayerInteractionRoomReply::PersonalShop(room),
             ) => {
                 self.show_inventory = false;
-                self.show_pet_equipment = false;
                 self.show_skill_book = false;
                 self.show_quest_log = false;
                 self.npc_dialogue = None;
@@ -616,7 +572,6 @@ impl ClientApp {
                 self.trade_request_pending = false;
                 self.pending_trade_invite = None;
                 self.show_inventory = false;
-                self.show_pet_equipment = false;
                 self.show_skill_book = false;
                 self.show_quest_log = false;
                 self.npc_dialogue = None;
@@ -1222,7 +1177,7 @@ impl ClientApp {
         if !forfeit_still_active {
             self.quest_forfeit_confirmation = None;
         }
-        let pixels = render_quest_log_panel(
+        let (pixels, detail_scroll_max) = render_quest_log_panel(
             &self.font,
             &self.quest_log,
             &self.available_quests,
@@ -1234,12 +1189,15 @@ impl ClientApp {
             self.quest_log_selected,
             self.quest_log_detail_open,
             self.quest_log_scroll,
+            self.quest_detail_scroll,
             self.quest_reward_selected,
             self.active_character.as_ref(),
             self.quest_forfeit_confirmation,
             &self.legacy_ui_archive,
             &self.npc_archive,
         );
+        self.quest_detail_scroll_max = detail_scroll_max;
+        self.quest_detail_scroll = self.quest_detail_scroll.min(detail_scroll_max);
         let Some(renderer) = self.renderer.as_ref() else {
             return;
         };
@@ -1258,8 +1216,17 @@ impl ClientApp {
     }
 
     pub(super) fn refresh_quest_helper_texture(&mut self) {
+        sync_quest_helper_order(
+            &self.quest_log,
+            &self.quest_archive,
+            self.inventory.as_ref(),
+            &mut self.quest_helper_order,
+            &mut self.quest_helper_progress,
+            &mut self.quest_helper_tracking_initialized,
+        );
         let entries = quest_helper_entries(
             &self.quest_log,
+            &self.quest_helper_order,
             &self.quest_archive,
             &self.string_archive,
             &self.font,

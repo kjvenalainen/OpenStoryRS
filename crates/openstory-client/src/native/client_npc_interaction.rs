@@ -101,7 +101,7 @@ impl ClientApp {
                 if let Some(choice) = current.into_iter().find(|current| {
                     current.quest_id == choice.quest_id && current.side == choice.side
                 }) {
-                    self.open_npc_quest_conversation(npc_id, choice);
+                    self.open_npc_quest_conversation(npc_id, choice, None);
                 }
             }
             Some(NpcMenuAction::Talk(object_id)) => self.send_npc_talk_request(object_id),
@@ -158,7 +158,12 @@ impl ClientApp {
         );
     }
 
-    pub(super) fn open_npc_quest_conversation(&mut self, npc_id: i32, choice: NpcQuestChoice) {
+    pub(super) fn open_npc_quest_conversation(
+        &mut self,
+        npc_id: i32,
+        choice: NpcQuestChoice,
+        reward_selection: Option<i16>,
+    ) {
         let NpcQuestChoice {
             quest_id,
             side,
@@ -178,7 +183,7 @@ impl ClientApp {
             let packet = if side == 0 {
                 openstory_protocol::start_quest_packet(quest_id, npc_id, true)
             } else {
-                openstory_protocol::complete_quest_packet(quest_id, npc_id, None, true)
+                openstory_protocol::complete_quest_packet(quest_id, npc_id, reward_selection, true)
             };
             if let Some(session) = self.session.as_ref()
                 && let Err(error) = session.send_packet(packet)
@@ -223,7 +228,7 @@ impl ClientApp {
             if side == 0 {
                 openstory_protocol::start_quest_packet(quest_id, npc_id, false)
             } else {
-                openstory_protocol::complete_quest_packet(quest_id, npc_id, None, false)
+                openstory_protocol::complete_quest_packet(quest_id, npc_id, reward_selection, false)
             }
         });
         let accepted_pages = if ready {

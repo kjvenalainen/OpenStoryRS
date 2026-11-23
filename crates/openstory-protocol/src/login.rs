@@ -129,7 +129,10 @@ pub struct CharacterLook {
     pub hair_id: i32,
     pub equips: Vec<(i8, i32)>,
     pub masked_equips: Vec<(i8, i32)>,
+    /// Equipped weapon recorded from inventory snapshots and local appearance updates.
     pub weapon_id: i32,
+    /// Cash weapon sticker sent after masked equipment in avatar look packets.
+    pub weapon_sticker_id: i32,
     pub pet_ids: [i32; 3],
 }
 
@@ -684,7 +687,7 @@ pub(crate) fn read_character_look(
     let hair_id = packet.read_i32()?;
     let equips = read_equipment_slots(packet)?;
     let masked_equips = read_equipment_slots(packet)?;
-    let weapon_id = packet.read_i32()?;
+    let weapon_sticker_id = packet.read_i32()?;
     let mut pet_ids = [0_i32; 3];
     for pet_id in &mut pet_ids {
         *pet_id = packet.read_i32()?;
@@ -696,7 +699,8 @@ pub(crate) fn read_character_look(
         hair_id,
         equips,
         masked_equips,
-        weapon_id,
+        weapon_id: 0,
+        weapon_sticker_id,
         pet_ids,
     })
 }

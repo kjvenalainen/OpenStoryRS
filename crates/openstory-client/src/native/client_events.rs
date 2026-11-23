@@ -162,14 +162,7 @@ impl ClientApp {
             height: EVENT_LIST_PANEL_HEIGHT as f32,
             blend_mode: BlendMode::Alpha,
         };
-        let close = SpriteRect {
-            x: EVENT_LIST_PANEL_X + EVENT_LIST_PANEL_WIDTH as f32 - 36.0,
-            y: EVENT_LIST_PANEL_Y + 3.0,
-            width: 24.0,
-            height: 22.0,
-            blend_mode: BlendMode::Alpha,
-        };
-        if rect_contains(close, point) {
+        if EVENT_LIST_CLOSE.contains(point.x - panel.x, point.y - panel.y) {
             self.close_event_list();
             return true;
         }

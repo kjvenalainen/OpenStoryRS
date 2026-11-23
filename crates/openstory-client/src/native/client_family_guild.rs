@@ -2019,18 +2019,21 @@ impl ClientApp {
             .as_ref()
             .is_some_and(|bbs| bbs.draft.is_some())
         {
-            if (510.0..600.0).contains(&local_x) && (422.0..458.0).contains(&local_y) {
+            let [cancel, save] = GUILD_BBS_DRAFT_BUTTONS;
+            if save.contains(local_x, local_y) {
                 self.submit_guild_bbs_post();
-            } else if (410.0..500.0).contains(&local_x) && (422.0..458.0).contains(&local_y) {
+            } else if cancel.contains(local_x, local_y)
+                || GUILD_BBS_DRAFT_CLOSE.contains(local_x, local_y)
+            {
                 if let Some(bbs) = self.guild_bbs.as_mut() {
                     bbs.draft = None;
                     bbs.feedback = None;
                 }
-            } else if (224.0..600.0).contains(&local_x) && (192.0..222.0).contains(&local_y) {
+            } else if GUILD_BBS_DRAFT_SUBJECT.contains(local_x, local_y) {
                 if let Some(draft) = self.guild_bbs.as_mut().and_then(|bbs| bbs.draft.as_mut()) {
                     draft.focus = GuildBbsDraftFocus::Title;
                 }
-            } else if (224.0..600.0).contains(&local_x) && (240.0..408.0).contains(&local_y) {
+            } else if GUILD_BBS_DRAFT_CONTENT.contains(local_x, local_y) {
                 if let Some(draft) = self.guild_bbs.as_mut().and_then(|bbs| bbs.draft.as_mut()) {
                     draft.focus = GuildBbsDraftFocus::Content;
                 }
@@ -2058,7 +2061,7 @@ impl ClientApp {
         };
         let page = bbs.page;
         let has_thread = bbs.thread.is_some();
-        if (774.0..814.0).contains(&local_x) && (46.0..76.0).contains(&local_y) {
+        if GUILD_BBS_CLOSE.contains(local_x, local_y) {
             self.guild_bbs = None;
             return;
         }

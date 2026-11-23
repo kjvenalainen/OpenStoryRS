@@ -1326,6 +1326,25 @@ fn render_alliance_panel(
     pixels
 }
 
+const GUILD_BBS_CLOSE: ui_foundation::UiRect =
+    ui_dialog::inventory_close(GUILD_BBS_PANEL_WIDTH as f32);
+
+const GUILD_BBS_DRAFT_FRAME: ui_foundation::UiRect =
+    ui_foundation::UiRect::new(192.0, 124.0, 440.0, 350.0);
+const GUILD_BBS_DRAFT_CLOSE: ui_foundation::UiRect = ui_dialog::close_button(
+    GUILD_BBS_DRAFT_FRAME.x + GUILD_BBS_DRAFT_FRAME.width - 19.0,
+    GUILD_BBS_DRAFT_FRAME.y + 6.0,
+);
+const GUILD_BBS_DRAFT_SUBJECT: ui_foundation::UiRect =
+    ui_foundation::UiRect::new(224.0, 192.0, 376.0, 30.0);
+const GUILD_BBS_DRAFT_CONTENT: ui_foundation::UiRect =
+    ui_foundation::UiRect::new(224.0, 246.0, 376.0, 162.0);
+const GUILD_BBS_DRAFT_BUTTONS: [ui_foundation::UiRect; 2] = ui_dialog::right_aligned_footer(
+    GUILD_BBS_DRAFT_FRAME.x + GUILD_BBS_DRAFT_FRAME.width - 8.0,
+    GUILD_BBS_DRAFT_FRAME.y + GUILD_BBS_DRAFT_FRAME.height,
+    [40.0, 40.0],
+);
+
 fn render_guild_bbs_panel(
     font: &fontdue::Font,
     ui_archive: &NxArchive,
@@ -1335,15 +1354,16 @@ fn render_guild_bbs_panel(
     let width = GUILD_BBS_PANEL_WIDTH as usize;
     let height = GUILD_BBS_PANEL_HEIGHT as usize;
     let mut pixels = vec![0; width * height * 4];
-    let _ = NxDialog::new(&mut pixels, width, height, ui_archive).scaled_frame(
-        "UIWindow.img/UserList/Guild/GuildBoard/backgrnd",
-        0, 0, width, height,
+    let _ = NxDialog::new(&mut pixels, width, height, ui_archive).inventory_window(
+        ui_foundation::UiRect::new(0.0, 0.0, width as f32, height as f32),
+        font,
+        "Guild Board",
+        GUILD_BBS_CLOSE,
     );
     for (x, button_width, path) in [
         (604, 54, "UIWindow.img/UserList/Guild/GuildBoard/BtList/normal/0"),
         (660, 44, "UIWindow.img/UserList/Guild/GuildRank/BtLeft/normal/0"),
         (706, 44, "UIWindow.img/UserList/Guild/GuildRank/BtRight/normal/0"),
-        (774, 40, "UIWindow.img/UserList/Guild/GuildBoard/BtCancel/normal/0"),
     ] {
         let _ = composite_nx_ui_bitmap_centered(
             &mut pixels,
@@ -1700,120 +1720,111 @@ fn render_guild_bbs_panel(
             height,
             [0, 0, 0, 176],
         );
-        let _ = NxDialog::new(&mut pixels, width, height, ui_archive).scaled_frame(
-            "UIWindow.img/UserList/Guild/GuildBoard/backgrnd1",
-            192, 124, 440, 350,
+        use ui_dialog::{ButtonState, NxButton};
+        use ui_foundation::{UiTextRole, draw_text_role};
+
+        let title = if draft.is_notice {
+            "Write Guild Notice"
+        } else {
+            "Write Guild Post"
+        };
+        let mut dialog = NxDialog::new(&mut pixels, width, height, ui_archive);
+        let _ = dialog.inventory_window(GUILD_BBS_DRAFT_FRAME, font, title, GUILD_BBS_DRAFT_CLOSE);
+        let [cancel, save] = GUILD_BBS_DRAFT_BUTTONS;
+        let _ = dialog.button(
+            cancel,
+            NxButton::new(
+                "UIWindow.img/UserList/Guild/GuildBoard/BtCancel",
+                ButtonState::Normal,
+            ),
         );
-        draw_dialogue_text(
-            font,
-            &mut pixels,
-            width,
-            height,
-            if draft.is_notice {
-                "Write Guild Notice"
+        let _ = dialog.button(
+            save,
+            NxButton::new(
+                "UIWindow.img/UserList/Guild/GuildBoard/BtSave",
+                ButtonState::Normal,
+            ),
+        );
+        for (field, focus, label, value, limit) in [
+            (
+                GUILD_BBS_DRAFT_SUBJECT,
+                GuildBbsDraftFocus::Title,
+                "Subject",
+                &draft.title,
+                GUILD_BBS_TITLE_LIMIT,
+            ),
+            (
+                GUILD_BBS_DRAFT_CONTENT,
+                GuildBbsDraftFocus::Content,
+                "Content",
+                &draft.content,
+                GUILD_BBS_CONTENT_LIMIT,
+            ),
+        ] {
+            let (x, y, w, h) = (
+                field.x as usize,
+                field.y as usize,
+                field.width as usize,
+                field.height as usize,
+            );
+            let border = if draft.focus == focus {
+                [178, 137, 85, 255]
             } else {
-                "Write Guild Post"
-            },
-            210,
-            142,
-            14.0,
-            404,
-            22,
-            [45, 38, 29],
-        );
-        draw_dialogue_text(
-            font,
-            &mut pixels,
-            width,
-            height,
-            &format!("Subject · {}/25", draft.title.encode_utf16().count()),
-            224,
-            172,
-            9.0,
-            370,
-            16,
-            [92, 83, 69],
-        );
-        draw_dialogue_text(
-            font,
-            &mut pixels,
-            width,
-            height,
-            &draft.title,
-            232,
-            200,
-            10.0,
-            360,
-            18,
-            if draft.focus == GuildBbsDraftFocus::Title { [20, 104, 174] } else { [45, 38, 29] },
-        );
-        draw_dialogue_text(
-            font,
-            &mut pixels,
-            width,
-            height,
-            &format!("Content · {}/600", draft.content.encode_utf16().count()),
-            224,
-            226,
-            9.0,
-            370,
-            16,
-            [92, 83, 69],
-        );
-        draw_dialogue_text(
-            font,
-            &mut pixels,
-            width,
-            height,
-            &draft.content,
-            232,
-            254,
-            10.0,
-            360,
-            140,
-            if draft.focus == GuildBbsDraftFocus::Content { [20, 104, 174] } else { [45, 38, 29] },
-        );
-        if let Some(feedback) = bbs.feedback.as_deref() {
+                [204, 195, 181, 255]
+            };
+            fill_dialogue_rect(&mut pixels, width, height, x, y, w, h, border);
+            fill_dialogue_rect(
+                &mut pixels,
+                width,
+                height,
+                x + 1,
+                y + 1,
+                w - 2,
+                h - 2,
+                [255, 255, 255, 255],
+            );
+            draw_text_role(
+                font,
+                &mut pixels,
+                width,
+                height,
+                &format!("{label} · {}/{limit}", value.encode_utf16().count()),
+                x as i32,
+                y as i32 - 17,
+                UiTextRole::Label,
+                w,
+                14,
+                None,
+            );
             draw_dialogue_text(
+                font,
+                &mut pixels,
+                width,
+                height,
+                value,
+                x as i32 + 7,
+                y as i32 + 6,
+                UiTextRole::Value.style().size,
+                w - 14,
+                h - 12,
+                UiTextRole::Value.style().color,
+            );
+        }
+        if let Some(feedback) = bbs.feedback.as_deref() {
+            draw_text_role(
                 font,
                 &mut pixels,
                 width,
                 height,
                 feedback,
                 224,
-                408,
-                8.0,
+                418,
+                UiTextRole::Value,
                 376,
                 14,
-                [150, 35, 35],
+                Some([150, 35, 35]),
             );
         }
-        for (x, path) in [
-            (410, "UIWindow.img/UserList/Guild/GuildBoard/BtCancel/normal/0"),
-            (510, "UIWindow.img/UserList/Guild/GuildBoard/BtSave/normal/0"),
-        ] {
-            let _ = composite_nx_ui_bitmap_centered(
-                &mut pixels,
-                width,
-                height,
-                ui_archive,
-                path,
-                ui_foundation::UiRect::new(x as f32, 422.0, 90.0, 36.0),
-            );
-        }
-        draw_dialogue_text(
-            font,
-            &mut pixels,
-            width,
-            height,
-            "Esc cancels · Enter moves to content; use Publish to submit",
-            210,
-            454,
-            8.0,
-            404,
-            14,
-            [92, 83, 69],
-        );
     } else if bbs.confirm_delete {
         fill_dialogue_rect(
             &mut pixels,

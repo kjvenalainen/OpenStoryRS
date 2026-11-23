@@ -77,6 +77,7 @@ impl ClientApp {
         let panel = match channel_switch::render(
             &self.ui_archive,
             &self.legacy_ui_archive,
+            &self.font,
             self.selected_world.unwrap_or(0),
             channels,
             self.selected_channel,
@@ -1456,7 +1457,7 @@ impl ClientApp {
         let rect = status_auto_assign_dialog_rect();
         let local_x = cursor.x - rect.x;
         let local_y = cursor.y - rect.y;
-        let (accept, cancel) = status_auto_assign_buttons();
+        let [accept, cancel] = status_auto_assign_buttons();
         if accept.contains(local_x, local_y) {
             self.resolve_status_auto_allocate(true);
         } else if cancel.contains(local_x, local_y)
@@ -1472,7 +1473,7 @@ impl ClientApp {
         if self.status_auto_confirmation {
             return;
         }
-        if (5.0..22.0).contains(&y) && (153.0..174.0).contains(&x) {
+        if ui_foundation::STATUS_CLOSE_BUTTON.contains(x, y) {
             self.show_status = false;
             self.show_status_detail = false;
             return;

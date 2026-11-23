@@ -15,12 +15,6 @@ impl ClientApp {
                 EQUIPMENT_INVENTORY_PANEL_WIDTH as f32,
                 EQUIPMENT_INVENTORY_PANEL_HEIGHT as f32,
             ),
-            DialogWindow::PetEquipment if self.show_pet_equipment => (
-                PET_EQUIPMENT_PANEL_X,
-                PET_EQUIPMENT_PANEL_Y,
-                PET_EQUIPMENT_PANEL_WIDTH as f32,
-                PET_EQUIPMENT_PANEL_HEIGHT as f32,
-            ),
             DialogWindow::SkillBook if self.show_skill_book => (
                 SKILL_BOOK_PANEL_X,
                 SKILL_BOOK_PANEL_Y,
@@ -249,7 +243,6 @@ impl ClientApp {
             DialogWindow::QuestLog,
             DialogWindow::SkillBook,
             DialogWindow::SkillMacros,
-            DialogWindow::PetEquipment,
             DialogWindow::EquipmentInventory,
             DialogWindow::Inventory,
             DialogWindow::Minimap,
@@ -344,8 +337,7 @@ impl ClientApp {
                     self.inventory_hover_slot = None;
                 }
             }
-            DialogWindow::EquipmentInventory => self.show_equipment_inventory = false,
-            DialogWindow::PetEquipment => self.show_pet_equipment = false,
+            DialogWindow::EquipmentInventory => self.toggle_equipment_inventory(),
             DialogWindow::SkillBook => {
                 self.show_skill_book = false;
                 self.skill_book_texture = None;
@@ -506,11 +498,19 @@ impl ClientApp {
         let position = ui_foundation::UiRect::new(
             base.x + offset.0,
             base.y + offset.1,
-            base.width,
+            self.dialog_window_clamp_width(window, base.width),
             base.height,
         )
         .clamped_to_canvas();
         (position.x - base.x, position.y - base.y)
+    }
+
+    fn dialog_window_clamp_width(&self, window: DialogWindow, width: f32) -> f32 {
+        if window == DialogWindow::Status && self.show_status_detail {
+            STATUS_DETAIL_OFFSET_X + STATUS_DETAIL_WIDTH as f32
+        } else {
+            width
+        }
     }
 
     pub(super) fn dialog_window_is_topmost_at(&self, target: DialogWindow, cursor: Point) -> bool {
@@ -572,6 +572,13 @@ impl ClientApp {
         true
     }
 
+    pub(super) fn raise_dialog_window_if_open(&mut self, window: DialogWindow) -> bool {
+        if self.dialog_window_rect(window).is_none() {
+            return false;
+        }
+        self.raise_dialog_window(window)
+    }
+
     pub(super) fn begin_dialog_window_drag(&mut self, cursor: Point) -> bool {
         let Some(window) = self.topmost_dialog_window_at(cursor) else {
             return false;
@@ -588,12 +595,32 @@ impl ClientApp {
             y: base.y + offset_y,
             ..base
         };
+        let title_width = if window == DialogWindow::QuestLog {
+            QUEST_LOG_LIST_WIDTH as f32
+        } else {
+            actual.width
+        };
+        let title_height: f32 = match window {
+            DialogWindow::Inventory
+            | DialogWindow::EquipmentInventory
+            | DialogWindow::SkillBook
+            | DialogWindow::SkillMacros
+            | DialogWindow::QuestLog
+            | DialogWindow::Status
+            | DialogWindow::KeyConfig
+            | DialogWindow::Settings
+            | DialogWindow::Whisper
+            | DialogWindow::GuildBbs
+            | DialogWindow::EventList
+            | DialogWindow::ChannelSwitch => 18.0,
+            _ => 24.0,
+        };
         let title_bar = SpriteRect {
             x: actual.x + 3.0,
             y: actual.y + 2.0,
             // Leave the right edge free for close/sort/window controls.
-            width: (actual.width - 54.0).max(0.0),
-            height: 24.0_f32.min(actual.height),
+            width: (title_width - 54.0).max(0.0),
+            height: title_height.min(actual.height),
             blend_mode: BlendMode::Alpha,
         };
         if !rect_contains(title_bar, cursor) {
@@ -617,39 +644,11 @@ impl ClientApp {
         };
         let origin_x = cursor.x - drag.grab_x;
         let origin_y = cursor.y - drag.grab_y;
-        let clamped = ui_foundation::UiRect::new(origin_x, origin_y, base.width, base.height)
+        let clamp_width = self.dialog_window_clamp_width(drag.window, base.width);
+        let clamped = ui_foundation::UiRect::new(origin_x, origin_y, clamp_width, base.height)
             .clamped_to_canvas();
-        if self.show_pet_equipment
-            && self.show_equipment_inventory
-            && matches!(
-                drag.window,
-                DialogWindow::EquipmentInventory | DialogWindow::PetEquipment
-            )
-        {
-            let group_left = if drag.window == DialogWindow::PetEquipment {
-                clamped.x - EQUIPMENT_INVENTORY_PANEL_WIDTH as f32
-            } else {
-                clamped.x
-            };
-            let group = ui_foundation::UiRect::new(
-                group_left,
-                clamped.y,
-                (EQUIPMENT_INVENTORY_PANEL_WIDTH + PET_EQUIPMENT_PANEL_WIDTH) as f32,
-                EQUIPMENT_INVENTORY_PANEL_HEIGHT as f32,
-            )
-            .clamped_to_canvas();
-            let offset = (
-                group.x - EQUIPMENT_INVENTORY_PANEL_X,
-                group.y - EQUIPMENT_INVENTORY_PANEL_Y,
-            );
-            self.dialog_window_offsets
-                .insert(DialogWindow::EquipmentInventory, offset);
-            self.dialog_window_offsets
-                .insert(DialogWindow::PetEquipment, offset);
-        } else {
-            self.dialog_window_offsets
-                .insert(drag.window, (clamped.x - base.x, clamped.y - base.y));
-        }
+        self.dialog_window_offsets
+            .insert(drag.window, (clamped.x - base.x, clamped.y - base.y));
         true
     }
 
@@ -670,9 +669,6 @@ impl ClientApp {
                 continue;
             };
             let (offset_x, offset_y) = self.dialog_window_offset(window);
-            if offset_x == 0.0 && offset_y == 0.0 {
-                continue;
-            }
             let actual = SpriteRect {
                 x: base.x + offset_x,
                 y: base.y + offset_y,
@@ -694,10 +690,6 @@ impl ClientApp {
             (
                 DialogWindow::EquipmentInventory,
                 self.equipment_inventory_texture.as_ref(),
-            ),
-            (
-                DialogWindow::PetEquipment,
-                self.pet_equipment_texture.as_ref(),
             ),
             (DialogWindow::SkillBook, self.skill_book_texture.as_ref()),
             (

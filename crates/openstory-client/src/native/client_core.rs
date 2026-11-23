@@ -185,7 +185,6 @@ impl ClientApp {
             character_info_texture: None,
             inventory_drop_prompt_texture: None,
             death_notice_texture: None,
-            pet_equipment_texture: None,
             cash_shop_texture: None,
             cash_shop_hit_regions: Vec::new(),
             cash_shop_hovered_item: None,
@@ -286,6 +285,7 @@ impl ClientApp {
             inventory_icon_cache: HashMap::new(),
             show_inventory: false,
             show_equipment_inventory: false,
+            equipment_tab: EquipmentTab::Equip,
             show_settings: false,
             show_status: false,
             show_status_detail: false,
@@ -323,6 +323,8 @@ impl ClientApp {
             next_macro_skill_at: Instant::now(),
             status_auto_confirmation: false,
             status_waiting_for_stats: false,
+            pending_experience_gain: None,
+            pending_experience_update: None,
             settings_dragging: None,
             settings_selected_slider: OptionControl::Music,
             settings,
@@ -335,8 +337,6 @@ impl ClientApp {
             social_settings,
             social_settings_original: social_settings,
             settings_notice: None,
-            show_pet_equipment: false,
-            pet_equipment_scroll_row: 0,
             show_skill_book: false,
             show_quest_log: false,
             skill_book_tab: 0,
@@ -347,11 +347,12 @@ impl ClientApp {
             pending_skill_hit_sounds: Vec::new(),
             pending_mob_hit_sounds: Vec::new(),
             skill_cooldowns: HashMap::new(),
+            quickslot_cooldown_refreshed_at: None,
             forced_equipment_stats: ForcedEquipmentStats::default(),
             inventory_tab: openstory_protocol::InventoryType::Equip,
             inventory_scroll_row: 0,
             inventory_hover_slot: None,
-            equipped_inventory_hover_slot: None,
+            equipment_hover: None,
             last_inventory_equip_click: None,
             inventory_drag_source: None,
             inventory_pending_move: None,
@@ -462,12 +463,17 @@ impl ClientApp {
             auto_mp_potion_cooldown: Duration::ZERO,
             teleport_rock_locations: openstory_protocol::TeleportRockLocations::default(),
             quest_log: openstory_protocol::QuestLog::default(),
+            quest_helper_order: Vec::new(),
+            quest_helper_progress: HashMap::new(),
+            quest_helper_tracking_initialized: false,
             quest_start_npc_index,
             available_quests: Vec::new(),
             quest_log_tab: QuestLogTab::Active,
             quest_log_detail_open: true,
             quest_log_selected: 0,
             quest_log_scroll: 0,
+            quest_detail_scroll: 0,
+            quest_detail_scroll_max: 0,
             quest_reward_selected: 0,
             quest_forfeit_confirmation: None,
             current_field: None,
@@ -477,6 +483,8 @@ impl ClientApp {
             map_loading_frame_rendered: false,
             map_loading_texture: None,
             map_initial_npc_loading_until: None,
+            initial_npc_spawns: VecDeque::new(),
+            initial_npc_nearby_pending: 0,
             map_entry_refresh_pending: false,
             map_entry_refresh_step: 0,
             pending_map_transition_ack: None,
@@ -642,13 +650,15 @@ impl ClientApp {
             self.auto_hp_potion_cooldown = AUTO_POTION_COOLDOWN;
         }
         if let Some(slot) = mp_slot {
-            self.audio
-                .play_item_sound(&self.sound_archive, self.auto_mp_potion_id);
-            packets.push(openstory_protocol::use_item_packet(
-                slot,
-                self.auto_mp_potion_id,
-                client_tick,
-            ));
+            if hp_slot.is_none() || self.auto_hp_potion_id != self.auto_mp_potion_id {
+                self.audio
+                    .play_item_sound(&self.sound_archive, self.auto_mp_potion_id);
+                packets.push(openstory_protocol::use_item_packet(
+                    slot,
+                    self.auto_mp_potion_id,
+                    client_tick,
+                ));
+            }
             self.auto_mp_potion_cooldown = AUTO_POTION_COOLDOWN;
         }
         for packet in packets {
@@ -730,6 +740,7 @@ impl ClientApp {
         if frame.updates == 0 {
             return;
         }
+        self.repeat_held_attacks();
         let is_stunned =
             self.active_buff_value(openstory_protocol::BuffMaskGroup::Second, STATUS_STUN) != 0;
         let is_confused =
@@ -784,7 +795,8 @@ impl ClientApp {
         scene.advance_projectiles(frame.updates);
         scene.advance_summons(frame.updates);
         scene.advance_dragons(frame.updates);
-        let pet_packets = scene.advance_pets(frame.updates, local_character_id);
+        let pet_packets =
+            scene.advance_pets(frame.updates, local_character_id, self.inventory.as_ref());
         scene.advance_character_effects(frame.updates);
         scene.advance_screen_effect(frame.updates);
         let mob_packets = scene.advance_mobs(frame.updates);
@@ -1143,25 +1155,38 @@ impl ClientApp {
             self.gameplay_input.jump_buffer = 0;
         }
 
+        let player_pickup_search_result = scene.take_player_pickup_search_result();
         if scene.footholds.is_some()
             && scene.local_chair.is_none()
             && scene.local_map_seat.is_none()
             && self.channel_connected
             && self.gameplay_input.pickup
             && self.gameplay_input.pickup_cooldown_ticks == 0
-            && let Some(object_id) = scene.nearest_drop()
         {
-            // The legacy client checks once per ~16 ms game frame.
-            self.gameplay_input.pickup_cooldown_ticks = 2;
-            let (x, y) = (rounded_i16(scene.player.x), rounded_i16(scene.player.y));
-            if let Some(session) = self.session.as_ref() {
-                match session.send_packet(openstory_protocol::pickup_item(object_id, x, y)) {
-                    Ok(()) => scene.mark_drop_pickup_attempt(object_id),
-                    Err(error) => {
-                        eprintln!("OpenStory: could not request item pickup: {error}");
-                        self.channel_connected = false;
+            if let Some(candidate) = player_pickup_search_result {
+                // Keep the legacy pickup cadence after each completed scan,
+                // including scans which found no eligible drop.
+                self.gameplay_input.pickup_cooldown_ticks = 2;
+                if let Some((object_id, _)) = candidate
+                    && let Some((drop_x, drop_y)) =
+                        scene.player_pickup_candidate_is_valid(object_id)
+                {
+                    // The v83 request carries the drop's map position, as in
+                    // the legacy client, rather than the player's position.
+                    let (x, y) = (rounded_i16(drop_x), rounded_i16(drop_y));
+                    if let Some(session) = self.session.as_ref() {
+                        match session.send_packet(openstory_protocol::pickup_item(object_id, x, y))
+                        {
+                            Ok(()) => scene.mark_drop_pickup_attempt(object_id),
+                            Err(error) => {
+                                eprintln!("OpenStory: could not request item pickup: {error}");
+                                self.channel_connected = false;
+                            }
+                        }
                     }
                 }
+            } else {
+                scene.request_player_pickup_search();
             }
         }
 
@@ -1173,9 +1198,24 @@ impl ClientApp {
                 openstory_protocol::BuffMaskGroup::Second,
                 STATUS_DARKSIGHT,
             );
+        let player_level = active_character.map_or(1, |character| i32::from(character.stats.level));
+        let local_avoidability = active_character.map_or(0, |character| {
+            player_avoidability(
+                character,
+                self.inventory.as_ref(),
+                &self.skill_archive,
+                &self.skills,
+                &self.active_buffs,
+                &self.forced_equipment_stats,
+            )
+        });
         let touch_elapsed = Duration::from_millis(8 * u64::from(frame.updates));
-        if let Some(touch) = scene.check_mob_touch(touch_elapsed, touch_protected)
-            && let Some(character) = active_character
+        if let Some(touch) = scene.check_mob_touch(
+            touch_elapsed,
+            touch_protected,
+            player_level,
+            local_avoidability,
+        ) && let Some(character) = active_character
         {
             let damage = calculate_player_touch_damage(
                 character,
@@ -1193,8 +1233,7 @@ impl ClientApp {
                 openstory_protocol::BuffMaskGroup::Second,
                 0x10,
             )) / 100.0;
-            let knockback =
-                damage > 0 && scene.local_ladder.is_none() && scene.next_attack_random() > stance;
+            let knockback = damage > 0 && scene.next_attack_random() > stance;
             self.pending_zombify_heal_feedback_until = None;
             scene.show_local_player_damage(damage);
             if damage > 0 {
@@ -1205,8 +1244,8 @@ impl ClientApp {
                 );
             }
             if knockback {
-                scene.player.horizontal_speed = if direction == 0 { -1.5 } else { 1.5 };
-                scene.player.vertical_force -= 3.5;
+                let horizontal_speed = if direction == 0 { -1.5 } else { 1.5 };
+                scene.apply_local_player_knockback(horizontal_speed, -3.5);
             }
             let timestamp = self.client_started_at.elapsed().as_millis() as u32;
             let packet = openstory_protocol::take_damage_packet(
@@ -1224,11 +1263,13 @@ impl ClientApp {
             }
         }
 
+        let climbing = scene.local_ladder.is_some();
+        let touching_portal_while_climbing = climbing && scene.is_touch_portal_at_player();
         match scene.advance_portals(
-            self.gameplay_input.up,
+            self.gameplay_input.up && !climbing,
             scene.attack_stance.is_none()
                 && !scene.is_locally_seated()
-                && scene.local_ladder.is_none(),
+                && (!climbing || touching_portal_while_climbing),
             frame.updates,
         ) {
             Some(PortalWarp::SameMap { x, y }) => {
@@ -1373,6 +1414,48 @@ impl ClientApp {
 
     pub(super) fn try_local_skill_attack(&mut self, skill: &SkillUiEntry) {
         self.try_local_attack(Some(skill));
+    }
+
+    fn repeat_held_attacks(&mut self) {
+        if !self
+            .map_scene
+            .as_ref()
+            .is_some_and(|scene| scene.attack_stance.is_none() && scene.local_ladder.is_none())
+        {
+            return;
+        }
+
+        let mut bindings: Vec<_> = self
+            .gameplay_input
+            .held_bindings
+            .values()
+            .copied()
+            .filter(|binding| (binding.kind == 5 && binding.action == 52) || binding.kind == 1)
+            .collect();
+        bindings.sort_by_key(|binding| (binding.kind, binding.action));
+        bindings.dedup_by_key(|binding| (binding.kind, binding.action));
+
+        let now = Instant::now();
+        for binding in bindings {
+            match binding.kind {
+                5 if binding.action == 52 => {
+                    self.try_local_basic_attack();
+                    return;
+                }
+                1 => {
+                    if self
+                        .skill_cooldowns
+                        .get(&binding.action)
+                        .is_some_and(|cooldown| cooldown.expires_at > now)
+                    {
+                        continue;
+                    }
+                    self.use_keybound_skill(binding.action);
+                    return;
+                }
+                _ => {}
+            }
+        }
     }
 
     pub(super) fn try_local_attack(&mut self, skill: Option<&SkillUiEntry>) {
@@ -1604,7 +1687,7 @@ impl ClientApp {
             };
             let position = (rounded_i16(*target_x), rounded_i16(*target_y));
             let projectile_travel = if shows_projectile {
-                projectile_flight_duration(scene.player.x, *target_x)
+                projectile_flight_duration(scene.player.x, *target_x, attack_stats.speed)
             } else {
                 Duration::ZERO
             };
@@ -1640,7 +1723,7 @@ impl ClientApp {
             .into_iter()
             .map(|(object_id, mob, (target_x, _))| {
                 let projectile_travel = if shows_projectile {
-                    projectile_flight_duration(scene.player.x, target_x)
+                    projectile_flight_duration(scene.player.x, target_x, attack_stats.speed)
                 } else {
                     Duration::ZERO
                 };
@@ -1687,16 +1770,14 @@ impl ClientApp {
                 return;
             }
         };
-        let skill_use_sound_played = if skill_id > 0 {
+        if skill_id > 0 {
             scene.show_character_skill_effect(None, skill_effects, skill_effect_speed_factor);
             self.audio.play_skill_use(
                 &self.sound_archive,
                 skill_id,
                 (rounded_i16(scene.player.x), rounded_i16(scene.player.y)),
-            )
-        } else {
-            false
-        };
+            );
+        }
         scene.start_attack(stance, &mut self.sprite_draws);
         let regular_action = skill_id == 0
             || character_skill_action_name(
@@ -1708,10 +1789,7 @@ impl ClientApp {
             .ok()
             .flatten()
             .is_none();
-        if regular_action
-            && !skill_use_sound_played
-            && let Some(weapon_id) = character_weapon_id(&character.look)
-        {
+        if regular_action && let Some(weapon_id) = character_weapon_id(&character.look) {
             let degenerate = attack_stats.attack_type == openstory_protocol::AttackType::Close
                 && matches!(attack_stats.weapon_type, 145 | 146 | 147 | 149);
             self.audio.play_weapon_attack(
@@ -1736,6 +1814,7 @@ impl ClientApp {
                             frames.clone(),
                             target_x,
                             target_y,
+                            attack_stats.speed,
                             skill_hit_delays[usize::from(hit_index)],
                         );
                     }
@@ -1746,6 +1825,7 @@ impl ClientApp {
                                 frames.clone(),
                                 target_x,
                                 target_y,
+                                attack_stats.speed,
                                 skill_hit_delays[usize::from(hit_index)],
                             );
                         }
@@ -1883,10 +1963,22 @@ impl ClientApp {
     pub(super) fn apply_skill_cooldown(&mut self, skill_id: i32, duration_seconds: i16) {
         if duration_seconds <= 0 {
             self.skill_cooldowns.remove(&skill_id);
-        } else if let Some(expires_at) =
-            Instant::now().checked_add(Duration::from_secs(duration_seconds as u64))
-        {
-            self.skill_cooldowns.insert(skill_id, expires_at);
+        } else {
+            let started_at = Instant::now();
+            if let Some(expires_at) =
+                started_at.checked_add(Duration::from_secs(duration_seconds as u64))
+            {
+                self.skill_cooldowns.insert(
+                    skill_id,
+                    SkillCooldownState {
+                        started_at,
+                        expires_at,
+                    },
+                );
+            }
+        }
+        if self.current_field.is_some() {
+            self.refresh_quickslots_texture();
         }
     }
 
@@ -1928,6 +2020,7 @@ impl ClientApp {
             return;
         }
         self.show_inventory = true;
+        self.raise_dialog_window(DialogWindow::Inventory);
         self.inventory_tab = tab;
         self.inventory_scroll_row = 0;
         self.inventory_drag_source = None;
@@ -1940,9 +2033,8 @@ impl ClientApp {
     pub(super) fn toggle_equipment_inventory(&mut self) {
         self.show_equipment_inventory = !self.show_equipment_inventory;
         if self.show_equipment_inventory {
+            self.raise_dialog_window(DialogWindow::EquipmentInventory);
             self.refresh_equipment_inventory_texture();
-        } else {
-            self.show_pet_equipment = false;
         }
         self.update_inventory_hover();
         self.refresh_inventory_tooltip_texture();
@@ -1967,6 +2059,7 @@ impl ClientApp {
         self.quest_log_tab = QuestLogTab::Active;
         self.quest_log_detail_open = true;
         self.quest_log_scroll = 0;
+        self.quest_detail_scroll = 0;
         self.quest_log_selected = 0;
         self.quest_reward_selected = 0;
         self.quest_forfeit_confirmation = None;
@@ -2235,6 +2328,10 @@ impl ClientApp {
         }
         const WIDTH: usize = 151;
         const HEIGHT: usize = 80;
+        let now = Instant::now();
+        self.quickslot_cooldown_refreshed_at = Some(now);
+        self.skill_cooldowns
+            .retain(|_, cooldown| cooldown.expires_at > now);
         let fallback = default_keymap_bindings();
         let bindings = self
             .key_config_draft
@@ -2253,12 +2350,34 @@ impl ClientApp {
                 .then(|| self.quickslot_icon_pixels(binding))
                 .flatten()
         });
+        let cooldown_remaining: [f32; 8] = std::array::from_fn(|slot| {
+            let binding = slot_bindings.get(slot).copied().unwrap_or_default();
+            if binding.kind != 1 {
+                return 0.0;
+            }
+            let Some(cooldown) = self.skill_cooldowns.get(&binding.action) else {
+                return 0.0;
+            };
+            let total = cooldown
+                .expires_at
+                .saturating_duration_since(cooldown.started_at)
+                .as_secs_f32();
+            if total <= 0.0 {
+                return 0.0;
+            }
+            cooldown
+                .expires_at
+                .saturating_duration_since(now)
+                .as_secs_f32()
+                / total
+        });
         let pixels = render_quickslot_panel_pixels(
             quickslot_background_image(&self.legacy_ui_archive),
             &self.ui_archive,
             &quickslot_keys,
             &icons,
             &item_counts,
+            &cooldown_remaining,
         );
 
         let Some(renderer) = self.renderer.as_ref() else {
@@ -2480,11 +2599,7 @@ impl ClientApp {
             let in_book = self.show_skill_book
                 && (0.0..SKILL_BOOK_PANEL_WIDTH as f32).contains(&book_x)
                 && (0.0..SKILL_BOOK_PANEL_HEIGHT as f32).contains(&book_y);
-            if in_book
-                && (SKILL_BOOK_PANEL_WIDTH as f32 - 24.0..SKILL_BOOK_PANEL_WIDTH as f32)
-                    .contains(&book_x)
-                && (4.0..25.0).contains(&book_y)
-            {
+            if in_book && ui_foundation::SKILL_CLOSE_BUTTON.contains(book_x, book_y) {
                 self.begin_skill_book_pointer(cursor);
                 if !self.show_skill_book {
                     self.skill_macro_editor.close();
@@ -3298,6 +3413,7 @@ impl ClientApp {
                 8 => {
                     if !self.show_quest_log {
                         self.quest_log_detail_open = true;
+                        self.quest_detail_scroll = 0;
                     }
                     self.show_quest_log = !self.show_quest_log;
                     self.refresh_quest_log_texture();
@@ -3382,7 +3498,7 @@ impl ClientApp {
                         self.open_alliance_panel();
                     }
                 }
-                45 => self.toggle_pet_equipment_panel(),
+                45 => self.toggle_equipment_pet_tab(),
                 _ => {}
             },
             5 => match binding.action {
@@ -3428,6 +3544,32 @@ impl ClientApp {
                 self.send_face_expression(binding.action.saturating_sub(99));
             }
             _ => {}
+        }
+        if pressed && !repeat && binding.kind == 4 {
+            let dialog_window = match binding.action {
+                0 | 45 => Some(DialogWindow::EquipmentInventory),
+                1 => Some(DialogWindow::Inventory),
+                2 => Some(DialogWindow::Status),
+                3 => Some(DialogWindow::SkillBook),
+                4 => Some(DialogWindow::Buddy),
+                5 => Some(DialogWindow::WorldMap),
+                8 => Some(DialogWindow::QuestLog),
+                9 => Some(DialogWindow::KeyConfig),
+                11 => Some(DialogWindow::Whisper),
+                17 => Some(DialogWindow::Guild),
+                19 => Some(DialogWindow::Party),
+                22 => Some(DialogWindow::MonsterBook),
+                25 => Some(DialogWindow::ChannelSwitch),
+                26 | 42 => Some(DialogWindow::Family),
+                28 => Some(DialogWindow::Settings),
+                32 => Some(DialogWindow::EventList),
+                43 => Some(DialogWindow::GuildBbs),
+                44 => Some(DialogWindow::Alliance),
+                _ => None,
+            };
+            if let Some(window) = dialog_window {
+                self.raise_dialog_window_if_open(window);
+            }
         }
         if pressed && !repeat && binding.kind == 4 && self.chat_input_focused {
             self.gameplay_input = GameplayInput::default();
@@ -3718,28 +3860,18 @@ impl ClientApp {
             }
             return true;
         }
-        if self.show_pet_equipment && pressed && !repeat {
-            if matches!(key, PhysicalKey::Code(KeyCode::Escape)) || self.is_menu_binding(key, 45) {
-                self.show_pet_equipment = false;
-                return true;
-            }
-            let scroll = match key {
-                PhysicalKey::Code(KeyCode::ArrowUp) => -1,
-                PhysicalKey::Code(KeyCode::ArrowDown) => 1,
-                PhysicalKey::Code(KeyCode::PageUp) => -5,
-                PhysicalKey::Code(KeyCode::PageDown) => 5,
-                _ => 0,
-            };
-            if scroll != 0 {
-                self.scroll_pet_equipment_by(scroll);
-                return true;
-            }
-        }
         if !matches!(key, PhysicalKey::Code(KeyCode::Escape))
             && let Some(binding) = gameplay_key_binding(self.server_keymap.as_deref(), key)
             && binding.kind != 0
         {
-            if pressed && binding.kind == 5 && matches!(binding.action, 50 | 51 | 200..=203) {
+            if pressed
+                && !repeat
+                && (binding.kind == 5 && matches!(binding.action, 50 | 51 | 52 | 200..=203)
+                    || binding.kind == 1
+                        && self
+                            .skill_ui_entry_by_id(binding.action)
+                            .is_some_and(|skill| skill.attack))
+            {
                 self.gameplay_input.held_bindings.insert(key, binding);
             }
             return self.apply_keymap_binding(state, repeat, binding);
@@ -3782,8 +3914,7 @@ impl ClientApp {
             } else if self.show_buddy_panel {
                 self.show_buddy_panel = false;
             } else if self.show_equipment_inventory {
-                self.show_equipment_inventory = false;
-                self.show_pet_equipment = false;
+                self.toggle_equipment_inventory();
             } else if self.show_inventory {
                 if self.pending_scroll_slot.take().is_some() {
                     self.refresh_inventory_texture();

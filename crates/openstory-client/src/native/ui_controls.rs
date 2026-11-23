@@ -369,58 +369,20 @@ fn render_skill_book_panel(
     const WIDTH: usize = SKILL_BOOK_PANEL_WIDTH as usize;
     const HEIGHT: usize = SKILL_BOOK_PANEL_HEIGHT as usize;
     let mut pixels = vec![0_u8; WIDTH * HEIGHT * 4];
-    let _ = NxDialog::new(&mut pixels, WIDTH, HEIGHT, ui_archive).frame(
-        "UIWindow.img/Skill/backgrnd",
-        0,
-        0,
+    let mut dialog = NxDialog::new(&mut pixels, WIDTH, HEIGHT, ui_archive);
+    let _ = dialog.authored_window(
+        &[("UIWindow.img/Skill/backgrnd", 0, 0)],
+        ui_foundation::SKILL_CLOSE_BUTTON,
     );
-    let _ = NxDialog::new(&mut pixels, WIDTH, HEIGHT, ui_archive)
-        .anchored_button("Basic.img/BtClose/normal/0", 156, 6);
     for tab in 0..visible_tabs.min(5) {
         let active = tab == selected_tab;
         let bounds = ui_foundation::skill_tab(usize::from(tab));
-        let left = bounds.x as usize;
-        let tab_state = if active { "1" } else { "0" };
-        let _ = composite_nx_ui_bitmap_scaled_to(
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            ui_archive,
-            &format!("Basic.img/Tab2/left{tab_state}"),
-            left,
-            25,
-            4,
-            17,
-        );
-        let _ = composite_nx_ui_bitmap_scaled_to(
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            ui_archive,
-            &format!("Basic.img/Tab2/fill{tab_state}"),
-            left + 4,
-            25,
-            24,
-            17,
-        );
-        let _ = composite_nx_ui_bitmap_scaled_to(
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            ui_archive,
-            &format!("Basic.img/Tab2/right{tab_state}"),
-            left + 28,
-            25,
-            4,
-            17,
-        );
+        let _ = dialog.tab(bounds, active);
         let path = format!(
             "UIWindow.img/Skill/Tab/{}/{tab}",
             if active { "enabled" } else { "disabled" }
         );
-        let _ = composite_nx_ui_bitmap_centered(
-            &mut pixels, WIDTH, HEIGHT, ui_archive, &path, bounds,
-        );
+        let _ = dialog.buttons(&[(&path, bounds)]);
     }
     if let Some((icon_width, icon_height, icon)) = book_icon {
         fill_dialogue_rect(
@@ -659,6 +621,11 @@ fn render_options_panel(
                 (330..366, SYSTEM_OPTIONS_FOOTER_Y as i32),
             ],
         );
+        dialog.replace_title(
+            font,
+            "System Options",
+            ui_foundation::UiRect::new(7.0, 5.0, 163.0, 12.0),
+        );
     }
     // Move the baked Mute labels and Scroll Lock badge inward. The blank
     // pixels to their left wrap around to fill the space along the row edge.
@@ -670,10 +637,19 @@ fn render_options_panel(
             row[x * 4..SYSTEM_OPTIONS_ROW_RIGHT * 4].rotate_left(inset * 4);
         }
     }
-    let _ = NxDialog::new(&mut pixels, WIDTH, HEIGHT, ui_archive).frame(
-        "UIWindow.img/GameOpt/backgrnd",
-        GAME_X as i32,
-        GAME_Y as i32,
+    let mut dialog = NxDialog::new(&mut pixels, WIDTH, HEIGHT, ui_archive);
+    let _ = dialog.authored_window(
+        &[(
+            "UIWindow.img/GameOpt/backgrnd",
+            GAME_X as i32,
+            GAME_Y as i32,
+        )],
+        SETTINGS_CLOSE_BUTTON,
+    );
+    dialog.replace_title(
+        font,
+        "Game Options",
+        ui_foundation::UiRect::new(GAME_X as f32 + 7.0, 5.0, 125.0, 12.0),
     );
 
     // The SysOpt artwork carries its own labels and layout. Overlay only live

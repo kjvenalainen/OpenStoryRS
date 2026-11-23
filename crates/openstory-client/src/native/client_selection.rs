@@ -632,6 +632,7 @@ impl ClientApp {
             &self.map_archive,
             &self.legacy_ui_archive,
             &self.character_archive,
+            &self.item_archive,
             characters,
             self.character_page,
             self.selected_character_index,
@@ -651,18 +652,53 @@ impl ClientApp {
         &mut self,
         update: openstory_protocol::CharacterStatUpdate,
     ) {
+        const EXPERIENCE_SYNC_WINDOW: Duration = Duration::from_secs(2);
+
+        let previous_stats = self.active_character.as_ref().map(|character| {
+            (
+                character.id,
+                character.stats.level,
+                character.stats.experience,
+            )
+        });
         let hp_changed_to_zero = update
             .changes
             .iter()
             .any(|change| matches!(change, openstory_protocol::CharacterStatChange::Hp(0)));
-        let level_up = self.active_character.as_ref().is_some_and(|character| {
-            update.changes.iter().any(|change| {
-                matches!(
-                    change,
-                    openstory_protocol::CharacterStatChange::Level(level)
-                        if *level > character.stats.level
-                )
-            })
+        let reported_level = update.changes.iter().find_map(|change| match change {
+            openstory_protocol::CharacterStatChange::Level(level) => Some(*level),
+            _ => None,
+        });
+        let reported_experience = update.changes.iter().find_map(|change| match change {
+            openstory_protocol::CharacterStatChange::Experience(experience) => Some(*experience),
+            _ => None,
+        });
+        let mut inferred_level = None;
+        if reported_level.is_some() {
+            self.pending_experience_gain = None;
+            self.pending_experience_update = None;
+        } else if let (Some((character_id, level, experience)), Some(new_experience)) =
+            (previous_stats, reported_experience)
+        {
+            self.pending_experience_update = Some((
+                character_id,
+                level,
+                experience,
+                new_experience,
+                Instant::now(),
+            ));
+            if let Some((gain_character_id, gain, gain_at)) = self.pending_experience_gain
+                && gain_character_id == character_id
+                && Instant::now().saturating_duration_since(gain_at) <= EXPERIENCE_SYNC_WINDOW
+            {
+                inferred_level = v83_level_after_exp_gain(level, experience, gain, new_experience);
+                self.pending_experience_gain = None;
+                self.pending_experience_update = None;
+            }
+        }
+        let level_up = previous_stats.is_some_and(|(_, old_level, _)| {
+            reported_level.is_some_and(|level| level > old_level)
+                || inferred_level.is_some_and(|level| level > old_level)
         });
         let hp_delta = self.active_character.as_ref().and_then(|character| {
             update.changes.iter().find_map(|change| match change {
@@ -728,6 +764,11 @@ impl ClientApp {
                 Change::Pet(_) | Change::GachaExperience(_) => {}
             }
         }
+        if let Some(level) = inferred_level
+            && let Some(character) = self.active_character.as_mut()
+        {
+            character.stats.level = level;
+        }
         if hp_delta.is_some_and(|delta| delta < 0)
             && let Some(scene) = self.map_scene.as_mut()
         {
@@ -773,18 +814,70 @@ impl ClientApp {
         if level_up
             && let Some(character_id) = self.active_character.as_ref().map(|character| character.id)
         {
-            self.audio
-                .play_ui_sound(&self.sound_archive, "Game.img/LevelUp");
-            self.show_foreign_character_effect(openstory_protocol::ForeignCharacterEffect {
-                character_id,
-                effect_type: 0,
-                variant: 0,
-                heal_amount: None,
-                skill_id: None,
-                level: 0,
-                direction: -1,
-            });
+            self.present_local_level_up(character_id);
         }
+    }
+
+    pub(super) fn remember_experience_gain(&mut self, gain: i32, bonus: i32) {
+        const EXPERIENCE_SYNC_WINDOW: Duration = Duration::from_secs(2);
+
+        let Some(character_id) = self.active_character.as_ref().map(|character| character.id)
+        else {
+            return;
+        };
+        let total_gain = i64::from(gain) + i64::from(bonus);
+        if total_gain <= 0 {
+            self.pending_experience_gain = None;
+            self.pending_experience_update = None;
+            return;
+        }
+        let now = Instant::now();
+        self.pending_experience_gain = Some((character_id, total_gain, now));
+        let Some((update_character_id, level, experience, new_experience, update_at)) =
+            self.pending_experience_update
+        else {
+            return;
+        };
+        if update_character_id != character_id
+            || now.saturating_duration_since(update_at) > EXPERIENCE_SYNC_WINDOW
+        {
+            self.pending_experience_update = None;
+            return;
+        }
+        let Some(level) = v83_level_after_exp_gain(level, experience, total_gain, new_experience)
+        else {
+            self.pending_experience_gain = None;
+            self.pending_experience_update = None;
+            return;
+        };
+        let Some(character) = self.active_character.as_mut() else {
+            return;
+        };
+        if character.id != character_id || level <= character.stats.level {
+            self.pending_experience_gain = None;
+            self.pending_experience_update = None;
+            return;
+        }
+        character.stats.level = level;
+        self.pending_experience_gain = None;
+        self.pending_experience_update = None;
+        self.refresh_map_hud();
+        self.refresh_status_texture();
+        self.present_local_level_up(character_id);
+    }
+
+    fn present_local_level_up(&mut self, character_id: i32) {
+        self.audio
+            .play_ui_sound(&self.sound_archive, "Game.img/LevelUp");
+        self.show_foreign_character_effect(openstory_protocol::ForeignCharacterEffect {
+            character_id,
+            effect_type: 0,
+            variant: 0,
+            heal_amount: None,
+            skill_id: None,
+            level: 0,
+            direction: -1,
+        });
     }
 
     pub(super) fn apply_forced_stat_set(&mut self, update: openstory_protocol::ForcedStatSet) {

@@ -274,6 +274,10 @@ impl ClientApp {
         }
         let local_x = cursor.x - SETTINGS_PANEL_X;
         let local_y = cursor.y - SETTINGS_PANEL_Y;
+        if SETTINGS_CLOSE_BUTTON.contains(local_x, local_y) {
+            self.cancel_settings();
+            return;
+        }
         if let Some(slider) = [
             OptionControl::GraphicsQuality,
             OptionControl::Music,
@@ -745,10 +749,18 @@ impl ClientApp {
         }
         let local_x = cursor.x - WHISPER_PANEL_X;
         let local_y = cursor.y - WHISPER_PANEL_Y;
-        if local_y < 32.0 && local_x >= WHISPER_PANEL_WIDTH as f32 - 34.0 {
+        if WHISPER_CLOSE.contains(local_x, local_y) {
             self.active_whisper = None;
             self.whisper_input_focused = false;
             self.whisper_target_focused = false;
+        } else if WHISPER_SEND.contains(local_x, local_y) {
+            if self
+                .active_whisper
+                .and_then(|index| self.whisper_conversations.get(index))
+                .is_some_and(whisper_can_send)
+            {
+                self.submit_whisper_input();
+            }
         } else if (34.0..62.0).contains(&local_y)
             && self
                 .active_whisper
@@ -831,6 +843,7 @@ impl ClientApp {
     }
 
     pub(super) fn push_chat_line(&mut self, text: String, color: [u8; 3]) {
+        let text = self.unfurl_chat_mob_references(&text);
         self.chat_lines.push_back(ChatLine { text, color });
         while self.chat_lines.len() > 100 {
             self.chat_lines.pop_front();
@@ -840,6 +853,117 @@ impl ClientApp {
             window.request_redraw();
         }
     }
+
+    pub(super) fn unfurl_chat_mob_references(&self, text: &str) -> String {
+        let characters = text.chars().collect::<Vec<_>>();
+        let mut output = String::with_capacity(text.len());
+        let mut index = 0;
+
+        while index < characters.len() {
+            if characters[index] == '#'
+                && characters
+                    .get(index + 1)
+                    .is_some_and(|code| code.eq_ignore_ascii_case(&'o'))
+                && let Some(end_offset) = characters[index + 2..]
+                    .iter()
+                    .position(|character| *character == '#')
+            {
+                let end = index + 2 + end_offset;
+                let id = characters[index + 2..end].iter().collect::<String>();
+                if !id.is_empty()
+                    && id.chars().all(|character| character.is_ascii_digit())
+                    && let Some(name) = chat_mob_name(&self.string_archive, &id)
+                {
+                    output.push_str(&name);
+                    index = end + 1;
+                    continue;
+                }
+            }
+
+            // Some channel messages spell a seven-digit mob ID as spaced digits,
+            // for example "MOB 0 2 1 0 1 0 0" for mob 0210100.
+            if index + 3 <= characters.len()
+                && characters[index].eq_ignore_ascii_case(&'M')
+                && characters[index + 1].eq_ignore_ascii_case(&'O')
+                && characters[index + 2].eq_ignore_ascii_case(&'B')
+                && (index == 0
+                    || (!characters[index - 1].is_ascii_alphanumeric()
+                        && characters[index - 1] != '_'))
+                && characters
+                    .get(index + 3)
+                    .is_some_and(|character| character.is_whitespace())
+                && let Some((id, end)) = spaced_chat_mob_id(&characters, index + 3)
+                && let Some(name) = chat_mob_name(&self.string_archive, &id)
+            {
+                output.push_str(&name);
+                index = end;
+                continue;
+            }
+
+            output.push(characters[index]);
+            index += 1;
+        }
+
+        output
+    }
+}
+
+fn chat_mob_name(string_archive: &NxArchive, id: &str) -> Option<String> {
+    let numeric_id = id.parse::<u32>().ok()?;
+    let canonical_id = numeric_id.to_string();
+    let padded_id = format!("{numeric_id:07}");
+    for candidate in [id, canonical_id.as_str(), padded_id.as_str()] {
+        let path = format!("Mob.img/{candidate}/name");
+        let Some(node) = string_archive.root().resolve(&path).ok().flatten() else {
+            continue;
+        };
+        if let Ok(NodeValue::String(name)) = node.value()
+            && !name.trim().is_empty()
+        {
+            return Some(name);
+        }
+    }
+    None
+}
+
+fn spaced_chat_mob_id(characters: &[char], start: usize) -> Option<(String, usize)> {
+    let mut index = start;
+    while characters
+        .get(index)
+        .is_some_and(|character| character.is_whitespace())
+    {
+        index += 1;
+    }
+
+    let mut digits = String::new();
+    let mut end = index;
+    while let Some(character) = characters.get(index) {
+        if character.is_ascii_digit() {
+            digits.push(*character);
+            index += 1;
+            end = index;
+            continue;
+        }
+        if character.is_whitespace() {
+            let mut next_digit = index;
+            while characters
+                .get(next_digit)
+                .is_some_and(|next| next.is_whitespace())
+            {
+                next_digit += 1;
+            }
+            if characters
+                .get(next_digit)
+                .is_some_and(|next| next.is_ascii_digit())
+            {
+                index = next_digit;
+                continue;
+            }
+        }
+        break;
+    }
+
+    ((6..=7).contains(&digits.len())).then_some((digits, end))
 }
 
 fn bool_to_percent(value: bool) -> u8 {

@@ -608,6 +608,45 @@ fn append_map_entity_draws<'a>(
                         }
                     }
                 }
+                if !mob.dying
+                    && mob.aggro_target.is_some()
+                    && let Some((texture_index, rect)) = mob.nameplate
+                    && let Some(texture) = textures.get(texture_index)
+                {
+                    let sprite_bottom = frame
+                        .sprites
+                        .iter()
+                        .map(|(_, sprite)| sprite.y + sprite.height)
+                        .fold(f32::NEG_INFINITY, f32::max);
+                    let x = 512.0 + offset_x - rect.width / 2.0;
+                    let y = sprite_bottom + offset_y + 2.0;
+                    if y.is_finite() {
+                        draws.push(SpriteDraw {
+                            texture,
+                            x: x + 1.0,
+                            y: y + 1.0,
+                            width: rect.width,
+                            height: rect.height,
+                            uv: [0.0, 0.0, 1.0, 1.0],
+                            tint: [0.0, 0.0, 0.0],
+                            blend_mode: BlendMode::Alpha,
+                            flip_x: false,
+                            opacity,
+                        });
+                        draws.push(SpriteDraw {
+                            texture,
+                            x,
+                            y,
+                            width: rect.width,
+                            height: rect.height,
+                            uv: [0.0, 0.0, 1.0, 1.0],
+                            tint: [1.0, 1.0, 1.0],
+                            blend_mode: BlendMode::Alpha,
+                            flip_x: false,
+                            opacity,
+                        });
+                    }
+                }
             }
             Actor::Npc(npc) => {
                 let offset_x = (npc.x - scene.player.x) as f32;

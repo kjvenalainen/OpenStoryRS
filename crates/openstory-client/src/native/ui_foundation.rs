@@ -7,8 +7,11 @@
 pub(super) const LOGICAL_WIDTH: f32 = 1024.0;
 pub(super) const LOGICAL_HEIGHT: f32 = 768.0;
 pub(super) const SKILL_MACRO_BUTTON: UiRect = UiRect::new(122.0, 265.0, 48.0, 18.0);
+pub(super) const SKILL_CLOSE_BUTTON: UiRect = super::ui_dialog::inventory_close(175.0);
 pub(super) const REVIVE_BUTTON: UiRect = UiRect::new(482.0, 425.0, 66.0, 27.0);
 
+pub(super) const STATUS_CLOSE_BUTTON: UiRect =
+    super::ui_dialog::inventory_close(super::STATUS_PANEL_WIDTH as f32);
 pub(super) const STATUS_AUTO_BUTTON: UiRect = UiRect::new(98.0, 201.0, 73.0, 35.0);
 pub(super) const STATUS_DETAIL_BUTTON: UiRect = UiRect::new(124.0, 323.0, 47.0, 18.0);
 
@@ -120,12 +123,9 @@ pub(super) const INVENTORY_GRID: UiGrid = UiGrid {
     cell_height: super::INVENTORY_SLOT_CELL_HEIGHT as f32,
 };
 
-pub(super) const INVENTORY_CLOSE_BUTTON: UiRect = super::ui_dialog::close_button(156.0, 6.0);
+pub(super) const INVENTORY_CLOSE_BUTTON: UiRect = super::ui_dialog::inventory_close(175.0);
 pub(super) const INVENTORY_GATHER_BUTTON: UiRect = UiRect::new(126.0, 6.0, 12.0, 12.0);
 pub(super) const INVENTORY_SORT_BUTTON: UiRect = UiRect::new(141.0, 6.0, 12.0, 12.0);
-pub(super) const EQUIPMENT_PET_BUTTON: UiRect = UiRect::new(115.0, 280.0, 54.0, 18.0);
-pub(super) const PET_EQUIPMENT_CLOSE_BUTTON: UiRect =
-    super::ui_dialog::close_button(super::PET_EQUIPMENT_PANEL_WIDTH as f32 - 19.0, 6.0);
 pub(super) const INVENTORY_MESO_BUTTON: UiRect = UiRect::new(5.0, 253.0, 19.0, 23.0);
 pub(super) const QUEST_LIST_CLOSE_BUTTON: UiRect =
     super::ui_dialog::close_button(super::QUEST_LOG_LIST_WIDTH as f32 - 18.0, 5.0);
@@ -134,11 +134,21 @@ pub(super) const QUEST_DETAIL_CLOSE_BUTTON: UiRect = super::ui_dialog::close_but
     5.0,
 );
 
+pub(super) fn quest_tab(index: usize) -> UiRect {
+    UiRect::new(10.0 + index as f32 * 70.0, 23.0, 70.0, 19.0)
+}
+
 const QUEST_FOOTER_BUTTON_Y: f32 = super::QUEST_LOG_PANEL_HEIGHT as f32 - 24.0;
 pub(super) const QUEST_HELPER_BUTTON: UiRect = UiRect::new(
     super::QUEST_LOG_PANEL_WIDTH as f32 - 154.0,
     QUEST_FOOTER_BUTTON_Y,
     86.0,
+    17.0,
+);
+pub(super) const QUEST_TELEPORT_BUTTON: UiRect = UiRect::new(
+    super::QUEST_LOG_PANEL_WIDTH as f32 - 69.0,
+    QUEST_FOOTER_BUTTON_Y - 27.0,
+    57.0,
     17.0,
 );
 pub(super) const QUEST_FORFEIT_BUTTON: UiRect = UiRect::new(
@@ -269,7 +279,7 @@ pub(super) fn measure_text(font: &fontdue::Font, text: &str, size: f32) -> f32 {
     let mut width = 0.0;
     let mut previous = None;
     for character in text.chars() {
-        if (0xf0000..=0xf0006).contains(&(character as u32)) {
+        if (0xf0000..=0xf0007).contains(&(character as u32)) {
             continue;
         }
         if let Some(previous) = previous {
@@ -291,13 +301,35 @@ pub(super) fn draw_tab_label(
     label: &str,
     bounds: UiRect,
 ) {
+    draw_control_label(
+        font,
+        pixels,
+        canvas_width,
+        canvas_height,
+        label,
+        bounds,
+        [255, 255, 255],
+        [62, 54, 47],
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn draw_control_label(
+    font: &fontdue::Font,
+    pixels: &mut [u8],
+    canvas_width: usize,
+    canvas_height: usize,
+    label: &str,
+    bounds: UiRect,
+    color: [u8; 3],
+    outline: [u8; 3],
+) {
     const SIZE: f32 = 10.0;
     const LINE_HEIGHT: usize = 12;
-    const OUTLINE: [u8; 3] = [62, 54, 47];
-    const COLOR: [u8; 3] = [255, 255, 255];
 
     let label_font = bold_font().unwrap_or(font);
-    let label_width = measure_text(label_font, label, SIZE);
+    let label = ellipsize(label_font, label, SIZE, (bounds.width - 4.0).max(0.0));
+    let label_width = measure_text(label_font, &label, SIZE);
     let x = (bounds.x + ((bounds.width - label_width) / 2.0).max(0.0)).round() as i32;
     let y = (bounds.y + ((bounds.height - LINE_HEIGHT as f32) / 2.0)).round() as i32;
     let max_width = bounds.width.ceil().max(1.0) as usize;
@@ -317,13 +349,13 @@ pub(super) fn draw_tab_label(
             pixels,
             canvas_width,
             canvas_height,
-            label,
+            &label,
             x + offset_x,
             y + offset_y,
             SIZE,
             max_width,
             max_height,
-            OUTLINE,
+            outline,
         );
     }
     super::draw_dialogue_text(
@@ -331,13 +363,13 @@ pub(super) fn draw_tab_label(
         pixels,
         canvas_width,
         canvas_height,
-        label,
+        &label,
         x,
         y,
         SIZE,
         max_width,
         max_height,
-        COLOR,
+        color,
     );
 }
 

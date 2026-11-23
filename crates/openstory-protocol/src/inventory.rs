@@ -75,6 +75,7 @@ pub struct EquipInventoryData {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct InventoryItem {
     pub inventory_type: InventoryType,
+    /// Worn slots are positive magnitudes, with cosmetic equipment offset by 100.
     pub slot: u16,
     pub item_id: i32,
     pub count: u16,
@@ -328,10 +329,13 @@ pub(crate) fn parse_initial_inventory(
             } else {
                 InventoryType::Equip
             };
-            let (normalized_type, slot) = if list_index == 1 {
-                (InventoryType::Equip, position.unsigned_abs())
-            } else {
-                normalize_slot(inventory_type, position)
+            let (normalized_type, slot) = match (list_index, position) {
+                // Initial v83 snapshots strip the 100 offset from the separate
+                // worn cash list. Restore it before merging with the base slots.
+                (1, 1..=100) => (InventoryType::Equipped, position as u16 + 100),
+                (1, 101..=i16::MAX) => (InventoryType::Equipped, position as u16),
+                (1, -100..=-1) => (InventoryType::Equip, position.unsigned_abs()),
+                _ => normalize_slot(inventory_type, position),
             };
             let item = read_inventory_item(packet, normalized_type, slot)?;
             snapshot.upsert(item);
@@ -1033,5 +1037,66 @@ fn normalize_slot(inventory_type: InventoryType, position: i16) -> (InventoryTyp
         (InventoryType::Equipped, position.unsigned_abs())
     } else {
         (inventory_type, position as u16)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn initial_equipment_snapshot_preserves_base_cash_pet_and_bag_slots() {
+        fn write_equip(packet: &mut PacketWriter, slot: i16, item_id: i32, cash: bool) {
+            packet.write_i16(slot);
+            packet.write_u8(1);
+            packet.write_i32(item_id);
+            packet.write_bool(cash);
+            if cash {
+                packet.write_i64(7);
+            }
+            packet.write_i64(0);
+            packet.write_bytes(&[0; 2 + EQUIP_STAT_COUNT * 2]);
+            packet.write_string("").unwrap();
+            packet.write_i16(0);
+            packet.write_bytes(&[0; 10]);
+            if !cash {
+                packet.write_i64(0);
+            }
+            packet.write_bytes(&[0; 12]);
+        }
+
+        let mut packet = PacketWriter::new(0);
+        packet.write_i32(0);
+        packet.write_bytes(&[24; 5]);
+        packet.write_i64(0);
+        write_equip(&mut packet, 1, 1_002_000, false);
+        packet.write_i16(0);
+        write_equip(&mut packet, 1, 1_002_187, true);
+        write_equip(&mut packet, 23, 1_812_000, true);
+        packet.write_i16(0);
+        write_equip(&mut packet, 1, 1_002_001, false);
+        packet.write_i16(0);
+        packet.write_i16(0);
+        packet.write_bytes(&[0; 4]);
+
+        let mut reader = PacketReader::new(&packet.as_slice()[2..]);
+        let inventory = parse_initial_inventory(&mut reader).unwrap();
+        assert!(reader.is_empty());
+        let equipped: Vec<_> = inventory
+            .equipped()
+            .map(|item| (item.slot, item.item_id))
+            .collect();
+        assert_eq!(
+            equipped,
+            [(1, 1_002_000), (101, 1_002_187), (123, 1_812_000)]
+        );
+        assert!(
+            inventory
+                .items
+                .iter()
+                .any(|item| item.inventory_type == InventoryType::Equip
+                    && item.slot == 1
+                    && item.item_id == 1_002_001)
+        );
     }
 }

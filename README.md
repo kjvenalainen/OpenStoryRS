@@ -36,6 +36,8 @@ If the server reports that its Terms of Service have not been accepted, the clie
 asks the player to review them; clicking OK or pressing Enter sends acceptance, while
 Escape cancels.
 The selection screen follows the legacy three-slot layout and pages through all characters returned by the server.
+Character previews render server-supplied masked cash equipment, weapon stickers, and equipped
+pets alongside the saved skin, face, and hair appearance.
 Click a character's avatar or the Start sign to enter; Enter also selects the highlighted character. Character
 selection supports PIC registration, verification, and the disabled-PIC path;
 PIC entry is masked and accepts 6–16 letters or numbers from the keyboard. Each row
@@ -357,10 +359,11 @@ extend matching bow, crossbow, and claw attack ranges from their NX level values
 that use the regular weapon action and lack a custom hit rectangle use the equipped weapon's
 afterimage range. Hit effects and hit sounds follow each attack delay and projectile flight;
 server mob-death animations and sounds apply immediately when `KILL_MOB` arrives. Attack skills
-play their authored Use sound before the attack action; when present, it takes precedence over
-the regular-action weapon sound. Skills without an authored Use sound retain the weapon sound
-when they use the regular weapon action. Teleport uses its learned NX range and stops at
-foothold walls or large floor changes; Flash Jump applies its aerial movement locally.
+play their authored Use sound before the attack action. Skills that fall back to the regular
+weapon action also play the weapon attack sound, matching the upstream client. Custom-action
+skills do not add the regular weapon sound. Skills without an authored Use sound retain the
+weapon sound when they use the regular weapon action. Teleport uses its learned NX range and
+stops at foothold walls or large floor changes; Flash Jump applies its aerial movement locally.
 Using a skill or mastery book now parses the v83 result and shows a success or failure
 message; learned skill levels still come from the server's skill update.
 Press J to open the available/active/completed quest log; its state
@@ -464,10 +467,15 @@ The v83 move request does not support partial
 stack moves within a bag, while drop and storage quantity prompts remain available. The
 legacy client rejects drags between inventory categories, so slot moves stay within the
 selected bag.
-Assign the Pet equipment action in Keyboard Settings, or click **PET EQUIP** at the bottom of
-the equipment inventory to open its right-side drawer. It shows pet names, level and fullness alongside
-pet gear. Click **Equip** or **Remove** on a gear row; the server inventory update remains
-authoritative.
+Equipment Inventory has four tabs. **Equip** shows base gear, **Deco** shows equipped cash
+overlays, and **Beauty** shows the character's current hair, eyes, and skin. **Pet** shows worn pet
+gear. On both **Equip** and **Pet**, the summoned pet sits beside the rightmost potion slots.
+**Auto MP** is above **Auto HP**. Each assigned potion shows its total quantity in the Use bag.
+Drag a matching restorative item from **Use** onto a potion slot to assign it. Right-click the
+slot to clear the server binding.
+The **Pet** tab shows the summoned pet's portrait, name, type, level, closeness and fullness.
+Equip pet gear from the item inventory and right-click a worn pet gear slot to remove it.
+Assign the Pet equipment shortcut in Keyboard Settings to open the tab directly.
 Use the Stats binding (`S` in the default layout) in the field to open Character Stats. Spend AP with the `+` buttons or use Auto
 to confirm allocation to the character's primary stat; each point is sent to the server and
 the panel waits for the authoritative stat update. Server `FORCED_STAT_SET` updates also

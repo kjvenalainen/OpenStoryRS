@@ -358,94 +358,22 @@ fn npc_shop_row_at(x: f32, y: f32, sell: bool) -> Option<usize> {
     (offset % NPC_SHOP_ROW_STEP < NPC_SHOP_ROW_HEIGHT).then_some(offset / NPC_SHOP_ROW_STEP)
 }
 
-fn npc_shop_button_rect(archive: &NxArchive, name: &str, x: f32, y: f32) -> Option<SpriteRect> {
+fn npc_shop_button_art(name: &str) -> String {
     let art_name = if name == "BtRecharge" { "BtExit" } else { name };
-    let (width, height, ox, oy) =
-        nx_dialogue_button_geometry(archive, &format!("UIWindow.img/Shop/{art_name}/normal/0"))?;
+    format!("UIWindow.img/Shop/{art_name}")
+}
+
+fn npc_shop_button_rect(archive: &NxArchive, name: &str, x: f32, y: f32) -> Option<SpriteRect> {
+    let art = npc_shop_button_art(name);
+    let rect = ui_dialog::NxButton::new(&art, ui_dialog::ButtonState::Normal)
+        .anchored_bounds(archive, x, y)?;
     Some(SpriteRect {
-        x: x - ox as f32,
-        y: y - oy as f32,
-        width,
-        height,
+        x: rect.x,
+        y: rect.y,
+        width: rect.width,
+        height: rect.height,
         blend_mode: BlendMode::Alpha,
     })
-}
-
-fn erase_npc_shop_button_label(pixels: &mut [u8], rect: ui_foundation::UiRect) {
-    let x = rect.x.round() as usize;
-    let y = rect.y.round() as usize;
-    let width = rect.width.round() as usize;
-    let height = rect.height.round() as usize;
-    let left = x + 8;
-    let right = x + width.saturating_sub(8);
-    if right <= left + 1 || y + height > NPC_SHOP_HEIGHT || right >= NPC_SHOP_WIDTH {
-        return;
-    }
-    for row in 3..height.saturating_sub(3) {
-        let pixel_y = y + row;
-        let left_index = (pixel_y * NPC_SHOP_WIDTH + left) * 4;
-        let right_index = (pixel_y * NPC_SHOP_WIDTH + right) * 4;
-        for pixel_x in left + 1..right {
-            let distance = pixel_x - left;
-            let span = right - left;
-            let index = (pixel_y * NPC_SHOP_WIDTH + pixel_x) * 4;
-            for channel in 0..3 {
-                pixels[index + channel] = ((usize::from(pixels[left_index + channel])
-                    * (span - distance)
-                    + usize::from(pixels[right_index + channel]) * distance)
-                    / span) as u8;
-            }
-        }
-    }
-}
-
-fn draw_npc_shop_button_label(
-    font: &fontdue::Font,
-    pixels: &mut [u8],
-    label: &str,
-    x: i32,
-    y: i32,
-    width: usize,
-    color: [u8; 3],
-) {
-    let outline = [62, 54, 47];
-    for (offset_x, offset_y) in [
-        (-1, -1),
-        (0, -1),
-        (1, -1),
-        (-1, 0),
-        (1, 0),
-        (-1, 1),
-        (0, 1),
-        (1, 1),
-    ] {
-        draw_dialogue_text(
-            font,
-            pixels,
-            NPC_SHOP_WIDTH,
-            NPC_SHOP_HEIGHT,
-            label,
-            x + offset_x,
-            y + offset_y,
-            10.0,
-            width,
-            12,
-            outline,
-        );
-    }
-    draw_dialogue_text(
-        font,
-        pixels,
-        NPC_SHOP_WIDTH,
-        NPC_SHOP_HEIGHT,
-        label,
-        x,
-        y,
-        10.0,
-        width,
-        12,
-        color,
-    );
 }
 
 fn render_npc_shop_panel(
@@ -498,8 +426,9 @@ fn render_npc_shop_panel(
             );
         }
     }
+    use ui_dialog::{ButtonState, NxButton};
+
     let mut dialog = NxDialog::new(&mut pixels, NPC_SHOP_WIDTH, NPC_SHOP_HEIGHT, ui);
-    let mut recharge_button = None;
     for (name, x, y) in NPC_SHOP_BUTTONS {
         let enabled = match name {
             "BtBuy" => !state.pending && state.selected_buy_item().is_some(),
@@ -509,40 +438,23 @@ fn render_npc_shop_panel(
             "BtRecharge" => !state.pending && npc_shop_recharge_slot(state, inventory).is_some(),
             _ => true,
         };
-        let variant = if !enabled {
-            "disabled"
+        let state = if !enabled {
+            ButtonState::Disabled
         } else if state.hovered_button == Some(name) {
-            "mouseOver"
+            ButtonState::Hovered
         } else {
-            "normal"
+            ButtonState::Normal
         };
-        let art_name = if name == "BtRecharge" { "BtExit" } else { name };
-        let rect =
-            dialog.anchored_button(&format!("UIWindow.img/Shop/{art_name}/{variant}/0"), x, y)?;
+        let art = npc_shop_button_art(name);
+        let button = NxButton::new(&art, state);
+        let bounds = NxButton::new(&art, ButtonState::Normal)
+            .anchored_bounds(ui, x as f32, y as f32)
+            .ok_or_else(|| format!("missing NX shop button {art}"))?;
         if name == "BtRecharge" {
-            recharge_button = Some((rect, enabled));
+            dialog.labeled_button(bounds, button, font, "Recharge")?;
+        } else {
+            dialog.button(bounds, button)?;
         }
-    }
-    drop(dialog);
-    if let Some((rect, enabled)) = recharge_button {
-        erase_npc_shop_button_label(&mut pixels, rect);
-        let label = "RECHARGE";
-        let label_font = ui_foundation::bold_font().unwrap_or(font);
-        let label_width = ui_foundation::measure_text(label_font, label, 10.0);
-        let label_x = (rect.x + (rect.width - label_width) / 2.0).round() as i32;
-        draw_npc_shop_button_label(
-            label_font,
-            &mut pixels,
-            label,
-            label_x,
-            rect.y.round() as i32 + 3,
-            rect.width.round() as usize,
-            if enabled {
-                [255, 255, 255]
-            } else {
-                [110, 110, 110]
-            },
-        );
     }
     composite_npc_shop_tab(&mut pixels, ui, 7, 54, !state.buy_recommended)?;
     ui_foundation::draw_tab_label(
@@ -1123,39 +1035,7 @@ impl ClientApp {
             let inventory = self.inventory.as_ref()?;
             npc_shop_tooltip_item(state, inventory)
         });
-        let Some(item) = item else {
-            self.inventory_tooltip_texture = None;
-            return;
-        };
-        let pixels = render_inventory_tooltip(
-            &self.font,
-            &item,
-            &self.legacy_ui_archive,
-            &self.item_archive,
-            &self.character_archive,
-            &self.string_archive,
-            self.active_character
-                .as_ref()
-                .map(|character| &character.stats),
-            self.inventory.as_ref(),
-            &mut self.inventory_icon_cache,
-            &mut self.item_name_cache,
-        );
-        let Some(renderer) = self.renderer.as_ref() else {
-            return;
-        };
-        let result = if let Some(texture) = self.inventory_tooltip_texture.as_ref() {
-            renderer.update_bgra(texture, &pixels).map(|()| None)
-        } else {
-            renderer
-                .upload_bgra(INVENTORY_TOOLTIP_WIDTH, INVENTORY_TOOLTIP_HEIGHT, &pixels)
-                .map(Some)
-        };
-        match result {
-            Ok(Some(texture)) => self.inventory_tooltip_texture = Some(texture),
-            Ok(None) => {}
-            Err(error) => eprintln!("OpenStoryRS: could not update NPC shop item tooltip: {error}"),
-        }
+        self.update_item_tooltip(item);
     }
 
     fn close_npc_shop(&mut self) {

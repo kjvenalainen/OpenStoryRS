@@ -17,7 +17,7 @@ fn reference_crop(
             575,
             142,
         ),
-        "hud-quickslot" => (865, 615, 152, 83, 152, 83),
+        "hud-quickslot" | "hud-quickslot-cooldown" => (865, 615, 152, 83, 152, 83),
         "hud-quickslot-item-tooltip" | "hud-quickslot-skill-tooltip" => {
             let tooltip = scene?.sprites.iter().find(|sprite| {
                 sprite.texture_key.ends_with("quickslot-preview")
@@ -48,25 +48,25 @@ fn reference_crop(
             291,
         ),
         "panel-item-inventory-tabs" => (0, 20, 896, 291, 635, 211),
-        "panel-equipment-inventory" => (
+        name if equipment_preview_tab(name).is_some() => (
             EQUIPMENT_INVENTORY_PANEL_X as u32,
             EQUIPMENT_INVENTORY_PANEL_Y as u32,
-            187,
-            296,
-            187,
-            296,
+            EQUIPMENT_INVENTORY_PANEL_WIDTH,
+            EQUIPMENT_INVENTORY_PANEL_HEIGHT,
+            EQUIPMENT_INVENTORY_PANEL_WIDTH,
+            EQUIPMENT_INVENTORY_PANEL_HEIGHT,
         ),
-        "panel-item-tooltip"
-        | "panel-item-tooltip-gloves"
-        | "panel-item-tooltip-bow"
-        | "panel-item-tooltip-thief" => (
-            520,
-            240,
-            INVENTORY_TOOLTIP_WIDTH,
-            INVENTORY_TOOLTIP_HEIGHT,
-            INVENTORY_TOOLTIP_WIDTH,
-            INVENTORY_TOOLTIP_HEIGHT,
-        ),
+        name if name.starts_with("panel-item-tooltip") => {
+            let sprite = scene?.sprites.last()?;
+            (
+                sprite.rect.x as u32,
+                sprite.rect.y as u32,
+                sprite.texture_width,
+                sprite.texture_height,
+                sprite.texture_width,
+                sprite.texture_height,
+            )
+        }
         "panel-skill-inventory"
         | "panel-skill-inventory-disabled"
         | "panel-skill-inventory-beginner" => (
@@ -77,14 +77,17 @@ fn reference_crop(
             177,
             292,
         ),
-        "panel-stats" | "panel-stats-auto-assign" => (
-            STATUS_PANEL_X as u32,
-            STATUS_PANEL_Y as u32,
-            348,
-            350,
-            348,
-            350,
-        ),
+        "panel-stats" | "panel-stats-auto-assign" | "panel-stats-detail" => {
+            let width = STATUS_DETAIL_OFFSET_X as u32 + STATUS_DETAIL_WIDTH;
+            (
+                STATUS_PANEL_X as u32,
+                STATUS_PANEL_Y as u32,
+                width,
+                350,
+                width,
+                350,
+            )
+        }
         "panel-npc-chat" => (
             NpcDialogueLayout::PANEL_X as u32,
             NpcDialogueLayout::PANEL_Y as u32,
@@ -180,9 +183,9 @@ fn write_reference_artifacts(
     let mut reader = decoder.read_info().map_err(|e| e.to_string())?;
     let mut decoded = vec![0; reader.output_buffer_size()];
     let info = reader.next_frame(&mut decoded).map_err(|e| e.to_string())?;
-    if info.width != target_width || info.height != target_height {
+    if info.width > target_width || info.height > target_height {
         return Err(format!(
-            "reference {name} is {}x{}, expected {target_width}x{target_height}",
+            "reference {name} is {}x{}, larger than its {target_width}x{target_height} crop",
             info.width, info.height
         ));
     }
@@ -192,20 +195,25 @@ fn write_reference_artifacts(
         _ => return Err(format!("unsupported reference color for {name}")),
     };
     let mut comparison = vec![255; target_width as usize * 2 * target_height as usize * 4];
-    let mut difference = vec![255; crop.len()];
+    let mut difference = vec![0; crop.len()];
     for row in 0..target_height as usize {
         for col in 0..target_width as usize {
             let index = row * target_width as usize + col;
-            let source = &decoded[index * channels..(index + 1) * channels];
-            let reference = [source[2], source[1], source[0], 255];
             let left = (row * target_width as usize * 2 + col) * 4;
             let right = left + target_width as usize * 4;
-            comparison[left..left + 4].copy_from_slice(&reference);
             comparison[right..right + 4].copy_from_slice(&crop[index * 4..index * 4 + 4]);
+            if row >= info.height as usize || col >= info.width as usize {
+                continue;
+            }
+            let offset = (row * info.width as usize + col) * channels;
+            let source = &decoded[offset..offset + channels];
+            let reference = [source[2], source[1], source[0], 255];
+            comparison[left..left + 4].copy_from_slice(&reference);
             for channel in 0..3 {
                 difference[index * 4 + channel] =
                     reference[channel].abs_diff(crop[index * 4 + channel]);
             }
+            difference[index * 4 + 3] = 255;
         }
     }
     write_png(

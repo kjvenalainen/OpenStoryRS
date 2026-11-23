@@ -48,6 +48,7 @@ fn scene_with_mob() -> MapSceneRuntime {
                 fly_speed: 0.0,
                 physical_attack: 1,
                 level: 1,
+                accuracy: 0,
                 physical_defense: 0.0,
                 magic_defense: 0.0,
                 avoid: 0.0,
@@ -73,6 +74,7 @@ fn scene_with_mob() -> MapSceneRuntime {
                 }],
             )]),
             skill_actions: HashMap::new(),
+            nameplate: None,
             hit_effects: Vec::new(),
             dying: false,
             fade_remaining: None,
@@ -115,7 +117,7 @@ fn ranged_skill_bonuses_extend_the_far_edge_of_the_attack_box() {
 
 #[test]
 fn server_kill_is_applied_immediately_while_hit_effects_remain_timed() {
-    let flight = projectile_flight_duration(0.0, 400.0);
+    let flight = projectile_flight_duration(0.0, 400.0, 6);
     assert!(flight > Duration::from_millis(400));
     assert!(flight < Duration::from_secs(2));
 

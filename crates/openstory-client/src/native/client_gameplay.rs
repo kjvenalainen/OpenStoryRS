@@ -294,6 +294,16 @@ impl ClientApp {
         {
             self.refresh_buff_list_texture(now);
         }
+        if !map_loading
+            && self.current_field.is_some()
+            && self.show_quickslots
+            && !self.skill_cooldowns.is_empty()
+            && self
+                .quickslot_cooldown_refreshed_at
+                .is_none_or(|last| now.saturating_duration_since(last) >= Duration::from_millis(50))
+        {
+            self.refresh_quickslots_texture();
+        }
         if was_riding
             && !self.active_buffs.contains_key(&character_buff_key(
                 openstory_protocol::BuffMaskGroup::First,

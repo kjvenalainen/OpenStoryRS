@@ -124,10 +124,22 @@ fn render_whisper_panel(
     let width = WHISPER_PANEL_WIDTH as usize;
     let height = WHISPER_PANEL_HEIGHT as usize;
     let mut pixels = vec![0; width * height * 4];
-    let _ = NxDialog::new(&mut pixels, width, height, ui_archive).layers(&[
-        ("UIWindow.img/Messenger/backgrnd", 0, 0),
-        ("UIWindow.img/Messenger/BtEnter/normal/0", 225, 315),
-    ]);
+    let mut dialog = NxDialog::new(&mut pixels, width, height, ui_archive);
+    let _ = dialog.authored_window(&[("UIWindow.img/Messenger/backgrnd", 0, 0)], WHISPER_CLOSE);
+    dialog.replace_title(
+        font,
+        "Whisper",
+        ui_foundation::UiRect::new(7.0, 5.0, 203.0, 12.0),
+    );
+    let state = if whisper_can_send(conversation) {
+        ui_dialog::ButtonState::Normal
+    } else {
+        ui_dialog::ButtonState::Disabled
+    };
+    let _ = dialog.button(
+        WHISPER_SEND,
+        ui_dialog::NxButton::new("UIWindow.img/Messenger/BtEnter", state),
+    );
     let recipient = if conversation.target.is_empty() {
         "To: enter a character name".to_owned()
     } else {
@@ -197,6 +209,10 @@ fn render_whisper_panel(
         );
     }
     pixels
+}
+
+fn whisper_can_send(conversation: &WhisperConversation) -> bool {
+    !conversation.target.trim().is_empty() && !conversation.input.trim().is_empty()
 }
 
 fn render_party_panel(

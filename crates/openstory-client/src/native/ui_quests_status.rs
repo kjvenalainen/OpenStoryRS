@@ -19,12 +19,10 @@ fn quest_is_displayable(archive: &NxArchive, quest_id: i16, font: &fontdue::Font
     if quest_id <= 0 {
         return false;
     }
-    let Ok(Some(quest_info)) = archive.root().resolve(&format!("QuestInfo.img/{quest_id}"))
-    else {
+    let Ok(Some(quest_info)) = archive.root().resolve(&format!("QuestInfo.img/{quest_id}")) else {
         return false;
     };
-    if quest_property_truthy(&quest_info, "blocked")
-        || quest_property_truthy(&quest_info, "hidden")
+    if quest_property_truthy(&quest_info, "blocked") || quest_property_truthy(&quest_info, "hidden")
     {
         return false;
     }
@@ -715,16 +713,126 @@ struct QuestHelperDisplayEntry {
     objectives: Vec<String>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct QuestHelperProgressSnapshot {
+    data: String,
+    item_counts: Vec<(i32, u32)>,
+}
+
+fn quest_helper_progress_snapshot(
+    quest: &openstory_protocol::QuestEntry,
+    archive: &NxArchive,
+    inventory: Option<&openstory_protocol::InventorySnapshot>,
+) -> QuestHelperProgressSnapshot {
+    let item_counts = quest_requirement_pairs(archive, quest.id, 1, "item")
+        .into_iter()
+        .filter(|(_, required)| *required > 0)
+        .map(|(item_id, _)| {
+            (
+                item_id,
+                inventory.map_or(0, |snapshot| snapshot.item_count(item_id)),
+            )
+        })
+        .collect();
+    QuestHelperProgressSnapshot {
+        data: quest.data.clone(),
+        item_counts,
+    }
+}
+
+fn sync_quest_helper_order(
+    log: &openstory_protocol::QuestLog,
+    archive: &NxArchive,
+    inventory: Option<&openstory_protocol::InventorySnapshot>,
+    order: &mut Vec<i16>,
+    previous_progress: &mut HashMap<i16, QuestHelperProgressSnapshot>,
+    initialized: &mut bool,
+) {
+    let current_progress: HashMap<i16, QuestHelperProgressSnapshot> = log
+        .started
+        .iter()
+        .map(|quest| {
+            (
+                quest.id,
+                quest_helper_progress_snapshot(quest, archive, inventory),
+            )
+        })
+        .collect();
+
+    if !*initialized {
+        *order = log.started.iter().map(|quest| quest.id).collect();
+        *previous_progress = current_progress;
+        *initialized = true;
+        return;
+    }
+
+    let current_ids: HashSet<i16> = current_progress.keys().copied().collect();
+    let newly_started: HashSet<i16> = current_ids
+        .iter()
+        .filter(|quest_id| !previous_progress.contains_key(*quest_id))
+        .copied()
+        .collect();
+    let progressed: HashSet<i16> = current_progress
+        .iter()
+        .filter_map(|(quest_id, current)| {
+            previous_progress
+                .get(quest_id)
+                .is_some_and(|previous| {
+                    current.data != previous.data
+                        || current.item_counts.iter().any(|(item_id, count)| {
+                            previous
+                                .item_counts
+                                .iter()
+                                .find(|(previous_item_id, _)| previous_item_id == item_id)
+                                .is_some_and(|(_, previous_count)| count > previous_count)
+                        })
+                })
+                .then_some(*quest_id)
+        })
+        .collect();
+
+    order.retain(|quest_id| current_ids.contains(quest_id));
+    let ordered_new: Vec<i16> = log
+        .started
+        .iter()
+        .filter(|quest| newly_started.contains(&quest.id))
+        .map(|quest| quest.id)
+        .collect();
+    let ordered_progressed: Vec<i16> = order
+        .iter()
+        .filter(|quest_id| progressed.contains(quest_id))
+        .copied()
+        .collect();
+    let mut next_order = ordered_new;
+    next_order.extend(ordered_progressed);
+    next_order.extend(
+        order
+            .iter()
+            .filter(|quest_id| !progressed.contains(quest_id))
+            .copied(),
+    );
+    *order = next_order;
+
+    *previous_progress = current_progress;
+}
+
 fn quest_helper_entries(
     log: &openstory_protocol::QuestLog,
+    order: &[i16],
     archive: &NxArchive,
     string_archive: &NxArchive,
     font: &fontdue::Font,
     inventory: Option<&openstory_protocol::InventorySnapshot>,
     item_name_cache: &mut HashMap<i32, Option<String>>,
 ) -> Vec<QuestHelperDisplayEntry> {
-    log.started
+    let mut started_by_id: HashMap<i16, &openstory_protocol::QuestEntry> = log
+        .started
         .iter()
+        .map(|quest| (quest.id, quest))
+        .collect();
+    order
+        .iter()
+        .filter_map(|quest_id| started_by_id.remove(quest_id))
         .filter(|quest| quest_is_displayable(archive, quest.id, font))
         .take(5)
         .map(|quest| {
@@ -809,17 +917,7 @@ fn draw_quest_helper_text(
         );
     }
     draw_dialogue_text(
-        font,
-        pixels,
-        width,
-        height,
-        text,
-        x,
-        y,
-        size,
-        max_width,
-        max_height,
-        color,
+        font, pixels, width, height, text, x, y, size, max_width, max_height, color,
     );
 }
 
@@ -1002,6 +1100,18 @@ fn render_quest_helper_panel(
 const QUEST_SCROLLBAR_WIDTH: usize = 15;
 const QUEST_SCROLLBAR_ARROW_HEIGHT: usize = 13;
 const QUEST_SCROLLBAR_THUMB_HEIGHT: usize = 25;
+const QUEST_DETAIL_BODY_TOP: usize = 129;
+const QUEST_DETAIL_BODY_BOTTOM: usize = 336;
+const QUEST_DETAIL_ACTIVE_BODY_BOTTOM: usize = 294;
+const QUEST_DETAIL_SCROLLBAR_INSET: usize = 5;
+
+fn quest_detail_body_bottom(tab: QuestLogTab) -> usize {
+    if tab == QuestLogTab::Active {
+        QUEST_DETAIL_ACTIVE_BODY_BOTTOM
+    } else {
+        QUEST_DETAIL_BODY_BOTTOM
+    }
+}
 
 fn draw_quest_panel_scrollbar(
     pixels: &mut [u8],
@@ -1056,6 +1166,70 @@ fn draw_quest_panel_scrollbar(
         "Basic.img/VScr4/enabled/thumb0",
         x as i32,
         thumb_y as i32,
+    );
+}
+
+fn draw_quest_teleport_button(
+    pixels: &mut [u8],
+    width: usize,
+    height: usize,
+    font: &fontdue::Font,
+    enabled: bool,
+) {
+    let button = ui_foundation::QUEST_TELEPORT_BUTTON;
+    let x = button.x.round() as usize;
+    let y = button.y.round() as usize;
+    let button_width = button.width.round() as usize;
+    let button_height = button.height.round() as usize;
+    let (edge, highlight, face, shadow, text) = if enabled {
+        (
+            [33, 76, 37],
+            [151, 207, 137],
+            [76, 157, 70],
+            [37, 104, 45],
+            [255, 255, 255],
+        )
+    } else {
+        (
+            [86, 83, 77],
+            [179, 175, 166],
+            [139, 135, 126],
+            [100, 96, 88],
+            [201, 197, 188],
+        )
+    };
+    for dy in 0..button_height {
+        for dx in 0..button_width {
+            let px = x + dx;
+            let py = y + dy;
+            if px >= width || py >= height {
+                continue;
+            }
+            let color = if dx == 0 || dx + 1 == button_width || dy == 0 || dy + 1 == button_height {
+                edge
+            } else if dy == 1 || dx == 1 {
+                highlight
+            } else if dy + 2 == button_height {
+                shadow
+            } else {
+                face
+            };
+            let offset = (py * width + px) * 4;
+            pixels[offset..offset + 4].copy_from_slice(&[color[2], color[1], color[0], 255]);
+        }
+    }
+    draw_dialogue_text(
+        font,
+        pixels,
+        width,
+        height,
+        "TELEPORT",
+        x as i32 + 4,
+        y as i32 + 3,
+        8.0,
+        button_width.saturating_sub(8),
+        button_height.saturating_sub(5),
+        text,
     );
 }
 
@@ -1126,12 +1300,13 @@ fn render_quest_log_panel(
     selected: usize,
     detail_open: bool,
     scroll: usize,
+    detail_scroll: usize,
     selected_reward: usize,
     character: Option<&openstory_protocol::CharacterInfo>,
     confirmation: Option<i16>,
     ui_archive: &NxArchive,
     npc_archive: &NxArchive,
-) -> Vec<u8> {
+) -> (Vec<u8>, usize) {
     const WIDTH: usize = QUEST_LOG_PANEL_WIDTH as usize;
     const HEIGHT: usize = QUEST_LOG_PANEL_HEIGHT as usize;
     const LIST_WIDTH: usize = QUEST_LOG_LIST_WIDTH as usize;
@@ -1141,85 +1316,44 @@ fn render_quest_log_panel(
     const SCROLLBAR_INSET: usize = 3;
     const LIST_SCROLLBAR_Y: usize = 50;
     const LIST_SCROLLBAR_HEIGHT: usize = 319;
-    const DETAIL_BODY_BOTTOM: usize = 360;
-    const DETAIL_CONTENT_RIGHT: usize =
-        DETAIL_X + QUEST_LOG_DETAIL_WIDTH as usize - 18;
     let mut pixels = vec![0_u8; WIDTH * HEIGHT * 4];
     let ids = quest_ids_for_tab(log, available_quests, tab, archive, font);
     let selected_quest = detail_open.then(|| ids.get(selected).copied()).flatten();
     let mut dialog = NxDialog::new(&mut pixels, WIDTH, HEIGHT, ui_archive);
     if selected_quest.is_some() {
-        let _ = dialog.frame("UIWindow.img/Quest/backgrnd2", DETAIL_X as i32, 0);
-        let _ = dialog.buttons(&[(
-            ui_dialog::CLOSE_BUTTON_ART,
+        let _ = dialog.authored_window(
+            &[("UIWindow.img/Quest/backgrnd2", DETAIL_X as i32, 0)],
             ui_foundation::QUEST_DETAIL_CLOSE_BUTTON,
-        )]);
+        );
+        dialog.title(
+            font,
+            "Quest Details",
+            ui_foundation::UiRect::new(DETAIL_X as f32 + 10.0, 4.0, 200.0, 12.0),
+        );
     }
     // Paint the list after the detail backdrop so its right bevel stays in front.
-    let _ = dialog.frame("UIWindow.img/Quest/backgrnd", 0, 0);
+    let _ = dialog.authored_window(
+        &[("UIWindow.img/Quest/backgrnd", 0, 0)],
+        ui_foundation::QUEST_LIST_CLOSE_BUTTON,
+        );
+    dialog.replace_title(
+            font,
+        "Quest Log",
+        ui_foundation::UiRect::new(7.0, 5.0, 183.0, 12.0),
+        );
     let active = tab == QuestLogTab::Active;
     let available = tab == QuestLogTab::Available;
     let completed = tab == QuestLogTab::Completed;
-    let tab_labels = ["Available", "In Progress", "Complete"];
-    for (index, selected_tab) in [available, active, completed].into_iter().enumerate() {
-        let tab_x = 10 + index * 70;
-        let tab_state = if selected_tab { "1" } else { "0" };
-        let _ = composite_nx_ui_bitmap(
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            ui_archive,
-            &format!("Basic.img/Tab2/left{tab_state}"),
-            tab_x as i32,
-            23,
-        );
-        let _ = composite_nx_ui_bitmap_scaled_to(
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            ui_archive,
-            &format!("Basic.img/Tab2/fill{tab_state}"),
-            tab_x + 4,
-            23,
-            62,
-            19,
-        );
-        let _ = composite_nx_ui_bitmap(
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            ui_archive,
-            &format!("Basic.img/Tab2/right{tab_state}"),
-            (tab_x + 66) as i32,
-            23,
-        );
-        ui_foundation::draw_tab_label(
-            font,
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            tab_labels[index],
-            ui_foundation::UiRect::new(tab_x as f32, 23.0, 70.0, 19.0),
-        );
+    for (index, (selected, label)) in [
+        (available, "Available"),
+        (active, "In Progress"),
+        (completed, "Complete"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let _ = dialog.labeled_tab(ui_foundation::quest_tab(index), selected, font, label);
     }
-    let title_font = ui_foundation::bold_font().unwrap_or(font);
-    draw_dialogue_text(
-        title_font,
-        &mut pixels,
-        WIDTH,
-        HEIGHT,
-        "S",
-        38,
-        5,
-        8.0,
-        8,
-        10,
-        [30, 30, 30],
-    );
-    let _ = NxDialog::new(&mut pixels, WIDTH, HEIGHT, ui_archive).buttons(&[(
-        ui_dialog::CLOSE_BUTTON_ART,
-        ui_foundation::QUEST_LIST_CLOSE_BUTTON,
-    )]);
 
     if ids.is_empty() {
         let notice_index = if available {
@@ -1280,7 +1414,11 @@ fn render_quest_log_panel(
                 11.0,
                 LIST_TEXT_WIDTH,
                 18,
-                if index == selected { [34, 72, 112] } else { [28, 28, 28] },
+                if index == selected {
+                    [34, 72, 112]
+                } else {
+                    [28, 28, 28]
+                },
             );
         }
     }
@@ -1306,9 +1444,13 @@ fn render_quest_log_panel(
         );
     }
 
+    let mut detail_scroll_max = 0;
     if let Some(id) = selected_quest {
         let text_x = DETAIL_X as i32 + 18;
-        let text_width = DETAIL_CONTENT_RIGHT - text_x as usize - 5;
+        let scrollbar_x = DETAIL_X + QUEST_LOG_DETAIL_WIDTH as usize
+            - QUEST_SCROLLBAR_WIDTH
+            - QUEST_DETAIL_SCROLLBAR_INSET;
+        let text_width = scrollbar_x.saturating_sub(text_x as usize + 7);
         let name =
             quest_info_text(archive, id, "name").unwrap_or_else(|| "Unknown quest".to_owned());
         let name = ui_foundation::ellipsize(font, &name, 11.0, 150.0);
@@ -1382,106 +1524,195 @@ fn render_quest_log_panel(
             quest_info_text(archive, id, "0")
                 .filter(|description| quest_description_is_displayable(description))
         };
-        if let Some(description) = description {
-            draw_dialogue_text(
+        let description = description.map(|description| clean_npc_markup(&description));
+        let body_bottom = quest_detail_body_bottom(tab);
+        let body_height = body_bottom.saturating_sub(QUEST_DETAIL_BODY_TOP);
+        let description_height = description.as_deref().map_or(0, |text| {
+            dialogue_text_content_height(
+                font,
+                text,
+                10.0,
+                text_width,
+                &EMPTY_NPC_INLINE_ICONS,
+            )
+        });
+        let description_bottom = QUEST_DETAIL_BODY_TOP.saturating_add(description_height);
+        let note = if completed {
+            quest_info_text(archive, id, "2")
+                .filter(|note| quest_description_is_displayable(note))
+                .map(|note| clean_npc_markup(&note))
+        } else {
+            None
+        };
+        let note_y = (QUEST_DETAIL_BODY_TOP + description_height + 8).max(220) as i32;
+        let note_height = note.as_deref().map_or(0, |text| {
+            dialogue_text_content_height(
+                font,
+                text,
+                10.0,
+                text_width,
+                &EMPTY_NPC_INLINE_ICONS,
+            )
+        });
+        let objective_heading_y = (QUEST_DETAIL_BODY_TOP + description_height + 8).max(177) as i32;
+        let objectives = if completed {
+            Vec::new()
+        } else {
+            quest_objective_lines(
+                log,
+                id,
+                tab,
+                archive,
+                string_archive,
+                inventory,
+                item_name_cache,
+            )
+        };
+        let mut objective_rows = Vec::new();
+        let mut content_bottom = description_bottom;
+        if completed {
+            content_bottom = content_bottom.max(note_y as usize + note_height);
+        } else {
+            content_bottom = content_bottom.max(objective_heading_y as usize + 15);
+            let mut row_y = objective_heading_y + 20;
+            if objectives.is_empty() {
+                let empty_label = if available {
+                    "No listed requirements.".to_owned()
+                } else {
+                    "No tracked objectives.".to_owned()
+                };
+                let row_height = dialogue_text_content_height(
+                    font,
+                    &empty_label,
+                    10.0,
+                    text_width,
+                    &EMPTY_NPC_INLINE_ICONS,
+                )
+                .max(16);
+                content_bottom = content_bottom.max(row_y as usize + row_height);
+                objective_rows.push((empty_label, row_y, row_height, [79, 74, 66]));
+            } else {
+                for (objective, done) in objectives.iter().take(5) {
+                    let prefix = if available {
+                        "· "
+                    } else if *done {
+                        "✓ "
+                    } else {
+                        "○ "
+                    };
+                    let text = format!("{prefix}{objective}");
+                    let row_height = dialogue_text_content_height(
+                        font,
+                        &text,
+                        9.0,
+                        text_width,
+                        &EMPTY_NPC_INLINE_ICONS,
+                    )
+                    .max(13);
+                    let color = if *done { [62, 112, 57] } else { [57, 53, 45] };
+                    content_bottom = content_bottom.max(row_y as usize + row_height);
+                    objective_rows.push((text, row_y, row_height, color));
+                    row_y += row_height as i32 + 2;
+                }
+            }
+        }
+        let content_height = content_bottom.saturating_sub(QUEST_DETAIL_BODY_TOP);
+        detail_scroll_max = content_height.saturating_sub(body_height);
+        let detail_scroll = detail_scroll.min(detail_scroll_max);
+        if let Some(description) = description.as_deref() {
+            draw_dialogue_text_with_icons_scrolled_in_viewport(
                 font,
                 &mut pixels,
                 WIDTH,
                 HEIGHT,
-                &clean_npc_markup(&description),
+                description,
                 text_x,
-                129,
+                QUEST_DETAIL_BODY_TOP as i32,
+                QUEST_DETAIL_BODY_TOP as i32,
                 10.0,
                 text_width,
-                32,
+                body_height,
                 [73, 69, 61],
+                &EMPTY_NPC_INLINE_ICONS,
+                detail_scroll,
             );
         }
         if completed {
-            if let Some(note) = quest_info_text(archive, id, "2") {
-                draw_dialogue_text(
+            if let Some(note) = note.as_deref() {
+                draw_dialogue_text_with_icons_scrolled_in_viewport(
                     font,
                     &mut pixels,
                     WIDTH,
                     HEIGHT,
-                    &clean_npc_markup(&note),
+                    note,
                     text_x,
-                    220,
+                    note_y,
+                    QUEST_DETAIL_BODY_TOP as i32,
                     10.0,
                     text_width,
-                    DETAIL_BODY_BOTTOM - 220,
+                    body_height,
                     [73, 69, 61],
+                    &EMPTY_NPC_INLINE_ICONS,
+                    detail_scroll,
                 );
             }
         } else {
-        draw_dialogue_text(
-            font,
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            if available {
-                "Requirements"
-            } else {
-                "Objectives"
-            },
-            text_x,
-            177,
-            10.0,
-            text_width,
-            15,
-            [49, 75, 93],
-        );
-        let objectives = quest_objective_lines(
-            log,
-            id,
-            tab,
-            archive,
-            string_archive,
-            inventory,
-            item_name_cache,
-        );
-        if objectives.is_empty() {
-            draw_dialogue_text(
+            draw_dialogue_text_with_icons_scrolled_in_viewport(
                 font,
                 &mut pixels,
                 WIDTH,
                 HEIGHT,
                 if available {
-                    "No listed requirements."
+                    "Requirements"
                 } else {
-                    "No tracked objectives."
+                    "Objectives"
                 },
                 text_x,
-                197,
+                objective_heading_y,
+                QUEST_DETAIL_BODY_TOP as i32,
                 10.0,
                 text_width,
-                16,
-                [79, 74, 66],
+                body_height,
+                [49, 75, 93],
+                &EMPTY_NPC_INLINE_ICONS,
+                detail_scroll,
             );
-        } else {
-            for (index, (objective, done)) in objectives.iter().take(5).enumerate() {
-                let prefix = if available {
-                    "· "
-                } else if *done {
-                    "✓ "
-                } else {
-                    "○ "
-                };
-                draw_dialogue_text(
+            for (text, y, _row_height, color) in objective_rows {
+                draw_dialogue_text_with_icons_scrolled_in_viewport(
                     font,
                     &mut pixels,
                     WIDTH,
                     HEIGHT,
-                    &format!("{prefix}{objective}"),
+                    &text,
                     text_x,
-                    196 + index as i32 * 18,
+                    y,
+                    QUEST_DETAIL_BODY_TOP as i32,
                     9.0,
                     text_width,
-                    17,
-                    if *done { [62, 112, 57] } else { [57, 53, 45] },
+                    body_height,
+                    color,
+                    &EMPTY_NPC_INLINE_ICONS,
+                    detail_scroll,
                 );
             }
         }
+        if detail_scroll_max > 0 {
+            let max_thumb_offset = body_height.saturating_sub(
+                QUEST_SCROLLBAR_ARROW_HEIGHT * 2 + QUEST_SCROLLBAR_THUMB_HEIGHT,
+            );
+            let thumb_offset = (max_thumb_offset as f32 * detail_scroll as f32
+                / detail_scroll_max as f32)
+                .round() as usize;
+            draw_quest_panel_scrollbar(
+                &mut pixels,
+                WIDTH,
+                HEIGHT,
+                ui_archive,
+                scrollbar_x,
+                QUEST_DETAIL_BODY_TOP,
+                body_height,
+                thumb_offset,
+            );
         }
         if active {
             let reward_choices = character.map_or_else(Vec::new, |character| {
@@ -1511,6 +1742,13 @@ fn render_quest_log_panel(
                 );
             }
         }
+        let teleport_enabled = active
+            && log
+                .started
+                .iter()
+                .find(|quest| quest.id == id)
+                .is_some_and(|quest| quest_is_completable(quest, archive, inventory, log));
+        draw_quest_teleport_button(&mut pixels, WIDTH, HEIGHT, font, teleport_enabled);
         let forfeit_path = if active {
             "UIWindow.img/Quest/BtGiveup/normal/0"
         } else {
@@ -1569,7 +1807,7 @@ fn render_quest_log_panel(
             overlay_y + 79,
         );
     }
-    pixels
+    (pixels, detail_scroll_max)
 }
 
 fn primary_ability_stat(
@@ -1626,20 +1864,31 @@ fn render_status_panel(
     const WIDTH: usize = STATUS_PANEL_WIDTH as usize;
     const HEIGHT: usize = STATUS_PANEL_HEIGHT as usize;
     let mut pixels = vec![0_u8; WIDTH * HEIGHT * 4];
-    let _ = NxDialog::new(&mut pixels, WIDTH, HEIGHT, ui_archive).layers(
+    use ui_dialog::{ButtonState, NxButton};
+
+    let mut dialog = NxDialog::new(&mut pixels, WIDTH, HEIGHT, ui_archive);
+    let _ = dialog.authored_window(
         &[("UIWindow.img/Stat/backgrnd", 0, 0)],
+        ui_foundation::STATUS_CLOSE_BUTTON,
+    );
+    dialog.replace_title(
+        font,
+        "Character Stats",
+        ui_foundation::UiRect::new(7.0, 5.0, 142.0, 12.0),
     );
     let auto_state = if character.stats.ability_points > 0 && !waiting_for_stats {
-        "normal"
+        ButtonState::Normal
     } else {
-        "disabled"
+        ButtonState::Disabled
     };
-    let auto_path = format!("UIWindow.img/Stat/BtAuto/{auto_state}/0");
-    let _ = NxDialog::new(&mut pixels, WIDTH, HEIGHT, ui_archive).layers(&[
-        (auto_path.as_str(), ui_foundation::STATUS_AUTO_BUTTON.x as i32, ui_foundation::STATUS_AUTO_BUTTON.y as i32),
-        ("UIWindow.img/Stat/BtDetail/normal/0", ui_foundation::STATUS_DETAIL_BUTTON.x as i32, ui_foundation::STATUS_DETAIL_BUTTON.y as i32),
-        ("Basic.img/BtClose/normal/0", 155, 6),
-    ]);
+    let _ = dialog.button(
+        ui_foundation::STATUS_AUTO_BUTTON,
+        NxButton::new("UIWindow.img/Stat/BtAuto", auto_state),
+    );
+    let _ = dialog.button(
+        ui_foundation::STATUS_DETAIL_BUTTON,
+        NxButton::new("UIWindow.img/Stat/BtDetail", ButtonState::Normal),
+    );
 
     let stats = &character.stats;
     let color = [56, 42, 31];
@@ -1658,9 +1907,15 @@ fn render_status_panel(
         (stats.luck.to_string(), 59, 298),
     ];
     for (value, x, y) in values {
-        let has_ap_button = stats.ability_points > 0 && matches!(y, 112 | 130 | 244 | 262 | 280 | 298);
+        let has_ap_button =
+            stats.ability_points > 0 && matches!(y, 112 | 130 | 244 | 262 | 280 | 298);
         let text_width = if has_ap_button { 92 } else { 111 };
-        let value = ui_foundation::ellipsize(font, &value, ui_foundation::UiTextRole::Value.style().size, text_width as f32);
+        let value = ui_foundation::ellipsize(
+            font,
+            &value,
+            ui_foundation::UiTextRole::Value.style().size,
+            text_width as f32,
+        );
         ui_foundation::draw_text_role(
             font,
             &mut pixels,
@@ -1676,10 +1931,15 @@ fn render_status_panel(
         );
     }
     if stats.ability_points > 0 {
-        let button_state = if waiting_for_stats { "disabled" } else { "normal" };
-        let path = format!("UIWindow.img/Stat/BtApUp/{button_state}/0");
+        let state = if waiting_for_stats {
+            ButtonState::Disabled
+        } else {
+            ButtonState::Normal
+        };
+        let button = NxButton::new("UIWindow.img/Stat/BtApUp", state);
+        let mut dialog = NxDialog::new(&mut pixels, WIDTH, HEIGHT, ui_archive);
         for (_, rect) in ui_foundation::status_ap_buttons() {
-            let _ = composite_nx_ui_bitmap(&mut pixels, WIDTH, HEIGHT, ui_archive, &path, rect.x as i32, rect.y as i32);
+            let _ = dialog.button(rect, button);
         }
     }
     let ability_points = stats.ability_points.to_string();
@@ -1705,16 +1965,14 @@ fn render_status_panel(
 
 const STATUS_AUTO_ASSIGN_DIALOG_WIDTH: usize = 190;
 const STATUS_AUTO_ASSIGN_DIALOG_HEIGHT: usize = 154;
-const STATUS_AUTO_ASSIGN_CLOSE: ui_foundation::UiRect = ui_dialog::close_button(
-    STATUS_AUTO_ASSIGN_DIALOG_WIDTH as f32 - 19.0,
-    6.0,
-);
+const STATUS_AUTO_ASSIGN_CLOSE: ui_foundation::UiRect =
+    ui_dialog::inventory_close(STATUS_AUTO_ASSIGN_DIALOG_WIDTH as f32);
 
-fn status_auto_assign_buttons() -> (ui_foundation::UiRect, ui_foundation::UiRect) {
-    let y = STATUS_AUTO_ASSIGN_DIALOG_HEIGHT as f32 - 23.0;
-    (
-        ui_foundation::UiRect::new(43.0, y, 47.0, 18.0),
-        ui_foundation::UiRect::new(96.0, y, 51.0, 18.0),
+fn status_auto_assign_buttons() -> [ui_foundation::UiRect; 2] {
+    ui_dialog::right_aligned_footer(
+        STATUS_AUTO_ASSIGN_DIALOG_WIDTH as f32 - 8.0,
+        STATUS_AUTO_ASSIGN_DIALOG_HEIGHT as f32,
+        [47.0, 47.0],
     )
 }
 
@@ -1723,53 +1981,28 @@ fn render_status_auto_assign_dialog(
     ui_archive: &NxArchive,
     character: &openstory_protocol::CharacterInfo,
 ) -> Result<Vec<u8>, String> {
-    const HEADER: usize = 25;
-    const FOOTER: usize = 28;
-    const CHROME: &str = "UIWindow.img/SysOpt/backgrnd";
-    const INK: [u8; 3] = [40, 51, 61];
+    use ui_dialog::{ButtonState, NxButton};
+    use ui_foundation::{UiRect, UiTextRole, draw_text_role};
+
     let width = STATUS_AUTO_ASSIGN_DIALOG_WIDTH;
     let height = STATUS_AUTO_ASSIGN_DIALOG_HEIGHT;
     let mut pixels = vec![0; width * height * 4];
-    let dialog = NxDialog::new(&mut pixels, width, height, ui_archive);
-    let (source_width, source_height, source) = dialog
-        .frame_bitmap(CHROME)
-        .filter(|(source_width, source_height, _)| {
-            *source_width >= width && *source_height > HEADER + FOOTER
-        })
-        .ok_or_else(|| format!("missing auto-assign window frame {CHROME}"))?;
-    let stride = source_width * 4;
-    let split = width / 2 * 4;
-    for (y, row) in pixels.chunks_exact_mut(width * 4).enumerate() {
-        let source_y = if y < HEADER {
-            y
-        } else if y >= height - FOOTER {
-            source_height - (height - y)
-        } else {
-            HEADER
-        };
-        let source_row = &source[source_y * stride..(source_y + 1) * stride];
-        row[..split].copy_from_slice(&source_row[..split]);
-        row[split..].copy_from_slice(&source_row[(source_width - width) * 4 + split..]);
-    }
-
-    fill_dialogue_rect(&mut pixels, width, height, 7, 6, width - 14, 12, [255, 255, 255, 255]);
-    fill_dialogue_rect(
-        &mut pixels,
-        width,
-        height,
-        5,
-        HEADER,
-        width - 10,
-        height - HEADER - FOOTER,
-        [244, 245, 243, 255],
-    );
-    let (accept, cancel) = status_auto_assign_buttons();
-    NxDialog::new(&mut pixels, width, height, ui_archive).buttons(&[
-        (ui_dialog::CLOSE_BUTTON_ART, STATUS_AUTO_ASSIGN_CLOSE),
-        ("Basic.img/BtOK2/normal/0", accept),
-        ("UIWindow.img/ItemMove/BtCancel/normal/0", cancel),
-    ])?;
-    draw_dialogue_text(font, &mut pixels, width, height, "AUTO ASSIGN", 9, 6, 10.0, width - 37, 13, INK);
+    let mut dialog = NxDialog::new(&mut pixels, width, height, ui_archive);
+    dialog.inventory_window(
+        UiRect::new(0.0, 0.0, width as f32, height as f32),
+        font,
+        "Auto-Assign Ability Points",
+        STATUS_AUTO_ASSIGN_CLOSE,
+    )?;
+    let [accept, cancel] = status_auto_assign_buttons();
+    dialog.button(
+        accept,
+        NxButton::new("Basic.img/BtOK2", ButtonState::Normal),
+    )?;
+    dialog.button(
+        cancel,
+        NxButton::new("Basic.img/BtCancel2", ButtonState::Normal),
+    )?;
 
     let points = character.stats.ability_points;
     let additions = match primary_ability_stat(character) {
@@ -1784,18 +2017,31 @@ fn render_status_auto_assign_dialog(
         .zip(additions)
         .enumerate()
     {
-        draw_dialogue_text(
+        draw_text_role(
             font,
             &mut pixels,
             width,
             height,
-            &format!("{label} +{amount}"),
+            label,
             18,
-            36 + index as i32 * 18,
-            12.0,
-            width - 36,
+            36 + index as i32 * 19,
+            UiTextRole::Label,
+            60,
             16,
-            INK,
+            None,
+        );
+        draw_text_role(
+            font,
+            &mut pixels,
+            width,
+            height,
+            &format!("+{amount}"),
+            96,
+            36 + index as i32 * 19,
+            UiTextRole::Value,
+            70,
+            16,
+            None,
         );
     }
     Ok(pixels)

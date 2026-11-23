@@ -54,6 +54,7 @@ fn render_quickslot_panel_pixels(
     keys: &[u8; 8],
     icons: &[Option<(u32, u32, Arc<[u8]>)>; 8],
     item_counts: &[u32; 8],
+    cooldown_remaining: &[f32; 8],
 ) -> Vec<u8> {
     const WIDTH: usize = 151;
     const HEIGHT: usize = 80;
@@ -131,6 +132,30 @@ fn render_quickslot_panel_pixels(
                 y,
                 32,
             );
+            let shadow_height = (32.0 * cooldown_remaining[slot].clamp(0.0, 1.0)).ceil() as usize;
+            if shadow_height > 0 {
+                const SHADOW_ALPHA: u16 = 160;
+                for target_y in (32 - shadow_height)..32 {
+                    let source_y = target_y * *icon_height as usize / 32;
+                    for target_x in 0..32 {
+                        let source_x = target_x * *icon_width as usize / 32;
+                        let source_index = (source_y * *icon_width as usize + source_x) * 4;
+                        let source_alpha = u16::from(icon[source_index + 3]);
+                        if source_alpha == 0 {
+                            continue;
+                        }
+                        let shadow_alpha = SHADOW_ALPHA * source_alpha / 255;
+                        let inverse = 255 - shadow_alpha;
+                        let destination_index = ((y + target_y) * WIDTH + x + target_x) * 4;
+                        for channel in 0..3 {
+                            pixels[destination_index + channel] = (u16::from(
+                                pixels[destination_index + channel],
+                            ) * inverse
+                                / 255) as u8;
+                        }
+                    }
+                }
+            }
         }
         if item_counts[slot] > 0 {
             let _ = draw_item_stack_count(

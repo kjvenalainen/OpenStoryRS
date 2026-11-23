@@ -105,3 +105,37 @@ pub fn change_keymap_packet(updates: &[(u8, KeyBinding)]) -> Result<Vec<u8>, Pac
     }
     Ok(packet.into_bytes())
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AutoPotionSlot {
+    Hp,
+    Mp,
+}
+
+/// Assigns a Use-item ID to the v83 pet auto-potion binding. Zero clears it.
+pub fn change_auto_potion_packet(slot: AutoPotionSlot, item_id: i32) -> Vec<u8> {
+    let mut packet = PacketWriter::new(OPCODE_CHANGE_KEYMAP);
+    packet.write_i32(match slot {
+        AutoPotionSlot::Hp => 1,
+        AutoPotionSlot::Mp => 2,
+    });
+    packet.write_i32(item_id);
+    packet.into_bytes()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pet_auto_potion_bindings_use_separate_keymap_modes() {
+        assert_eq!(
+            change_auto_potion_packet(AutoPotionSlot::Hp, 2_000_000),
+            [135, 0, 1, 0, 0, 0, 128, 132, 30, 0]
+        );
+        assert_eq!(
+            change_auto_potion_packet(AutoPotionSlot::Mp, 0),
+            [135, 0, 2, 0, 0, 0, 0, 0, 0, 0]
+        );
+    }
+}

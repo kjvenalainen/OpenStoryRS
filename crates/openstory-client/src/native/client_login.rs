@@ -3,6 +3,20 @@ use super::*;
 const MAX_MAP_PREFETCH_CANDIDATES: usize = 3;
 const MAX_PREFETCHED_MAP_SCENES: usize = 3;
 const MAX_PREFETCHED_MAP_SCENE_BYTES: usize = 128 * 1024 * 1024;
+// Include sprites whose anchors are just outside the logical canvas but whose
+// art can still overlap the view.
+const INITIAL_NPC_VIEW_MARGIN_X: f32 = 128.0;
+const INITIAL_NPC_VIEW_MARGIN_Y: f32 = 160.0;
+
+fn initial_npc_spawn_in_view(
+    spawn: &openstory_protocol::MapNpcSpawn,
+    scene: &MapSceneRuntime,
+) -> bool {
+    let screen_x = f32::from(spawn.x) + scene.camera_offset.0;
+    let screen_y = f32::from(spawn.y) + scene.camera_offset.1;
+    (-INITIAL_NPC_VIEW_MARGIN_X..=1024.0 + INITIAL_NPC_VIEW_MARGIN_X).contains(&screen_x)
+        && (-INITIAL_NPC_VIEW_MARGIN_Y..=768.0 + INITIAL_NPC_VIEW_MARGIN_Y).contains(&screen_y)
+}
 
 fn decoded_scene_bytes(scene: &LoginSceneAssets) -> usize {
     let mut bitmaps = HashSet::new();
@@ -104,6 +118,8 @@ impl ClientApp {
         self.map_loading_started_at = Some(Instant::now());
         self.map_loading_frame_rendered = false;
         self.map_initial_npc_loading_until = None;
+        self.initial_npc_spawns.clear();
+        self.initial_npc_nearby_pending = 0;
         let character_look = self
             .active_character
             .as_ref()
@@ -153,6 +169,8 @@ impl ClientApp {
                 self.map_loading_started_at = None;
                 self.map_loading_frame_rendered = false;
                 self.map_initial_npc_loading_until = None;
+                self.initial_npc_spawns.clear();
+                self.initial_npc_nearby_pending = 0;
                 self.map_entry_refresh_pending = false;
                 self.pending_map_transition_ack = None;
                 eprintln!("OpenStoryRS: could not start loading map {map_id}: {error}");
@@ -176,6 +194,8 @@ impl ClientApp {
                 self.map_loading_started_at = None;
                 self.map_loading_frame_rendered = false;
                 self.map_initial_npc_loading_until = None;
+                self.initial_npc_spawns.clear();
+                self.initial_npc_nearby_pending = 0;
                 self.map_entry_refresh_pending = false;
                 if let Some(window) = self.window.as_ref() {
                     window.request_redraw();
@@ -248,6 +268,8 @@ impl ClientApp {
         self.map_loading_started_at = None;
         self.map_loading_frame_rendered = false;
         self.map_initial_npc_loading_until = None;
+        self.initial_npc_spawns.clear();
+        self.initial_npc_nearby_pending = 0;
         self.map_entry_refresh_pending = false;
         self.map_entry_refresh_step = 0;
         self.pending_map_transition_ack = None;
@@ -417,6 +439,8 @@ impl ClientApp {
             self.map_loading_started_at = None;
             self.map_loading_frame_rendered = false;
             self.map_initial_npc_loading_until = None;
+            self.initial_npc_spawns.clear();
+            self.initial_npc_nearby_pending = 0;
         }
         if let Some(window) = self.window.as_ref() {
             window.request_redraw();
@@ -446,11 +470,10 @@ impl ClientApp {
             }
             5 if self.map_entry_refresh_pending => self.sync_equipped_look(),
             6 if self.map_entry_refresh_pending => self.refresh_inventory_texture(),
-            7 if self.map_entry_refresh_pending => self.refresh_pet_equipment_texture(),
-            8 if self.map_entry_refresh_pending => self.refresh_skill_book_entries(),
-            9 if self.map_entry_refresh_pending => self.refresh_skill_book_texture(),
-            5..=9 => {
-                self.map_entry_refresh_step = 10;
+            7 if self.map_entry_refresh_pending => self.refresh_skill_book_entries(),
+            8 if self.map_entry_refresh_pending => self.refresh_skill_book_texture(),
+            5..=8 => {
+                self.map_entry_refresh_step = 9;
                 if let Some(window) = self.window.as_ref() {
                     window.request_redraw();
                 }
@@ -495,6 +518,60 @@ impl ClientApp {
             return;
         }
         self.map_initial_npc_loading_until = None;
+        self.prioritize_initial_npc_spawns();
+        if self.initial_npc_nearby_pending == 0 {
+            self.release_map_loading_screen();
+        }
+    }
+
+    fn prioritize_initial_npc_spawns(&mut self) {
+        let Some(scene) = self.map_scene.as_ref() else {
+            self.initial_npc_nearby_pending = 0;
+            return;
+        };
+        self.initial_npc_spawns
+            .make_contiguous()
+            .sort_by(|left, right| {
+                let left_near = initial_npc_spawn_in_view(left, scene);
+                let right_near = initial_npc_spawn_in_view(right, scene);
+                right_near.cmp(&left_near).then_with(|| {
+                    let left_dx = f64::from(left.x) - scene.player.x;
+                    let left_dy = f64::from(left.y) - scene.player.y;
+                    let right_dx = f64::from(right.x) - scene.player.x;
+                    let right_dy = f64::from(right.y) - scene.player.y;
+                    let left_distance = left_dx * left_dx + left_dy * left_dy;
+                    let right_distance = right_dx * right_dx + right_dy * right_dy;
+                    left_distance.total_cmp(&right_distance)
+                })
+            });
+        self.initial_npc_nearby_pending = self
+            .initial_npc_spawns
+            .iter()
+            .take_while(|spawn| initial_npc_spawn_in_view(spawn, scene))
+            .count();
+    }
+
+    pub(super) fn advance_initial_npc_spawns(&mut self) {
+        if self.map_initial_npc_loading_until.is_some() {
+            return;
+        }
+        let Some(spawn) = self.initial_npc_spawns.pop_front() else {
+            return;
+        };
+        let nearby = self.initial_npc_nearby_pending > 0;
+        self.spawn_npc_inner(spawn);
+        if nearby {
+            self.initial_npc_nearby_pending = self.initial_npc_nearby_pending.saturating_sub(1);
+        }
+        if self.initial_npc_nearby_pending == 0 && self.map_loading_started_at.is_some() {
+            self.release_map_loading_screen();
+        }
+        if let Some(window) = self.window.as_ref() {
+            window.request_redraw();
+        }
+    }
+
+    pub(super) fn release_map_loading_screen(&mut self) {
         self.map_loading_started_at = None;
         self.map_loading_frame_rendered = false;
         if let Some(window) = self.window.as_ref() {

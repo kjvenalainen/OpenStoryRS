@@ -148,13 +148,15 @@ pub(super) fn render(
     )?;
     let preview_character = character.map(|character| {
         let mut preview = character.clone();
-        if !state.preview_remove_all {
-            if let Some(product) = state
-                .selected_sn
-                .and_then(|sn| products.iter().find(|product| product.sn == sn))
-            {
-                try_on_cash_shop_item(&mut preview.look, product.item_id);
-            }
+        if state.preview_remove_all {
+            preview.look.equips.clear();
+            preview.look.masked_equips.clear();
+            preview.look.weapon_id = 0;
+            preview.look.weapon_sticker_id = 0;
+            preview.look.pet_ids = [0; 3];
+        }
+        for item_id in state.try_on_items.values() {
+            try_on_cash_shop_item(&mut preview.look, *item_id);
         }
         preview
     });
@@ -682,32 +684,48 @@ fn draw_equipped_pets(
     Ok(())
 }
 
-fn try_on_cash_shop_item(look: &mut openstory_protocol::CharacterLook, item_id: i32) {
-    if !(1_000_000..2_000_000).contains(&item_id) {
-        return;
+pub(super) fn add_try_on_item(state: &mut super::CashShopUi, item_id: i32) {
+    if let Some(slot) = cash_shop_preview_slot(item_id) {
+        state.try_on_items.insert(slot, item_id);
     }
-    let slot = match item_id / 10_000 {
-        100 => 1,
-        101 => 2,
-        102 => 3,
-        103 => 4,
-        104 | 105 => 5,
-        106 => 6,
-        107 => 7,
-        108 => 8,
-        109 => 10,
-        110 => 9,
-        111 => 12,
-        112 => 17,
-        113 => 50,
-        114 => 49,
-        130..=170 => 11,
-        _ => return,
+}
+
+fn cash_shop_preview_slot(item_id: i32) -> Option<i8> {
+    match item_id / 10_000 {
+        100 => Some(1),
+        101 => Some(2),
+        102 => Some(3),
+        103 => Some(4),
+        104 | 105 => Some(5),
+        106 => Some(6),
+        107 => Some(7),
+        108 => Some(8),
+        109 => Some(10),
+        110 => Some(9),
+        111 => Some(12),
+        112 => Some(17),
+        113 => Some(50),
+        114 => Some(49),
+        130..=170 => Some(11),
+        500 => Some(0),
+        _ => None,
+    }
+}
+
+fn try_on_cash_shop_item(look: &mut openstory_protocol::CharacterLook, item_id: i32) {
+    let Some(slot) = cash_shop_preview_slot(item_id) else {
+        return;
     };
-    let slot = slot as i8;
-    look.masked_equips
-        .retain(|(equipped_slot, _)| *equipped_slot != slot);
-    look.masked_equips.push((slot, item_id));
+    if slot == 0 {
+        look.pet_ids[0] = item_id;
+    } else {
+        if slot == 11 {
+            look.weapon_sticker_id = 0;
+        }
+        look.masked_equips
+            .retain(|(equipped_slot, _)| *equipped_slot != slot);
+        look.masked_equips.push((slot, item_id));
+    }
 }
 
 pub(super) fn render_preview(
@@ -749,6 +767,9 @@ pub(super) fn render_preview(
     state.locker_slots = 24;
     state.character_slots = 6;
     state.selected_sn = products.first().map(|product| product.sn);
+    if let Some(product) = products.first() {
+        add_try_on_item(&mut state, product.item_id);
+    }
     state.notice = Some("Offline preview data; no server is connected.".to_owned());
 
     match variant {
@@ -810,12 +831,12 @@ pub(super) fn render_preview(
                 inventory_type: cash_shop_inventory_type(product.item_id),
                 item_id: product.item_id,
                 count: product.count.max(1),
+                cash: true,
                 ..Default::default()
             };
-            let tooltip = super::render_inventory_tooltip(
+            let tooltip = super::item_tooltip::render(
                 font,
                 &item,
-                ui_archive,
                 item_archive,
                 character_archive,
                 string_archive,
@@ -829,9 +850,9 @@ pub(super) fn render_preview(
                 510.0,
                 208.0,
                 1.0,
-                super::INVENTORY_TOOLTIP_WIDTH as usize,
-                super::INVENTORY_TOOLTIP_HEIGHT as usize,
-                &tooltip,
+                tooltip.width as usize,
+                tooltip.height as usize,
+                &tooltip.pixels,
             );
         }
     }

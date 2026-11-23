@@ -228,6 +228,61 @@ fn calculate_player_touch_damage(
     damage_before_achilles.saturating_sub((f64::from(damage_before_achilles) * achilles) as i32)
 }
 
+fn player_avoidability(
+    character: &openstory_protocol::CharacterInfo,
+    inventory: Option<&openstory_protocol::InventorySnapshot>,
+    skill_archive: &NxArchive,
+    skills: &HashMap<i32, openstory_protocol::SkillEntry>,
+    active_buffs: &CharacterBuffs,
+    forced_stats: &ForcedEquipmentStats,
+) -> i32 {
+    let equipment_avoidability = inventory.map_or(0_i32, |inventory| {
+        inventory
+            .equipped()
+            .filter_map(|item| item.equip.as_ref())
+            .map(|equip| i32::from(equip.stats[11]))
+            .sum()
+    });
+    let angel_blessing_avoidability = if character_can_use_skill(character.stats.job, 12) {
+        learned_skill_level(skill_archive, skills, 12)
+            .and_then(|level| integer_property(&level, "z"))
+            .unwrap_or(0)
+    } else {
+        0
+    };
+    let buff_avoidability = i32::from(character_buff_value(
+        active_buffs,
+        openstory_protocol::BuffMaskGroup::Second,
+        0x0000_0020_0000_0000,
+    ));
+    forced_stats.avoidability.map_or_else(
+        || {
+            equipment_avoidability
+                .saturating_add(i32::from(character.stats.luck) / 2)
+                .saturating_add(i32::from(character.stats.dexterity) / 4)
+                .saturating_add(
+                    angel_blessing_avoidability.clamp(0, i32::MAX as i64) as i32,
+                )
+                .saturating_add(buff_avoidability)
+        },
+        i32::from,
+    )
+}
+
+fn combat_hit_chance(
+    accuracy: i32,
+    attacker_level: i32,
+    target_level: i32,
+    avoidability: f64,
+) -> f64 {
+    let level_delta = target_level.saturating_sub(attacker_level).max(0) as f32;
+    f64::from(
+        (accuracy as f32
+            / ((1.84_f32 + 0.07_f32 * level_delta) * avoidability.max(0.0) as f32 + 1.0))
+            .clamp(0.01, 1.0),
+    )
+}
+
 fn basic_attack_stats(
     character: &openstory_protocol::CharacterInfo,
     inventory: Option<&openstory_protocol::InventorySnapshot>,
@@ -453,6 +508,10 @@ fn basic_attack_stats(
         magic_total = magic_total.saturating_add(blessing_magic);
         accuracy_bonus = accuracy_bonus.saturating_add(integer_property(&level, "z").unwrap_or(0));
     }
+    accuracy_bonus = accuracy_bonus.saturating_add(buff_value(
+        openstory_protocol::BuffMaskGroup::Second,
+        0x0000_0010_0000_0000,
+    ));
     accuracy_bonus = accuracy_bonus.min(999);
     if let Some(value) = forced_stats.weapon_attack {
         weapon_attack = i64::from(value);
@@ -609,10 +668,8 @@ fn basic_attack_damage(
                 .max(1.0),
         )
     };
-    let hit_chance = (attack.accuracy as f32
-        / ((1.84_f32 + 0.07_f32 * level_delta as f32) * mob.avoid as f32 + 1.0))
-        .max(0.01);
-    if scene.next_attack_random() >= f64::from(hit_chance) {
+    let hit_chance = combat_hit_chance(attack.accuracy, attack.level, mob.level, mob.avoid);
+    if scene.next_attack_random() >= hit_chance {
         return (0, false);
     }
     let mut damage = min_damage + (max_damage - min_damage) * scene.next_attack_random();

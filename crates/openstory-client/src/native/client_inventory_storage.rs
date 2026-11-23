@@ -47,6 +47,9 @@ impl ClientApp {
     pub(super) fn refresh_inventory_texture(&mut self) {
         self.refresh_quickslot_counts_if_changed();
         self.refresh_quest_helper_texture();
+        if self.show_quest_log {
+            self.refresh_quest_log_texture();
+        }
         if self.show_equipment_inventory {
             self.refresh_equipment_inventory_texture();
         }
@@ -115,12 +118,20 @@ impl ClientApp {
         }
         let empty_inventory = openstory_protocol::InventorySnapshot::default();
         let inventory = self.inventory.as_ref().unwrap_or(&empty_inventory);
-        let pixels = render_equipment_inventory_panel(
+        let pixels = ui_equipment::render(
+            &self.font,
             inventory,
+            self.active_character
+                .as_ref()
+                .map(|character| &character.look),
+            self.equipment_tab,
+            self.equipment_pet_slots(),
             &self.legacy_ui_archive,
             &self.item_archive,
             &self.character_archive,
+            &self.string_archive,
             &mut self.inventory_icon_cache,
+            &mut self.item_name_cache,
         );
         let Some(renderer) = self.renderer.as_ref() else {
             return;
@@ -141,25 +152,60 @@ impl ClientApp {
         }
     }
 
-    pub(super) fn open_pet_equipment_panel(&mut self) {
-        self.show_equipment_inventory = true;
-        self.show_pet_equipment = true;
-        self.pet_equipment_scroll_row = 0;
-        let equipment_offset = self.dialog_window_offset(DialogWindow::EquipmentInventory);
-        self.dialog_window_offsets
-            .insert(DialogWindow::PetEquipment, equipment_offset);
-        self.refresh_equipment_inventory_texture();
-        self.refresh_pet_equipment_texture();
-        self.update_inventory_hover();
-        self.refresh_inventory_tooltip_texture();
+    fn equipment_pet_slots(&self) -> ui_equipment::PetSlots {
+        let summoned = self.active_character.as_ref().and_then(|character| {
+            self.map_scene
+                .as_ref()?
+                .pets
+                .values()
+                .filter(|pet| pet.owner_id == character.id)
+                .min_by_key(|pet| pet.slot)
+                .map(|pet| (pet.item_id, pet.unique_id))
+        });
+        ui_equipment::PetSlots {
+            summoned,
+            hp: self.auto_hp_potion_id,
+            mp: self.auto_mp_potion_id,
+        }
     }
 
-    pub(super) fn toggle_pet_equipment_panel(&mut self) {
-        if self.show_pet_equipment {
-            self.show_pet_equipment = false;
-        } else {
-            self.open_pet_equipment_panel();
+    pub(super) fn apply_auto_potion(
+        &mut self,
+        slot: openstory_protocol::AutoPotionSlot,
+        item_id: i32,
+    ) {
+        let assigned = match slot {
+            openstory_protocol::AutoPotionSlot::Hp => &mut self.auto_hp_potion_id,
+            openstory_protocol::AutoPotionSlot::Mp => &mut self.auto_mp_potion_id,
+        };
+        if *assigned == item_id {
+            return;
         }
+        *assigned = item_id;
+        self.refresh_equipment_pet_slots();
+    }
+
+    pub(super) fn refresh_equipment_pet_slots(&mut self) {
+        if self.show_equipment_inventory
+            && matches!(self.equipment_tab, EquipmentTab::Equip | EquipmentTab::Pet)
+        {
+            self.refresh_equipment_inventory_texture();
+            self.update_inventory_hover();
+            self.refresh_inventory_tooltip_texture();
+        }
+    }
+
+    pub(super) fn toggle_equipment_pet_tab(&mut self) {
+        if self.show_equipment_inventory && self.equipment_tab == EquipmentTab::Pet {
+            self.toggle_equipment_inventory();
+            return;
+        }
+        self.show_equipment_inventory = true;
+        self.equipment_tab = EquipmentTab::Pet;
+        self.raise_dialog_window(DialogWindow::EquipmentInventory);
+        self.refresh_equipment_inventory_texture();
+        self.update_inventory_hover();
+        self.refresh_inventory_tooltip_texture();
     }
 
     pub(super) fn refresh_inventory_tooltip_texture(&mut self) {
@@ -171,13 +217,13 @@ impl ClientApp {
             self.refresh_npc_shop_tooltip_texture();
             return;
         }
-        let item = if let Some(slot) = self
-            .equipped_inventory_hover_slot
+        let item = if let Some(hover) = self
+            .equipment_hover
             .filter(|_| self.show_equipment_inventory)
         {
             self.inventory
                 .as_ref()
-                .and_then(|inventory| inventory.equipped().find(|item| item.slot == slot).cloned())
+                .and_then(|inventory| hover.item(inventory, self.equipment_pet_slots()))
         } else if let Some(slot) = self.inventory_hover_slot.filter(|_| self.show_inventory) {
             self.inventory.as_ref().and_then(|inventory| {
                 inventory_display_item(
@@ -203,39 +249,7 @@ impl ClientApp {
                     })
                 })
         };
-        let Some(item) = item else {
-            self.inventory_tooltip_texture = None;
-            return;
-        };
-        let pixels = render_inventory_tooltip(
-            &self.font,
-            &item,
-            &self.legacy_ui_archive,
-            &self.item_archive,
-            &self.character_archive,
-            &self.string_archive,
-            self.active_character
-                .as_ref()
-                .map(|character| &character.stats),
-            self.inventory.as_ref(),
-            &mut self.inventory_icon_cache,
-            &mut self.item_name_cache,
-        );
-        let Some(renderer) = self.renderer.as_ref() else {
-            return;
-        };
-        let result = if let Some(texture) = self.inventory_tooltip_texture.as_ref() {
-            renderer.update_bgra(texture, &pixels).map(|()| None)
-        } else {
-            renderer
-                .upload_bgra(INVENTORY_TOOLTIP_WIDTH, INVENTORY_TOOLTIP_HEIGHT, &pixels)
-                .map(Some)
-        };
-        match result {
-            Ok(Some(texture)) => self.inventory_tooltip_texture = Some(texture),
-            Ok(None) => {}
-            Err(error) => eprintln!("OpenStory: could not update inventory item tooltip: {error}"),
-        }
+        self.update_item_tooltip(item);
     }
 
     pub(super) fn update_inventory_hover(&mut self) -> bool {
@@ -246,21 +260,17 @@ impl ClientApp {
         let cursor = self
             .cursor
             .map(|cursor| self.dialog_window_input_cursor(cursor));
-        let equipped_hovered_slot = if equipment_inventory_is_topmost {
+        let equipment_hover = if equipment_inventory_is_topmost {
             cursor.and_then(|cursor| {
                 let local_x = cursor.x - EQUIPMENT_INVENTORY_PANEL_X;
                 let local_y = cursor.y - EQUIPMENT_INVENTORY_PANEL_Y;
                 self.inventory.as_ref().and_then(|inventory| {
-                    inventory.equipped().find_map(|item| {
-                        let (x, y) = equipment_inventory_slot_position(item.slot)?;
-                        let left = x as f32 + 1.0;
-                        let top = y as f32 + 1.0;
-                        (local_x >= left
-                            && local_x < left + 32.0
-                            && local_y >= top
-                            && local_y < top + 32.0)
-                            .then_some(item.slot)
-                    })
+                    self.equipment_tab.hover(
+                        inventory,
+                        self.equipment_pet_slots(),
+                        local_x,
+                        local_y,
+                    )
                 })
             })
         } else {
@@ -303,10 +313,10 @@ impl ClientApp {
             .filter(|cursor| self.topmost_dialog_window_at(*cursor).is_none())
             .and_then(|cursor| self.quickslot_at(cursor));
         let changed = self.inventory_hover_slot != hovered_slot
-            || self.equipped_inventory_hover_slot != equipped_hovered_slot
+            || self.equipment_hover != equipment_hover
             || self.quickslot_hover_slot != quickslot_hovered_slot;
         self.inventory_hover_slot = hovered_slot;
-        self.equipped_inventory_hover_slot = equipped_hovered_slot;
+        self.equipment_hover = equipment_hover;
         self.quickslot_hover_slot = quickslot_hovered_slot;
         changed
     }
@@ -1652,7 +1662,6 @@ impl ClientApp {
             openstory_protocol::StorageEvent::Open(state) => {
                 self.show_inventory = false;
                 self.inventory_hover_slot = None;
-                self.show_pet_equipment = false;
                 self.show_skill_book = false;
                 self.show_quest_log = false;
                 self.storage = Some(StorageUi {

@@ -1898,7 +1898,15 @@ pub fn parse_drop_remove(bytes: &[u8]) -> Result<MapDropRemove, PacketError> {
     } else {
         None
     };
-    let looted_by_pet = mode > 1 && !packet.is_empty() && packet.read_u8()? != 0;
+    // The trailing byte is the pet slot. Slot zero is valid, so its value
+    // cannot be used as a boolean; legacy clients treat the byte's presence
+    // as the pet-pickup marker.
+    let looted_by_pet = if mode > 1 && !packet.is_empty() {
+        packet.read_u8()?;
+        true
+    } else {
+        false
+    };
     Ok(MapDropRemove {
         object_id,
         mode,

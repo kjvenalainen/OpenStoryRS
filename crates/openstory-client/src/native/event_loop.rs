@@ -1,26 +1,5 @@
 use super::*;
 
-fn inventory_tooltip_position(cursor: Point) -> (f32, f32) {
-    let width = INVENTORY_TOOLTIP_WIDTH as f32;
-    let height = INVENTORY_TOOLTIP_HEIGHT as f32;
-    let x = if cursor.x + 18.0 + width > 1024.0 {
-        cursor.x - width - 18.0
-    } else {
-        cursor.x + 18.0
-    }
-    .clamp(0.0, 1024.0 - width);
-    let y = if cursor.y + 18.0 + height > 768.0 {
-        cursor.y - height - 18.0
-    } else {
-        cursor.y + 18.0
-    }
-    .clamp(0.0, 768.0 - height);
-
-    // Cursor coordinates can be fractional after viewport scaling; align the
-    // 1:1 tooltip texture to logical pixels so its text avoids bilinear blur.
-    (x.round(), y.round())
-}
-
 fn map_background_hidden_for_quality(
     scene: &MapSceneRuntime,
     draw_index: usize,
@@ -391,6 +370,34 @@ impl ApplicationHandler for ClientApp {
                         self.refresh_inventory_texture();
                     }
                     if let Some(window) = self.window.as_ref() {
+                        window.request_redraw();
+                    }
+                }
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Right,
+                ..
+            } => {
+                if self.map_loading_started_at.is_none()
+                    && self.cash_shop.is_none()
+                    && self.storage.is_none()
+                    && self.npc_shop.is_none()
+                    && self.npc_dialogue.is_none()
+                    && !self.wedding_panel_open
+                    && !self.death_notice
+                    && self.inventory_drag_source.is_none()
+                    && self.inventory_drop_prompt.is_none()
+                    && !self.quit_confirmation
+                    && self.server_notice_popup.is_none()
+                    && let Some(cursor) = self.cursor
+                    && self.topmost_dialog_window_at(cursor)
+                        == Some(DialogWindow::EquipmentInventory)
+                {
+                    let cursor = self.dialog_window_input_cursor(cursor);
+                    if self.right_click_equipment_slot(cursor)
+                        && let Some(window) = self.window.as_ref()
+                    {
                         window.request_redraw();
                     }
                 }
@@ -938,15 +945,6 @@ impl ApplicationHandler for ClientApp {
                     }
                     return;
                 }
-                if self.show_pet_equipment
-                    && self.dialog_window_hit_test(DialogWindow::PetEquipment, screen_cursor)
-                    && self.begin_pet_equipment_pointer(cursor)
-                {
-                    if let Some(window) = self.window.as_ref() {
-                        window.request_redraw();
-                    }
-                    return;
-                }
                 if self.show_skill_book
                     && self.dialog_window_hit_test(DialogWindow::SkillBook, screen_cursor)
                     && self.begin_skill_book_pointer(cursor)
@@ -1390,32 +1388,6 @@ impl ApplicationHandler for ClientApp {
                     }
                     return;
                 }
-                if self.show_pet_equipment
-                    && self.cursor.is_some_and(|cursor| {
-                        self.dialog_window_hit_test(DialogWindow::PetEquipment, cursor)
-                    })
-                    && cursor.is_some_and(|cursor| {
-                        (PET_EQUIPMENT_PANEL_X + 8.0
-                            ..PET_EQUIPMENT_PANEL_X + PET_EQUIPMENT_PANEL_WIDTH as f32 - 8.0)
-                            .contains(&cursor.x)
-                            && (PET_EQUIPMENT_PANEL_Y + PET_EQUIPMENT_GEAR_LIST_Y
-                                ..PET_EQUIPMENT_PANEL_Y + PET_EQUIPMENT_PANEL_HEIGHT as f32 - 12.0)
-                                .contains(&cursor.y)
-                    })
-                {
-                    let scroll = if amount > 0.0 {
-                        -1
-                    } else if amount < 0.0 {
-                        1
-                    } else {
-                        0
-                    };
-                    self.scroll_pet_equipment_by(scroll);
-                    if let Some(window) = self.window.as_ref() {
-                        window.request_redraw();
-                    }
-                    return;
-                }
                 let scroll_npc_choices = self.npc_dialogue.as_ref().is_some_and(|dialogue| {
                     let visible_choices = dialogue
                         .buttons
@@ -1461,6 +1433,35 @@ impl ApplicationHandler for ClientApp {
                     if let Some(cursor) = cursor {
                         self.scroll_storage(cursor, amount);
                     }
+                    if let Some(window) = self.window.as_ref() {
+                        window.request_redraw();
+                    }
+                } else if self.show_quest_log
+                    && self.quest_log_detail_open
+                    && self.quest_detail_scroll_max > 0
+                    && self.cursor.is_some_and(|cursor| {
+                        self.dialog_window_hit_test(DialogWindow::QuestLog, cursor)
+                    })
+                    && cursor.is_some_and(|cursor| {
+                        (QUEST_LOG_PANEL_X + QUEST_LOG_DETAIL_X as f32
+                            ..QUEST_LOG_PANEL_X
+                                + QUEST_LOG_DETAIL_X as f32
+                                + QUEST_LOG_DETAIL_WIDTH as f32)
+                            .contains(&cursor.x)
+                            && (QUEST_LOG_PANEL_Y + QUEST_DETAIL_BODY_TOP as f32
+                                ..QUEST_LOG_PANEL_Y
+                                    + quest_detail_body_bottom(self.quest_log_tab) as f32)
+                                .contains(&cursor.y)
+                    })
+                {
+                    self.quest_detail_scroll = if amount > 0.0 {
+                        self.quest_detail_scroll.saturating_sub(16)
+                    } else {
+                        self.quest_detail_scroll
+                            .saturating_add(16)
+                            .min(self.quest_detail_scroll_max)
+                    };
+                    self.refresh_quest_log_texture();
                     if let Some(window) = self.window.as_ref() {
                         window.request_redraw();
                     }
@@ -1983,7 +1984,12 @@ impl ApplicationHandler for ClientApp {
                                     if matches!(message_type, 2 | 3) =>
                                 {
                                     if let Some(dialogue) = self.npc_dialogue.as_mut() {
-                                        dialogue.input.pop();
+                                        if message_type == 3 && dialogue.number_input_selected {
+                                            dialogue.input.clear();
+                                        } else {
+                                            dialogue.input.pop();
+                                        }
+                                        dialogue.number_input_selected = false;
                                     }
                                     self.rebuild_npc_dialogue();
                                 }
@@ -2021,6 +2027,7 @@ impl ApplicationHandler for ClientApp {
                             PhysicalKey::Code(KeyCode::KeyI) if !event.repeat => {
                                 self.show_inventory = !self.show_inventory;
                                 if self.show_inventory {
+                                    self.raise_dialog_window(DialogWindow::Inventory);
                                     self.inventory_scroll_row = 0;
                                     self.update_inventory_hover();
                                     self.refresh_inventory_texture();
@@ -2089,6 +2096,7 @@ impl ApplicationHandler for ClientApp {
                             PhysicalKey::Code(KeyCode::KeyI) if !event.repeat => {
                                 self.show_inventory = !self.show_inventory;
                                 if self.show_inventory {
+                                    self.raise_dialog_window(DialogWindow::Inventory);
                                     self.inventory_scroll_row = 0;
                                     self.update_inventory_hover();
                                     self.refresh_inventory_texture();
@@ -2565,6 +2573,7 @@ impl ApplicationHandler for ClientApp {
                             {
                                 self.show_inventory = !self.show_inventory;
                                 if self.show_inventory {
+                                    self.raise_dialog_window(DialogWindow::Inventory);
                                     self.inventory_scroll_row = 0;
                                     self.update_inventory_hover();
                                     self.refresh_inventory_texture();
@@ -2881,8 +2890,6 @@ impl ApplicationHandler for ClientApp {
                     PhysicalKey::Code(KeyCode::Escape) => {
                         if self.show_skill_book {
                             self.show_skill_book = false;
-                        } else if self.show_pet_equipment {
-                            self.show_pet_equipment = false;
                         } else if self.show_inventory {
                             if self.pending_scroll_slot.take().is_some() {
                                 self.refresh_inventory_texture();
@@ -3193,11 +3200,21 @@ impl ApplicationHandler for ClientApp {
                     self.refresh_character_creation_scene();
                 } else if let Some(dialogue) = self.npc_dialogue.as_mut() {
                     if matches!(dialogue.state.message_type, 2 | 3) {
+                        if dialogue.state.message_type == 3 && dialogue.number_input_selected {
+                            dialogue.input.clear();
+                            dialogue.number_input_selected = false;
+                        }
                         append_npc_dialogue_input(
                             &mut dialogue.input,
                             dialogue.state.message_type,
                             &text,
                         );
+                        if dialogue.state.message_type == 3 && dialogue.input.parse::<i64>().is_ok()
+                        {
+                            dialogue.input =
+                                npc_dialogue_number(&dialogue.input, dialogue.state.number_bounds)
+                                    .to_string();
+                        }
                         self.rebuild_npc_dialogue();
                     }
                 } else if self.whisper_input_focused {
@@ -3951,22 +3968,6 @@ impl ApplicationHandler for ClientApp {
                             y: EQUIPMENT_INVENTORY_PANEL_Y,
                             width: EQUIPMENT_INVENTORY_PANEL_WIDTH as f32,
                             height: EQUIPMENT_INVENTORY_PANEL_HEIGHT as f32,
-                            uv: [0.0, 0.0, 1.0, 1.0],
-                            tint: [1.0, 1.0, 1.0],
-                            blend_mode: BlendMode::Alpha,
-                            flip_x: false,
-                            opacity: 1.0,
-                        });
-                    }
-                }
-                if self.show_pet_equipment {
-                    if let Some(texture) = self.pet_equipment_texture.as_ref() {
-                        draws.push(SpriteDraw {
-                            texture,
-                            x: PET_EQUIPMENT_PANEL_X,
-                            y: PET_EQUIPMENT_PANEL_Y,
-                            width: PET_EQUIPMENT_PANEL_WIDTH as f32,
-                            height: PET_EQUIPMENT_PANEL_HEIGHT as f32,
                             uv: [0.0, 0.0, 1.0, 1.0],
                             tint: [1.0, 1.0, 1.0],
                             blend_mode: BlendMode::Alpha,
@@ -4789,8 +4790,7 @@ impl ApplicationHandler for ClientApp {
                     npc_shop_item_hovered
                 } else {
                     (self.show_inventory && self.inventory_hover_slot.is_some())
-                        || (self.show_equipment_inventory
-                            && self.equipped_inventory_hover_slot.is_some())
+                        || (self.show_equipment_inventory && self.equipment_hover.is_some())
                 };
                 if (inventory_item_hovered || quickslot_item_hovered)
                     && (npc_shop_open || self.skill_tooltip_key.is_none())
@@ -4802,21 +4802,7 @@ impl ApplicationHandler for ClientApp {
                     && let (Some(texture), Some(cursor)) =
                         (self.inventory_tooltip_texture.as_ref(), self.cursor)
                 {
-                    let width = INVENTORY_TOOLTIP_WIDTH as f32;
-                    let height = INVENTORY_TOOLTIP_HEIGHT as f32;
-                    let (x, y) = inventory_tooltip_position(cursor);
-                    draws.push(SpriteDraw {
-                        texture,
-                        x,
-                        y,
-                        width,
-                        height,
-                        uv: [0.0, 0.0, 1.0, 1.0],
-                        tint: [1.0, 1.0, 1.0],
-                        blend_mode: BlendMode::Alpha,
-                        flip_x: false,
-                        opacity: 1.0,
-                    });
+                    draws.push(item_tooltip::draw(texture, cursor));
                 }
                 if self.inventory_drag_source.is_some()
                     && let (Some(texture), Some(cursor)) =
@@ -5026,21 +5012,7 @@ impl ApplicationHandler for ClientApp {
                     && let (Some(texture), Some(cursor)) =
                         (self.inventory_tooltip_texture.as_ref(), self.cursor)
                 {
-                    let width = INVENTORY_TOOLTIP_WIDTH as f32;
-                    let height = INVENTORY_TOOLTIP_HEIGHT as f32;
-                    let (x, y) = inventory_tooltip_position(cursor);
-                    draws.push(SpriteDraw {
-                        texture,
-                        x,
-                        y,
-                        width,
-                        height,
-                        uv: [0.0, 0.0, 1.0, 1.0],
-                        tint: [1.0, 1.0, 1.0],
-                        blend_mode: BlendMode::Alpha,
-                        flip_x: false,
-                        opacity: 1.0,
-                    });
+                    draws.push(item_tooltip::draw(texture, cursor));
                 }
                 if let Some(renderer) = self.renderer.as_mut() {
                     let result = renderer.render_sprites(&draws);
@@ -5067,6 +5039,7 @@ impl ApplicationHandler for ClientApp {
         self.process_map_prefetch_results();
         self.process_network_events();
         self.finish_initial_npc_loading_if_idle(Instant::now());
+        self.advance_initial_npc_spawns();
         self.process_map_load_completion();
         self.advance_pending_map_scene_finalize();
         self.advance_pending_map_scene_upload();

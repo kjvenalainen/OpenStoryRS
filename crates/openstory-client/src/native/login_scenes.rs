@@ -524,6 +524,7 @@ fn load_character_selection_scene(
     map: &NxArchive,
     legacy_ui: &NxArchive,
     character_archive: &NxArchive,
+    item_archive: &NxArchive,
     characters: &openstory_protocol::CharacterList,
     page: usize,
     selected_character: usize,
@@ -744,6 +745,14 @@ fn load_character_selection_scene(
                 UI_SCALE,
                 true,
                 &mut avatar_cache,
+            )?;
+            append_character_selection_pets(
+                &mut sprites,
+                item_archive,
+                &character.look,
+                feet_x,
+                feet_y,
+                UI_SCALE,
             )?;
             append_character_selection_name_tag(
                 &mut sprites,
@@ -970,6 +979,60 @@ fn load_character_selection_scene(
         login_buttons: Vec::new(),
         save_id_indicator_draws: None,
     })
+}
+
+fn append_character_selection_pets(
+    sprites: &mut Vec<DecodedSprite>,
+    item_archive: &NxArchive,
+    look: &openstory_protocol::CharacterLook,
+    feet_x: f32,
+    feet_y: f32,
+    scale: f32,
+) -> Result<(), String> {
+    let pets = look
+        .pet_ids
+        .iter()
+        .copied()
+        .filter(|item_id| *item_id > 0)
+        .collect::<Vec<_>>();
+    let first_x = 18.0 * scale;
+    let pet_scale = scale * 0.8;
+    let mut cache = MapArtCache::default();
+    for (index, item_id) in pets.into_iter().enumerate() {
+        let anchor_x = feet_x + first_x + index as f32 * 14.0 * scale;
+        for stance in ["stand0", "stand1"] {
+            let path = format!("Pet/{item_id}.img/{stance}/0");
+            let Some(frame) = item_archive
+                .root()
+                .resolve(&path)
+                .map_err(|error| error.to_string())?
+            else {
+                continue;
+            };
+            let first_sprite = sprites.len();
+            append_map_art_sprite(
+                sprites,
+                &frame,
+                &format!("character:pet:{item_id}/{stance}/0"),
+                anchor_x,
+                feet_y,
+                255,
+                false,
+                &mut cache,
+            )?;
+            if sprites.len() > first_sprite {
+                for sprite in &mut sprites[first_sprite..] {
+                    sprite.rect.x = anchor_x + (sprite.rect.x - anchor_x) * pet_scale;
+                    sprite.rect.y = feet_y + (sprite.rect.y - feet_y) * pet_scale;
+                    sprite.rect.width *= pet_scale;
+                    sprite.rect.height *= pet_scale;
+                    sprite.depth_order = 0;
+                }
+                break;
+            }
+        }
+    }
+    Ok(())
 }
 
 fn load_character_customization_scene(

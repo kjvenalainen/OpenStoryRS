@@ -215,8 +215,10 @@ pub(super) fn run(
             build_inventory_tabs_scene(map, legacy_ui, characters, items, strings, font)?
         } else if name.starts_with("panel-item-inventory") {
             build_inventory_panel_scene(name, map, legacy_ui, characters, items, strings, font)?
-        } else if *name == "panel-equipment-inventory" {
-            build_equipment_panel_scene(map, legacy_ui, characters, items, font)?
+        } else if let Some(tab) = equipment_preview_tab(name) {
+            build_equipment_panel_scene(
+                name, tab, map, legacy_ui, characters, items, strings, font,
+            )?
         } else if name.starts_with("panel-merchant-") || *name == "panel-personal-shop" {
             build_merchant_panel_scene(name, map, legacy_ui, characters, items, strings, font)?
         } else if name.starts_with("panel-trade-room") {
@@ -228,9 +230,7 @@ pub(super) fn run(
         } else if *name == "panel-npc-storage" {
             build_storage_panel_scene(map, legacy_ui, npcs, characters, items, strings, font)?
         } else if name.starts_with("panel-item-tooltip") {
-            build_item_tooltip_scene(name, map, characters, items, strings, ui, font)?
-        } else if name.starts_with("panel-pet-equipment") {
-            build_pet_equipment_scene(name, map, legacy_ui, characters, items, strings, font)?
+            build_item_tooltip_scene(name, map, characters, items, strings, font)?
         } else if *name == "panel-quest-helper" {
             build_quest_helper_panel_scene(map, legacy_ui, characters, font)?
         } else if *name == "panel-quest-helper-with-quest-log" {
@@ -243,6 +243,8 @@ pub(super) fn run(
                 | "panel-quests-available"
                 | "panel-quests-collapsed"
                 | "panel-quests-detail"
+                | "panel-quests-detail-flow"
+                | "panel-quests-detail-scrolled"
         ) {
             build_quest_log_panel_scene(
                 name, map, legacy_ui, quests, strings, characters, npcs, font,
@@ -295,7 +297,7 @@ pub(super) fn run(
                     "panel-npc-chat-text-input" => (2004, 2, None,
                         "What would you like to say?".to_owned()),
                     "panel-npc-chat-number-input" => (2004, 3, None,
-                        "How many would you like?".to_owned()),
+                        "So, you want me to make some Adamantium Plates? In that case, how many do you want me to make?".to_owned()),
                     "panel-npc-chat-navigation" => (22000, 0, Some((true, true)),
                         "Take this ship to Victoria Island. Once you leave Maple Island, you cannot return.".to_owned()),
                     _ => (2004, 12, None,
@@ -318,6 +320,12 @@ pub(super) fn run(
                 } else {
                     (text, Vec::new())
                 };
+                let npc_id = if *name == "panel-npc-chat-number-input" {
+                    fixture_named_id(strings, "Npc.img", "Mr. Thunder", 2004)
+                } else {
+                    npc_id
+                };
+                let number_bounds = (*name == "panel-npc-chat-number-input").then_some((1, 1, 7));
                 let (pixels, panel, _, _) = render_npc_dialogue(
                     font,
                     legacy_ui,
@@ -327,6 +335,7 @@ pub(super) fn run(
                     0,
                     message_type,
                     navigation,
+                    number_bounds,
                     &plain,
                     if *name == "panel-npc-chat-long-scrolled" {
                         usize::MAX
@@ -340,7 +349,7 @@ pub(super) fn run(
                     None,
                     match *name {
                         "panel-npc-chat-text-input" => "Hello Maple World",
-                        "panel-npc-chat-number-input" => "25",
+                        "panel-npc-chat-number-input" => "1",
                         _ => "",
                     },
                 );
@@ -750,6 +759,7 @@ pub(super) fn run(
                 map,
                 legacy_ui,
                 characters,
+                items,
                 &character_list,
                 0,
                 0,
@@ -915,24 +925,21 @@ pub(super) fn run(
                     );
                 }
             }
-            if matches!(
-                *name,
-                "panel-skill-inventory"
-                    | "panel-skill-inventory-disabled"
-                    | "panel-skill-inventory-beginner"
-                    | "panel-skill-inventory-beginner-job"
-                    | "panel-stats"
-                    | "panel-stats-auto-assign"
-                    | "panel-stats-detail"
-                    | "panel-equipment-inventory"
-                    | "panel-pet-equipment"
-                    | "panel-pet-equipment-empty"
-                    | "panel-pet-equipment-worn"
-                    | "panel-pet-equipment-scroll"
-            ) {
+            if equipment_preview_tab(name).is_some()
+                || matches!(
+                    *name,
+                    "panel-skill-inventory"
+                        | "panel-skill-inventory-disabled"
+                        | "panel-skill-inventory-beginner"
+                        | "panel-skill-inventory-beginner-job"
+                        | "panel-stats"
+                        | "panel-stats-auto-assign"
+                        | "panel-stats-detail"
+                )
+            {
                 let (x, y, regions) = if *name == "panel-stats-auto-assign" {
                     let dialog = status_auto_assign_dialog_rect();
-                    let (accept, cancel) = status_auto_assign_buttons();
+                    let [accept, cancel] = status_auto_assign_buttons();
                     (
                         dialog.x,
                         dialog.y,
@@ -949,35 +956,20 @@ pub(super) fn run(
                     regions
                         .extend((0..SKILL_BOOK_VISIBLE_ROWS).map(ui_foundation::skill_sp_button));
                     regions.push(ui_foundation::SKILL_MACRO_BUTTON);
+                    regions.push(ui_foundation::SKILL_CLOSE_BUTTON);
                     (SKILL_BOOK_PANEL_X, SKILL_BOOK_PANEL_Y, regions)
-                } else if *name == "panel-equipment-inventory" {
-                    let mut regions = (1..=59)
-                        .filter_map(equipment_inventory_slot_position)
-                        .map(|(x, y)| ui_foundation::UiRect::new(x as f32, y as f32, 33.0, 33.0))
-                        .collect::<Vec<_>>();
-                    regions.push(ui_foundation::EQUIPMENT_PET_BUTTON);
+                } else if let Some(tab) = equipment_preview_tab(name) {
                     (
                         EQUIPMENT_INVENTORY_PANEL_X,
                         EQUIPMENT_INVENTORY_PANEL_Y,
-                        regions,
+                        tab.hitboxes(&preview_equipment_tabs_inventory(name)),
                     )
-                } else if name.starts_with("panel-pet-equipment") {
-                    let mut regions = vec![ui_foundation::PET_EQUIPMENT_CLOSE_BUTTON];
-                    regions.extend((0..PET_EQUIPMENT_VISIBLE_ROWS).map(|index| {
-                        ui_foundation::UiRect::new(
-                            8.0,
-                            PET_EQUIPMENT_GEAR_LIST_Y
-                                + index as f32 * PET_EQUIPMENT_GEAR_ROW_HEIGHT,
-                            PET_EQUIPMENT_PANEL_WIDTH as f32 - 16.0,
-                            PET_EQUIPMENT_GEAR_ROW_HEIGHT - 2.0,
-                        )
-                    }));
-                    (PET_EQUIPMENT_PANEL_X, PET_EQUIPMENT_PANEL_Y, regions)
                 } else {
                     let mut regions = ui_foundation::status_ap_buttons()
                         .map(|(_, rect)| rect)
                         .to_vec();
                     regions.extend([
+                        ui_foundation::STATUS_CLOSE_BUTTON,
                         ui_foundation::STATUS_AUTO_BUTTON,
                         ui_foundation::STATUS_DETAIL_BUTTON,
                     ]);
@@ -1000,19 +992,28 @@ pub(super) fn run(
                 }
             }
             if *name == "panel-item-inventory" {
-                for tab in 0..5 {
+                let controls = [
+                    ui_foundation::INVENTORY_GATHER_BUTTON,
+                    ui_foundation::INVENTORY_SORT_BUTTON,
+                    ui_foundation::INVENTORY_CLOSE_BUTTON,
+                ];
+                for (index, rect) in (0..5)
+                    .map(ui_foundation::inventory_tab)
+                    .chain(controls)
+                    .enumerate()
+                {
                     draw_rect_outline(
                         &mut image,
                         CANVAS_WIDTH,
                         CANVAS_HEIGHT,
                         SpriteRect {
-                            x: super::INVENTORY_PANEL_X + ui_foundation::inventory_tab(tab).x,
-                            y: super::INVENTORY_PANEL_Y + ui_foundation::inventory_tab(tab).y,
-                            width: ui_foundation::inventory_tab(tab).width,
-                            height: ui_foundation::inventory_tab(tab).height,
+                            x: super::INVENTORY_PANEL_X + rect.x,
+                            y: super::INVENTORY_PANEL_Y + rect.y,
+                            width: rect.width,
+                            height: rect.height,
                             blend_mode: BlendMode::Alpha,
                         },
-                        hitbox_color(tab),
+                        hitbox_color(index),
                     );
                 }
                 for row in 0..INVENTORY_SLOT_ROWS {
@@ -1055,12 +1056,16 @@ pub(super) fn run(
                     | "panel-quests-available"
                     | "panel-quests-collapsed"
                     | "panel-quests-detail"
+                    | "panel-quests-detail-flow"
+                    | "panel-quests-detail-scrolled"
             ) {
                 let mut bounds = vec![ui_foundation::QUEST_LIST_CLOSE_BUTTON];
+                bounds.extend((0..3).map(ui_foundation::quest_tab));
                 if *name != "panel-quests-collapsed" {
                     bounds.extend([
                         ui_foundation::QUEST_DETAIL_CLOSE_BUTTON,
                         ui_foundation::QUEST_HELPER_BUTTON,
+                        ui_foundation::QUEST_TELEPORT_BUTTON,
                     ]);
                     if *name == "panel-quests" {
                         bounds.push(ui_foundation::QUEST_FORFEIT_BUTTON);
@@ -1079,24 +1084,6 @@ pub(super) fn run(
                             blend_mode: BlendMode::Alpha,
                         },
                         hitbox_color(3 + super::QUEST_LOG_VISIBLE_ROWS + index),
-                    );
-                }
-                for (index, (left, width)) in [(10.0, 66.0), (78.0, 70.0), (150.0, 70.0)]
-                    .into_iter()
-                    .enumerate()
-                {
-                    draw_rect_outline(
-                        &mut image,
-                        CANVAS_WIDTH,
-                        CANVAS_HEIGHT,
-                        SpriteRect {
-                            x: super::QUEST_LOG_PANEL_X + left,
-                            y: super::QUEST_LOG_PANEL_Y + 21.0,
-                            width,
-                            height: 27.0,
-                            blend_mode: BlendMode::Alpha,
-                        },
-                        hitbox_color(index),
                     );
                 }
                 for row in 0..super::QUEST_LOG_VISIBLE_ROWS {
@@ -1191,13 +1178,9 @@ fn write_menu_comparison_preview(
         ),
         (
             "Equipment Inventory",
-            build_equipment_panel_scene(map, ui, characters, items, font)?,
-            "nx-window:live-equipment",
-        ),
-        (
-            "Pet Equipment",
-            build_pet_equipment_scene(
-                "panel-pet-equipment",
+            build_equipment_panel_scene(
+                "panel-equipment-inventory",
+                EquipmentTab::Equip,
                 map,
                 ui,
                 characters,
@@ -1205,7 +1188,21 @@ fn write_menu_comparison_preview(
                 strings,
                 font,
             )?,
-            "rendered-window:pet-equipment",
+            "nx-window:live-equipment",
+        ),
+        (
+            "Equipment Inventory (Pet)",
+            build_equipment_panel_scene(
+                "panel-equipment-inventory-pet",
+                EquipmentTab::Pet,
+                map,
+                legacy_ui,
+                characters,
+                items,
+                strings,
+                font,
+            )?,
+            "nx-window:live-equipment",
         ),
         (
             "Skill Inventory",
@@ -1284,7 +1281,7 @@ fn write_menu_comparison_preview(
             "monster-book-detail-preview",
         ),
         (
-            "Key Settings",
+            "Keyboard Settings",
             build_scene(
                 "panel-keyboard-settings",
                 map,
@@ -1347,43 +1344,50 @@ fn write_menu_comparison_preview(
             Some([226, 224, 215]),
         );
 
-        let sprite = scene
+        let detail_key = (texture_key == "rendered-window:status-panel")
+            .then_some("rendered-window:status-detail-panel");
+        let sprites: Vec<_> = scene
             .sprites
             .into_iter()
-            .find(|sprite| sprite.texture_key == texture_key)
+            .filter(|sprite| {
+                sprite.texture_key == texture_key || detail_key == Some(sprite.texture_key.as_str())
+            })
+            .collect();
+        let first = sprites
+            .first()
             .ok_or_else(|| format!("menu comparison is missing panel {texture_key:?}"))?;
+        let origin = first.rect;
+        let panel_width = sprites
+            .iter()
+            .map(|sprite| sprite.rect.x + sprite.rect.width - origin.x)
+            .fold(origin.width, f32::max);
+        let panel_height = sprites
+            .iter()
+            .map(|sprite| sprite.rect.y + sprite.rect.height - origin.y)
+            .fold(origin.height, f32::max);
         let available_width = CELL_WIDTH.saturating_sub(PANEL_PADDING * 2);
         let available_height = CELL_HEIGHT.saturating_sub(HEADER_HEIGHT as u32 + PANEL_PADDING);
-        let scale = (available_width as f32 / sprite.rect.width)
-            .min(available_height as f32 / sprite.rect.height)
+        let scale = (available_width as f32 / panel_width)
+            .min(available_height as f32 / panel_height)
             .min(1.0);
-        let draw_width = sprite.rect.width * scale;
-        let draw_height = sprite.rect.height * scale;
-        let draw_x = cell_x as f32 + (CELL_WIDTH as f32 - draw_width) * 0.5;
-        let draw_y =
-            cell_y as f32 + HEADER_HEIGHT as f32 + (available_height as f32 - draw_height) * 0.5;
-        let comparison_sprite = DecodedSprite {
-            texture_key: sprite.texture_key,
-            rect: SpriteRect {
-                x: draw_x,
-                y: draw_y,
-                width: draw_width,
-                height: draw_height,
-                blend_mode: sprite.rect.blend_mode,
-            },
-            depth_order: sprite.depth_order,
-            texture_width: sprite.texture_width,
-            texture_height: sprite.texture_height,
-            pixels: sprite.pixels,
-        };
-        composite_sprite(&mut pixels, width, height, &comparison_sprite);
+        let draw_x = cell_x as f32 + (CELL_WIDTH as f32 - panel_width * scale) * 0.5;
+        let draw_y = cell_y as f32
+            + HEADER_HEIGHT as f32
+            + (available_height as f32 - panel_height * scale) * 0.5;
+        for mut sprite in sprites {
+            sprite.rect.x = draw_x + (sprite.rect.x - origin.x) * scale;
+            sprite.rect.y = draw_y + (sprite.rect.y - origin.y) * scale;
+            sprite.rect.width *= scale;
+            sprite.rect.height *= scale;
+            composite_sprite(&mut pixels, width, height, &sprite);
+        }
     }
 
     let image_path = output_dir.join("panel-menu-comparison.png");
     write_png(&image_path, width, height, &pixels)
         .map_err(|error| format!("could not write {}: {error}", image_path.display()))?;
     let report = format!(
-        "Screen: panel-menu-comparison\nCanvas: {width}x{height} contact sheet\nPanels: Item Inventory, Equipment Inventory, Pet Equipment, Skill Inventory, Skill Macros, Character Stats, Quest Log, Monster Book, Key Settings\nPanel artwork uses native dimensions, scaled down only when a panel exceeds its comparison cell.\n"
+        "Screen: panel-menu-comparison\nCanvas: {width}x{height} contact sheet\nPanels: Item Inventory, Equipment Inventory, Equipment Inventory (Pet), Skill Inventory, Skill Macros, Character Stats, Quest Log, Monster Book, Keyboard Settings\nPanel artwork uses native dimensions, scaled down only when a panel exceeds its comparison cell.\n"
     );
     let report_path = output_dir.join("panel-menu-comparison-layout.txt");
     fs::write(&report_path, report.as_bytes())
@@ -1458,7 +1462,7 @@ fn build_scene(
                 name: String::new(),
                 load,
             });
-            let panel = super::channel_switch::render(ui, legacy_ui, 0, &channels, 0, 1)?;
+            let panel = super::channel_switch::render(ui, legacy_ui, font, 0, &channels, 0, 1)?;
             sprites.push(DecodedSprite {
                 texture_key: "channel-switch-preview".to_owned(),
                 rect: SpriteRect {
@@ -1654,6 +1658,7 @@ fn build_scene(
                     &DEFAULT_QUICKSLOT_KEYS,
                     &std::array::from_fn(|_| None),
                     &[0; 8],
+                    &[0.0; 8],
                 );
                 sprites.push(DecodedSprite {
                     texture_key: "quickslots:gain-feed-preview".to_owned(),
@@ -1898,9 +1903,13 @@ fn build_scene(
                     slots: 6,
                 }
             } else {
-                let look = fixture_look();
+                let mut look = fixture_look();
+                look.masked_equips.push((1, 1_002_812));
+                look.weapon_sticker_id = 1_702_000;
+                look.pet_ids[0] = 5_000_000;
                 // One selected character plus five open slots shows the native
-                // parchment, selection glow, silhouettes, and page arrows.
+                // parchment, selection glow, silhouettes, page arrows, and
+                // cash equipment over the underlying gear.
                 let characters = vec![openstory_protocol::CharacterInfo {
                     id: 1,
                     stats: openstory_protocol::CharacterStats {
@@ -1928,6 +1937,7 @@ fn build_scene(
                 map,
                 legacy_ui,
                 character_archive,
+                item_archive,
                 &characters,
                 0,
                 0,
@@ -1996,6 +2006,7 @@ fn build_scene(
         | "hud-quickslot"
         | "hud-quickslot-item-tooltip"
         | "hud-quickslot-skill-tooltip"
+        | "hud-quickslot-cooldown"
         | "panel-skill-macros"
         | "panel-skill-macros-drag"
         | "panel-skill-macros-book"
@@ -3194,131 +3205,6 @@ fn build_trade_panel_scene(
     })
 }
 
-fn build_pet_equipment_scene(
-    name: &str,
-    map_archive: &NxArchive,
-    ui_archive: &NxArchive,
-    character_archive: &NxArchive,
-    item_archive: &NxArchive,
-    string_archive: &NxArchive,
-    font: &fontdue::Font,
-) -> Result<LoginSceneAssets, String> {
-    let mut inventory = preview_equipped_inventory();
-    if name != "panel-pet-equipment-empty" {
-        inventory.items.extend([
-            openstory_protocol::InventoryItem {
-                inventory_type: openstory_protocol::InventoryType::Cash,
-                slot: 1,
-                item_id: 5_000_000,
-                pet: Some(openstory_protocol::PetInventoryData {
-                    name: "Kitty".to_owned(),
-                    level: 12,
-                    fullness: 85,
-                    ..Default::default()
-                }),
-                ..Default::default()
-            },
-            openstory_protocol::InventoryItem {
-                inventory_type: openstory_protocol::InventoryType::Equip,
-                slot: 3,
-                item_id: 1_822_000,
-                ..Default::default()
-            },
-            openstory_protocol::InventoryItem {
-                inventory_type: openstory_protocol::InventoryType::Equip,
-                slot: 4,
-                item_id: 1_812_000,
-                ..Default::default()
-            },
-        ]);
-    }
-    if name == "panel-pet-equipment-worn" {
-        for (slot, item_id) in [
-            (114, 1_822_000),
-            (115, 1_812_000),
-            (116, 1_812_001),
-            (117, 1_802_000),
-            (118, 1_812_005),
-        ] {
-            inventory.items.push(openstory_protocol::InventoryItem {
-                inventory_type: openstory_protocol::InventoryType::Equipped,
-                slot,
-                item_id,
-                ..Default::default()
-            });
-        }
-    }
-    if name == "panel-pet-equipment-scroll" {
-        for slot in 5..=11 {
-            inventory.items.push(openstory_protocol::InventoryItem {
-                inventory_type: openstory_protocol::InventoryType::Equip,
-                slot,
-                item_id: 1_812_000,
-                ..Default::default()
-            });
-        }
-    }
-    let pixels = super::render_pet_equipment_panel(
-        font,
-        &inventory,
-        ui_archive,
-        item_archive,
-        character_archive,
-        string_archive,
-        &mut HashMap::new(),
-        &mut HashMap::new(),
-        if name == "panel-pet-equipment-scroll" {
-            3
-        } else {
-            0
-        },
-    );
-    let mut sprites = gameplay_backdrop(map_archive, character_archive, font)?;
-    let equipment_pixels = super::render_equipment_inventory_panel(
-        &inventory,
-        ui_archive,
-        item_archive,
-        character_archive,
-        &mut HashMap::new(),
-    );
-    sprites.push(DecodedSprite {
-        texture_key: "nx-window:equipment-inventory-with-pets".to_owned(),
-        rect: SpriteRect {
-            x: super::EQUIPMENT_INVENTORY_PANEL_X,
-            y: super::EQUIPMENT_INVENTORY_PANEL_Y,
-            width: super::EQUIPMENT_INVENTORY_PANEL_WIDTH as f32,
-            height: super::EQUIPMENT_INVENTORY_PANEL_HEIGHT as f32,
-            blend_mode: BlendMode::Alpha,
-        },
-        depth_order: 0,
-        texture_width: super::EQUIPMENT_INVENTORY_PANEL_WIDTH,
-        texture_height: super::EQUIPMENT_INVENTORY_PANEL_HEIGHT,
-        pixels: Arc::from(equipment_pixels),
-    });
-    sprites.push(DecodedSprite {
-        texture_key: "rendered-window:pet-equipment".to_owned(),
-        rect: SpriteRect {
-            x: super::PET_EQUIPMENT_PANEL_X,
-            y: super::PET_EQUIPMENT_PANEL_Y,
-            width: super::PET_EQUIPMENT_PANEL_WIDTH as f32,
-            height: super::PET_EQUIPMENT_PANEL_HEIGHT as f32,
-            blend_mode: BlendMode::Alpha,
-        },
-        depth_order: 0,
-        texture_width: super::PET_EQUIPMENT_PANEL_WIDTH,
-        texture_height: super::PET_EQUIPMENT_PANEL_HEIGHT,
-        pixels: Arc::from(pixels),
-    });
-    Ok(LoginSceneAssets {
-        sprites,
-        actions: Vec::new(),
-        map_scene: None,
-        animated_art: Vec::new(),
-        login_buttons: Vec::new(),
-        save_id_indicator_draws: None,
-    })
-}
-
 fn build_npc_shop_panel_scene(
     variant: &str,
     map: &NxArchive,
@@ -3522,32 +3408,31 @@ fn build_npc_shop_panel_scene(
             Some(NpcShopItemHover::Sell(_)) => (NPC_SHOP_X + 350.0, NPC_SHOP_Y + 144.0),
             None => unreachable!(),
         };
-        let tooltip_pixels = super::render_inventory_tooltip(
+        let tooltip = item_tooltip::render(
             font,
             &item,
-            ui,
             items,
             characters,
             strings,
-            None,
+            Some(&character.stats),
             Some(&inventory),
             &mut HashMap::new(),
             &mut HashMap::new(),
         );
-        sprites.push(DecodedSprite {
-            texture_key: "npc-shop-item-tooltip:preview".to_owned(),
-            rect: SpriteRect {
-                x: (cursor_x + 18.0).min(1024.0 - super::INVENTORY_TOOLTIP_WIDTH as f32),
-                y: (cursor_y + 18.0).min(768.0 - super::INVENTORY_TOOLTIP_HEIGHT as f32),
-                width: super::INVENTORY_TOOLTIP_WIDTH as f32,
-                height: super::INVENTORY_TOOLTIP_HEIGHT as f32,
-                blend_mode: BlendMode::Alpha,
+        let point = item_tooltip::position(
+            Point {
+                x: cursor_x,
+                y: cursor_y,
             },
-            depth_order: 1,
-            texture_width: super::INVENTORY_TOOLTIP_WIDTH,
-            texture_height: super::INVENTORY_TOOLTIP_HEIGHT,
-            pixels: Arc::from(tooltip_pixels),
-        });
+            tooltip.width,
+            tooltip.height,
+        );
+        sprites.push(item_tooltip_preview_sprite(
+            "npc-shop-item-tooltip:preview",
+            tooltip,
+            point,
+            1,
+        ));
     }
     if let Some(quantity) = state.quantity.as_ref() {
         let pixels = render_npc_shop_quantity(
@@ -3648,106 +3533,158 @@ fn build_storage_panel_scene(
     })
 }
 
+fn item_tooltip_preview_sprite(
+    key: &str,
+    tooltip: item_tooltip::Tooltip,
+    point: Point,
+    depth_order: i16,
+) -> DecodedSprite {
+    DecodedSprite {
+        texture_key: key.to_owned(),
+        rect: SpriteRect {
+            x: point.x,
+            y: point.y,
+            width: tooltip.width as f32,
+            height: tooltip.height as f32,
+            blend_mode: BlendMode::Alpha,
+        },
+        depth_order,
+        texture_width: tooltip.width,
+        texture_height: tooltip.height,
+        pixels: tooltip.pixels.into(),
+    }
+}
+
 fn build_item_tooltip_scene(
     preview_case: &str,
     map_archive: &NxArchive,
     character_archive: &NxArchive,
     item_archive: &NxArchive,
     string_archive: &NxArchive,
-    ui_archive: &NxArchive,
     font: &fontdue::Font,
 ) -> Result<LoginSceneAssets, String> {
-    let is_thief_item = preview_case == "panel-item-tooltip-thief";
-    let is_archer_gloves = preview_case == "panel-item-tooltip-gloves";
-    let is_bow = preview_case == "panel-item-tooltip-bow";
-    let item = openstory_protocol::InventoryItem {
-        inventory_type: openstory_protocol::InventoryType::Equip,
+    use openstory_protocol::{CharacterStats, EquipInventoryData, InventoryItem, InventoryType};
+
+    let mut stats = CharacterStats {
+        level: 30,
+        strength: 30,
+        dexterity: 65,
+        ..Default::default()
+    };
+    let mut item = InventoryItem {
+        inventory_type: InventoryType::Equip,
         slot: 1,
-        item_id: if is_thief_item {
-            fixture_named_id(
-                string_archive,
-                "Eqp.img/Eqp/Weapon",
-                "Beginner Thief Wrist Guard",
-                1_472_000,
-            )
-        } else if is_archer_gloves {
+        count: 1,
+        ..Default::default()
+    };
+    let mut equip = EquipInventoryData {
+        upgrade_slots: 7,
+        ..Default::default()
+    };
+    item.item_id = match preview_case {
+        "panel-item-tooltip-gloves" => {
+            stats.level = 15;
+            stats.dexterity = 40;
+            equip.upgrade_slots = 5;
+            equip.stats[1] = 1;
+            equip.stats[8] = 8;
             fixture_named_id(
                 string_archive,
                 "Eqp.img/Eqp/Glove",
                 "Basic Archer Gloves",
                 1_082_000,
             )
-        } else if is_bow {
+        }
+        "panel-item-tooltip-bow" => {
+            equip.stats[0] = 1;
+            equip.stats[6] = 50;
             fixture_named_id(string_archive, "Eqp.img/Eqp/Weapon", "Ryden", 1_452_005)
-        } else {
-            fixture_named_id(string_archive, "Eqp.img/Eqp/Coat", "Grey T-Shirt", 1040010)
-        },
-        count: 1,
-        equip: Some({
-            let mut data = openstory_protocol::EquipInventoryData::default();
-            data.upgrade_slots = if is_archer_gloves { 5 } else { 7 };
-            if is_archer_gloves {
-                data.stats[1] = 1;
-                data.stats[8] = 8;
-            } else if is_bow {
-                data.stats[0] = 1;
-                data.stats[6] = 50;
-            } else if is_thief_item {
-                data.stats[6] = 31;
-            } else {
-                data.stats[8] = 3;
-            }
-            data
-        }),
-        ..Default::default()
+        }
+        "panel-item-tooltip-thief" => {
+            stats.level = 5;
+            stats.dexterity = 20;
+            equip.stats[6] = 31;
+            fixture_named_id(
+                string_archive,
+                "Eqp.img/Eqp/Weapon",
+                "Beginner Thief Wrist Guard",
+                1_472_000,
+            )
+        }
+        "panel-item-tooltip-spear" => {
+            stats.level = 70;
+            equip.level = 5;
+            equip.upgrade_slots = 2;
+            equip.stats[0] = 9;
+            equip.stats[6] = 113;
+            equip.stats[8] = 4;
+            equip.stats[10] = 37;
+            1_432_040
+        }
+        "panel-item-tooltip-wand" => {
+            equip.level = 7;
+            equip.upgrade_slots = 0;
+            equip.stats[2] = 16;
+            equip.stats[3] = 3;
+            equip.stats[6] = 84;
+            equip.stats[7] = 118;
+            equip.stats[9] = 4;
+            equip.stats[10] = 6;
+            equip.stats[13] = 2;
+            1_372_038
+        }
+        "panel-item-tooltip-cover" => {
+            item.cash = true;
+            equip.upgrade_slots = 0;
+            1_702_181
+        }
+        "panel-item-tooltip-pet" => {
+            item.cash = true;
+            equip.upgrade_slots = 0;
+            equip.stats[4] = 100;
+            1_802_029
+        }
+        "panel-item-tooltip-mount" => {
+            item.cash = true;
+            equip.upgrade_slots = 0;
+            1_902_008
+        }
+        "panel-item-tooltip-consumable" => {
+            item.inventory_type = InventoryType::Use;
+            2_022_179
+        }
+        _ => {
+            stats.level = 5;
+            stats.dexterity = 20;
+            equip.stats[8] = 3;
+            fixture_named_id(
+                string_archive,
+                "Eqp.img/Eqp/Coat",
+                "Grey T-Shirt",
+                1_040_010,
+            )
+        }
     };
-    let preview_stats = if is_archer_gloves {
-        openstory_protocol::CharacterStats {
-            level: 15,
-            dexterity: 40,
-            ..Default::default()
-        }
-    } else if is_bow {
-        openstory_protocol::CharacterStats {
-            level: 30,
-            strength: 30,
-            dexterity: 65,
-            ..Default::default()
-        }
-    } else {
-        openstory_protocol::CharacterStats {
-            level: 5,
-            dexterity: 20,
-            ..Default::default()
-        }
-    };
-    let pixels = super::render_inventory_tooltip(
+    item.equip = (item.inventory_type == InventoryType::Equip).then_some(equip);
+
+    let tooltip = item_tooltip::render(
         font,
         &item,
-        ui_archive,
         item_archive,
         character_archive,
         string_archive,
-        Some(&preview_stats),
+        Some(&stats),
         None,
         &mut HashMap::new(),
         &mut HashMap::new(),
     );
     let mut sprites = gameplay_backdrop(map_archive, character_archive, font)?;
-    sprites.push(DecodedSprite {
-        texture_key: "inventory-tooltip:preview".to_owned(),
-        rect: SpriteRect {
-            x: 520.0,
-            y: 240.0,
-            width: super::INVENTORY_TOOLTIP_WIDTH as f32,
-            height: super::INVENTORY_TOOLTIP_HEIGHT as f32,
-            blend_mode: BlendMode::Alpha,
-        },
-        depth_order: 0,
-        texture_width: super::INVENTORY_TOOLTIP_WIDTH,
-        texture_height: super::INVENTORY_TOOLTIP_HEIGHT,
-        pixels: Arc::from(pixels),
-    });
+    sprites.push(item_tooltip_preview_sprite(
+        "inventory-tooltip:preview",
+        tooltip,
+        Point { x: 520.0, y: 240.0 },
+        0,
+    ));
     Ok(LoginSceneAssets {
         sprites,
         actions: Vec::new(),
@@ -3758,29 +3695,147 @@ fn build_item_tooltip_scene(
     })
 }
 
+fn equipment_preview_tab(name: &str) -> Option<EquipmentTab> {
+    Some(match name {
+        "panel-equipment-inventory" => EquipmentTab::Equip,
+        "panel-equipment-inventory-deco" => EquipmentTab::Deco,
+        "panel-equipment-inventory-beauty" => EquipmentTab::Beauty,
+        "panel-equipment-inventory-pet" | "panel-equipment-inventory-pet-empty" => {
+            EquipmentTab::Pet
+        }
+        _ => return None,
+    })
+}
+
+fn preview_equipment_tabs_inventory(name: &str) -> openstory_protocol::InventorySnapshot {
+    use openstory_protocol::{InventoryItem, InventoryType, PetInventoryData};
+
+    let mut inventory = preview_equipped_inventory();
+    if name == "panel-equipment-inventory-pet-empty" {
+        return inventory;
+    }
+    inventory
+        .items
+        .retain(|item| !matches!(item.slot, 5 | 6 | 11));
+    inventory.items.extend([
+        InventoryItem {
+            inventory_type: InventoryType::Cash,
+            slot: 1,
+            item_id: 5_000_054,
+            cash_id: Some(1),
+            pet: Some(PetInventoryData {
+                name: "Snail".to_owned(),
+                level: 5,
+                closeness: 1,
+                fullness: 3,
+            }),
+            ..Default::default()
+        },
+        InventoryItem {
+            inventory_type: InventoryType::Use,
+            slot: 1,
+            item_id: 2_000_000,
+            count: 183,
+            ..Default::default()
+        },
+        InventoryItem {
+            inventory_type: InventoryType::Use,
+            slot: 2,
+            item_id: 2_000_003,
+            count: 208,
+            ..Default::default()
+        },
+        InventoryItem {
+            inventory_type: InventoryType::Equip,
+            slot: 3,
+            item_id: 1_812_001,
+            ..Default::default()
+        },
+        InventoryItem {
+            inventory_type: InventoryType::Equip,
+            slot: 4,
+            item_id: 1_802_007,
+            ..Default::default()
+        },
+    ]);
+    // The base and cash layers include items in the same hat and top slots.
+    let items = [
+        (5, 1_050_058),
+        (11, 1_442_005),
+        (12, 1_112_001),
+        (13, 1_112_002),
+        (15, 1_112_000),
+        (16, 1_112_005),
+        (17, 1_122_000),
+        (49, 1_142_000),
+        (50, 1_132_000),
+        (2, 1_012_000),
+        (3, 1_022_000),
+        (4, 1_032_000),
+        (8, 1_082_002),
+        (9, 1_102_000),
+        (101, 1_002_187),
+        (105, 1_042_037),
+        (106, 1_062_026),
+        (107, 1_072_151),
+        (114, 1_822_000),
+        (117, 1_802_006),
+        (123, 1_812_000),
+        (124, 1_812_002),
+        (125, 1_812_003),
+        (126, 1_812_004),
+        (127, 1_812_005),
+        (128, 1_812_006),
+        (129, 1_812_007),
+    ];
+    inventory
+        .items
+        .extend(
+            items
+                .into_iter()
+                .map(|(slot, item_id)| openstory_protocol::InventoryItem {
+                    inventory_type: openstory_protocol::InventoryType::Equipped,
+                    slot,
+                    item_id,
+                    count: 1,
+                    cash: slot > 100,
+                    ..Default::default()
+                }),
+        );
+    inventory
+}
+
 fn build_equipment_panel_scene(
+    name: &str,
+    tab: EquipmentTab,
     map_archive: &NxArchive,
     ui_archive: &NxArchive,
     character_archive: &NxArchive,
     item_archive: &NxArchive,
+    string_archive: &NxArchive,
     font: &fontdue::Font,
 ) -> Result<LoginSceneAssets, String> {
-    let mut inventory = preview_equipped_inventory();
-    // Exercise the eye/face/ear cells, which differ from the newer doll layout.
-    for (slot, item_id) in [(2, 1_012_000), (3, 1_022_000), (4, 1_032_000)] {
-        inventory.items.push(openstory_protocol::InventoryItem {
-            inventory_type: openstory_protocol::InventoryType::Equipped,
-            slot,
-            item_id,
-            count: 1,
-            ..Default::default()
-        });
-    }
-    let pixels = super::render_equipment_inventory_panel(
+    let inventory = preview_equipment_tabs_inventory(name);
+    let pet = if name == "panel-equipment-inventory-pet-empty" {
+        ui_equipment::PetSlots::default()
+    } else {
+        ui_equipment::PetSlots {
+            summoned: Some((5_000_054, 1)),
+            hp: 2_000_000,
+            mp: 2_000_003,
+        }
+    };
+    let pixels = super::ui_equipment::render(
+        font,
         &inventory,
+        Some(&fixture_look()),
+        tab,
+        pet,
         ui_archive,
         item_archive,
         character_archive,
+        string_archive,
+        &mut HashMap::new(),
         &mut HashMap::new(),
     );
     let mut sprites = gameplay_backdrop(map_archive, character_archive, font)?;
@@ -3818,7 +3873,15 @@ fn build_quest_log_panel_scene(
     npcs: &NxArchive,
     font: &fontdue::Font,
 ) -> Result<LoginSceneAssets, String> {
-    let detail_preview = name == "panel-quests-detail";
+    let detail_preview = matches!(
+        name,
+        "panel-quests-detail" | "panel-quests-detail-flow" | "panel-quests-detail-scrolled"
+    );
+    let detail_flow_preview = matches!(
+        name,
+        "panel-quests-detail-flow" | "panel-quests-detail-scrolled"
+    );
+    let detail_scrolled_preview = name == "panel-quests-detail-scrolled";
     let available_preview = name == "panel-quests-available";
     let collapsed_preview = name == "panel-quests-collapsed";
     let desired = [
@@ -3854,7 +3917,9 @@ fn build_quest_log_panel_scene(
     }
     all_ids.sort_unstable();
     all_ids.dedup();
-    let mut ids = if detail_preview {
+    let mut ids = if detail_flow_preview {
+        all_ids
+    } else if detail_preview {
         desired_ids
     } else if available_preview {
         all_ids
@@ -3885,7 +3950,9 @@ fn build_quest_log_panel_scene(
                 .collect()
         },
     };
-    let tab = if detail_preview {
+    let tab = if detail_flow_preview {
+        QuestLogTab::Active
+    } else if detail_preview {
         QuestLogTab::Completed
     } else if available_preview {
         QuestLogTab::Available
@@ -3898,7 +3965,26 @@ fn build_quest_log_panel_scene(
         Vec::new()
     };
     let visible_ids = quest_ids_for_tab(&log, &available_quests, tab, quest_archive, font);
-    let selected = if detail_preview {
+    let selected = if detail_flow_preview {
+        visible_ids
+            .iter()
+            .enumerate()
+            .max_by_key(|(_, id)| {
+                let description = quest_info_text(quest_archive, **id, "1")
+                    .filter(|description| quest_description_is_displayable(description))
+                    .or_else(|| quest_info_text(quest_archive, **id, "0"))
+                    .unwrap_or_default();
+                dialogue_text_content_height(
+                    font,
+                    &clean_npc_markup(&description),
+                    10.0,
+                    250,
+                    &EMPTY_NPC_INLINE_ICONS,
+                )
+            })
+            .map(|(index, _)| index)
+            .unwrap_or(0)
+    } else if detail_preview {
         visible_ids
             .iter()
             .position(|id| {
@@ -3921,7 +4007,7 @@ fn build_quest_log_panel_scene(
     } else {
         0
     };
-    let pixels = super::render_quest_log_panel(
+    let (pixels, _) = super::render_quest_log_panel(
         font,
         &log,
         &available_quests,
@@ -3933,6 +4019,7 @@ fn build_quest_log_panel_scene(
         selected,
         !collapsed_preview,
         scroll,
+        if detail_scrolled_preview { 72 } else { 0 },
         0,
         None,
         None,
@@ -4105,13 +4192,14 @@ fn build_native_window_scene(
         "hud-quickslot"
         | "hud-quickslot-item-tooltip"
         | "hud-quickslot-skill-tooltip"
+        | "hud-quickslot-cooldown"
         | "panel-skill-macros"
         | "panel-skill-macros-drag"
         | "panel-skill-macros-book" => &[],
         "panel-item-inventory" => &[("UIWindow.img/Item/backgrnd", 300.0, 160.0)],
         "panel-inventory-drop" => &[],
         "panel-meso-drop" => &[],
-        "panel-equipment-inventory" => &[],
+        name if equipment_preview_tab(name).is_some() => &[],
         "panel-skill-inventory"
         | "panel-skill-inventory-disabled"
         | "panel-skill-inventory-beginner"
@@ -4660,13 +4748,19 @@ fn build_native_window_scene(
         const PREVIEW_ITEM_ID: i32 = 2_000_000;
         let preview_key = usize::from(keys[1]);
         bindings[preview_key] = openstory_protocol::KeyBinding {
-            kind: if name == "hud-quickslot-skill-tooltip" {
+            kind: if matches!(
+                name,
+                "hud-quickslot-skill-tooltip" | "hud-quickslot-cooldown"
+            ) {
                 1
             } else {
                 2
             },
-            action: if name == "hud-quickslot-skill-tooltip" {
-                1_001
+            action: if matches!(
+                name,
+                "hud-quickslot-skill-tooltip" | "hud-quickslot-cooldown"
+            ) {
+                1_001_004
             } else {
                 PREVIEW_ITEM_ID
             },
@@ -4744,6 +4838,13 @@ fn build_native_window_scene(
             &keys,
             &icons,
             &item_counts,
+            &std::array::from_fn(|slot| {
+                if name == "hud-quickslot-cooldown" && slot == 1 {
+                    0.56
+                } else {
+                    0.0
+                }
+            }),
         );
         sprites.push(DecodedSprite {
             texture_key: "quickslots:preview".to_owned(),
@@ -4767,10 +4868,9 @@ fn build_native_window_scene(
         if name == "hud-quickslot-item-tooltip"
             && let Some(item) = inventory.items.first()
         {
-            let pixels = render_inventory_tooltip(
+            let tooltip = item_tooltip::render(
                 font,
                 item,
-                ui_archive,
                 item_archive,
                 character_archive,
                 string_archive,
@@ -4779,34 +4879,13 @@ fn build_native_window_scene(
                 &mut HashMap::new(),
                 &mut HashMap::new(),
             );
-            let width = INVENTORY_TOOLTIP_WIDTH as f32;
-            let height = INVENTORY_TOOLTIP_HEIGHT as f32;
-            let x = if cursor.x + 18.0 + width > CANVAS_WIDTH as f32 {
-                cursor.x - width - 18.0
-            } else {
-                cursor.x + 18.0
-            }
-            .clamp(0.0, CANVAS_WIDTH as f32 - width);
-            let y = if cursor.y + 18.0 + height > CANVAS_HEIGHT as f32 {
-                cursor.y - height - 18.0
-            } else {
-                cursor.y + 18.0
-            }
-            .clamp(0.0, CANVAS_HEIGHT as f32 - height);
-            sprites.push(DecodedSprite {
-                texture_key: "inventory-tooltip:quickslot-preview".to_owned(),
-                rect: SpriteRect {
-                    x,
-                    y,
-                    width,
-                    height,
-                    blend_mode: BlendMode::Alpha,
-                },
-                depth_order: 0,
-                texture_width: INVENTORY_TOOLTIP_WIDTH,
-                texture_height: INVENTORY_TOOLTIP_HEIGHT,
-                pixels: Arc::from(pixels),
-            });
+            let point = item_tooltip::position(cursor, tooltip.width, tooltip.height);
+            sprites.push(item_tooltip_preview_sprite(
+                "inventory-tooltip:quickslot-preview",
+                tooltip,
+                point,
+                0,
+            ));
         } else if name == "hud-quickslot-skill-tooltip" {
             let mut skill = preview_skill_entry();
             skill.id = 1_001;
@@ -5413,52 +5492,50 @@ fn geometry_report(name: &str, scene: &LoginSceneAssets, width: u32, height: u32
         scene.sprites.len(),
         scene.actions.len()
     );
-    let native_window_preview = matches!(
-        name,
-        "panel-game-menu"
-            | "panel-keyboard-settings"
-            | "panel-keyboard-settings-empty"
-            | "panel-keyboard-settings-capture"
-            | "panel-keyboard-settings-scroll"
-            | "panel-keyboard-settings-quickslots"
-            | "panel-keyboard-settings-large-values"
-            | "panel-skill-macros"
-            | "panel-item-inventory"
-            | "panel-inventory-drop"
-            | "panel-meso-drop"
-            | "panel-equipment-inventory"
-            | "panel-skill-inventory"
-            | "panel-skill-inventory-disabled"
-            | "panel-skill-inventory-beginner"
-            | "panel-skill-inventory-beginner-job"
-            | "panel-skill-tooltip"
-            | "panel-skill-tooltip-unlearned"
-            | "panel-skill-tooltip-max-level"
-            | "panel-skill-tooltip-edge"
-            | "panel-pet-equipment"
-            | "panel-pet-equipment-empty"
-            | "panel-pet-equipment-worn"
-            | "panel-pet-equipment-scroll"
-            | "page-cash-shop"
-            | "page-cash-shop-tooltip"
-            | "panel-monster-book"
-            | "panel-stats"
-            | "panel-stats-auto-assign"
-            | "panel-stats-detail"
-            | "panel-quest-helper"
-            | "panel-quests"
-            | "panel-quests-available"
-            | "panel-quests-collapsed"
-            | "panel-quests-detail"
-            | "hud-chat"
-            | "panel-owl"
-            | "panel-owl-results"
-            | "panel-party"
-            | "panel-buddy"
-            | "panel-guild"
-            | "panel-alliance"
-            | "panel-audio-settings"
-    );
+    let native_window_preview = equipment_preview_tab(name).is_some()
+        || matches!(
+            name,
+            "panel-game-menu"
+                | "panel-keyboard-settings"
+                | "panel-keyboard-settings-empty"
+                | "panel-keyboard-settings-capture"
+                | "panel-keyboard-settings-scroll"
+                | "panel-keyboard-settings-quickslots"
+                | "panel-keyboard-settings-large-values"
+                | "panel-skill-macros"
+                | "panel-item-inventory"
+                | "panel-inventory-drop"
+                | "panel-meso-drop"
+                | "panel-skill-inventory"
+                | "panel-skill-inventory-disabled"
+                | "panel-skill-inventory-beginner"
+                | "panel-skill-inventory-beginner-job"
+                | "panel-skill-tooltip"
+                | "panel-skill-tooltip-unlearned"
+                | "panel-skill-tooltip-max-level"
+                | "panel-skill-tooltip-edge"
+                | "page-cash-shop"
+                | "page-cash-shop-tooltip"
+                | "panel-monster-book"
+                | "panel-stats"
+                | "panel-stats-auto-assign"
+                | "panel-stats-detail"
+                | "panel-quest-helper"
+                | "panel-quests"
+                | "panel-quests-available"
+                | "panel-quests-collapsed"
+                | "panel-quests-detail"
+                | "panel-quests-detail-flow"
+                | "panel-quests-detail-scrolled"
+                | "hud-chat"
+                | "panel-owl"
+                | "panel-owl-results"
+                | "panel-party"
+                | "panel-buddy"
+                | "panel-guild"
+                | "panel-alliance"
+                | "panel-audio-settings"
+        );
     if native_window_preview {
         let nx_sprite_count = scene
             .sprites

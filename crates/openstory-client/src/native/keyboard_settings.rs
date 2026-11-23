@@ -48,7 +48,7 @@ pub(super) fn buttons() -> [(Button, UiRect, &'static str); 6] {
         ),
         (
             Button::Close,
-            UiRect::new(607.0, 10.0, 13.0, 13.0),
+            ui_dialog::close_button(607.0, 10.0),
             "BtClose",
         ),
     ]
@@ -509,6 +509,11 @@ pub(super) fn render(
                 (369..373, 338),
             ],
         );
+        dialog.replace_title(
+            font,
+            "Keyboard Settings",
+            UiRect::new(13.0, 9.0, 177.0, 12.0),
+        );
         // Replace the baked shortcut tiles and Shift legends at their actual
         // bitmap bounds so the old bevel cannot peek through around the edges.
         for (rect, scroll_lock) in [
@@ -622,9 +627,16 @@ pub(super) fn render(
         }
     }
     let mut dialog = NxDialog::new(&mut pixels, width, height, ui);
-    for (_button, rect, path) in buttons() {
-        let path = format!("UIWindow.img/KeyConfig/{path}/normal/0");
-        let _ = dialog.buttons(&[(&path, rect)]);
+    for (button, rect, name) in buttons() {
+        if button == Button::Close {
+            let _ = dialog.close(rect);
+        } else {
+            let art = format!("UIWindow.img/KeyConfig/{name}");
+            let _ = dialog.button(
+                rect,
+                ui_dialog::NxButton::new(&art, ui_dialog::ButtonState::Normal),
+            );
+        }
     }
     if let Some(slot) = quickslot_capture {
         let _ = composite_nx_ui_bitmap(

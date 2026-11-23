@@ -33,9 +33,11 @@ while their replacements are outstanding.
 - No proprietary font or NX archive was copied into the repository. Arial's
   availability is platform dependent; fontdue grayscale rasterization does not
   reproduce the original client's Windows font hinting/ClearType exactly.
-- Window chrome and controls use original NX artwork. The item tooltip keeps
-  its existing drawn 237x183 frame as the sole exception, matching the reference
-  while `UIToolTip.img` is absent from the installed UI archive.
+- Window chrome and controls use original NX artwork. Item tooltips draw their
+  own translucent frame and size it to the visible content. They use the
+  installed NX archives for icons, names, descriptions, and base equipment data.
+  Equipment flavor text wraps below the stat rows, including mount descriptions
+  from `String.nx/Eqp.img/Eqp/Taming`.
 
 ## Reference cases
 
@@ -49,8 +51,8 @@ while their replacements are outstanding.
 | `hud-minimap-expanded` | Corrected native frame, title and map marks | Match reference map viewport/zoom, title area and dimensions |
 | `panel-item-inventory` | Fresh NX layers, tabs, clipped native icons/counts, live scrollbar and meso | Match exact fixture items, borders and tab styling; live drag verification |
 | `panel-item-inventory-tabs` | Five fixtures using the live inventory renderer | Match reference item sets, tab-strip spacing and montage scaling |
-| `panel-equipment-inventory` | Native v83 doll with corrected eye-accessory cell and populated face/eye/ear preview | Rebuild reference Equip/Deco/Beauty tabs, geometry, art and input |
-| `panel-item-tooltip` | New equipment requirements/category/stat/upgrade layout and consume-item descriptions | Complete multi-stat equipment details and exact background/typography |
+| `panel-equipment-inventory` and its Deco, Beauty and Pet variants | Shared NX window, worn equipment and cash overlays, current appearance previews, worn pet gear and auto-potion assignments | Verify gear changes and potion assignments on a live v83 server |
+| `panel-item-tooltip` and its equipment and consumable variants | Shared variable-height tooltip with equipment requirements, class eligibility, all stat and upgrade rows, and wrapped item descriptions | Verify hover behavior on a live v83 server |
 | `panel-skill-inventory` | Fresh native frame, live tabs/rows, clipped names, live SP and scrollbar | Match macro/scroll controls, add pointer states and live allocation/drag verification |
 | `panel-stats` | Both live stat sheets in one fixture | Match reference values, numeric formatting and precise field geometry |
 | `panel-npc-chat` | Taller native tiled frame, script colors/bold, native NPC and buttons | Match exact fixture wrapping/scrollbar, verify every message/input type live |
@@ -92,8 +94,10 @@ full stacks. Zero-meso, zero-pitch projectile refill entries stay available for
 recharge but are omitted from the buy list.
 
 The dialog alignment audit centers inventory, skill and shop tab labels using
-NX bitmap dimensions and origins. Pet equipment opens in a right-side drawer
-attached to the equipment inventory, with separate Equip and Remove actions.
+NX bitmap dimensions and origins. The Pet tab uses Character Info artwork for the summoned
+pet's portrait and stats. Right-click a worn pet gear slot to remove it. The Pet equipment
+shortcut opens this tab directly. The expanded stats window stays within the logical canvas when moved, and both
+stat sheets are included in the standalone and menu previews.
 NPC names fit their nameplate before centering. AP and SP
 allocation hitboxes now match the visible NX buttons; stat value fields, skill
 row gaps and the skill scrollbar no longer allocate points. Keyboard item counts
@@ -109,7 +113,7 @@ subsequent live UI checks.
 ## Remaining screens
 
 The canonical catalogue preserves preview access to login/selection/creation,
-pet equipment, NPC stores, skill macros, social panels, world maps, clock,
+NPC stores, skill macros, social panels, world maps, clock,
 wedding, RPS, events, dragon/carnival, megaphones, quit/server/TOS dialogs,
 Cash Shop locker/coupon/confirmation and monster-book animation details. These
 use the retained implementations and shared font/clipping changes. They still

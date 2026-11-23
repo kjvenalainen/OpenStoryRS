@@ -1046,7 +1046,7 @@ fn load_damage_glyph_atlas(
         })
     };
 
-    let mut decoded = Vec::with_capacity(81);
+    let mut decoded = Vec::with_capacity(82);
     for state in [
         "NoRed1",
         "NoRed0",
@@ -1063,6 +1063,7 @@ fn load_damage_glyph_atlas(
         }
     }
     decoded.push(load_glyph("BasicEff.img/NoRed0/Miss".to_owned())?);
+    decoded.push(load_glyph("BasicEff.img/NoViolet0/Miss".to_owned())?);
 
     let cell_width = decoded.iter().map(|glyph| glyph.width).max().unwrap_or(0) + 2;
     let cell_height = decoded.iter().map(|glyph| glyph.height).max().unwrap_or(0) + 2;

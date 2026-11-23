@@ -1,9 +1,13 @@
-//! In-game channel selector using `UIWindow2.img/Channel` or v83 `UIWindow.img/Channel` artwork.
+//! In-game channel selector with native channel cards and shared window chrome.
+
+use super::ui_dialog::{self, NxDialog};
+use super::ui_foundation::UiRect;
 
 use openstory_assets::{NodeValue, NxArchive, NxNode};
 
 pub const PANEL_WIDTH: u32 = 436;
 pub const PANEL_HEIGHT: u32 = 280;
+const CLOSE: UiRect = ui_dialog::inventory_close(PANEL_WIDTH as f32);
 pub const DEFAULT_X: f32 = (1024.0 - PANEL_WIDTH as f32) / 2.0;
 pub const DEFAULT_Y: f32 = (768.0 - PANEL_HEIGHT as f32) / 2.0;
 pub const MAX_VISIBLE_CHANNELS: usize = 20;
@@ -63,6 +67,7 @@ struct Sprite {
 pub fn render(
     ui_archive: &NxArchive,
     login_ui: &NxArchive,
+    font: &fontdue::Font,
     world_id: u8,
     channels: &[openstory_protocol::WorldChannel],
     current_channel: u8,
@@ -73,33 +78,28 @@ pub fn render(
     let root = ui_archive.root();
     let window = resolve(&root, "UIWindow2.img/Channel")?;
     let mut pixels = vec![0_u8; width * height * 4];
-    let mut actions = Vec::with_capacity(MAX_VISIBLE_CHANNELS + 2);
-
-    if optional_resolve(&window, "backgrnd")?.is_some() {
-        for name in ["backgrnd", "backgrnd2", "backgrnd3"] {
-            let image = sprite(&resolve(&window, name)?)?;
-            blit(&mut pixels, width, height, &image, 0.0, 0.0);
-        }
+    let mut actions = Vec::with_capacity(MAX_VISIBLE_CHANNELS + 3);
+    if NxDialog::new(&mut pixels, width, height, ui_archive)
+        .inventory_window(
+            UiRect::new(0.0, 0.0, width as f32, height as f32),
+            font,
+            "Change Channel",
+            CLOSE,
+        )
+        .is_ok()
+    {
+        actions.push(ActionHit {
+            bounds: HitRect {
+                x: CLOSE.x,
+                y: CLOSE.y,
+                width: CLOSE.width,
+                height: CLOSE.height,
+            },
+            action: Action::Close,
+        });
     } else {
-        // The v83 UIWindow.img layout stores the header, repeating body, and
-        // footer separately instead of exposing backgrnd* layers.
-        let header = sprite(&resolve(&window, "t")?)?;
-        let body = sprite(&resolve(&window, "c")?)?;
-        let footer = sprite(&resolve(&window, "s")?)?;
-        blit_scaled_width(&mut pixels, width, height, &header, 0.0, 0.0, width);
-        let footer_y = height.saturating_sub(footer.height);
-        for y in (header.height..footer_y).step_by(body.height.max(1)) {
-            blit_scaled_width(&mut pixels, width, height, &body, 0.0, y as f32, width);
-        }
-        blit_scaled_width(
-            &mut pixels,
-            width,
-            height,
-            &footer,
-            0.0,
-            footer_y as f32,
-            width,
-        );
+        pixels.fill(0);
+        draw_legacy_frame(&mut pixels, width, height, &window)?;
     }
 
     if let Some(world) = optional_resolve(&window, &format!("world/{world_id}"))? {
@@ -133,9 +133,8 @@ pub fn render(
             &login_root,
             &format!("Login.img/WorldSelect/channel/{index}/{state}"),
         )?)?;
-        if index != current {
-            // Neutralize the card artwork before adding the colored load gauge
-            // and selection marker so available channels have grey backgrounds.
+        if index != selected {
+            // Keep the native gold treatment on the selected card.
             for pixel in image.pixels.chunks_exact_mut(4) {
                 let grey = ((u32::from(pixel[2]) * 299
                     + u32::from(pixel[1]) * 587
@@ -157,13 +156,6 @@ pub fn render(
                 y + 21.0,
                 gauge_width,
             );
-        }
-        if index == selected && selected != current {
-            let highlight = sprite(&resolve(
-                &login_root,
-                "Login.img/WorldSelect/channel/chSelect/3",
-            )?)?;
-            blit(&mut pixels, width, height, &highlight, x + 46.0, y + 15.0);
         }
         actions.push(ActionHit {
             bounds: HitRect {
@@ -212,6 +204,33 @@ pub fn render(
         pixels,
         actions,
     })
+}
+
+fn draw_legacy_frame(
+    pixels: &mut [u8],
+    width: usize,
+    height: usize,
+    window: &NxNode,
+) -> Result<(), String> {
+    if optional_resolve(window, "backgrnd")?.is_some() {
+        for name in ["backgrnd", "backgrnd2", "backgrnd3"] {
+            let image = sprite(&resolve(window, name)?)?;
+            blit(pixels, width, height, &image, 0.0, 0.0);
+        }
+    } else {
+        // The v83 UIWindow.img layout stores the header, repeating body, and
+        // footer separately instead of exposing backgrnd* layers.
+        let header = sprite(&resolve(window, "t")?)?;
+        let body = sprite(&resolve(window, "c")?)?;
+        let footer = sprite(&resolve(window, "s")?)?;
+        blit_scaled_width(pixels, width, height, &header, 0.0, 0.0, width);
+        let footer_y = height.saturating_sub(footer.height);
+        for y in (header.height..footer_y).step_by(body.height.max(1)) {
+            blit_scaled_width(pixels, width, height, &body, 0.0, y as f32, width);
+        }
+        blit_scaled_width(pixels, width, height, &footer, 0.0, footer_y as f32, width);
+    }
+    Ok(())
 }
 
 fn sprite_bounds(anchor_x: f32, anchor_y: f32, sprite: &Sprite) -> HitRect {

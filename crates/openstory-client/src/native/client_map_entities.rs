@@ -1,5 +1,37 @@
 use super::*;
 
+fn append_mob_nameplate_sprite(
+    sprites: &mut Vec<DecodedSprite>,
+    font: &fontdue::Font,
+    name: &str,
+    level: i32,
+) -> usize {
+    const FONT_SIZE: f32 = 12.0;
+    const MAX_WIDTH: u32 = 512;
+    const HEIGHT: u32 = 20;
+
+    let name = name.chars().take(48).collect::<String>();
+    let text = format!("{name} Lv. {level}");
+    let width =
+        (measured_text_width(font, &text, FONT_SIZE).ceil() as u32).clamp(1, MAX_WIDTH - 4) + 4;
+    let index = sprites.len();
+    sprites.push(DecodedSprite {
+        texture_key: format!("mob-nameplate:{FONT_SIZE}:{text}"),
+        rect: SpriteRect {
+            x: 0.0,
+            y: 0.0,
+            width: width as f32,
+            height: HEIGHT as f32,
+            blend_mode: BlendMode::Alpha,
+        },
+        depth_order: 0,
+        texture_width: width,
+        texture_height: HEIGHT,
+        pixels: rasterize_label(font, &text, FONT_SIZE, width, HEIGHT).into(),
+    });
+    index
+}
+
 impl ClientApp {
     fn pet_name_matches_owner(&self, character_id: i32, pet_name: &str) -> bool {
         let pet_name = pet_name.trim();
@@ -435,6 +467,7 @@ impl ClientApp {
             info,
             fame_pending: false,
         });
+        self.raise_dialog_window(DialogWindow::CharacterInfo);
         self.refresh_character_info_texture();
     }
 
@@ -575,14 +608,22 @@ impl ClientApp {
     }
 
     pub(super) fn spawn_npc(&mut self, spawn: openstory_protocol::MapNpcSpawn) {
-        self.spawn_npc_inner(spawn);
         if self.map_initial_npc_loading_until.is_some() {
+            self.initial_npc_spawns
+                .retain(|queued| queued.object_id != spawn.object_id);
+            self.initial_npc_spawns.push_back(spawn);
             self.map_initial_npc_loading_until =
                 Some(Instant::now() + INITIAL_NPC_LOADING_QUIET_WINDOW);
+            return;
         }
+        // A later spawn/controller update supersedes a distant initial spawn
+        // that has not reached the background load queue yet.
+        self.initial_npc_spawns
+            .retain(|queued| queued.object_id != spawn.object_id);
+        self.spawn_npc_inner(spawn);
     }
 
-    fn spawn_npc_inner(&mut self, spawn: openstory_protocol::MapNpcSpawn) {
+    pub(super) fn spawn_npc_inner(&mut self, spawn: openstory_protocol::MapNpcSpawn) {
         let flipped = !spawn.flipped;
         let maple_tv_anchors = maple_tv_screen_anchors(&self.npc_archive, spawn.npc_id);
         if maple_tv_anchors.is_some() {
@@ -880,6 +921,22 @@ impl ClientApp {
     }
 
     pub(super) fn remove_npc(&mut self, object_id: i32) {
+        if let Some(index) = self
+            .initial_npc_spawns
+            .iter()
+            .position(|spawn| spawn.object_id == object_id)
+        {
+            self.initial_npc_spawns.remove(index);
+            if index < self.initial_npc_nearby_pending {
+                self.initial_npc_nearby_pending -= 1;
+                if self.initial_npc_nearby_pending == 0
+                    && self.map_initial_npc_loading_until.is_none()
+                    && self.map_loading_started_at.is_some()
+                {
+                    self.release_map_loading_screen();
+                }
+            }
+        }
         if let Some(scene) = self.map_scene.as_mut() {
             scene.npcs.remove(&object_id);
         }
@@ -961,6 +1018,14 @@ impl ClientApp {
     }
 
     pub(super) fn show_npc_dialogue(&mut self, dialogue: openstory_protocol::NpcDialogue) {
+        let mut dialogue = dialogue;
+        if let Some(inventory) = self.inventory.as_ref() {
+            restrict_mr_thunder_quantity_to_inventory(
+                &mut dialogue,
+                &self.string_archive,
+                inventory,
+            );
+        }
         self.pending_npc_talk = None;
         self.gameplay_input = GameplayInput::default();
         self.npc_dialogue_scroll_dragging = false;
@@ -1002,6 +1067,7 @@ impl ClientApp {
             dialogue.speaker,
             dialogue.message_type,
             dialogue.navigation,
+            dialogue.number_bounds,
             visible_text,
             0,
             &inline_icons,
@@ -1025,6 +1091,7 @@ impl ClientApp {
                 } else {
                     0
                 };
+                let number_input_selected = dialogue.message_type == 3;
                 self.npc_dialogue = Some(NpcDialogueUi {
                     state: dialogue,
                     local_quest: None,
@@ -1040,6 +1107,7 @@ impl ClientApp {
                     first_visible_selection: 0,
                     hovered_selection: None,
                     input,
+                    number_input_selected,
                     texture,
                     panel,
                     buttons,
@@ -1067,7 +1135,6 @@ impl ClientApp {
         }
         self.show_inventory = false;
         self.inventory_hover_slot = None;
-        self.show_pet_equipment = false;
         self.show_skill_book = false;
         self.pending_scroll_slot = None;
         self.gameplay_input = GameplayInput::default();
@@ -1262,7 +1329,6 @@ impl ClientApp {
         if inventory_changed {
             self.sync_equipped_look();
             self.refresh_inventory_texture();
-            self.refresh_pet_equipment_texture();
         }
         self.refresh_cash_shop_texture();
     }
@@ -1505,6 +1571,7 @@ impl ClientApp {
                 if let Some(state) = self.cash_shop.as_mut() {
                     state.preview_remove_all = false;
                     state.selected_sn = None;
+                    state.try_on_items.clear();
                     state.search_focused = false;
                 }
             }
@@ -1512,6 +1579,7 @@ impl ClientApp {
                 if let Some(state) = self.cash_shop.as_mut() {
                     state.preview_remove_all = true;
                     state.selected_sn = None;
+                    state.try_on_items.clear();
                     state.search_focused = false;
                 }
             }
@@ -1600,7 +1668,6 @@ impl ClientApp {
                     state.category = category;
                     state.page = 0;
                     state.selected_sn = None;
-                    state.preview_remove_all = false;
                     state.search_focused = false;
                 }
             }
@@ -1609,6 +1676,7 @@ impl ClientApp {
                     (self.cash_shop.as_mut(), self.cash_products.get(index))
                 {
                     state.selected_sn = Some(product.sn);
+                    cash_shop_ui::add_try_on_item(state, product.item_id);
                     state.preview_remove_all = false;
                     state.search_focused = false;
                 }
@@ -1618,6 +1686,7 @@ impl ClientApp {
                     (self.cash_shop.as_mut(), self.cash_products.get(index))
                 {
                     state.selected_sn = Some(product.sn);
+                    cash_shop_ui::add_try_on_item(state, product.item_id);
                     state.preview_remove_all = false;
                     state.search_focused = false;
                     if state.entered {
@@ -1755,41 +1824,7 @@ impl ClientApp {
     }
 
     pub(super) fn refresh_cash_shop_tooltip_texture(&mut self) {
-        let Some(item) = self.cash_shop_tooltip_item() else {
-            self.inventory_tooltip_texture = None;
-            return;
-        };
-        let pixels = render_inventory_tooltip(
-            &self.font,
-            &item,
-            &self.legacy_ui_archive,
-            &self.item_archive,
-            &self.character_archive,
-            &self.string_archive,
-            self.active_character
-                .as_ref()
-                .map(|character| &character.stats),
-            self.inventory.as_ref(),
-            &mut self.inventory_icon_cache,
-            &mut self.item_name_cache,
-        );
-        let Some(renderer) = self.renderer.as_ref() else {
-            return;
-        };
-        let result = if let Some(texture) = self.inventory_tooltip_texture.as_ref() {
-            renderer.update_bgra(texture, &pixels).map(|()| None)
-        } else {
-            renderer
-                .upload_bgra(INVENTORY_TOOLTIP_WIDTH, INVENTORY_TOOLTIP_HEIGHT, &pixels)
-                .map(Some)
-        };
-        match result {
-            Ok(Some(texture)) => self.inventory_tooltip_texture = Some(texture),
-            Ok(None) => {}
-            Err(error) => {
-                eprintln!("OpenStoryRS: could not update Cash Shop item tooltip: {error}")
-            }
-        }
+        self.update_item_tooltip(self.cash_shop_tooltip_item());
     }
 
     pub(super) fn cash_shop_max_page(&mut self) -> usize {
@@ -1838,6 +1873,7 @@ impl ClientApp {
             state.speaker,
             state.message_type,
             state.navigation,
+            state.number_bounds,
             &text,
             text_scroll,
             &inline_icons,
@@ -1926,7 +1962,15 @@ impl ClientApp {
             }
             NpcDialogueAction::SubmitText => openstory_protocol::npc_talk_text(&ui.input),
             NpcDialogueAction::SubmitNumber => {
-                let value = npc_dialogue_number(&ui.input, ui.state.number_bounds);
+                let mut state = ui.state.clone();
+                if let Some(inventory) = self.inventory.as_ref() {
+                    restrict_mr_thunder_quantity_to_inventory(
+                        &mut state,
+                        &self.string_archive,
+                        inventory,
+                    );
+                }
+                let value = npc_dialogue_number(&ui.input, state.number_bounds);
                 Ok(openstory_protocol::npc_talk_number(value))
             }
             NpcDialogueAction::AdjustNumber(delta) => {
@@ -1935,6 +1979,7 @@ impl ClientApp {
                 let value = npc_dialogue_number(&value.to_string(), ui.state.number_bounds);
                 if let Some(ui) = self.npc_dialogue.as_mut() {
                     ui.input = value.to_string();
+                    ui.number_input_selected = false;
                 }
                 self.rebuild_npc_dialogue();
                 return;
@@ -2237,6 +2282,13 @@ impl ClientApp {
                 return;
             }
         };
+        let name = nx_string_value(
+            &self.string_archive,
+            &format!("Mob.img/{}/name", spawn.mob_id),
+        )
+        .unwrap_or_else(|| format!("Monster {}", spawn.mob_id));
+        let nameplate_sprite_index =
+            append_mob_nameplate_sprite(&mut sprites, &self.font, &name, traits.level);
         let draws = match self.upload_dynamic_sprites(sprites) {
             Ok(draws) => draws,
             Err(error) => {
@@ -2281,6 +2333,7 @@ impl ClientApp {
             elapsed: Duration::ZERO,
             animations,
             skill_actions,
+            nameplate: draws.get(nameplate_sprite_index).copied(),
             hit_effects: Vec::with_capacity(2),
             dying: false,
             fade_remaining: None,
@@ -2448,6 +2501,7 @@ impl ClientApp {
                 y: f64::from(spawn.y),
                 body,
                 loot_target: None,
+                loot_excursion: false,
                 movement_ticks: 0,
                 last_sent_movement: None,
                 stance: spawn.stance,
@@ -3328,6 +3382,7 @@ impl ClientApp {
                     self.show_quest_log = true;
                     self.quest_log_tab = QuestLogTab::Active;
                     self.quest_log_scroll = 0;
+                    self.quest_detail_scroll = 0;
                     self.quest_log_selected = 0;
                     self.quest_reward_selected = 0;
                     self.quest_forfeit_confirmation = None;

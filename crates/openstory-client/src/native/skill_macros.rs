@@ -1,5 +1,7 @@
 //! Native editor for the three v83 skill macros.
 
+use super::ui_dialog::{self, ButtonState, NxButton};
+use super::ui_foundation::{UiRect, UiTextRole, draw_text_role};
 use super::{NxArchive, NxDialog, composite_nx_ui_bitmap, draw_dialogue_text};
 use openstory_protocol::{MAX_SKILL_MACRO_NAME_CHARS, SKILL_MACRO_COUNT, SkillMacro};
 
@@ -9,7 +11,10 @@ pub(super) const PANEL_WIDTH: u32 = 207;
 pub(super) const PANEL_HEIGHT: u32 = 375;
 
 pub(super) const VISIBLE_SKILLS: usize = 3;
-const SKILL_ROW_TOP: f32 = 294.0;
+const CLOSE: UiRect = ui_dialog::inventory_close(PANEL_WIDTH as f32);
+const FOOTER_BUTTONS: [UiRect; 2] =
+    ui_dialog::right_aligned_footer(PANEL_WIDTH as f32 - 8.0, PANEL_HEIGHT as f32, [47.0, 47.0]);
+const SKILL_ROW_TOP: f32 = 287.0;
 const SKILL_ROW_HEIGHT: f32 = 19.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -231,9 +236,7 @@ pub(super) fn hit_test(
     state: &State,
     skills: &[(i32, String)],
 ) -> Option<Action> {
-    if (6.0..21.0).contains(&local_y)
-        && (PANEL_WIDTH as f32 - 32.0..PANEL_WIDTH as f32).contains(&local_x)
-    {
+    if CLOSE.contains(local_x, local_y) {
         return Some(Action::Close);
     }
     for row in 0..SKILL_MACRO_COUNT {
@@ -274,13 +277,12 @@ pub(super) fn hit_test(
             .get(state.skill_scroll.saturating_add(row))
             .map(|(id, _)| Action::AssignSkill(*id));
     }
-    if (351.0..375.0).contains(&local_y) {
-        if (108.0..173.0).contains(&local_x) {
-            return Some(Action::Save);
-        }
-        if (6.0..71.0).contains(&local_x) {
-            return Some(Action::Close);
-        }
+    let [cancel, save] = FOOTER_BUTTONS;
+    if save.contains(local_x, local_y) {
+        return Some(Action::Save);
+    }
+    if cancel.contains(local_x, local_y) {
+        return Some(Action::Close);
     }
     None
 }
@@ -301,15 +303,17 @@ pub(super) fn render(
     let width = PANEL_WIDTH as usize;
     let height = PANEL_HEIGHT as usize;
     let mut pixels = vec![0; width * height * 4];
-    let native = NxDialog::new(&mut pixels, width, height, ui_archive)
+    const EDITOR_HEIGHT: usize = 289;
+    let mut editor_art = vec![0; width * EDITOR_HEIGHT * 4];
+    let native = NxDialog::new(&mut editor_art, width, EDITOR_HEIGHT, ui_archive)
         .frame("UIWindow2.img/Skill/macro/backgrnd", 1, 0)
         .is_ok();
     if native {
         for layer in ["backgrnd2", "backgrnd3"] {
             let _ = composite_nx_ui_bitmap(
-                &mut pixels,
+                &mut editor_art,
                 width,
-                height,
+                EDITOR_HEIGHT,
                 ui_archive,
                 &format!("UIWindow2.img/Skill/macro/{layer}"),
                 0,
@@ -317,16 +321,16 @@ pub(super) fn render(
             );
         }
     } else {
-        let _ = NxDialog::new(&mut pixels, width, height, ui_archive).frame(
+        let _ = NxDialog::new(&mut editor_art, width, EDITOR_HEIGHT, ui_archive).frame(
             "UIWindow.img/SkillMacro/backgrnd",
             0,
             0,
         );
         for row in 0..SKILL_MACRO_COUNT {
             let _ = composite_nx_ui_bitmap(
-                &mut pixels,
+                &mut editor_art,
                 width,
-                height,
+                EDITOR_HEIGHT,
                 ui_archive,
                 "UIWindow.img/SkillMacro/macroslot2",
                 12,
@@ -334,46 +338,31 @@ pub(super) fn render(
             );
         }
         let _ = composite_nx_ui_bitmap(
-            &mut pixels,
+            &mut editor_art,
             width,
-            height,
+            EDITOR_HEIGHT,
             ui_archive,
             "UIWindow.img/SkillMacro/macroname",
             14,
             185,
         );
     }
-    // The original panel edits three macro rows. The additional list below it
-    // retains click-to-assign for clients without skill-icon dragging.
-    super::fill_dialogue_rect(
-        &mut pixels,
-        width,
-        height,
-        0,
-        289,
-        width,
-        height - 289,
-        [242, 242, 237, 255],
+    let mut dialog = NxDialog::new(&mut pixels, width, height, ui_archive);
+    let _ = dialog.inventory_window(
+        UiRect::new(0.0, 0.0, width as f32, height as f32),
+        font,
+        "Skill Macros",
+        CLOSE,
     );
-    super::fill_dialogue_rect(
-        &mut pixels,
-        width,
-        height,
-        0,
-        289,
-        width,
-        1,
-        [100, 118, 133, 255],
+    // Preserve the native editor body while fitting the extra skill list under it.
+    let _ = dialog.frame_rows(&editor_art, width, 0, &[(30..264, 30)]);
+    let [cancel, save] = FOOTER_BUTTONS;
+    let _ = dialog.button(
+        cancel,
+        NxButton::new("Basic.img/BtCancel2", ButtonState::Normal),
     );
-    let _ = composite_nx_ui_bitmap(
-        &mut pixels,
-        width,
-        height,
-        ui_archive,
-        "UIWindow.img/BtUIClose/normal/0",
-        width as i32 - 32,
-        6,
-    );
+    let _ = dialog.button(save, NxButton::new("Basic.img/BtOK2", ButtonState::Normal));
+
     let _ = composite_nx_ui_bitmap(
         &mut pixels,
         width,
@@ -514,6 +503,19 @@ pub(super) fn render(
             230,
         );
     }
+    draw_text_role(
+        font,
+        &mut pixels,
+        width,
+        height,
+        "Available Skills",
+        9,
+        269,
+        UiTextRole::Label,
+        width - 18,
+        14,
+        None,
+    );
     for (row, (skill_id, name)) in skills
         .iter()
         .skip(state.skill_scroll)
@@ -547,10 +549,6 @@ pub(super) fn render(
             [70, 48, 33],
         );
     }
-    NxDialog::new(&mut pixels, width, height, ui_archive).anchored_buttons(&[
-        ("Basic.img/BtCancel/normal/0", 6, 351),
-        ("Basic.img/BtOK/normal/0", 108, 351),
-    ]);
     if let Some(drag) = state.drag {
         let (x, y) = drag.current;
         if drag.moved && (0.0..width as f32).contains(&x) && (0.0..height as f32).contains(&y) {
@@ -630,7 +628,7 @@ mod tests {
             hit_test(39.0, 47.0, &state, &skills),
             Some(Action::ClearSkill(0))
         );
-        assert_eq!(hit_test(180.0, 355.0, &state, &skills), None);
+        assert_eq!(hit_test(205.0, 355.0, &state, &skills), None);
         assert_eq!(
             hit_test(65.0, 205.0, &state, &skills),
             Some(Action::FocusName)
@@ -643,6 +641,14 @@ mod tests {
             hit_test(10.0, 295.0, &state, &skills),
             Some(Action::AssignSkill(1001004))
         );
-        assert_eq!(hit_test(110.0, 355.0, &state, &skills), Some(Action::Save));
+        let [cancel, save] = FOOTER_BUTTONS;
+        assert_eq!(
+            hit_test(save.x, save.y, &state, &skills),
+            Some(Action::Save)
+        );
+        assert_eq!(
+            hit_test(cancel.x, cancel.y, &state, &skills),
+            Some(Action::Close)
+        );
     }
 }

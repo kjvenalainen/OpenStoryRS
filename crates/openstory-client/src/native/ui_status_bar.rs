@@ -674,6 +674,31 @@ fn v83_exp_fraction(level: u8, experience: i32) -> f32 {
     }
 }
 
+fn v83_level_after_exp_gain(
+    level: u8,
+    experience: i32,
+    gain: i64,
+    reported_experience: i32,
+) -> Option<u8> {
+    let mut next_level = usize::from(level);
+    let mut remaining = i64::from(experience.max(0)).checked_add(gain)?;
+    let reported_level = loop {
+        if next_level >= 200 {
+            break next_level;
+        }
+        let required = *V83_EXP_TO_NEXT_LEVEL.get(next_level)?;
+        if required <= 0 || remaining < required {
+            break next_level;
+        }
+        remaining -= required;
+        next_level += 1;
+    };
+    // An exact match guards against treating ordinary EXP loss as a level-up.
+    (reported_level > usize::from(level) && remaining == i64::from(reported_experience))
+        .then(|| u8::try_from(reported_level).ok())
+        .flatten()
+}
+
 struct DecodedSprite {
     texture_key: String,
     rect: SpriteRect,

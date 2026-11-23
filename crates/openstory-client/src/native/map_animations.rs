@@ -1827,6 +1827,11 @@ fn append_mob_animations(
             .and_then(|node| integer_property(node, "level"))
             .unwrap_or(1)
             .clamp(1, i32::MAX as i64) as i32,
+        accuracy: info
+            .as_ref()
+            .and_then(|node| integer_property(node, "acc"))
+            .unwrap_or(0)
+            .clamp(0, i32::MAX as i64) as i32,
         physical_defense: info
             .as_ref()
             .and_then(|node| integer_property(node, "PDDamage"))

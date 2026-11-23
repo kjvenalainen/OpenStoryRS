@@ -447,17 +447,25 @@ impl NpcDialogueLayout {
     const INPUT_X: i32 = Self::TEXT_X + 8;
     const INPUT_Y: i32 = 177;
     const INPUT_HEIGHT: usize = 20;
+    const NUMBER_MINUS_X: i32 = Self::TEXT_X + 55;
+    const NUMBER_VALUE_X: i32 = Self::TEXT_X + 105;
+    const NUMBER_PLUS_X: i32 = Self::TEXT_X + 174;
+    const NUMBER_MAX_X: i32 = Self::TEXT_X + 218;
     const SELECTION_ROW_STEP: i32 = 25;
     const SELECTION_HEIGHT: usize = 23;
-    const ADJUST_MINUS_X: i32 = 328;
-    const ADJUST_PLUS_X: i32 = 365;
+    const SELECTION_TEXT_GAP: i32 = 0;
     const CLOSE_X: i32 = 9;
     const YES_X: i32 = 400;
     const NO_X: i32 = 465;
     const PREV_X: i32 = 389;
     const NEXT_X: i32 = 471;
     const OK_X: i32 = 471;
-    const SELECTION_BOTTOM_Y: i32 = 227;
+    const SELECTION_BOTTOM_Y: i32 = Self::BOTTOM_Y as i32;
+    const SELECTION_TEXT_VIEW_HEIGHT: usize = (Self::SELECTION_BOTTOM_Y
+        - Self::TEXT_Y
+        - Self::SELECTION_TEXT_GAP
+        - Self::SELECTION_ROW_STEP
+        - Self::SELECTION_HEIGHT as i32) as usize;
     const BUTTON_Y: i32 = 236;
 }
 
@@ -493,6 +501,95 @@ fn npc_dialogue_number(input: &str, bounds: Option<(i32, i32, i32)>) -> i32 {
     }
 }
 
+const MR_THUNDER_ORE_PER_REFINED_ITEM: u32 = 10;
+const MR_THUNDER_REFINED_ORE_RECIPES: [(i32, i32); 17] = [
+    (4_011_000, 4_010_000), // Bronze
+    (4_011_001, 4_010_001), // Steel
+    (4_011_002, 4_010_002), // Mithril
+    (4_011_003, 4_010_003), // Adamantium
+    (4_011_004, 4_010_004), // Silver
+    (4_011_005, 4_010_005), // Orihalcon
+    (4_011_006, 4_010_006), // Gold
+    (4_011_008, 4_010_007), // Lidium
+    (4_021_000, 4_020_000), // Garnet
+    (4_021_001, 4_020_001), // Amethyst
+    (4_021_002, 4_020_002), // AquaMarine
+    (4_021_003, 4_020_003), // Emerald
+    (4_021_004, 4_020_004), // Opal
+    (4_021_005, 4_020_005), // Sapphire
+    (4_021_006, 4_020_006), // Topaz
+    (4_021_007, 4_020_007), // Diamond
+    (4_021_008, 4_020_008), // Black Crystal
+];
+
+fn npc_dialogue_item_macro_ids(text: &str) -> impl Iterator<Item = i32> + '_ {
+    text.match_indices("#")
+        .filter_map(move |(start, _)| {
+            let tail = text.get(start + 1..)?;
+            let mut chars = tail.chars();
+            matches!(chars.next()?, 't' | 'z').then_some(chars.as_str())
+        })
+        .filter_map(|tail| {
+            let end = tail.find('#')?;
+            tail[..end].parse::<i32>().ok()
+        })
+}
+
+fn mr_thunder_ore_item_id(
+    dialogue: &openstory_protocol::NpcDialogue,
+    string_archive: &NxArchive,
+) -> Option<i32> {
+    if dialogue.message_type != 3
+        || !nx_string_value(
+            string_archive,
+            &format!("Npc.img/{}/name", dialogue.npc_id),
+        )
+        .is_some_and(|name| name.eq_ignore_ascii_case("Mr. Thunder"))
+    {
+        return None;
+    }
+
+    if let Some(ore_item_id) = npc_dialogue_item_macro_ids(&dialogue.text).find_map(|item_id| {
+        MR_THUNDER_REFINED_ORE_RECIPES
+            .iter()
+            .find_map(|(plate_id, ore_id)| {
+                (*plate_id == item_id || *ore_id == item_id).then_some(*ore_id)
+            })
+    }) {
+        return Some(ore_item_id);
+    }
+
+    let text = dialogue.text.to_lowercase();
+    MR_THUNDER_REFINED_ORE_RECIPES
+        .iter()
+        .find_map(|(refined_id, ore_id)| {
+            let refined_name = nx_string_value(
+                string_archive,
+                &format!("Etc.img/Etc/{refined_id}/name"),
+            )?;
+            text.contains(&refined_name.to_lowercase()).then_some(*ore_id)
+        })
+}
+
+fn restrict_mr_thunder_quantity_to_inventory(
+    dialogue: &mut openstory_protocol::NpcDialogue,
+    string_archive: &NxArchive,
+    inventory: &openstory_protocol::InventorySnapshot,
+) {
+    let Some(ore_item_id) = mr_thunder_ore_item_id(dialogue, string_archive) else {
+        return;
+    };
+    let Some((default, minimum, maximum)) = dialogue.number_bounds else {
+        return;
+    };
+    let ore_count = inventory.item_count(ore_item_id);
+    let inventory_maximum = (ore_count / MR_THUNDER_ORE_PER_REFINED_ITEM).min(i32::MAX as u32) as i32;
+    let maximum = maximum.max(0).min(inventory_maximum);
+    let minimum = minimum.max(0).min(maximum);
+    let default = default.clamp(minimum, maximum);
+    dialogue.number_bounds = Some((default, minimum, maximum));
+}
+
 fn npc_dialogue_cancel_response(message_type: i8) -> i8 {
     match message_type {
         0 | 1 | 5 | 6 => -1,
@@ -503,7 +600,7 @@ fn npc_dialogue_cancel_response(message_type: i8) -> i8 {
 fn npc_dialogue_text_view_height(message_type: i8) -> usize {
     match message_type {
         2 | 3 => 112,
-        4 => 106,
+        4 => NpcDialogueLayout::SELECTION_TEXT_VIEW_HEIGHT,
         _ => NpcDialogueLayout::BOTTOM_Y - NpcDialogueLayout::TEXT_Y as usize,
     }
 }
@@ -513,7 +610,7 @@ fn npc_dialogue_selection_visible_rows(text_view_height: usize) -> usize {
         + if text_view_height == 0 {
             0
         } else {
-            text_view_height as i32 + 8
+            text_view_height as i32 + NpcDialogueLayout::SELECTION_TEXT_GAP
         };
     let available_height = NpcDialogueLayout::SELECTION_BOTTOM_Y - first_row_y;
     let row_height = NpcDialogueLayout::SELECTION_HEIGHT as i32;
@@ -571,7 +668,7 @@ fn dialogue_text_content_height(
             previous = None;
             continue;
         }
-        if (0xf0000..=0xf0006).contains(&(character as u32)) {
+        if (0xf0000..=0xf0007).contains(&(character as u32)) {
             continue;
         }
         let font = if bold {
@@ -625,6 +722,7 @@ fn render_npc_dialogue(
     speaker: i8,
     message_type: i8,
     navigation: Option<(bool, bool)>,
+    number_bounds: Option<(i32, i32, i32)>,
     text: &str,
     text_scroll: usize,
     inline_icons: &NpcInlineIcons,
@@ -766,7 +864,7 @@ fn render_npc_dialogue(
                 + if text_view_height == 0 {
                     0
                 } else {
-                    text_view_height as i32 + 8
+                    text_view_height as i32 + NpcDialogueLayout::SELECTION_TEXT_GAP
                 }
                 + row as i32 * NpcDialogueLayout::SELECTION_ROW_STEP;
             let body_size = body_style.size;
@@ -841,7 +939,7 @@ fn render_npc_dialogue(
             NpcDialogueAction::More(0),
         );
     } else {
-        if message_type == 2 || message_type == 3 {
+        if message_type == 2 {
             let mut visible = input;
             while dialogue_text_width(font, visible, 16.0) > 287.0 {
                 let Some((index, _)) = visible.char_indices().nth(1) else {
@@ -891,14 +989,50 @@ fn render_npc_dialogue(
                 NpcDialogueAction::SubmitText,
             ),
             3 => {
+                let mut visible = input;
+                while dialogue_text_width(font, visible, 16.0) > 74.0 {
+                    let Some((index, _)) = visible.char_indices().nth(1) else {
+                        break;
+                    };
+                    visible = &visible[index..];
+                }
+                let maximum = number_bounds.map(|(_, _, maximum)| maximum.max(0));
+                draw_dialogue_text(
+                    font,
+                    &mut pixels,
+                    width,
+                    height,
+                    &format!("{visible}|"),
+                    NpcDialogueLayout::NUMBER_VALUE_X,
+                    NpcDialogueLayout::INPUT_Y,
+                    16.0,
+                    76,
+                    NpcDialogueLayout::INPUT_HEIGHT,
+                    [46, 46, 46],
+                );
+                draw_dialogue_text(
+                    font,
+                    &mut pixels,
+                    width,
+                    height,
+                    &maximum.map_or_else(|| "Max".to_owned(), |maximum| format!("Max {maximum}")),
+                    NpcDialogueLayout::NUMBER_MAX_X,
+                    NpcDialogueLayout::INPUT_Y + 2,
+                    13.0,
+                    NpcDialogueLayout::TEXT_WIDTH.saturating_sub(
+                        (NpcDialogueLayout::NUMBER_MAX_X - NpcDialogueLayout::TEXT_X) as usize,
+                    ),
+                    NpcDialogueLayout::INPUT_HEIGHT,
+                    [92, 92, 92],
+                );
                 for (x, path, delta) in [
                     (
-                        NpcDialogueLayout::ADJUST_MINUS_X,
+                        NpcDialogueLayout::NUMBER_MINUS_X,
                         "Basic.img/BtMin/normal/0",
                         -1,
                     ),
                     (
-                        NpcDialogueLayout::ADJUST_PLUS_X,
+                        NpcDialogueLayout::NUMBER_PLUS_X,
                         "Basic.img/BtMax/normal/0",
                         1,
                     ),
@@ -910,8 +1044,8 @@ fn render_npc_dialogue(
                         width,
                         height,
                         path,
-                        x + 10,
-                        NpcDialogueLayout::BUTTON_Y + 3,
+                        x,
+                        NpcDialogueLayout::INPUT_Y + 6,
                         NpcDialogueAction::AdjustNumber(delta),
                     );
                 }
@@ -1134,6 +1268,7 @@ pub(super) fn render_npc_dialogue_preview(
         0,
         0,
         None,
+        None,
         "\u{f0004}Ascension Powers\u{f0005}\n\n\u{f0000}Upon reaching level 200, you have unlocked new command:\n\u{f0002}@ascension <option>\u{f0001}\n\n\u{f0004}Available Options:\u{f0005}\n0 - View your active ascensions\n1 - Hoarder Ascension: Gain 5x EXP and drop rates for all characters\n2 - Resilient Ascension: Characters become immune to debuffs\n\n\u{f0004}Please Note:\u{f0005} \u{f0002}Ascending will send your current character to level 1.",
         0,
         &NpcInlineIcons::new(),
@@ -1222,6 +1357,8 @@ fn rasterize_maple_tv_text(
     pixels
 }
 
+const DIALOGUE_HIGHLIGHT_COLOR: [u8; 3] = [255, 206, 128];
+
 fn draw_dialogue_text(
     font: &fontdue::Font,
     pixels: &mut [u8],
@@ -1299,6 +1436,40 @@ fn draw_dialogue_text_with_icons_scrolled(
     inline_icons: &NpcInlineIcons,
     vertical_offset: usize,
 ) {
+    draw_dialogue_text_with_icons_scrolled_in_viewport(
+        font,
+        pixels,
+        width,
+        height,
+        text,
+        x,
+        y,
+        y,
+        size,
+        max_width,
+        max_height,
+        color,
+        inline_icons,
+        vertical_offset,
+    );
+}
+
+fn draw_dialogue_text_with_icons_scrolled_in_viewport(
+    font: &fontdue::Font,
+    pixels: &mut [u8],
+    width: usize,
+    height: usize,
+    text: &str,
+    x: i32,
+    y: i32,
+    viewport_y: i32,
+    size: f32,
+    max_width: usize,
+    max_height: usize,
+    color: [u8; 3],
+    inline_icons: &NpcInlineIcons,
+    vertical_offset: usize,
+) {
     let line_height = size.ceil() as i32 + 4;
     let mut pen_x = x as f32;
     let mut line_y = y;
@@ -1343,6 +1514,11 @@ fn draw_dialogue_text_with_icons_scrolled(
                 previous = None;
                 continue;
             }
+            '\u{f0007}' => {
+                text_color = DIALOGUE_HIGHLIGHT_COLOR;
+                previous = None;
+                continue;
+            }
             _ => {}
         }
         let font = if bold {
@@ -1363,7 +1539,7 @@ fn draw_dialogue_text_with_icons_scrolled(
                 line_y += line_height;
             }
             let icon_y = line_y - vertical_offset as i32;
-            if icon_y >= y && icon_y + icon_size as i32 <= y + max_height as i32 {
+            if icon_y >= viewport_y && icon_y + icon_size as i32 <= viewport_y + max_height as i32 {
                 composite_inventory_icon(
                     pixels,
                     width,
@@ -1400,9 +1576,9 @@ fn draw_dialogue_text_with_icons_scrolled(
                 let py = top + row as i32;
                 if px < x.max(0)
                     || px >= x.saturating_add(max_width.min(i32::MAX as usize) as i32)
-                    || py < y.max(0)
+                    || py < viewport_y.max(0)
                     || px >= width as i32
-                    || py >= (y + max_height as i32).min(height as i32)
+                    || py >= (viewport_y + max_height as i32).min(height as i32)
                 {
                     continue;
                 }
@@ -1457,7 +1633,7 @@ fn wrap_dialogue_text(
             let mut width = 0.0_f32;
             let mut previous = None;
             for character in candidate.chars() {
-                if (0xf0000..=0xf0006).contains(&(character as u32)) {
+                if (0xf0000..=0xf0007).contains(&(character as u32)) {
                     continue;
                 }
                 if inline_icons.contains_key(&character) {

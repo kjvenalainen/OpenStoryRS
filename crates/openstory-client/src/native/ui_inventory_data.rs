@@ -58,42 +58,49 @@ fn first_free_equip_inventory_slot(
         .and_then(|slot| i16::try_from(slot).ok())
 }
 
-// 181xxxx PetEquip items occupy equipped slot 123 (wire destination -123).
-// Upstream currently maps them to NONE/0, which the server interprets as a
-// drop request. Cosmic's v83 character-info response reads the pet label ring
-// from -114, so keep that separate known slot for the label-ring item.
+// Pet equipment uses dedicated equipped positions. The 1812000-1812007
+// ability items occupy slots 122-129; the name and quote rings use 114 and
+// 113. Sending every PetEquip item to -123 makes each one replace the last.
 fn pet_equipment_destination(
     item_id: i32,
     inventory: &openstory_protocol::InventorySnapshot,
 ) -> Option<i16> {
-    if item_id / 10_000 == 181 {
-        return Some(123);
+    let (slot, preserve_existing) = match item_id {
+        1_812_000..=1_812_007 => (122 + (item_id - 1_812_000) as i16, false),
+        id if id / 10_000 == 180 => (121, false),
+        id if id / 10_000 == 182 => (114, true),
+        id if id / 10_000 == 183 => (113, true),
+        _ => return None,
+    };
+    if preserve_existing {
+        if let Some(equipped_slot) = inventory
+            .equipped()
+            .find(|item| item.item_id == item_id)
+            .and_then(|item| i16::try_from(item.slot).ok())
+            .filter(|equipped_slot| *equipped_slot > 0)
+        {
+            return Some(equipped_slot);
+        }
+        if inventory
+            .equipped()
+            .any(|item| i32::from(item.slot) == i32::from(slot))
+        {
+            return None;
+        }
     }
-    if !(180..=183).contains(&(item_id / 10_000)) {
-        return None;
-    }
-    if let Some(slot) = inventory
-        .equipped()
-        .find(|item| item.item_id == item_id)
-        .and_then(|item| i16::try_from(item.slot).ok())
-        .filter(|slot| *slot > 0)
-    {
-        return Some(slot);
-    }
-    if item_id == 1_822_000 && !inventory.equipped().any(|item| item.slot == 114) {
-        return Some(114);
-    }
-    None
+    Some(slot)
 }
 
 fn equip_slot_for_item(
     item_id: i32,
+    cash: bool,
     inventory: &openstory_protocol::InventorySnapshot,
 ) -> Option<i16> {
     if item_id <= 0 {
         return None;
     }
     let category = item_id / 10_000;
+    let offset = if cash { 100 } else { 0 };
     let slot = match category {
         100 => 1,
         101 => 2,
@@ -107,18 +114,19 @@ fn equip_slot_for_item(
         110 => 9,
         111 => [13_u16, 15, 16]
             .into_iter()
-            .find(|slot| !inventory.equipped().any(|item| item.slot == *slot))
-            .unwrap_or(12) as i16,
+            .find(|slot| !inventory.equipped().any(|item| item.slot == *slot + offset))
+            .unwrap_or(12),
         112 => 17,
         113 => 50,
         114 => 49,
         130..=149 => 11,
+        170 if cash => 11,
         181 => return None,
         190 => 18,
         191 => 19,
         _ => return None,
     };
-    Some(slot)
+    Some((slot + offset) as i16)
 }
 
 fn equipment_block_reason(
@@ -313,9 +321,7 @@ fn load_cash_products(
             .ok()
             .flatten()
             .is_none()
-            || item_name_path(item_id)
-                .and_then(|name_path| string_archive.root().resolve(&name_path).ok().flatten())
-                .is_none()
+            || item_string_node(item_id, string_archive, "name").is_none()
         {
             continue;
         }
@@ -412,91 +418,6 @@ fn inventory_item_info_node(
     archive.root().resolve(info_path).ok().flatten()
 }
 
-fn inventory_item_stat_summary(
-    item: &openstory_protocol::InventoryItem,
-    item_archive: &NxArchive,
-    character_archive: &NxArchive,
-) -> Option<String> {
-    if item.item_id / 1_000_000 != 1 {
-        return None;
-    }
-    let info = inventory_item_info_node(item_archive, character_archive, item.item_id)?;
-    let mut requirements = Vec::new();
-    for (property, label) in [
-        ("reqLevel", "Lv"),
-        ("reqSTR", "STR"),
-        ("reqDEX", "DEX"),
-        ("reqINT", "INT"),
-        ("reqLUK", "LUK"),
-    ] {
-        if let Some(value) = integer_property(&info, property).filter(|value| *value > 0) {
-            requirements.push(format!("{label} {value}"));
-        }
-    }
-    let mut stats = Vec::new();
-    if let Some(equip) = item.equip.as_ref() {
-        for (index, property, label) in [
-            (0, "incSTR", "STR"),
-            (1, "incDEX", "DEX"),
-            (2, "incINT", "INT"),
-            (3, "incLUK", "LUK"),
-            (4, "incMHP", "HP"),
-            (5, "incMMP", "MP"),
-            (6, "incPAD", "W.ATK"),
-            (7, "incMAD", "M.ATK"),
-            (8, "incPDD", "W.DEF"),
-            (9, "incMDD", "M.DEF"),
-            (10, "incACC", "ACC"),
-            (11, "incEVA", "AVOID"),
-            (12, "incHands", "HANDS"),
-            (13, "incSpeed", "SPEED"),
-            (14, "incJump", "JUMP"),
-        ] {
-            let value = i32::from(equip.stats[index]);
-            if value == 0 {
-                continue;
-            }
-            let delta = i64::from(value) - integer_property(&info, property).unwrap_or(0);
-            if delta == 0 {
-                stats.push(format!("{label} {value}"));
-            } else {
-                stats.push(format!("{label} {value} ({delta:+})"));
-            }
-        }
-        if equip.upgrade_slots > 0 {
-            stats.push(format!("Slots {}", equip.upgrade_slots));
-        }
-        if equip.level > 0 {
-            stats.push(format!("Enhance {}", equip.level));
-        }
-    } else {
-        for (property, label) in [
-            ("incSTR", "STR"),
-            ("incDEX", "DEX"),
-            ("incINT", "INT"),
-            ("incLUK", "LUK"),
-            ("incPAD", "W.ATK"),
-            ("incMAD", "M.ATK"),
-            ("incPDD", "W.DEF"),
-            ("incMDD", "M.DEF"),
-            ("incACC", "ACC"),
-            ("incEVA", "AVOID"),
-            ("incMHP", "HP"),
-            ("incMMP", "MP"),
-            ("incSpeed", "SPEED"),
-            ("incJump", "JUMP"),
-        ] {
-            if let Some(value) = integer_property(&info, property).filter(|value| *value != 0) {
-                stats.push(format!("{label} {value:+}"));
-            }
-        }
-    }
-    if !requirements.is_empty() {
-        stats.insert(0, format!("Req. {}", requirements.join("  ")));
-    }
-    (!stats.is_empty()).then(|| stats.join("   "))
-}
-
 fn inventory_item_property_truthy(node: &openstory_assets::NxNode, field: &str) -> bool {
     let Some(value) = node
         .child(field)
@@ -516,7 +437,7 @@ fn inventory_item_property_truthy(node: &openstory_assets::NxNode, field: &str) 
     }
 }
 
-fn item_name_path(item_id: i32) -> Option<String> {
+fn item_string_path(item_id: i32) -> Option<String> {
     if item_id <= 0 {
         return None;
     }
@@ -525,7 +446,7 @@ fn item_name_path(item_id: i32) -> Option<String> {
         1 => {
             let category = match item_prefix {
                 180..=183 => "PetEquip",
-                190 | 191 => "TamingMob",
+                190 | 191 => "Taming",
                 _ => match item_prefix - 100 {
                     0 => "Cap",
                     1..=3 | 12..=14 => "Accessory",
@@ -541,15 +462,37 @@ fn item_name_path(item_id: i32) -> Option<String> {
                     _ => return None,
                 },
             };
-            format!("Eqp.img/Eqp/{category}/{item_id}/name")
+            format!("Eqp.img/Eqp/{category}/{item_id}")
         }
-        2 => format!("Consume.img/{item_id}/name"),
-        3 => format!("Ins.img/{item_id}/name"),
-        4 => format!("Etc.img/Etc/{item_id}/name"),
-        5 if item_prefix == 500 => format!("Pet.img/{item_id}/name"),
-        5 => format!("Cash.img/{item_id}/name"),
+        2 => format!("Consume.img/{item_id}"),
+        3 => format!("Ins.img/{item_id}"),
+        4 => format!("Etc.img/Etc/{item_id}"),
+        5 if item_prefix == 500 => format!("Pet.img/{item_id}"),
+        5 => format!("Cash.img/{item_id}"),
         _ => return None,
     })
+}
+
+fn item_string_node(item_id: i32, archive: &NxArchive, property: &str) -> Option<NxNode> {
+    let path = item_string_path(item_id)?;
+    let root = archive.root();
+    root.resolve(&format!("{path}/{property}"))
+        .ok()
+        .flatten()
+        .or_else(|| {
+            // Mount strings use Taming in v83. Also accept the Character.nx category name.
+            let mount_id = path.strip_prefix("Eqp.img/Eqp/Taming/")?;
+            root.resolve(&format!("Eqp.img/Eqp/TamingMob/{mount_id}/{property}"))
+                .ok()
+                .flatten()
+        })
+}
+
+fn item_string_property(item_id: i32, archive: &NxArchive, property: &str) -> Option<String> {
+    match item_string_node(item_id, archive, property)?.value().ok()? {
+        NodeValue::String(value) if !value.trim().is_empty() => Some(value),
+        _ => None,
+    }
 }
 
 fn item_name(
@@ -560,13 +503,7 @@ fn item_name(
     if let Some(name) = cache.get(&item_id) {
         return name.clone().unwrap_or_else(|| format!("Item #{item_id}"));
     }
-    let resolved = item_name_path(item_id).and_then(|path| {
-        let node = string_archive.root().resolve(&path).ok().flatten()?;
-        match node.value().ok()? {
-            NodeValue::String(name) if !name.trim().is_empty() => Some(name),
-            _ => None,
-        }
-    });
+    let resolved = item_string_property(item_id, string_archive, "name");
     if cache.len() >= 512 {
         cache.clear();
     }
@@ -623,18 +560,6 @@ fn build_owl_item_name_index(string_archive: &NxArchive) -> Vec<(String, i32)> {
         }
     }
     index
-}
-
-fn item_description(item_id: i32, string_archive: &NxArchive) -> Option<String> {
-    let name_path = item_name_path(item_id)?;
-    let description_path = format!("{}/desc", name_path.strip_suffix("/name")?);
-    let node = string_archive.root().resolve(&description_path).ok()??;
-    match node.value().ok()? {
-        NodeValue::String(description) if !description.trim().is_empty() => {
-            Some(description.replace("\\n", "\n"))
-        }
-        _ => None,
-    }
 }
 
 fn composite_inventory_icon(

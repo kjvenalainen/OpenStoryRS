@@ -106,9 +106,8 @@ operating system.
 
 #### Explicit known-bad fixes
 
-- [x] **Pet equipment window:** add a dedicated window for pet status and pet gear. It must
-  show owned pets and pet equipment from the character's Equip inventory, send the v83
-  equip move for pet gear, and refresh from server inventory updates.
+- [x] **Pet equipment:** show pet status and gear in the Pet tab of Equipment Inventory.
+  The tab sends v83 equip and remove moves and refreshes from server inventory updates.
 - [x] **Cash shop rewrite:** replace the legacy fixed layout with a new 1024x768-logical,
   resizable catalog and locker experience. Use `Etc.nx/Commodity.img` as the source of
   purchaseable products and their server SN, price, count, and on-sale status. Include
@@ -181,9 +180,8 @@ and sends the matching selection index.
   Space starts dialogue with the nearest nearby NPC, reveals typed dialogue, then advances
   pages or accepts the highlighted choice; Up/Down moves through selection prompts without consuming text-entry
   spaces. Holding X sits on nearby map-authored seats; movement or either Option key stands.
-  `P` opens the new
-  Pet Equipment panel, which reads pet records and PetEquip items from the Equip inventory
-  and sends the legacy `MOVE_ITEM` pet-equip request. Activating a Cash pet sends the
+  The Pet equipment shortcut opens the Pet tab in Equipment Inventory. The tab reads pet
+  records and PetEquip items and sends the legacy `MOVE_ITEM` pet-equip request. Activating a Cash pet sends the
   legacy summon/dismiss packet. Pet sprites use their NX stance animations, names, and server
   spawn/movement updates. Local pets follow with the shared foothold physics, choose nearby
   drops using the legacy pet AI cadence, and send the v83 `PET_LOOT` request. Pet-chat packets
@@ -803,7 +801,8 @@ and sends the matching selection index.
   upstream `CharStats` and `Mob` formulas, including equipped stats, weapon mastery, Maple
   Warrior, Angel's Blessing, and Berserk. Upstream treats `mad` as the magic-defense selector
   without folding MATK into the weapon-derived range; it parses `prop` and `elemAttr` but does
-  not apply either to mob damage.
+  not apply either to mob damage. Mob touch damage also rolls mob ACC against player EVA and
+  the level difference before applying defense, so contact attacks can miss.
   Other active skills emit `USE_SKILL`; teleport uses the learned NX range with foothold
   collision checks, and Flash Jump applies its aerial movement locally. Fourth-job master
   levels, skill prerequisites,
@@ -814,9 +813,9 @@ and sends the matching selection index.
   basic ranged attacks retain their equipped-ammo projectiles. Incoming v83 character
   attack broadcasts are decoded with bounded damage lines. They
   play weapon-appropriate NX attack stances for remote characters and show normal and critical
-  damage plus the legacy normal miss glyph above affected mobs. Attack skills play their
-  skill-specific Use sound, which takes precedence over a reused regular-action weapon sound;
-  weapon sounds remain local-action sounds and are not replayed for remote broadcasts. Each
+  damage plus the legacy normal miss glyph above affected mobs. Local attack skills play their
+  authored Use sounds; those using the regular weapon action also play the weapon sound. Weapon
+  sounds are not replayed for remote broadcasts. Each
   hit's damage, reaction, mob sound, hit effect, and skill Hit sound
   follow its authored hit frame and projectile travel. Server mob death/removal presentation
   applies immediately when `KILL_MOB` arrives. Damage lines
