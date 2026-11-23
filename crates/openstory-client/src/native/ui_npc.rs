@@ -929,6 +929,28 @@ fn render_npc_dialogue(
             body_style.size,
             inline_icons,
         );
+        if selections.len() > visible_rows {
+            let selection_start_y = NpcDialogueLayout::TEXT_Y
+                + text_view_height as i32
+                + NpcDialogueLayout::SELECTION_TEXT_GAP;
+            let selection_scroll_height = (NpcDialogueLayout::SELECTION_BOTTOM_Y
+                - selection_start_y)
+                .max(51) as usize;
+            let selection_scroll_y =
+                NpcDialogueLayout::SELECTION_BOTTOM_Y - selection_scroll_height as i32;
+            ui_foundation::draw_scrollbar_for_items(
+                &mut pixels,
+                width,
+                height,
+                ui_archive,
+                NpcDialogueLayout::SCROLL_X as i32,
+                selection_scroll_y,
+                selection_scroll_height,
+                first_visible_selection,
+                selections.len(),
+                visible_rows,
+            );
+        }
         let mut row_offset = 0;
         for (index, (selection, label)) in selections
             .iter()

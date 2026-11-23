@@ -227,7 +227,7 @@ pub(super) fn load_search_catalog(
                 let title = direct_title
                     .clone()
                     .or_else(|| super::map_string_name(strings, map_id))
-                    .unwrap_or_else(|| format!("Map {map_id}"));
+                    .unwrap_or_else(|| "Unknown map".to_owned());
                 let description = direct_description
                     .clone()
                     .or_else(|| {
@@ -506,11 +506,7 @@ pub(super) fn render(
                         .first()
                         .and_then(|id| super::map_string_name(strings, *id))
                 })
-                .unwrap_or_else(|| {
-                    map_ids
-                        .first()
-                        .map_or_else(|| "Map".to_owned(), |id| format!("Map {id}"))
-                });
+                .unwrap_or_else(|| "Unknown map".to_owned());
             let path_node = optional_child(&entry, "path")?;
             markers.push(MarkerHit {
                 bounds: HitRect {
@@ -606,10 +602,7 @@ pub(super) fn render(
         }
     }
 
-    if let Some(marker) = hovered_marker
-        .and_then(|index| markers.get(index))
-        .or(selected_marker)
-    {
+    if let Some(marker) = hovered_marker.and_then(|index| markers.get(index)) {
         let tooltip_in_search_panel = search_panel_in_side && normalized_query.is_empty();
         let tooltip_width = if tooltip_in_search_panel {
             search_width.saturating_sub(18)
@@ -630,14 +623,14 @@ pub(super) fn render(
         let description = marker.description.chars().collect::<Vec<_>>();
         let description_line_one = description.iter().take(18).collect::<String>();
         let description_line_two = description.iter().skip(18).take(18).collect::<String>();
-        let selected_map_id =
-            selected_route_map_id.filter(|map_id| marker.map_ids.contains(map_id));
-        let tooltip_line_one = if selected_map_id.is_some() {
+        let is_route_target =
+            selected_route_map_id.is_some_and(|map_id| marker.map_ids.contains(&map_id));
+        let tooltip_line_one = if is_route_target {
             "Route selected"
         } else {
             description_line_one.as_str()
         };
-        let tooltip_line_two = if selected_map_id.is_some() {
+        let tooltip_line_two = if is_route_target {
             description_line_one.as_str()
         } else {
             description_line_two.as_str()
@@ -657,7 +650,7 @@ pub(super) fn render(
             width,
             height,
             font,
-            &format!("Map {}", selected_map_id.unwrap_or(marker.map_id)),
+            tooltip_line_one,
             tooltip_x + 5.0,
             tooltip_y + 19.0,
             [255, 255, 255],
@@ -667,19 +660,9 @@ pub(super) fn render(
             width,
             height,
             font,
-            tooltip_line_one,
-            tooltip_x + 5.0,
-            tooltip_y + 34.0,
-            [255, 255, 255],
-        );
-        draw_shadowed_text_color(
-            &mut pixels,
-            width,
-            height,
-            font,
             tooltip_line_two,
             tooltip_x + 5.0,
-            tooltip_y + 48.0,
+            tooltip_y + 33.0,
             [255, 255, 255],
         );
     }

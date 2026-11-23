@@ -411,6 +411,7 @@ impl ClientApp {
                 self.cash_shop_hit_regions.clear();
                 self.cash_shop_hovered_item = None;
                 self.inventory_tooltip_texture = None;
+                self.inventory_comparison_tooltip_texture = None;
                 self.show_status = false;
                 self.status_auto_confirmation = false;
                 self.status_waiting_for_stats = false;
@@ -1657,5 +1658,6 @@ impl ClientApp {
                 break;
             }
         }
+        self.flush_inventory_ui_refresh();
     }
 }

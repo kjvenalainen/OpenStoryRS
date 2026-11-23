@@ -478,7 +478,7 @@ fn status_bar_job_name(job: u16) -> String {
 
 const BUFF_LIST_HEIGHT: u32 = 32;
 
-fn render_buff_list_pixels(
+pub(super) fn render_buff_list_pixels(
     icons: &[(u32, u32, Arc<[u8]>, Option<Duration>, i32, Duration)],
 ) -> Vec<u8> {
     const WIDTH: usize = 1024;
@@ -529,7 +529,7 @@ fn render_buff_list_pixels(
             0.0
         };
         let cover_height = (30.0 * cover).round() as usize;
-        let cover_alpha = (153.0 * cover).round() as u16;
+        let cover_alpha = (204.0 * cover).round() as u16;
         for y in (30 - cover_height)..30 {
             for local_x in 1..31 {
                 let offset = (y * WIDTH + x + local_x) * 4;

@@ -185,6 +185,7 @@ pub(super) fn render(
     player_inventory: Option<&InventorySnapshot>,
     icon_cache: &mut HashMap<i32, Option<(u32, u32, Arc<[u8]>)>>,
     item_name_cache: &mut HashMap<i32, Option<String>>,
+    equipped_label: bool,
 ) -> Tooltip {
     let equipment = item.item_id / 1_000_000 == 1;
     let info = inventory_item_info_node(item_archive, character_archive, item.item_id);
@@ -198,10 +199,14 @@ pub(super) fn render(
         .map(|description| formatted_description(&description))
         .unwrap_or_default();
     let icon = inventory_item_icon(item.item_id, item_archive, character_archive, icon_cache);
-    let gender = match (equipment, item.item_id / 1_000 % 10) {
-        (true, 0) => Some("Male only"),
-        (true, 1) => Some("Female only"),
-        _ => None,
+    let gender = if equipped_label {
+        Some("EQUIPPED")
+    } else {
+        match (equipment, item.item_id / 1_000 % 10) {
+            (true, 0) => Some("Male only"),
+            (true, 1) => Some("Female only"),
+            _ => None,
+        }
     };
     let restriction = match (untradable, gender) {
         (true, Some(gender)) => Some(format!("Untradable  ·  {gender}")),
@@ -727,6 +732,80 @@ pub(super) fn position(cursor: Point, width: u32, height: u32) -> Point {
 
 pub(super) fn draw(texture: &GpuTexture, cursor: Point) -> SpriteDraw<'_> {
     let point = position(cursor, texture.width(), texture.height());
+    draw_at(texture, point)
+}
+
+pub(super) fn comparison_positions(
+    cursor: Point,
+    primary_width: u32,
+    primary_height: u32,
+    comparison_width: u32,
+    comparison_height: u32,
+) -> (Point, Point) {
+    const GAP: f32 = 10.0;
+    let width = ui_foundation::LOGICAL_WIDTH;
+    let height = ui_foundation::LOGICAL_HEIGHT;
+    let tallest = primary_height.max(comparison_height);
+    let primary = position(cursor, primary_width, tallest);
+    let fits_with_overflow = |point: Point| {
+        let left_overflow = (-point.x).max(0.0);
+        let top_overflow = (-point.y).max(0.0);
+        let right_overflow = (point.x + comparison_width as f32 - width).max(0.0);
+        let bottom_overflow = (point.y + comparison_height as f32 - height).max(0.0);
+        left_overflow <= comparison_width as f32 * 0.5
+            && right_overflow <= comparison_width as f32 * 0.5
+            && top_overflow <= comparison_height as f32 * 0.5
+            && bottom_overflow <= comparison_height as f32 * 0.5
+    };
+    let horizontal_center = (primary.x + (primary_width as f32 - comparison_width as f32) / 2.0)
+        .clamp(0.0, width - comparison_width as f32);
+    let candidates = [
+        Point {
+            x: primary.x + primary_width as f32 + GAP,
+            y: primary.y,
+        },
+        Point {
+            x: horizontal_center,
+            y: primary.y + primary_height as f32 + GAP,
+        },
+        Point {
+            x: primary.x - GAP - comparison_width as f32,
+            y: primary.y,
+        },
+        Point {
+            x: horizontal_center,
+            y: primary.y - GAP - comparison_height as f32,
+        },
+    ];
+    let comparison = candidates
+        .into_iter()
+        .find(|point| fits_with_overflow(*point))
+        .unwrap_or(Point {
+            x: candidates[2].x.clamp(0.0, width - comparison_width as f32),
+            y: primary.y,
+        });
+    (primary, comparison)
+}
+
+pub(super) fn draw_comparison(
+    primary: &GpuTexture,
+    comparison: &GpuTexture,
+    cursor: Point,
+) -> [SpriteDraw<'_>; 2] {
+    let (primary_point, comparison_point) = comparison_positions(
+        cursor,
+        primary.width(),
+        primary.height(),
+        comparison.width(),
+        comparison.height(),
+    );
+    [
+        draw_at(primary, primary_point),
+        draw_at(comparison, comparison_point),
+    ]
+}
+
+fn draw_at(texture: &GpuTexture, point: Point) -> SpriteDraw<'_> {
     SpriteDraw {
         texture,
         x: point.x,
@@ -741,10 +820,36 @@ pub(super) fn draw(texture: &GpuTexture, cursor: Point) -> SpriteDraw<'_> {
     }
 }
 
+fn update_tooltip_texture(
+    renderer: &GpuRenderer,
+    current: Option<&GpuTexture>,
+    tooltip: &Tooltip,
+) -> Result<Option<GpuTexture>, String> {
+    match current {
+        Some(texture) if texture.width() == tooltip.width && texture.height() == tooltip.height => {
+            renderer
+                .update_bgra(texture, &tooltip.pixels)
+                .map(|()| None)
+        }
+        _ => renderer
+            .upload_bgra(tooltip.width, tooltip.height, &tooltip.pixels)
+            .map(Some)
+    }
+}
+
 impl ClientApp {
     pub(super) fn update_item_tooltip(&mut self, item: Option<InventoryItem>) {
+        self.update_item_tooltip_with_comparison(item, None);
+    }
+
+    pub(super) fn update_item_tooltip_with_comparison(
+        &mut self,
+        item: Option<InventoryItem>,
+        comparison: Option<InventoryItem>,
+    ) {
         let Some(item) = item else {
             self.inventory_tooltip_texture = None;
+            self.inventory_comparison_tooltip_texture = None;
             return;
         };
         let Some(renderer) = self.renderer.as_ref() else {
@@ -762,25 +867,45 @@ impl ClientApp {
             self.inventory.as_ref(),
             &mut self.inventory_icon_cache,
             &mut self.item_name_cache,
+            false,
         );
-        let result = match self.inventory_tooltip_texture.as_ref() {
-            Some(texture)
-                if texture.width() == tooltip.width && texture.height() == tooltip.height =>
-            {
-                renderer
-                    .update_bgra(texture, &tooltip.pixels)
-                    .map(|()| None)
-            }
-            _ => renderer
-                .upload_bgra(tooltip.width, tooltip.height, &tooltip.pixels)
-                .map(Some),
-        };
-        match result {
+        match update_tooltip_texture(renderer, self.inventory_tooltip_texture.as_ref(), &tooltip) {
             Ok(Some(texture)) => self.inventory_tooltip_texture = Some(texture),
             Ok(None) => {}
             Err(error) => {
                 self.inventory_tooltip_texture = None;
                 eprintln!("OpenStoryRS: could not update item tooltip: {error}");
+            }
+        }
+
+        let Some(comparison) = comparison else {
+            self.inventory_comparison_tooltip_texture = None;
+            return;
+        };
+        let comparison_tooltip = render(
+            &self.font,
+            &comparison,
+            &self.item_archive,
+            &self.character_archive,
+            &self.string_archive,
+            self.active_character
+                .as_ref()
+                .map(|character| &character.stats),
+            self.inventory.as_ref(),
+            &mut self.inventory_icon_cache,
+            &mut self.item_name_cache,
+            true,
+        );
+        match update_tooltip_texture(
+            renderer,
+            self.inventory_comparison_tooltip_texture.as_ref(),
+            &comparison_tooltip,
+        ) {
+            Ok(Some(texture)) => self.inventory_comparison_tooltip_texture = Some(texture),
+            Ok(None) => {}
+            Err(error) => {
+                self.inventory_comparison_tooltip_texture = None;
+                eprintln!("OpenStoryRS: could not update equipped item tooltip: {error}");
             }
         }
     }

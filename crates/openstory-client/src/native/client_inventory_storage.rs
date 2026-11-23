@@ -1,6 +1,27 @@
 use super::*;
 
 impl ClientApp {
+    pub(super) fn flush_inventory_ui_refresh(&mut self) {
+        if !std::mem::take(&mut self.inventory_ui_refresh_pending) {
+            return;
+        }
+        if std::mem::take(&mut self.equipped_look_refresh_pending) {
+            self.sync_equipped_look();
+        }
+        self.refresh_inventory_texture();
+        self.refresh_storage_texture();
+        self.refresh_npc_shop_texture();
+        self.refresh_inventory_drop_prompt_texture();
+        self.refresh_key_config_texture();
+        self.refresh_npc_quest_marks();
+        if std::mem::take(&mut self.inventory_drag_refresh_pending) {
+            self.refresh_inventory_drag_texture();
+        }
+        if let Some(window) = self.window.as_ref() {
+            window.request_redraw();
+        }
+    }
+
     fn inventory_pending_move_for_display(
         &self,
     ) -> Option<(openstory_protocol::InventoryType, u16, u16)> {
@@ -118,22 +139,18 @@ impl ClientApp {
         }
         let empty_inventory = openstory_protocol::InventorySnapshot::default();
         let inventory = self.inventory.as_ref().unwrap_or(&empty_inventory);
-        let active_scroll_item_id = self
-            .inventory_drag_source
-            .and_then(|(inventory_type, slot, _)| {
-                if inventory_type != openstory_protocol::InventoryType::Use {
-                    return None;
-                }
-                self.inventory
-                    .as_ref()?
-                    .items
-                    .iter()
-                    .find(|item| {
-                        item.inventory_type == inventory_type && item.slot == slot
-                    })
-                    .map(|item| item.item_id)
-                    .filter(|item_id| item_id / 10_000 == 204)
-            });
+        let active_scroll_item_id =
+            self.inventory_drag_source
+                .and_then(|(inventory_type, slot, _)| {
+                    if inventory_type != openstory_protocol::InventoryType::Use {
+                        return None;
+                    }
+                    let item = inventory
+                        .items
+                        .iter()
+                        .find(|item| item.inventory_type == inventory_type && item.slot == slot)?;
+                    (item.item_id / 10_000 == 204).then_some(item.item_id)
+                });
         let pixels = ui_equipment::render(
             &self.font,
             inventory,
@@ -234,6 +251,23 @@ impl ClientApp {
             self.refresh_npc_shop_tooltip_texture();
             return;
         }
+        let comparison = if self.equipment_hover.is_none()
+            && self.show_inventory
+            && self.inventory_tab == openstory_protocol::InventoryType::Equip
+        {
+            self.inventory_hover_slot.and_then(|slot| {
+                let inventory = self.inventory.as_ref()?;
+                let item = inventory_display_item(
+                    inventory,
+                    self.inventory_tab,
+                    slot,
+                    self.inventory_pending_move_for_display(),
+                )?;
+                equipped_comparison_item(item, inventory)
+            })
+        } else {
+            None
+        };
         let item = if let Some(hover) = self
             .equipment_hover
             .filter(|_| self.show_equipment_inventory)
@@ -266,7 +300,7 @@ impl ClientApp {
                     })
                 })
         };
-        self.update_item_tooltip(item);
+        self.update_item_tooltip_with_comparison(item, comparison);
     }
 
     pub(super) fn update_inventory_hover(&mut self) -> bool {
@@ -277,6 +311,10 @@ impl ClientApp {
         let cursor = self
             .cursor
             .map(|cursor| self.dialog_window_input_cursor(cursor));
+        let inventory_is_topmost = self.cursor.is_some_and(|cursor| {
+            self.show_inventory
+                && self.topmost_dialog_window_at(cursor) == Some(DialogWindow::Inventory)
+        });
         let equipment_hover = if equipment_inventory_is_topmost {
             cursor.and_then(|cursor| {
                 let local_x = cursor.x - EQUIPMENT_INVENTORY_PANEL_X;
@@ -293,7 +331,7 @@ impl ClientApp {
         } else {
             None
         };
-        let hovered_slot = if self.show_inventory
+        let hovered_slot = if inventory_is_topmost
             && !equipment_inventory_is_topmost
             && self.inventory_drag_source.is_none()
         {

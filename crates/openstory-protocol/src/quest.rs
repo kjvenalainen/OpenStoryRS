@@ -44,9 +44,19 @@ pub enum QuestUpdate {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum StatusInfoUpdate {
-    Item { item_id: i32, quantity: i32 },
-    Meso { gain: i32 },
-    Experience { white: bool, gain: i32, bonus: i32 },
+    Item {
+        item_id: i32,
+        quantity: i32,
+    },
+    Meso {
+        gain: i32,
+    },
+    Experience {
+        white: bool,
+        gain: i32,
+        in_chat: bool,
+        bonus: i32,
+    },
     InfoText(String),
 }
 
@@ -180,10 +190,15 @@ pub fn parse_status_info_update(bytes: &[u8]) -> Result<Option<StatusInfoUpdate>
         3 => {
             let white = packet.read_bool()?;
             let gain = packet.read_i32()?;
-            packet.read_bool()?;
+            let in_chat = packet.read_bool()?;
             let bonus = packet.read_i32()?;
             packet.skip(19)?;
-            Ok(Some(StatusInfoUpdate::Experience { white, gain, bonus }))
+            Ok(Some(StatusInfoUpdate::Experience {
+                white,
+                gain,
+                in_chat,
+                bonus,
+            }))
         }
         5 => {
             let gain = packet.read_i32()?;

@@ -1122,6 +1122,7 @@ pub(super) fn render_preview(
                 Some(&preview_inventory),
                 &mut icon_cache,
                 &mut name_cache,
+                false,
             );
             composite_scaled(
                 &mut scene.pixels,

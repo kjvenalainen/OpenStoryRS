@@ -57,6 +57,7 @@ impl ClientApp {
         let input_settings = InputSettings::load();
         let gameplay_settings = GameplaySettings::load();
         let social_settings = SocialSettings::load();
+        let pet_item_filter = ui_pet_item_filter::State::load();
         let saved_quickslot_keys = load_quickslot_keys();
         let quickslot_keys_customized = saved_quickslot_keys.is_some();
         let mut dialog_window_offsets = DialogWindow::PERSISTED
@@ -176,7 +177,9 @@ impl ClientApp {
             inventory_texture: None,
             inventory_drag_texture: None,
             equipment_inventory_texture: None,
+            pet_item_filter_texture: None,
             inventory_tooltip_texture: None,
+            inventory_comparison_tooltip_texture: None,
             npc_shop_texture: None,
             npc_shop: None,
             storage_texture: None,
@@ -243,6 +246,7 @@ impl ClientApp {
                 color: [255, 255, 0],
             }]),
             chat_input: String::new(),
+            chat_key_text_for_ime_dedup: None,
             chat_scroll: 0,
             chat_open: true,
             chat_input_focused: false,
@@ -292,6 +296,7 @@ impl ClientApp {
             show_inventory: false,
             show_equipment_inventory: false,
             equipment_tab: EquipmentTab::Equip,
+            pet_item_filter,
             show_settings: false,
             show_status: false,
             show_status_detail: false,
@@ -362,6 +367,9 @@ impl ClientApp {
             last_inventory_equip_click: None,
             inventory_drag_source: None,
             inventory_pending_move: None,
+            inventory_ui_refresh_pending: false,
+            inventory_drag_refresh_pending: false,
+            equipped_look_refresh_pending: false,
             pending_scroll_slot: None,
             inventory_drop_prompt: None,
             death_notice: false,
@@ -802,8 +810,17 @@ impl ClientApp {
         scene.advance_projectiles(frame.updates);
         scene.advance_summons(frame.updates);
         scene.advance_dragons(frame.updates);
-        let pet_packets =
-            scene.advance_pets(frame.updates, local_character_id, self.inventory.as_ref());
+        let player_level = self
+            .active_character
+            .as_ref()
+            .map_or(1, |character| character.stats.level);
+        let pet_filter = self.pet_item_filter.loot_snapshot(player_level);
+        let pet_packets = scene.advance_pets(
+            frame.updates,
+            local_character_id,
+            self.inventory.as_ref(),
+            &pet_filter,
+        );
         scene.advance_character_effects(frame.updates);
         scene.advance_screen_effect(frame.updates);
         let mob_packets = scene.advance_mobs(frame.updates);
@@ -1883,6 +1900,12 @@ impl ClientApp {
                 }
             }
         }
+        // Dark Sight ends when the character attacks. Clear it locally now so
+        // rendering and touch protection match the action while the server's
+        // cancellation packet is still handled normally when it arrives.
+        if self.active_buffs.cancel_masks(0, STATUS_DARKSIGHT) > 0 {
+            self.refresh_map_hud();
+        }
         self.schedule_mob_hit_sounds(&mob_hit_sound_events);
         if skill_id > 0 {
             self.schedule_skill_hit_sounds(skill_id, &skill_hit_sound_events);
@@ -2020,6 +2043,12 @@ impl ClientApp {
 
     pub(super) fn open_inventory_tab(&mut self, tab: openstory_protocol::InventoryType) {
         if self.show_inventory && self.inventory_tab == tab {
+            if self.npc_dialogue.is_some()
+                && self.raised_dialog_windows.first() != Some(&DialogWindow::Inventory)
+            {
+                self.raise_dialog_window(DialogWindow::Inventory);
+                return;
+            }
             self.show_inventory = false;
             self.inventory_drag_source = None;
             self.inventory_hover_slot = None;
@@ -2042,6 +2071,8 @@ impl ClientApp {
         if self.show_equipment_inventory {
             self.raise_dialog_window(DialogWindow::EquipmentInventory);
             self.refresh_equipment_inventory_texture();
+        } else if self.pet_item_filter.open {
+            self.close_pet_item_filter();
         }
         self.update_inventory_hover();
         self.refresh_inventory_tooltip_texture();

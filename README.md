@@ -425,6 +425,15 @@ packets display timed speech bubbles above the correct pet, while pet
 command packets play the NX success/failure interaction art, legacy alert/jump fallback, and
 matching pet sound category. `PET_EXCEPTION_LIST` packets consume the pet serial and excluded
 item IDs and report the server's exclusion count in yellow chat.
+Equip the **Item Ignore Pendant**, then click its slot in the Equipment Inventory's **Pet** tab to
+open the client Exception List beside it. Registered item IDs are skipped by local pet pickup;
+type an item name and choose **Register** to add its closest match. `*` matches any sequence of
+characters in an item name and registers all matching items, or drag an item from inventory into
+the list. Select an entry and choose **Delete** to remove it. **Meso** separately toggles meso
+pickup, and **Low Lvl** skips equipment whose NX required level is below the current character
+level. Red toggle buttons mean the filter is on; green means those pickups are allowed. These
+settings are saved in the per-user `pet-item-filter.ini` file and only limit client pet pickup
+requests; server pickup rules remain authoritative.
 Clicking an Equip item sends `MOVE_ITEM` to its legacy equipment slot, and clicking a worn
 item sends the unequip request to the first free Equip slot. Dragging between slots in the
 same bag sends a server-authoritative `MOVE_ITEM`;

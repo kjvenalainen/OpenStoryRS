@@ -17,7 +17,8 @@ fn render_chat_panel(
     let max_scroll = lines.len().saturating_sub(visible_rows);
     let first = if open { max_scroll.saturating_sub(scroll) } else { max_scroll };
     let panel_top = if open { 0 } else { history_height - 16 };
-    fill_dialogue_rect(&mut pixels, width, height, 0, panel_top, width, history_height - panel_top, [0, 0, 0, 165]);
+    let panel_opacity = if open { 220 } else { 165 };
+    fill_dialogue_rect(&mut pixels, width, height, 0, panel_top, width, history_height - panel_top, [0, 0, 0, panel_opacity]);
     if open {
         let fraction = if max_scroll == 0 { 1.0 } else { first as f32 / max_scroll as f32 };
         ui_foundation::draw_scrollbar(&mut pixels, width, height, ui_archive, width as i32 - 16, 0, history_height, fraction);

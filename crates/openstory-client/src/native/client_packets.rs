@@ -5,9 +5,8 @@ fn inventory_update_touches_slot(
     inventory_type: openstory_protocol::InventoryType,
     slot: u16,
 ) -> bool {
-    let touches_slot = |kind, position: i16| {
-        kind == inventory_type && position.unsigned_abs() == slot
-    };
+    let touches_slot =
+        |kind, position: i16| kind == inventory_type && position.unsigned_abs() == slot;
     update
         .modifications
         .iter()
@@ -32,6 +31,32 @@ fn inventory_update_touches_slot(
                 touches_slot(*inventory_type, *position)
                     || touches_slot(*inventory_type, *other_position)
             }
+        })
+}
+
+fn inventory_update_touches_type(
+    update: &openstory_protocol::InventoryUpdate,
+    inventory_type: openstory_protocol::InventoryType,
+) -> bool {
+    update
+        .modifications
+        .iter()
+        .any(|modification| match modification {
+            openstory_protocol::InventoryModification::Add(item) => {
+                item.inventory_type == inventory_type
+            }
+            openstory_protocol::InventoryModification::ChangeCount {
+                inventory_type: changed_type,
+                ..
+            }
+            | openstory_protocol::InventoryModification::Remove {
+                inventory_type: changed_type,
+                ..
+            }
+            | openstory_protocol::InventoryModification::Swap {
+                inventory_type: changed_type,
+                ..
+            } => *changed_type == inventory_type,
         })
 }
 
@@ -890,10 +915,17 @@ impl ClientApp {
                     Ok(Some(openstory_protocol::StatusInfoUpdate::Experience {
                         white,
                         gain,
+                        in_chat,
                         bonus,
                     })) => {
                         self.remember_experience_gain(gain, bonus);
                         let sign = if gain < 0 { "-" } else { "+" };
+                        if in_chat {
+                            self.push_chat_line(
+                                format!("Gained experience: {sign}{}", gain.unsigned_abs()),
+                                [128, 190, 255],
+                            );
+                        }
                         self.show_status_message(
                             format!("You have gained experience ({sign}{})", gain.unsigned_abs()),
                             if white {
@@ -1450,19 +1482,33 @@ impl ClientApp {
             openstory_protocol::OPCODE_MODIFY_INVENTORY => {
                 match openstory_protocol::parse_inventory_update(packet) {
                     Ok(update) => {
+                        let equipped_items_touched = [
+                            openstory_protocol::InventoryType::Equip,
+                            openstory_protocol::InventoryType::Equipped,
+                        ]
+                        .into_iter()
+                        .any(|inventory_type| {
+                            inventory_update_touches_type(&update, inventory_type)
+                        });
                         self.key_config_actions_dirty = true;
                         let inventory_drag_touched = self.inventory_drag_source.is_some_and(
                             |(inventory_type, source, _)| {
                                 inventory_update_touches_slot(&update, inventory_type, source)
                             },
                         );
-                        let inventory_drag_item_before = self.inventory_drag_source.and_then(
-                            |(inventory_type, source, _)| {
-                                self.inventory.as_ref()?.items.iter().find(|item| {
-                                    item.inventory_type == inventory_type && item.slot == source
-                                }).cloned()
-                            },
-                        );
+                        let inventory_drag_item_before =
+                            self.inventory_drag_source
+                                .and_then(|(inventory_type, source, _)| {
+                                    self.inventory
+                                        .as_ref()?
+                                        .items
+                                        .iter()
+                                        .find(|item| {
+                                            item.inventory_type == inventory_type
+                                                && item.slot == source
+                                        })
+                                        .cloned()
+                                });
                         if self.inventory_pending_move.is_some_and(
                             |(inventory_type, source, destination, _)| {
                                 inventory_update_touches_move(
@@ -1504,19 +1550,16 @@ impl ClientApp {
                                     self.inventory_drag_texture = None;
                                 }
                             }
-                            self.resolve_pending_storage_restores();
-                            self.sync_equipped_look();
-                            self.refresh_inventory_texture();
-                            self.refresh_storage_texture();
-                            self.refresh_npc_shop_texture();
-                            self.refresh_inventory_drop_prompt_texture();
-                            self.refresh_key_config_texture();
-                            self.refresh_npc_quest_marks();
+                            if !self.pending_storage_restores.is_empty() {
+                                self.resolve_pending_storage_restores();
+                            }
+                            self.equipped_look_refresh_pending |= equipped_items_touched;
+                            self.inventory_ui_refresh_pending = true;
                         } else {
                             eprintln!("OpenStory: received inventory update before field entry");
                         }
                         if refresh_inventory_drag_icon {
-                            self.refresh_inventory_drag_texture();
+                            self.inventory_drag_refresh_pending = true;
                         }
                     }
                     Err(error) => eprintln!("OpenStory: invalid inventory update: {error}"),

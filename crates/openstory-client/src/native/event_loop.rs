@@ -159,6 +159,9 @@ impl ApplicationHandler for ClientApp {
 
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::Focused(false) => {
+                self.gameplay_input = GameplayInput::default();
+            }
             WindowEvent::CursorLeft { .. } => {
                 self.cursor = None;
                 self.cursor_physical = None;
@@ -241,6 +244,7 @@ impl ApplicationHandler for ClientApp {
                     window.request_redraw();
                 }
                 if let Some(cursor) = self.cursor
+                    && self.topmost_dialog_window_at(cursor) == Some(DialogWindow::NpcDialogue)
                     && self.update_npc_dialogue_hover(self.dialog_window_input_cursor(cursor))
                     && let Some(window) = self.window.as_ref()
                 {
@@ -915,14 +919,18 @@ impl ApplicationHandler for ClientApp {
                     }
                     return;
                 }
-                if self.npc_shop.is_some() {
+                if self.npc_shop.is_some()
+                    && self.dialog_window_hit_test(DialogWindow::NpcShop, screen_cursor)
+                {
                     self.click_npc_shop(cursor);
                     if let Some(window) = self.window.as_ref() {
                         window.request_redraw();
                     }
                     return;
                 }
-                if self.storage.is_some() {
+                if self.storage.is_some()
+                    && self.dialog_window_hit_test(DialogWindow::Storage, screen_cursor)
+                {
                     self.click_storage(cursor);
                     if let Some(window) = self.window.as_ref() {
                         window.request_redraw();
@@ -938,8 +946,19 @@ impl ApplicationHandler for ClientApp {
                     }
                     return;
                 }
-                if self.npc_dialogue.is_some() {
+                if self.npc_dialogue.is_some()
+                    && self.dialog_window_hit_test(DialogWindow::NpcDialogue, screen_cursor)
+                {
                     self.click_npc_dialogue(cursor);
+                    return;
+                }
+                if self.pet_item_filter.open
+                    && self.dialog_window_hit_test(DialogWindow::PetItemFilter, screen_cursor)
+                    && self.click_pet_item_filter(cursor)
+                {
+                    if let Some(window) = self.window.as_ref() {
+                        window.request_redraw();
+                    }
                     return;
                 }
                 if self.show_equipment_inventory
@@ -964,6 +983,19 @@ impl ApplicationHandler for ClientApp {
                     return;
                 }
                 if self.topmost_dialog_window_at(screen_cursor).is_some() {
+                    return;
+                }
+                if self.npc_shop.is_some() || self.storage.is_some() {
+                    return;
+                }
+                if self.npc_dialogue.is_some() {
+                    if self.click_native_status_bar(cursor) {
+                        if let Some(window) = self.window.as_ref() {
+                            window.request_redraw();
+                        }
+                    } else if self.focused_dialog_window() == Some(DialogWindow::NpcDialogue) {
+                        self.fast_forward_npc_dialogue_text();
+                    }
                     return;
                 }
                 if self.current_field.is_some() {
@@ -1143,6 +1175,19 @@ impl ApplicationHandler for ClientApp {
                 let cursor = self
                     .cursor
                     .map(|cursor| self.dialog_window_input_cursor(cursor));
+                if self.pet_item_filter.open
+                    && self.cursor.is_some_and(|screen_cursor| {
+                        self.dialog_window_hit_test(DialogWindow::PetItemFilter, screen_cursor)
+                    })
+                {
+                    if let Some(cursor) = cursor {
+                        self.scroll_pet_item_filter(cursor, amount);
+                    }
+                    if let Some(window) = self.window.as_ref() {
+                        window.request_redraw();
+                    }
+                    return;
+                }
                 if self.current_field.is_some()
                     && self.chat_open
                     && self.cursor.is_some_and(|p| {
@@ -1394,37 +1439,47 @@ impl ApplicationHandler for ClientApp {
                     }
                     return;
                 }
-                let scroll_npc_choices = self.npc_dialogue.as_ref().is_some_and(|dialogue| {
-                    let visible_choices = dialogue
-                        .buttons
-                        .iter()
-                        .filter(|button| matches!(button.action, NpcDialogueAction::Select(_)))
-                        .collect::<Vec<_>>();
-                    dialogue.state.message_type == 4
-                        && dialogue.selections.len() > visible_choices.len()
-                        && self.cursor.is_some_and(|cursor| {
-                            rect_contains(dialogue.panel, cursor)
-                                && visible_choices
-                                    .iter()
-                                    .any(|button| rect_contains(button.rect, cursor))
-                        })
+                let npc_dialogue_is_topmost = self.cursor.is_some_and(|cursor| {
+                    self.topmost_dialog_window_at(cursor) == Some(DialogWindow::NpcDialogue)
                 });
+                let scroll_npc_choices = npc_dialogue_is_topmost
+                    && self.npc_dialogue.as_ref().is_some_and(|dialogue| {
+                        let visible_choices = dialogue
+                            .buttons
+                            .iter()
+                            .filter(|button| matches!(button.action, NpcDialogueAction::Select(_)))
+                            .collect::<Vec<_>>();
+                        dialogue.state.message_type == 4
+                            && dialogue.selections.len() > visible_choices.len()
+                            && self.cursor.is_some_and(|cursor| {
+                                rect_contains(dialogue.panel, cursor)
+                                    && visible_choices
+                                        .iter()
+                                        .any(|button| rect_contains(button.rect, cursor))
+                            })
+                    });
                 if scroll_npc_choices {
                     self.move_npc_dialogue_selection(if amount > 0.0 { -1 } else { 1 });
                     if let Some(window) = self.window.as_ref() {
                         window.request_redraw();
                     }
-                } else if self.npc_dialogue.as_ref().is_some_and(|dialogue| {
-                    dialogue.text_max_scroll > 0
-                        && self
-                            .cursor
-                            .is_some_and(|cursor| rect_contains(dialogue.panel, cursor))
-                }) {
+                } else if npc_dialogue_is_topmost
+                    && self.npc_dialogue.as_ref().is_some_and(|dialogue| {
+                        dialogue.text_max_scroll > 0
+                            && self
+                                .cursor
+                                .is_some_and(|cursor| rect_contains(dialogue.panel, cursor))
+                    })
+                {
                     self.scroll_npc_dialogue_text(if amount > 0.0 { -1 } else { 1 });
                     if let Some(window) = self.window.as_ref() {
                         window.request_redraw();
                     }
-                } else if self.npc_shop.is_some() {
+                } else if self.npc_shop.is_some()
+                    && self.cursor.is_some_and(|cursor| {
+                        self.dialog_window_hit_test(DialogWindow::NpcShop, cursor)
+                    })
+                {
                     if let Some(cursor) = cursor {
                         self.scroll_npc_shop(cursor, amount);
                     }
@@ -1432,6 +1487,9 @@ impl ApplicationHandler for ClientApp {
                         window.request_redraw();
                     }
                 } else if self.storage.is_some()
+                    && self.cursor.is_some_and(|cursor| {
+                        self.dialog_window_hit_test(DialogWindow::Storage, cursor)
+                    })
                     && cursor.is_some_and(|cursor| {
                         (182.0..645.0).contains(&cursor.x) && (191.0..391.0).contains(&cursor.y)
                     })
@@ -1456,7 +1514,10 @@ impl ApplicationHandler for ClientApp {
                             .contains(&cursor.x)
                             && (QUEST_LOG_PANEL_Y + QUEST_DETAIL_BODY_TOP as f32
                                 ..QUEST_LOG_PANEL_Y
-                                    + quest_detail_body_bottom(self.quest_log_tab) as f32)
+                                    + quest_detail_body_bottom(
+                                        self.quest_log_tab,
+                                        self.selected_quest_has_reward_choices(),
+                                    ) as f32)
                                 .contains(&cursor.y)
                     })
                 {
@@ -1654,7 +1715,10 @@ impl ApplicationHandler for ClientApp {
                 // gameplay controls before routing the event.
                 if let Key::Named(named) = &event.logical_key {
                     event.physical_key = match named {
+                        NamedKey::Enter => PhysicalKey::Code(KeyCode::Enter),
                         NamedKey::Escape => PhysicalKey::Code(KeyCode::Escape),
+                        NamedKey::Backspace => PhysicalKey::Code(KeyCode::Backspace),
+                        NamedKey::Tab => PhysicalKey::Code(KeyCode::Tab),
                         NamedKey::ArrowUp => PhysicalKey::Code(KeyCode::ArrowUp),
                         NamedKey::ArrowDown => PhysicalKey::Code(KeyCode::ArrowDown),
                         NamedKey::ArrowLeft => PhysicalKey::Code(KeyCode::ArrowLeft),
@@ -1859,6 +1923,7 @@ impl ApplicationHandler for ClientApp {
                 // cannot insert ordinary key text twice.
                 self.login_key_text_for_ime_dedup = None;
                 self.character_creation_key_text_for_ime_dedup = None;
+                self.chat_key_text_for_ime_dedup = None;
                 self.skill_macro_editor.key_text_for_ime_dedup = None;
                 if let Some(input) = self.family_ui.input.as_mut() {
                     input.key_text_for_ime_dedup = None;
@@ -1906,6 +1971,18 @@ impl ApplicationHandler for ClientApp {
                 }
                 if self.skill_macro_editor.open {
                     self.handle_skill_macro_editor_key(
+                        event.physical_key,
+                        event.state,
+                        event.repeat,
+                        event.text.as_deref(),
+                    );
+                    if let Some(window) = self.window.as_ref() {
+                        window.request_redraw();
+                    }
+                    return;
+                }
+                if self.pet_item_filter.open {
+                    self.handle_pet_item_filter_key(
                         event.physical_key,
                         event.state,
                         event.repeat,
@@ -1975,71 +2052,90 @@ impl ApplicationHandler for ClientApp {
                     }
                     return;
                 }
-                // NPC dialogue is a modal interaction. Handle its keys before
-                // inventory/storage/settings shortcuts so Space cannot be
-                // swallowed by another gameplay UI or interpreted as jump.
+                // Keep NPC dialogue keys ahead of gameplay input while allowing
+                // the item inventory to be opened and focused above the dialogue.
                 if let Some(message_type) = self
                     .npc_dialogue
                     .as_ref()
                     .map(|dialogue| dialogue.state.message_type)
+                    .filter(|_| {
+                        matches!(
+                            self.focused_dialog_window(),
+                            Some(DialogWindow::NpcDialogue | DialogWindow::Inventory)
+                        )
+                    })
                 {
                     if event.state == ElementState::Pressed {
-                        let is_space =
-                            matches!(event.physical_key, PhysicalKey::Code(KeyCode::Space))
-                                || matches!(&event.logical_key, Key::Named(NamedKey::Space))
-                                || event.text.as_deref() == Some(" ");
-                        let advance = is_space
-                            || (message_type != 2 && self.is_npc_chat_key(event.physical_key));
-                        if advance && !event.repeat {
-                            // Let Space skip the prompt's typewriter reveal even
-                            // for text-entry dialogs. Once the prompt is visible,
-                            // Space remains available as an ordinary input character.
-                            let revealed = self.fast_forward_npc_dialogue_text();
-                            if !revealed && message_type != 2 {
-                                self.advance_npc_dialogue();
+                        let inventory_has_focus = self.show_inventory
+                            && self.raised_dialog_windows.first() == Some(&DialogWindow::Inventory);
+                        if event.physical_key == PhysicalKey::Code(KeyCode::KeyI)
+                            && !event.repeat
+                            && !matches!(message_type, 2 | 3)
+                        {
+                            self.open_inventory_tab(self.inventory_tab);
+                        } else if event.physical_key == PhysicalKey::Code(KeyCode::Escape)
+                            && !event.repeat
+                        {
+                            if inventory_has_focus {
+                                self.open_inventory_tab(self.inventory_tab);
+                            } else {
+                                self.cancel_npc_dialogue();
                             }
-                        } else {
-                            match event.physical_key {
-                                PhysicalKey::Code(KeyCode::Escape) if !event.repeat => {
-                                    self.cancel_npc_dialogue();
-                                }
-                                PhysicalKey::Code(KeyCode::Enter | KeyCode::NumpadEnter)
-                                    if !event.repeat =>
-                                {
+                        } else if !inventory_has_focus {
+                            let is_space =
+                                matches!(event.physical_key, PhysicalKey::Code(KeyCode::Space))
+                                    || matches!(&event.logical_key, Key::Named(NamedKey::Space))
+                                    || event.text.as_deref() == Some(" ");
+                            let advance = is_space
+                                || (message_type != 2 && self.is_npc_chat_key(event.physical_key));
+                            if advance && !event.repeat {
+                                // Let Space skip the prompt's typewriter reveal even
+                                // for text-entry dialogs. Once the prompt is visible,
+                                // Space remains available as an ordinary input character.
+                                let revealed = self.fast_forward_npc_dialogue_text();
+                                if !revealed && message_type != 2 {
                                     self.advance_npc_dialogue();
                                 }
-                                PhysicalKey::Code(KeyCode::Backspace)
-                                    if matches!(message_type, 2 | 3) =>
-                                {
-                                    if let Some(dialogue) = self.npc_dialogue.as_mut() {
-                                        if message_type == 3 && dialogue.number_input_selected {
-                                            dialogue.input.clear();
-                                        } else {
-                                            dialogue.input.pop();
-                                        }
-                                        dialogue.number_input_selected = false;
+                            } else {
+                                match event.physical_key {
+                                    PhysicalKey::Code(KeyCode::Enter | KeyCode::NumpadEnter)
+                                        if !event.repeat =>
+                                    {
+                                        self.advance_npc_dialogue();
                                     }
-                                    self.rebuild_npc_dialogue();
+                                    PhysicalKey::Code(KeyCode::Backspace)
+                                        if matches!(message_type, 2 | 3) =>
+                                    {
+                                        if let Some(dialogue) = self.npc_dialogue.as_mut() {
+                                            if message_type == 3 && dialogue.number_input_selected {
+                                                dialogue.input.clear();
+                                            } else {
+                                                dialogue.input.pop();
+                                            }
+                                            dialogue.number_input_selected = false;
+                                        }
+                                        self.rebuild_npc_dialogue();
+                                    }
+                                    PhysicalKey::Code(KeyCode::ArrowUp | KeyCode::ArrowDown)
+                                        if message_type == 4 && !event.repeat =>
+                                    {
+                                        let direction = match event.physical_key {
+                                            PhysicalKey::Code(KeyCode::ArrowUp) => -1,
+                                            _ => 1,
+                                        };
+                                        self.move_npc_dialogue_selection(direction);
+                                    }
+                                    PhysicalKey::Code(KeyCode::PageUp | KeyCode::PageDown)
+                                        if !event.repeat =>
+                                    {
+                                        let direction = match event.physical_key {
+                                            PhysicalKey::Code(KeyCode::PageUp) => -1,
+                                            _ => 1,
+                                        };
+                                        self.scroll_npc_dialogue_text(direction * 5);
+                                    }
+                                    _ => {}
                                 }
-                                PhysicalKey::Code(KeyCode::ArrowUp | KeyCode::ArrowDown)
-                                    if message_type == 4 && !event.repeat =>
-                                {
-                                    let direction = match event.physical_key {
-                                        PhysicalKey::Code(KeyCode::ArrowUp) => -1,
-                                        _ => 1,
-                                    };
-                                    self.move_npc_dialogue_selection(direction);
-                                }
-                                PhysicalKey::Code(KeyCode::PageUp | KeyCode::PageDown)
-                                    if !event.repeat =>
-                                {
-                                    let direction = match event.physical_key {
-                                        PhysicalKey::Code(KeyCode::PageUp) => -1,
-                                        _ => 1,
-                                    };
-                                    self.scroll_npc_dialogue_text(direction * 5);
-                                }
-                                _ => {}
                             }
                         }
                     }
@@ -2344,14 +2440,18 @@ impl ApplicationHandler for ClientApp {
                     }
                     return;
                 }
-                if self.npc_shop.is_some() {
+                if self.npc_shop.is_some()
+                    && self.focused_dialog_window() == Some(DialogWindow::NpcShop)
+                {
                     self.key_npc_shop(&event);
                     if let Some(window) = self.window.as_ref() {
                         window.request_redraw();
                     }
                     return;
                 }
-                if self.storage.is_some() {
+                if self.storage.is_some()
+                    && self.focused_dialog_window() == Some(DialogWindow::Storage)
+                {
                     if event.state == ElementState::Pressed && !event.repeat {
                         match event.physical_key {
                             PhysicalKey::Code(KeyCode::Escape) => self.close_storage(),
@@ -2563,61 +2663,87 @@ impl ApplicationHandler for ClientApp {
                     && self.npc_dialogue.is_none()
                     && self.cash_shop.is_none()
                 {
-                    if event.state == ElementState::Pressed && !event.repeat {
-                        match event.physical_key {
-                            PhysicalKey::Code(KeyCode::Escape) => {
-                                self.chat_open = false;
-                                self.chat_input_focused = false;
-                                self.cash_item_compose = None;
+                    if event.state == ElementState::Pressed {
+                        if let Some(text) = event
+                            .text
+                            .as_deref()
+                            .filter(|text| text.chars().any(|character| !character.is_control()))
+                        {
+                            let max_chars = self
+                                .cash_item_compose
+                                .as_ref()
+                                .map_or(MAX_CHAT_MESSAGE_CHARS, CashItemCompose::input_max_chars);
+                            let mut inserted = false;
+                            for character in text.chars() {
+                                if !character.is_control()
+                                    && self.chat_input.chars().count() < max_chars
+                                {
+                                    self.chat_input.push(character);
+                                    inserted = true;
+                                }
+                            }
+                            if inserted {
+                                self.chat_key_text_for_ime_dedup = Some(text.to_owned());
                                 self.refresh_chat_texture();
                             }
-                            PhysicalKey::Code(KeyCode::Tab) => {
-                                let whisper = self.cash_item_compose.as_mut().and_then(|compose| {
-                                    if compose.kind.has_whisper_toggle(compose.item_id) {
-                                        compose.whisper = !compose.whisper;
-                                        Some(compose.whisper)
-                                    } else {
-                                        None
+                        }
+                        if !event.repeat {
+                            match event.physical_key {
+                                PhysicalKey::Code(KeyCode::Escape) => {
+                                    self.chat_open = false;
+                                    self.chat_input_focused = false;
+                                    self.cash_item_compose = None;
+                                    self.refresh_chat_texture();
+                                }
+                                PhysicalKey::Code(KeyCode::Tab) => {
+                                    let whisper =
+                                        self.cash_item_compose.as_mut().and_then(|compose| {
+                                            if compose.kind.has_whisper_toggle(compose.item_id) {
+                                                compose.whisper = !compose.whisper;
+                                                Some(compose.whisper)
+                                            } else {
+                                                None
+                                            }
+                                        });
+                                    if let Some(enabled) = whisper {
+                                        self.push_chat_line(
+                                            format!(
+                                                "[Megaphone] Whisper icon {}.",
+                                                if enabled { "enabled" } else { "disabled" }
+                                            ),
+                                            [255, 222, 112],
+                                        );
+                                    } else if self.cash_item_compose.is_none() {
+                                        self.chat_target = self.chat_target.next();
                                     }
-                                });
-                                if let Some(enabled) = whisper {
-                                    self.push_chat_line(
-                                        format!(
-                                            "[Megaphone] Whisper icon {}.",
-                                            if enabled { "enabled" } else { "disabled" }
-                                        ),
-                                        [255, 222, 112],
-                                    );
-                                } else if self.cash_item_compose.is_none() {
-                                    self.chat_target = self.chat_target.next();
+                                    self.refresh_chat_texture();
                                 }
-                                self.refresh_chat_texture();
-                            }
-                            PhysicalKey::Code(KeyCode::KeyI)
-                                if self.cash_item_compose.as_ref().is_some_and(|compose| {
-                                    compose.awaiting_attachment
-                                        && compose.kind.uses_item_attachment(compose.item_id)
-                                }) =>
-                            {
-                                self.show_inventory = !self.show_inventory;
-                                if self.show_inventory {
-                                    self.raise_dialog_window(DialogWindow::Inventory);
-                                    self.inventory_scroll_row = 0;
-                                    self.update_inventory_hover();
-                                    self.refresh_inventory_texture();
-                                } else {
-                                    self.inventory_drag_source = None;
-                                    self.inventory_hover_slot = None;
+                                PhysicalKey::Code(KeyCode::KeyI)
+                                    if self.cash_item_compose.as_ref().is_some_and(|compose| {
+                                        compose.awaiting_attachment
+                                            && compose.kind.uses_item_attachment(compose.item_id)
+                                    }) =>
+                                {
+                                    self.show_inventory = !self.show_inventory;
+                                    if self.show_inventory {
+                                        self.raise_dialog_window(DialogWindow::Inventory);
+                                        self.inventory_scroll_row = 0;
+                                        self.update_inventory_hover();
+                                        self.refresh_inventory_texture();
+                                    } else {
+                                        self.inventory_drag_source = None;
+                                        self.inventory_hover_slot = None;
+                                    }
                                 }
+                                PhysicalKey::Code(KeyCode::Enter | KeyCode::NumpadEnter) => {
+                                    self.submit_chat_message();
+                                }
+                                PhysicalKey::Code(KeyCode::Backspace) => {
+                                    self.chat_input.pop();
+                                    self.refresh_chat_texture();
+                                }
+                                _ => {}
                             }
-                            PhysicalKey::Code(KeyCode::Enter | KeyCode::NumpadEnter) => {
-                                self.submit_chat_message();
-                            }
-                            PhysicalKey::Code(KeyCode::Backspace) => {
-                                self.chat_input.pop();
-                                self.refresh_chat_texture();
-                            }
-                            _ => {}
                         }
                     }
                     if let Some(window) = self.window.as_ref() {
@@ -3001,6 +3127,13 @@ impl ApplicationHandler for ClientApp {
                 if self.show_key_config {
                     return;
                 }
+                if self.pet_item_filter.open {
+                    self.handle_pet_item_filter_text(&text);
+                    if let Some(window) = self.window.as_ref() {
+                        window.request_redraw();
+                    }
+                    return;
+                }
                 if self.family_ui.input.is_some() {
                     let duplicate = self
                         .family_ui
@@ -3272,6 +3405,9 @@ impl ApplicationHandler for ClientApp {
                     && self.current_field.is_some()
                     && self.cash_shop.is_none()
                 {
+                    if self.chat_key_text_for_ime_dedup.take().as_deref() == Some(text.as_str()) {
+                        return;
+                    }
                     let max_chars = self
                         .cash_item_compose
                         .as_ref()
@@ -4027,6 +4163,23 @@ impl ApplicationHandler for ClientApp {
                             opacity: 1.0,
                         });
                     }
+                }
+                if self.pet_item_filter.open
+                    && let Some(texture) = self.pet_item_filter_texture.as_ref()
+                {
+                    let (x, y) = self.pet_item_filter_origin();
+                    draws.push(SpriteDraw {
+                        texture,
+                        x,
+                        y,
+                        width: PET_ITEM_FILTER_PANEL_WIDTH as f32,
+                        height: PET_ITEM_FILTER_PANEL_HEIGHT as f32,
+                        uv: [0.0, 0.0, 1.0, 1.0],
+                        tint: [1.0, 1.0, 1.0],
+                        blend_mode: BlendMode::Alpha,
+                        flip_x: false,
+                        opacity: 1.0,
+                    });
                 }
                 if self.show_skill_book {
                     if let Some(texture) = self.skill_book_texture.as_ref() {
@@ -4873,7 +5026,11 @@ impl ApplicationHandler for ClientApp {
                     && let (Some(texture), Some(cursor)) =
                         (self.inventory_tooltip_texture.as_ref(), self.cursor)
                 {
-                    draws.push(item_tooltip::draw(texture, cursor));
+                    if let Some(comparison) = self.inventory_comparison_tooltip_texture.as_ref() {
+                        draws.extend(item_tooltip::draw_comparison(texture, comparison, cursor));
+                    } else {
+                        draws.push(item_tooltip::draw(texture, cursor));
+                    }
                 }
                 if self.inventory_drag_source.is_some()
                     && let (Some(texture), Some(cursor)) =

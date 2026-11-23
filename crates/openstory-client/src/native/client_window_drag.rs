@@ -15,6 +15,16 @@ impl ClientApp {
                 EQUIPMENT_INVENTORY_PANEL_WIDTH as f32,
                 EQUIPMENT_INVENTORY_PANEL_HEIGHT as f32,
             ),
+            DialogWindow::PetItemFilter if self.pet_item_filter.open => {
+                let (equipment_offset_x, equipment_offset_y) =
+                    self.dialog_window_offset(DialogWindow::EquipmentInventory);
+                (
+                    PET_ITEM_FILTER_PANEL_X + equipment_offset_x,
+                    PET_ITEM_FILTER_PANEL_Y + equipment_offset_y,
+                    PET_ITEM_FILTER_PANEL_WIDTH as f32,
+                    PET_ITEM_FILTER_PANEL_HEIGHT as f32,
+                )
+            }
             DialogWindow::SkillBook if self.show_skill_book => (
                 SKILL_BOOK_PANEL_X,
                 SKILL_BOOK_PANEL_Y,
@@ -78,6 +88,12 @@ impl ClientApp {
                 let panel = self.npc_dialogue.as_ref()?.panel;
                 (panel.x, panel.y, panel.width, panel.height)
             }
+            DialogWindow::NpcShop if self.npc_shop.is_some() => (
+                NPC_SHOP_X,
+                NPC_SHOP_Y,
+                NPC_SHOP_WIDTH as f32,
+                NPC_SHOP_HEIGHT as f32,
+            ),
             DialogWindow::Storage if self.storage.is_some() => (
                 182.0,
                 105.0,
@@ -233,6 +249,7 @@ impl ClientApp {
             DialogWindow::TradeRoom,
             DialogWindow::HiredMerchant,
             DialogWindow::Storage,
+            DialogWindow::NpcShop,
             DialogWindow::NpcDialogue,
             DialogWindow::Whisper,
             DialogWindow::OwlSearch,
@@ -243,6 +260,7 @@ impl ClientApp {
             DialogWindow::QuestLog,
             DialogWindow::SkillBook,
             DialogWindow::SkillMacros,
+            DialogWindow::PetItemFilter,
             DialogWindow::EquipmentInventory,
             DialogWindow::Inventory,
             DialogWindow::Minimap,
@@ -338,6 +356,7 @@ impl ClientApp {
                 }
             }
             DialogWindow::EquipmentInventory => self.toggle_equipment_inventory(),
+            DialogWindow::PetItemFilter => self.close_pet_item_filter(),
             DialogWindow::SkillBook => {
                 self.show_skill_book = false;
                 self.skill_book_texture = None;
@@ -380,6 +399,7 @@ impl ClientApp {
                 self.owl_texture = None;
             }
             DialogWindow::NpcDialogue => self.cancel_npc_dialogue(),
+            DialogWindow::NpcShop => self.close_npc_shop(),
             DialogWindow::Storage => self.close_storage(),
             DialogWindow::HiredMerchant => {
                 if let Some(room) = self.hired_merchant_room.as_mut()
@@ -593,6 +613,9 @@ impl ClientApp {
         if window == DialogWindow::Minimap {
             return false;
         }
+        if window == DialogWindow::NpcShop {
+            return false;
+        }
         let Some(base) = self.dialog_window_rect(window) else {
             return false;
         };
@@ -610,6 +633,7 @@ impl ClientApp {
         let title_height: f32 = match window {
             DialogWindow::Inventory
             | DialogWindow::EquipmentInventory
+            | DialogWindow::PetItemFilter
             | DialogWindow::SkillBook
             | DialogWindow::SkillMacros
             | DialogWindow::QuestLog
@@ -698,6 +722,10 @@ impl ClientApp {
                 DialogWindow::EquipmentInventory,
                 self.equipment_inventory_texture.as_ref(),
             ),
+            (
+                DialogWindow::PetItemFilter,
+                self.pet_item_filter_texture.as_ref(),
+            ),
             (DialogWindow::SkillBook, self.skill_book_texture.as_ref()),
             (
                 DialogWindow::QuestHelper,
@@ -716,6 +744,7 @@ impl ClientApp {
                 DialogWindow::NpcDialogue,
                 self.npc_dialogue.as_ref().map(|ui| &ui.texture),
             ),
+            (DialogWindow::NpcShop, self.npc_shop_texture.as_ref()),
             (DialogWindow::Storage, self.storage_texture.as_ref()),
             (
                 DialogWindow::HiredMerchant,

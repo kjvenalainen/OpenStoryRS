@@ -18,7 +18,6 @@ impl ClientApp {
         self.world_map.search_focused = false;
         self.world_map.hovered_link = None;
         self.world_map.hovered_marker = None;
-        self.world_map.selected_route_map_id = None;
         self.world_map.map_id = Some(map_id);
         self.world_map.map_path = None;
         self.refresh_world_map_texture();
@@ -940,7 +939,6 @@ impl ClientApp {
             self.world_map.map_path = None;
             self.world_map.hovered_link = None;
             self.world_map.hovered_marker = None;
-            self.world_map.selected_route_map_id = None;
         }
         let panel = match world_map::render(
             &self.map_archive,
@@ -1058,7 +1056,6 @@ impl ClientApp {
             self.world_map.search_focused = false;
             self.world_map.hovered_link = None;
             self.world_map.hovered_marker = None;
-            self.world_map.selected_route_map_id = None;
             refresh = true;
         } else if let Some((map_id, clears_selected_route)) = self
             .world_map
@@ -1108,7 +1105,6 @@ impl ClientApp {
             self.world_map.map_path = Some(parent);
             self.world_map.hovered_link = None;
             self.world_map.hovered_marker = None;
-            self.world_map.selected_route_map_id = None;
             self.refresh_world_map_texture();
         } else {
             self.world_map.open = false;
@@ -1125,7 +1121,6 @@ impl ClientApp {
             }
         }
         self.world_map.search_scroll = 0;
-        self.world_map.selected_route_map_id = None;
         self.world_map.hovered_marker = None;
         self.refresh_world_map_texture();
     }
@@ -1136,7 +1131,6 @@ impl ClientApp {
         }
         self.world_map.search_query.pop();
         self.world_map.search_scroll = 0;
-        self.world_map.selected_route_map_id = None;
         self.world_map.hovered_marker = None;
         self.refresh_world_map_texture();
     }

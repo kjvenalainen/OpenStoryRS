@@ -256,10 +256,10 @@ fn append_map_background(
     camera_y: f32,
     cache: &mut MapArtCache,
     animations: &mut Vec<MapArtAnimationAsset>,
-) -> Result<(), String> {
+) -> Result<(usize, usize), String> {
     let background_set = string_property(entry, "bS").unwrap_or_default();
     if background_set.is_empty() {
-        return Ok(());
+        return Ok((1, 1));
     }
     let art_index = integer_property(entry, "no").unwrap_or(0);
     let animated = integer_property(entry, "ani").unwrap_or(0) != 0;
@@ -270,7 +270,7 @@ fn append_map_background(
         .resolve(&path)
         .map_err(|error| error.to_string())?
     else {
-        return Ok(());
+        return Ok((1, 1));
     };
     let root_is_bitmap = art_root
         .bitmap()
@@ -285,6 +285,7 @@ fn append_map_background(
         frame_nodes.push(art_root);
     }
     let mut frames = Vec::new();
+    let mut tile_counts = (1, 1);
     for frame_node in &frame_nodes {
         let first_sprite = sprites.len();
         let frame_path = if animated && !root_is_bitmap {
@@ -295,7 +296,7 @@ fn append_map_background(
         } else {
             path.clone()
         };
-        append_map_background_frame(
+        let frame_tile_counts = append_map_background_frame(
             sprites,
             entry,
             frame_node,
@@ -304,6 +305,8 @@ fn append_map_background(
             camera_y,
             cache,
         )?;
+        tile_counts.0 = tile_counts.0.max(frame_tile_counts.0);
+        tile_counts.1 = tile_counts.1.max(frame_tile_counts.1);
         let delay_ms = integer_property(frame_node, "delay")
             .and_then(|delay| u16::try_from(delay).ok())
             .filter(|delay| *delay > 0)
@@ -320,7 +323,7 @@ fn append_map_background(
             hold_last: false,
         });
     }
-    Ok(())
+    Ok(tile_counts)
 }
 
 fn append_map_background_frame(
@@ -331,9 +334,9 @@ fn append_map_background_frame(
     camera_x: f32,
     camera_y: f32,
     cache: &mut MapArtCache,
-) -> Result<(), String> {
+) -> Result<(usize, usize), String> {
     let Some(bitmap) = art.bitmap().map_err(|error| error.to_string())? else {
-        return Ok(());
+        return Ok((1, 1));
     };
     let cache_entry = if let Some(cached) = cache.get(path) {
         cached
@@ -387,7 +390,6 @@ fn append_map_background_frame(
         .unwrap_or(i64::from(cache_entry.1)) as f32;
     let horizontal = matches!(kind, 1 | 3 | 4 | 6);
     let vertical = matches!(kind, 2 | 3 | 5 | 7);
-    let (count_x, count_y) = map_background_tile_counts(kind, tile_x, tile_y);
     let horizontal_scrolls = horizontal_mobile || rx != 0.0;
     let vertical_scrolls = vertical_mobile || ry != 0.0;
     let base_x = if horizontal {
@@ -400,6 +402,11 @@ fn append_map_background_frame(
     } else {
         anchor_y
     };
+    let start_x = base_x - cache_entry.2.0;
+    let start_y = base_y - cache_entry.2.1;
+    // Account for the NX origin when reserving the tiled copies. Two spare
+    // copies keep the viewport covered while the background scrolls.
+    let (count_x, count_y) = map_background_tile_counts(kind, tile_x, tile_y, start_x, start_y);
     let opacity = integer_property(entry, "a").unwrap_or(255).clamp(0, 255) as u8;
     let flipped = integer_property(entry, "f").unwrap_or(0) != 0;
     let texture_key = map_texture_key(&path, opacity, flipped);
@@ -425,8 +432,8 @@ fn append_map_background_frame(
     };
     for x_index in 0..count_x {
         for y_index in 0..count_y {
-            let x = base_x + x_index as f32 * tile_x - cache_entry.2.0;
-            let y = base_y + y_index as f32 * tile_y - cache_entry.2.1;
+            let x = start_x + x_index as f32 * tile_x;
+            let y = start_y + y_index as f32 * tile_y;
             // Keep offscreen copies that can scroll into view; tiled backgrounds recycle
             // their reserved copies as they leave the viewport.
             if (!horizontal
@@ -454,7 +461,7 @@ fn append_map_background_frame(
             });
         }
     }
-    Ok(())
+    Ok((count_x, count_y))
 }
 
 fn normalize_tiled_position(position: f32, interval: f32) -> f32 {

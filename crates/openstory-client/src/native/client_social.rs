@@ -1031,6 +1031,7 @@ impl ClientApp {
             );
             return;
         };
+        let show_public_bubble = command.is_none() && self.chat_target == ChatTarget::Public;
         let (packet, echo) = match command {
             Some(ChatCommand::Whisper { .. } | ChatCommand::OpenWhisper(_)) => {
                 unreachable!("whisper commands are handled above")
@@ -1084,6 +1085,11 @@ impl ClientApp {
         }
         self.chat_input.clear();
         self.chat_input_focused = false;
+        if show_public_bubble
+            && let Some(character_id) = self.active_character.as_ref().map(|character| character.id)
+        {
+            self.show_character_speech(character_id, &message);
+        }
         self.refresh_chat_texture();
         if let Some(echo) = echo {
             self.push_chat_line(echo, [255, 255, 255]);

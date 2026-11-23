@@ -129,6 +129,33 @@ fn equip_slot_for_item(
     Some((slot + offset) as i16)
 }
 
+fn equipped_comparison_item(
+    item: &openstory_protocol::InventoryItem,
+    inventory: &openstory_protocol::InventorySnapshot,
+) -> Option<openstory_protocol::InventoryItem> {
+    use openstory_protocol::InventoryType;
+
+    if item.inventory_type != InventoryType::Equip || item.item_id / 1_000_000 != 1 {
+        return None;
+    }
+    let target_slot = equip_slot_for_item(item.item_id, item.cash, inventory)?;
+    let equipped = inventory
+        .equipped()
+        .find(|equipped| i16::try_from(equipped.slot).ok() == Some(target_slot))
+        .or_else(|| {
+            // Rings can occupy several equivalent positions. If the next
+            // destination is empty, compare against a ring already worn.
+            (item.item_id / 10_000 == 111)
+                .then(|| {
+                    inventory
+                        .equipped()
+                        .find(|equipped| equipped.item_id / 10_000 == 111)
+                })
+                .flatten()
+        })?;
+    Some(equipped.clone())
+}
+
 fn equipment_block_reason(
     item_id: i32,
     character: &openstory_protocol::CharacterInfo,

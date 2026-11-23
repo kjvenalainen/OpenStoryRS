@@ -947,50 +947,6 @@ fn quest_helper_entries(
         .collect()
 }
 
-#[allow(clippy::too_many_arguments)]
-fn draw_quest_helper_text(
-    font: &fontdue::Font,
-    pixels: &mut [u8],
-    width: usize,
-    height: usize,
-    text: &str,
-    x: i32,
-    y: i32,
-    size: f32,
-    max_width: usize,
-    max_height: usize,
-    color: [u8; 3],
-) {
-    const OUTLINE: [u8; 3] = [246, 237, 216];
-    for (offset_x, offset_y) in [
-        (-1, -1),
-        (0, -1),
-        (1, -1),
-        (-1, 0),
-        (1, 0),
-        (-1, 1),
-        (0, 1),
-        (1, 1),
-    ] {
-        draw_dialogue_text(
-            font,
-            pixels,
-            width,
-            height,
-            text,
-            x + offset_x,
-            y + offset_y,
-            size,
-            max_width,
-            max_height,
-            OUTLINE,
-        );
-    }
-    draw_dialogue_text(
-        font, pixels, width, height, text, x, y, size, max_width, max_height, color,
-    );
-}
-
 fn render_quest_helper_panel(
     font: &fontdue::Font,
     entries: &[QuestHelperDisplayEntry],
@@ -1056,21 +1012,19 @@ fn render_quest_helper_panel(
         5,
     );
 
-    let title_font = ui_foundation::bold_font().unwrap_or(font);
     let title = format!("Quest Helper ({}/{})", entries.len(), 5);
-    let title = ui_foundation::ellipsize(title_font, &title, 11.0, (WIDTH - 76) as f32);
-    draw_quest_helper_text(
-        title_font,
+    ui_foundation::draw_text_role(
+        font,
         &mut pixels,
         WIDTH,
         height,
         &title,
         5,
         4,
-        11.0,
+        ui_foundation::UiTextRole::Small,
         WIDTH - 76,
         15,
-        [27, 27, 23],
+        Some([27, 27, 23]),
     );
     let _ = composite_nx_ui_bitmap(
         &mut pixels,
@@ -1117,20 +1071,18 @@ fn render_quest_helper_panel(
         );
     }
     for entry in entries {
-        let name_font = ui_foundation::bold_font().unwrap_or(font);
-        let name = ui_foundation::ellipsize(name_font, &entry.name, 12.0, (WIDTH - 34) as f32);
-        draw_quest_helper_text(
-            name_font,
+        ui_foundation::draw_text_role(
+            font,
             &mut pixels,
             WIDTH,
             height,
-            &name,
+            &entry.name,
             8,
             y,
-            12.0,
+            ui_foundation::UiTextRole::Label,
             WIDTH - 34,
             16,
-            [28, 27, 23],
+            Some([28, 27, 23]),
         );
         let _ = composite_nx_ui_bitmap_scaled_to(
             &mut pixels,
@@ -1145,19 +1097,18 @@ fn render_quest_helper_panel(
         );
         y += ENTRY_NAME_HEIGHT as i32;
         for objective in &entry.objectives {
-            let objective = ui_foundation::ellipsize(font, objective, 11.0, (WIDTH - 24) as f32);
-            draw_quest_helper_text(
+            ui_foundation::draw_text_role(
                 font,
                 &mut pixels,
                 WIDTH,
                 height,
-                &objective,
+                objective,
                 11,
                 y,
-                11.0,
+                ui_foundation::UiTextRole::Value,
                 WIDTH - 24,
                 16,
-                [39, 37, 32],
+                Some([39, 37, 32]),
             );
             y += OBJECTIVE_HEIGHT as i32;
         }
@@ -1171,12 +1122,14 @@ const QUEST_SCROLLBAR_WIDTH: usize = 15;
 const QUEST_SCROLLBAR_ARROW_HEIGHT: usize = 13;
 const QUEST_SCROLLBAR_THUMB_HEIGHT: usize = 25;
 const QUEST_DETAIL_BODY_TOP: usize = 129;
-const QUEST_DETAIL_BODY_BOTTOM: usize = 336;
+const QUEST_DETAIL_TELEPORT_GAP: usize = 4;
+const QUEST_DETAIL_BODY_BOTTOM: usize =
+    ui_foundation::QUEST_TELEPORT_BUTTON.y as usize - QUEST_DETAIL_TELEPORT_GAP;
 const QUEST_DETAIL_ACTIVE_BODY_BOTTOM: usize = 294;
 const QUEST_DETAIL_SCROLLBAR_INSET: usize = 5;
 
-fn quest_detail_body_bottom(tab: QuestLogTab) -> usize {
-    if tab == QuestLogTab::Active {
+fn quest_detail_body_bottom(tab: QuestLogTab, has_reward_choices: bool) -> usize {
+    if tab == QuestLogTab::Active && has_reward_choices {
         QUEST_DETAIL_ACTIVE_BODY_BOTTOM
     } else {
         QUEST_DETAIL_BODY_BOTTOM
@@ -1609,9 +1562,9 @@ fn render_quest_log_panel(
                 .filter(|npc_id| *npc_id > 0)
         });
         if let Some(npc_id) = npc_id {
+            const PORTRAIT_BOX: usize = 60;
             let path = format!("{npc_id:07}.img/stand/0");
             if let Ok(Some(npc)) = npc_archive.root().resolve(&path) {
-                const PORTRAIT_BOX: usize = 60;
                 if let Some((portrait_width, portrait_height, portrait)) =
                     fit_quest_portrait(&npc, PORTRAIT_BOX, PORTRAIT_BOX)
                 {
@@ -1642,13 +1595,17 @@ fn render_quest_log_panel(
                 })
             {
                 let name = ui_foundation::ellipsize(font, &name, 9.0, 110.0);
+                let portrait_center_x = DETAIL_X as f32 + 200.0 + PORTRAIT_BOX as f32 / 2.0;
+                let label_x = (portrait_center_x
+                    - ui_foundation::measure_text(font, &name, 9.0) / 2.0)
+                .round() as i32;
                 draw_dialogue_text(
                     font,
                     &mut pixels,
                     WIDTH,
                     HEIGHT,
                     &name,
-                    DETAIL_X as i32 + 155,
+                    label_x,
                     94,
                     9.0,
                     110,
@@ -1669,7 +1626,14 @@ fn render_quest_log_panel(
                 .filter(|description| quest_description_is_displayable(description))
         };
         let description = description.map(|description| clean_npc_markup(&description));
-        let body_bottom = quest_detail_body_bottom(tab);
+        let reward_choices = if active {
+            character.map_or_else(Vec::new, |character| {
+                quest_reward_choices(id, archive, string_archive, character, item_name_cache)
+            })
+        } else {
+            Vec::new()
+        };
+        let body_bottom = quest_detail_body_bottom(tab, !reward_choices.is_empty());
         let body_height = body_bottom.saturating_sub(QUEST_DETAIL_BODY_TOP);
         let dialogue_text = dialogue.map(|(line, _)| format!("“{line}”"));
         let dialogue_height = dialogue_text.as_deref().map_or(0, |text| {
@@ -1876,9 +1840,6 @@ fn render_quest_log_panel(
             );
         }
         if active {
-            let reward_choices = character.map_or_else(Vec::new, |character| {
-                quest_reward_choices(id, archive, string_archive, character, item_name_cache)
-            });
             if !reward_choices.is_empty() {
                 let choice_index = selected_reward.min(reward_choices.len() - 1);
                 let choice = &reward_choices[choice_index];

@@ -58,7 +58,7 @@ fn load_map_scene(
             .filter(|entry| integer_property(entry, "front").unwrap_or(0) == 0)
         {
             let first_sprite = sprites.len();
-            append_map_background(
+            let tile_counts = append_map_background(
                 &mut sprites,
                 archive,
                 entry,
@@ -68,9 +68,13 @@ fn load_map_scene(
                 &mut map_art_animations,
             )?;
             align_map_background_to_viewport(map_id, entry, &mut sprites[first_sprite..]);
-            if let Some(background) =
-                map_background_asset(entry, first_sprite..sprites.len(), &sprites, None)
-            {
+            if let Some(background) = map_background_asset(
+                entry,
+                first_sprite..sprites.len(),
+                &sprites,
+                None,
+                tile_counts,
+            ) {
                 map_backgrounds.push(background);
             }
         }
@@ -140,7 +144,7 @@ fn load_map_scene(
             .filter(|entry| integer_property(entry, "front").unwrap_or(0) != 0)
         {
             let first_sprite = sprites.len();
-            append_map_background(
+            let tile_counts = append_map_background(
                 &mut sprites,
                 archive,
                 entry,
@@ -150,9 +154,13 @@ fn load_map_scene(
                 &mut map_art_animations,
             )?;
             align_map_background_to_viewport(map_id, entry, &mut sprites[first_sprite..]);
-            if let Some(background) =
-                map_background_asset(entry, first_sprite..sprites.len(), &sprites, None)
-            {
+            if let Some(background) = map_background_asset(
+                entry,
+                first_sprite..sprites.len(),
+                &sprites,
+                None,
+                tile_counts,
+            ) {
                 map_backgrounds.push(background);
             }
         }
@@ -163,7 +171,7 @@ fn load_map_scene(
             let name = entry.name().map_err(|error| error.to_string())?;
             let first_sprite = sprites.len();
             let first_animation = map_art_animations.len();
-            append_map_background(
+            let tile_counts = append_map_background(
                 &mut sprites,
                 archive,
                 &entry,
@@ -175,9 +183,13 @@ fn load_map_scene(
             for animation in &mut map_art_animations[first_animation..] {
                 animation.environment_name = Some(name.clone());
             }
-            if let Some(environment) =
-                map_background_asset(&entry, first_sprite..sprites.len(), &sprites, Some(name))
-            {
+            if let Some(environment) = map_background_asset(
+                &entry,
+                first_sprite..sprites.len(),
+                &sprites,
+                Some(name),
+                tile_counts,
+            ) {
                 map_backgrounds.push(environment);
             }
         }
@@ -289,6 +301,7 @@ fn map_background_asset(
     sprites: Range<usize>,
     draws: &[DecodedSprite],
     environment_name: Option<String>,
+    (tile_count_x, tile_count_y): (usize, usize),
 ) -> Option<MapBackgroundAsset> {
     let sample = draws.get(sprites.start)?;
     let kind = integer_property(entry, "type").unwrap_or(0);
@@ -306,7 +319,6 @@ fn map_background_asset(
         .filter(|value| *value > 0)
         .map_or(sample.rect.height, |value| value as f32)
         .max(1.0);
-    let (tile_count_x, tile_count_y) = map_background_tile_counts(kind, tile_width, tile_height);
     Some(MapBackgroundAsset {
         sprites,
         environment_name,
@@ -325,16 +337,22 @@ fn map_background_asset(
     })
 }
 
-fn map_background_tile_counts(kind: i64, tile_width: f32, tile_height: f32) -> (usize, usize) {
+fn map_background_tile_counts(
+    kind: i64,
+    tile_width: f32,
+    tile_height: f32,
+    first_x: f32,
+    first_y: f32,
+) -> (usize, usize) {
     let horizontal = matches!(kind, 1 | 3 | 4 | 6);
     let vertical = matches!(kind, 2 | 3 | 5 | 7);
     let count_x = if horizontal {
-        ((1024.0 / tile_width.max(1.0)).ceil() as usize + 3).clamp(1, 32)
+        (((1024.0 - first_x) / tile_width.max(1.0)).ceil() as usize + 2).clamp(1, 32)
     } else {
         1
     };
     let count_y = if vertical {
-        ((768.0 / tile_height.max(1.0)).ceil() as usize + 3).clamp(1, 32)
+        (((768.0 - first_y) / tile_height.max(1.0)).ceil() as usize + 2).clamp(1, 32)
     } else {
         1
     };

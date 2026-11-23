@@ -146,7 +146,7 @@ pub(super) const QUEST_HELPER_BUTTON: UiRect = UiRect::new(
     17.0,
 );
 pub(super) const QUEST_TELEPORT_BUTTON: UiRect = UiRect::new(
-    super::QUEST_LOG_PANEL_WIDTH as f32 - 69.0,
+    super::QUEST_LOG_PANEL_WIDTH as f32 - 61.0,
     QUEST_FOOTER_BUTTON_Y - 27.0,
     57.0,
     17.0,
@@ -576,5 +576,65 @@ pub(super) fn draw_scrollbar(
             top as i32,
         );
     }
+    super::composite_bgra_pixels(pixels, width, height, &track, 15, track_height, x, y);
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn draw_scrollbar_for_items(
+    pixels: &mut [u8],
+    width: usize,
+    height: usize,
+    ui: &openstory_assets::NxArchive,
+    x: i32,
+    y: i32,
+    track_height: usize,
+    offset: usize,
+    total_items: usize,
+    visible_items: usize,
+) {
+    if !(51..=2048).contains(&track_height) || total_items == 0 {
+        return;
+    }
+    let mut track = vec![0; 15 * track_height * 4];
+    for row in (0..track_height).step_by(13) {
+        let _ = super::composite_nx_ui_bitmap(
+            &mut track,
+            15,
+            track_height,
+            ui,
+            "Basic.img/VScr5/enabled/base",
+            0,
+            row as i32,
+        );
+    }
+    let inner_height = track_height - 26;
+    let visible_fraction = visible_items.min(total_items) as f32 / total_items as f32;
+    let thumb_height = ((inner_height as f32 * visible_fraction).round() as usize)
+        .clamp(8.min(inner_height), inner_height);
+    let thumb_travel = inner_height - thumb_height;
+    let fraction = scroll_fraction(offset, total_items, visible_items);
+    let thumb_top = 13 + (thumb_travel as f32 * fraction).round() as usize;
+    for (part, top) in [("prev0", 0), ("next0", track_height - 13)] {
+        let _ = super::composite_nx_ui_bitmap(
+            &mut track,
+            15,
+            track_height,
+            ui,
+            &format!("Basic.img/VScr5/enabled/{part}"),
+            0,
+            top as i32,
+        );
+    }
+    let _ = super::composite_nx_ui_bitmap_scaled_to(
+        &mut track,
+        15,
+        track_height,
+        ui,
+        "Basic.img/VScr5/enabled/thumb0",
+        0,
+        thumb_top,
+        15,
+        thumb_height,
+    );
     super::composite_bgra_pixels(pixels, width, height, &track, 15, track_height, x, y);
 }

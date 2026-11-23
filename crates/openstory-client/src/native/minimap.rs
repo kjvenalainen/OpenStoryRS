@@ -22,6 +22,8 @@ const MAX_PORTALS: usize = 512;
 const MAX_MAP_LABEL_CHARS: usize = 80;
 const MAP_LABEL_SIZE: f32 = 13.0;
 const MAP_LABEL_OUTLINE: [u8; 3] = [20, 24, 32];
+const EXPANDED_LABEL_X: f32 = 48.0;
+const EXPANDED_LABEL_RIGHT_INSET: f32 = 10.0;
 const NPC_TOOLTIP_SIZE: f32 = 12.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -158,25 +160,11 @@ struct CollapsedFrameArt {
     east: SpriteImage,
 }
 
-#[derive(Clone)]
-struct MapFrameArt {
-    west: SpriteImage,
-    east: SpriteImage,
-    north: SpriteImage,
-    northwest: SpriteImage,
-    northeast: SpriteImage,
-    south: SpriteImage,
-    southwest: SpriteImage,
-    southeast: SpriteImage,
-}
-
 /// UI art shared by all map minimaps. Decode NX bitmaps once, then reuse their
 /// BGRA buffers whenever moving actors force the panel to refresh.
 pub(super) struct UiAssets {
     collapsed: CollapsedFrameArt,
     title: SpriteImage,
-    normal: MapFrameArt,
-    expanded: MapFrameArt,
     min_normal: SpriteImage,
     min_disabled: SpriteImage,
     max_normal: SpriteImage,
@@ -197,8 +185,6 @@ impl UiAssets {
             center: load_ui_image(archive, &collapsed_root, minimap_path, "c", "Min/c")?,
             east: load_ui_image(archive, &collapsed_root, minimap_path, "e", "Min/e")?,
         };
-        let normal = load_map_frame(archive, &minimap_ui, minimap_path, "MinMap")?;
-        let expanded = load_map_frame(archive, &minimap_ui, minimap_path, "MaxMap")?;
         let map_root = required(&minimap_ui, "BtMap")?;
         let min_normal = load_minimap_button(archive, minimap_path, "BtMin/normal/0", false)?;
         let min_disabled = load_minimap_button(archive, minimap_path, "BtMin/disabled/0", true)?;
@@ -214,8 +200,6 @@ impl UiAssets {
         Ok(Self {
             title: load_ui_image(archive, &minimap_ui, minimap_path, "title", "title")?,
             collapsed,
-            normal,
-            expanded,
             min_normal,
             min_disabled,
             max_normal,
@@ -385,6 +369,7 @@ impl MiniMapData {
 /// the caller can upload it once per map/UI update and draw it at `(x, y)`.
 pub(super) fn render(
     data: &MiniMapData,
+    ui_archive: &NxArchive,
     ui_assets: &UiAssets,
     viewport: LogicalSize,
     map_name: &str,
@@ -500,29 +485,18 @@ pub(super) fn render(
                         - 25.0,
                 );
             }
-            let mut button_x = width
-                - button_min.width as f32
-                - button_max.width as f32
-                - button_map.width as f32
-                - 9.0;
-            let _ = draw_button(&mut canvas, button_min, button_x, 4.0, x, y, None);
-            button_x += button_min.width as f32 + 1.0;
-            if let Some(hit) = draw_button(&mut canvas, button_max, button_x, 4.0, x, y, max_action)
-            {
-                hit_regions.push(hit);
-            }
-            button_x += button_max.width as f32 + 1.0;
-            if let Some(hit) = draw_button(
+            draw_header_buttons(
                 &mut canvas,
+                button_min,
+                button_max,
                 button_map,
-                button_x,
                 4.0,
                 x,
                 y,
-                Some(HitAction::OpenWorldMap),
-            ) {
-                hit_regions.push(hit);
-            }
+                min_action,
+                max_action,
+                &mut hit_regions,
+            );
             (width as u32, 20, canvas.into_pixels())
         }
         Presentation::Normal | Presentation::Expanded => {
@@ -530,7 +504,7 @@ pub(super) fn render(
                 return Err(format!("minimap map {} has no canvas", data.map_id));
             }
             let expanded = presentation == Presentation::Expanded;
-            let canvas_y = if expanded { 60.0 } else { 29.0 };
+            let canvas_y = if expanded { 70.0 } else { 30.0 };
             let map_height = data.canvas.height as f32;
             let map_width = data.canvas.width as f32;
             let available_width = (viewport.width - x - 16.0).max(64.0);
@@ -542,10 +516,13 @@ pub(super) fn render(
                 .max(0.1);
             let zoomed_width = (map_width * zoom).ceil().max(1.0);
             let zoomed_height = (map_height * zoom).ceil().max(1.0);
-            // Keep the normal panel sized to the map. Expanded mode needs a
-            // small title area beside the map mark, while controls remain
-            // positioned in the frame's existing right-hand control zone.
-            let text_width = if expanded { name_width + 78.0 } else { 0.0 };
+            // The map mark uses the first 48 pixels; keep a 10-pixel frame
+            // inset after the longest expanded label.
+            let text_width = if expanded {
+                name_width + EXPANDED_LABEL_X + EXPANDED_LABEL_RIGHT_INSET
+            } else {
+                0.0
+            };
             let width = (zoomed_width + 20.0)
                 .max(text_width)
                 .max(178.0)
@@ -555,28 +532,37 @@ pub(super) fn render(
                 .min(viewport.height - y)
                 .max(1.0);
             let mut canvas = Canvas::new(width as u32, height as u32)?;
+            let control_left = width
+                - 8.0
+                - button_map.width as f32
+                - 1.0
+                - button_max.width as f32
+                - 1.0
+                - button_min.width as f32;
+            let title_width = (control_left - 12.0).max(1.0);
+            super::ui_dialog::NxDialog::new(
+                &mut canvas.pixels,
+                width as usize,
+                height as usize,
+                ui_archive,
+            )
+            .window_chrome(
+                super::ui_foundation::UiRect::new(0.0, 0.0, width, height),
+                font,
+                "Mini Map",
+                super::ui_foundation::UiRect::new(8.0, 5.0, title_width, 12.0),
+            )?;
             for row in canvas_y as usize..height as usize - 14 {
                 for column in 6..width as usize - 6 {
                     let index = (row * width as usize + column) * 4;
                     canvas.pixels[index..index + 4].copy_from_slice(&[75, 65, 65, 255]);
                 }
             }
-            draw_map_frame(
-                &mut canvas,
-                if expanded {
-                    &ui_assets.expanded
-                } else {
-                    &ui_assets.normal
-                },
-                width,
-                zoomed_height,
-                canvas_y,
-            );
             if expanded && let Some(map_mark) = data.map_mark.as_ref() {
                 canvas.draw_image(
                     map_mark,
                     7.0,
-                    21.0,
+                    30.0,
                     map_mark.width as f32,
                     map_mark.height as f32,
                     false,
@@ -685,58 +671,36 @@ pub(super) fn render(
                 canvas.draw_text_outlined(
                     label_font,
                     &label,
-                    48.0,
+                    EXPANDED_LABEL_X,
                     27.0,
                     MAP_LABEL_SIZE,
                     [255, 255, 255],
                     MAP_LABEL_OUTLINE,
-                    width - 130.0,
+                    width - EXPANDED_LABEL_X - EXPANDED_LABEL_RIGHT_INSET,
                 );
                 canvas.draw_text_outlined(
                     label_font,
                     &street_label,
-                    48.0,
+                    EXPANDED_LABEL_X,
                     41.0,
                     MAP_LABEL_SIZE,
                     [255, 255, 255],
                     MAP_LABEL_OUTLINE,
-                    width - 130.0,
+                    width - EXPANDED_LABEL_X - EXPANDED_LABEL_RIGHT_INSET,
                 );
             }
-            canvas.draw_image(
-                &ui_assets.title,
-                9.0,
-                8.0,
-                ui_assets.title.width as f32,
-                ui_assets.title.height as f32,
-                false,
-            );
-            let collapse_x = width
-                - button_min.width as f32
-                - button_max.width as f32
-                - button_map.width as f32
-                - 8.0;
-            if let Some(hit) =
-                draw_button(&mut canvas, button_min, collapse_x, 4.0, x, y, min_action)
-            {
-                hit_regions.push(hit);
-            }
-            let expand_x = width - button_max.width as f32 - button_map.width as f32 - 5.0;
-            if let Some(hit) = draw_button(&mut canvas, button_max, expand_x, 4.0, x, y, max_action)
-            {
-                hit_regions.push(hit);
-            }
-            if let Some(hit) = draw_button(
+            draw_header_buttons(
                 &mut canvas,
+                button_min,
+                button_max,
                 button_map,
-                expand_x + button_max.width as f32 + 1.0,
-                4.0,
+                6.0,
                 x,
                 y,
-                Some(HitAction::OpenWorldMap),
-            ) {
-                hit_regions.push(hit);
-            }
+                min_action,
+                max_action,
+                &mut hit_regions,
+            );
             (width as u32, height as u32, canvas.into_pixels())
         }
     };
@@ -869,35 +833,6 @@ fn load_minimap_button(
     sprite_image(archive, &node, &fallback_path, MAX_UI_BITMAP_SIDE)
 }
 
-fn load_map_frame(
-    archive: &NxArchive,
-    minimap_ui: &NxNode,
-    minimap_path: &str,
-    frame_name: &str,
-) -> Result<MapFrameArt, String> {
-    let frame = required(minimap_ui, frame_name)?;
-    let prefix = frame_name.to_owned();
-    let load = |child: &str| {
-        load_ui_image(
-            archive,
-            &frame,
-            minimap_path,
-            child,
-            &format!("{prefix}/{child}"),
-        )
-    };
-    Ok(MapFrameArt {
-        west: load("w")?,
-        east: load("e")?,
-        north: load("n")?,
-        northwest: load("nw")?,
-        northeast: load("ne")?,
-        south: load("s")?,
-        southwest: load("sw")?,
-        southeast: load("se")?,
-    })
-}
-
 fn draw_collapsed_frame(canvas: &mut Canvas, frame: &CollapsedFrameArt, width: f32) {
     let left = &frame.west;
     let center = &frame.center;
@@ -916,81 +851,6 @@ fn draw_collapsed_frame(canvas: &mut Canvas, frame: &CollapsedFrameArt, width: f
         0.0,
         right.width as f32,
         right.height as f32,
-        false,
-    );
-}
-
-fn draw_map_frame(
-    canvas: &mut Canvas,
-    frame: &MapFrameArt,
-    width: f32,
-    map_height: f32,
-    canvas_y: f32,
-) {
-    let left = frame.northwest.width as f32;
-    let right = frame.northeast.width as f32;
-    let inner_width = (width - left - right).max(0.0);
-    // These are six-pixel v83 corners, not the 64-pixel title zones used by
-    // later archives. Tile the one-pixel edges at their native thickness.
-    canvas.draw_image(
-        &frame.northwest,
-        0.0,
-        0.0,
-        left,
-        frame.northwest.height as f32,
-        false,
-    );
-    canvas.tile_image(
-        &frame.north,
-        left,
-        0.0,
-        inner_width,
-        frame.north.height as f32,
-    );
-    canvas.draw_image(
-        &frame.northeast,
-        width - right,
-        0.0,
-        right,
-        frame.northeast.height as f32,
-        false,
-    );
-    canvas.tile_image(
-        &frame.west,
-        0.0,
-        frame.northwest.height as f32,
-        frame.west.width as f32,
-        (canvas_y + map_height - frame.northwest.height as f32).max(0.0),
-    );
-    canvas.tile_image(
-        &frame.east,
-        width - frame.east.width as f32,
-        frame.northeast.height as f32,
-        frame.east.width as f32,
-        (canvas_y + map_height - frame.northeast.height as f32).max(0.0),
-    );
-    let bottom_y = canvas_y + map_height;
-    canvas.draw_image(
-        &frame.southwest,
-        0.0,
-        bottom_y,
-        frame.southwest.width as f32,
-        frame.southwest.height as f32,
-        false,
-    );
-    canvas.tile_image(
-        &frame.south,
-        frame.southwest.width as f32,
-        bottom_y,
-        width - frame.southwest.width as f32 - frame.southeast.width as f32,
-        frame.south.height as f32,
-    );
-    canvas.draw_image(
-        &frame.southeast,
-        width - frame.southeast.width as f32,
-        bottom_y,
-        frame.southeast.width as f32,
-        frame.southeast.height as f32,
         false,
     );
 }
@@ -1021,6 +881,43 @@ fn draw_button(
             height: image.height as f32,
         },
     })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_header_buttons(
+    canvas: &mut Canvas,
+    button_min: &SpriteImage,
+    button_max: &SpriteImage,
+    button_map: &SpriteImage,
+    y: f32,
+    panel_x: f32,
+    panel_y: f32,
+    min_action: Option<HitAction>,
+    max_action: Option<HitAction>,
+    hit_regions: &mut Vec<HitRegion>,
+) {
+    // Match the shared window's eight-pixel right inset and align every
+    // control to the same title-bar baseline.
+    let map_x = canvas.width as f32 - 8.0 - button_map.width as f32;
+    let max_x = map_x - 1.0 - button_max.width as f32;
+    let min_x = max_x - 1.0 - button_min.width as f32;
+    if let Some(hit) = draw_button(canvas, button_min, min_x, y, panel_x, panel_y, min_action) {
+        hit_regions.push(hit);
+    }
+    if let Some(hit) = draw_button(canvas, button_max, max_x, y, panel_x, panel_y, max_action) {
+        hit_regions.push(hit);
+    }
+    if let Some(hit) = draw_button(
+        canvas,
+        button_map,
+        map_x,
+        y,
+        panel_x,
+        panel_y,
+        Some(HitAction::OpenWorldMap),
+    ) {
+        hit_regions.push(hit);
+    }
 }
 
 fn sprite_image(

@@ -109,11 +109,37 @@ impl<'a> NxDialog<'a> {
         title: &str,
         close: UiRect,
     ) -> Result<(), String> {
+        if bounds.height < 60.0 {
+            return Err("inventory window is too short for its chrome".to_owned());
+        }
+        self.window_chrome(
+            bounds,
+            font,
+            title,
+            UiRect::new(
+                bounds.x + 8.0,
+                bounds.y + 5.0,
+                close.x - 4.0 - (bounds.x + 8.0),
+                12.0,
+            ),
+        )?;
+        self.close(close)
+    }
+
+    /// Builds the shared resizable window frame and title without choosing a
+    /// control, so compact windows can place their own buttons in the header.
+    pub(super) fn window_chrome(
+        &mut self,
+        bounds: UiRect,
+        font: &fontdue::Font,
+        title: &str,
+        title_bounds: UiRect,
+    ) -> Result<(), String> {
         const HEADER: usize = 30;
         const FOOTER: usize = 30;
         let height = bounds.height as usize;
-        if height < HEADER + FOOTER {
-            return Err("inventory window is too short for its chrome".to_owned());
+        if height < HEADER {
+            return Err("window is too short for its header".to_owned());
         }
         self.repeat_art(
             "UIWindow.img/Equip/backgrnd",
@@ -127,14 +153,8 @@ impl<'a> NxDialog<'a> {
                 y => 266 + y % 2,
             },
         )?;
-        let title_x = bounds.x + 8.0;
-        let title_right = close.x - 4.0;
-        self.replace_title(
-            font,
-            title,
-            UiRect::new(title_x, bounds.y + 5.0, title_right - title_x, 12.0),
-        );
-        self.close(close)
+        self.replace_title(font, title, title_bounds);
+        Ok(())
     }
 
     pub(super) fn title(&mut self, font: &fontdue::Font, title: &str, bounds: UiRect) {

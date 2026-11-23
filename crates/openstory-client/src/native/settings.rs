@@ -261,6 +261,99 @@ pub(super) struct SocialSettings {
     pub allow_follow: bool,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(super) struct PetItemFilterSettings {
+    pub ignored_item_ids: Vec<i32>,
+    pub ignore_meso: bool,
+    pub ignore_below_level_equipment: bool,
+}
+
+pub(super) fn load_pet_item_filter() -> PetItemFilterSettings {
+    let mut settings = PetItemFilterSettings::default();
+    let Some(path) = settings_path().and_then(|path| {
+        path.parent()
+            .map(|parent| parent.join("pet-item-filter.ini"))
+    }) else {
+        return settings;
+    };
+    let Ok(contents) = fs::read_to_string(path) else {
+        return settings;
+    };
+    for line in contents.lines() {
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        let key = key.trim();
+        let value = value.trim();
+        match key {
+            "IgnoreMeso" => {
+                if let Some(enabled) = parse_bool(value) {
+                    settings.ignore_meso = enabled;
+                }
+            }
+            "IgnoreBelowLevelEquipment" => {
+                if let Some(enabled) = parse_bool(value) {
+                    settings.ignore_below_level_equipment = enabled;
+                }
+            }
+            "IgnoredItem" => {
+                if let Ok(item_id) = value.parse::<i32>()
+                    && item_id > 0
+                    && !settings.ignored_item_ids.contains(&item_id)
+                {
+                    settings.ignored_item_ids.push(item_id);
+                }
+            }
+            _ => {}
+        }
+    }
+    settings
+}
+
+pub(super) fn save_pet_item_filter(
+    ignored_item_ids: &[i32],
+    ignore_meso: bool,
+    ignore_below_level_equipment: bool,
+) -> Result<PathBuf, String> {
+    let path = settings_path()
+        .and_then(|path| {
+            path.parent()
+                .map(|parent| parent.join("pet-item-filter.ini"))
+        })
+        .ok_or_else(|| "no per-user settings directory is available on this platform".to_owned())?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| "pet item filter file has no parent directory".to_owned())?;
+    fs::create_dir_all(parent)
+        .map_err(|error| format!("could not create settings directory: {error}"))?;
+
+    let mut ids = ignored_item_ids
+        .iter()
+        .copied()
+        .filter(|item_id| *item_id > 0)
+        .collect::<Vec<_>>();
+    ids.sort_unstable();
+    ids.dedup();
+    let mut contents = format!(
+        "IgnoreMeso={ignore_meso}\nIgnoreBelowLevelEquipment={ignore_below_level_equipment}\n"
+    );
+    for item_id in ids {
+        contents.push_str(&format!("IgnoredItem={item_id}\n"));
+    }
+
+    let temporary_path = path.with_extension("ini.tmp");
+    fs::write(&temporary_path, contents)
+        .map_err(|error| format!("could not write pet item filter: {error}"))?;
+    #[cfg(windows)]
+    if path.exists() {
+        fs::remove_file(&path)
+            .map_err(|error| format!("could not replace pet item filter: {error}"))?;
+    }
+    fs::rename(&temporary_path, &path)
+        .map_err(|error| format!("could not save pet item filter: {error}"))?;
+    Ok(path)
+}
+
 impl SocialSettings {
     pub(super) fn load() -> Self {
         let mut settings = Self::default();

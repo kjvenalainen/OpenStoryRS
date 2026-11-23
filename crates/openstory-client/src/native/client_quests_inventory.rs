@@ -253,6 +253,34 @@ impl ClientApp {
         self.refresh_quest_log_texture();
     }
 
+    pub(super) fn selected_quest_has_reward_choices(&self) -> bool {
+        if self.quest_log_tab != QuestLogTab::Active {
+            return false;
+        }
+        let Some(quest_id) = quest_ids_for_tab(
+            &self.quest_log,
+            &self.available_quests,
+            self.quest_log_tab,
+            &self.quest_archive,
+            &self.font,
+        )
+        .get(self.quest_log_selected)
+        .copied() else {
+            return false;
+        };
+        let Some(character) = self.active_character.as_ref() else {
+            return false;
+        };
+        !quest_reward_choices(
+            quest_id,
+            &self.quest_archive,
+            &self.string_archive,
+            character,
+            &mut HashMap::new(),
+        )
+        .is_empty()
+    }
+
     pub(super) fn quest_log_has_detail(&self) -> bool {
         self.quest_log_detail_open
             && quest_ids_for_tab(
@@ -290,9 +318,7 @@ impl ClientApp {
         if self.quest_log_selected < self.quest_log_scroll {
             self.quest_log_scroll = self.quest_log_selected;
         } else if self.quest_log_selected
-            >= self
-                .quest_log_scroll
-                .saturating_add(QUEST_LOG_VISIBLE_ROWS)
+            >= self.quest_log_scroll.saturating_add(QUEST_LOG_VISIBLE_ROWS)
         {
             self.quest_log_scroll = self
                 .quest_log_selected
@@ -395,8 +421,11 @@ impl ClientApp {
                 - QUEST_SCROLLBAR_WIDTH as f32
                 - QUEST_DETAIL_SCROLLBAR_INSET as f32;
             let body_top = QUEST_DETAIL_BODY_TOP as f32;
-            let body_height = quest_detail_body_bottom(self.quest_log_tab)
-                .saturating_sub(QUEST_DETAIL_BODY_TOP) as f32;
+            let detail_body_bottom = quest_detail_body_bottom(
+                self.quest_log_tab,
+                self.selected_quest_has_reward_choices(),
+            );
+            let body_height = detail_body_bottom.saturating_sub(QUEST_DETAIL_BODY_TOP) as f32;
             if (scrollbar_x..scrollbar_x + QUEST_SCROLLBAR_WIDTH as f32).contains(&x)
                 && (body_top..body_top + body_height).contains(&y)
             {
@@ -1182,6 +1211,21 @@ impl ClientApp {
                 self.update_inventory_hover();
                 self.refresh_inventory_tooltip_texture();
             }
+        } else if self.equipment_tab == EquipmentTab::Pet
+            && ui_equipment::item_ignore_bounds().contains(local_x, local_y)
+        {
+            if self.inventory.as_ref().is_some_and(|inventory| {
+                inventory
+                    .equipped()
+                    .any(|item| item.item_id == ui_equipment::ITEM_IGNORE_PENDANT_ID)
+            }) {
+                self.open_pet_item_filter();
+            } else {
+                self.push_chat_line(
+                    "[Pet] Equip the Item Ignore Pendant to open its exception list.".to_owned(),
+                    [255, 215, 128],
+                );
+            }
         }
         true
     }
@@ -1351,6 +1395,27 @@ impl ClientApp {
         }
         if moved && let Some(drop_cursor) = cursor {
             let screen_cursor = self.cursor.unwrap_or(drop_cursor);
+            if self.topmost_dialog_window_at(screen_cursor) == Some(DialogWindow::PetItemFilter) {
+                let (filter_x, filter_y) = self.pet_item_filter_origin();
+                if (0.0..PET_ITEM_FILTER_PANEL_WIDTH as f32).contains(&(drop_cursor.x - filter_x))
+                    && (0.0..PET_ITEM_FILTER_PANEL_HEIGHT as f32)
+                        .contains(&(drop_cursor.y - filter_y))
+                    && let Some(item_id) = self.inventory.as_ref().and_then(|inventory| {
+                        inventory
+                            .items
+                            .iter()
+                            .find(|item| {
+                                item.inventory_type == source_type && item.slot == source_slot
+                            })
+                            .map(|item| item.item_id)
+                    })
+                {
+                    self.add_pet_item_filter_id(item_id);
+                }
+                self.refresh_inventory_texture();
+                self.refresh_pet_item_filter_texture();
+                return;
+            }
             if self.topmost_dialog_window_at(screen_cursor)
                 == Some(DialogWindow::EquipmentInventory)
             {

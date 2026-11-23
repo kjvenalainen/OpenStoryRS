@@ -710,6 +710,7 @@ impl ClientApp {
             .unwrap_or_else(|| map_name.clone());
         let panel = match minimap::render(
             data,
+            &self.ui_archive,
             ui_assets,
             LogicalSize::LEGACY_1024X768,
             &map_name,

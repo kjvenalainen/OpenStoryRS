@@ -260,6 +260,19 @@ fn npc_shop_sell_quantity(item: &openstory_protocol::InventoryItem) -> Option<Np
     })
 }
 
+fn npc_shop_sell_items(
+    inventory: &openstory_protocol::InventorySnapshot,
+    tab: openstory_protocol::InventoryType,
+) -> Vec<&openstory_protocol::InventoryItem> {
+    let mut items: Vec<_> = inventory
+        .items
+        .iter()
+        .filter(|item| item.inventory_type == tab && item.slot > 0)
+        .collect();
+    items.sort_unstable_by_key(|item| item.slot);
+    items
+}
+
 fn npc_shop_sell_maximum(item: &openstory_protocol::InventoryItem) -> i16 {
     // Rechargeable projectiles sell as a complete set of charges.
     if npc_shop_item_is_equipment(item.item_id) || matches!(item.item_id / 10_000, 207 | 233) {
@@ -493,11 +506,7 @@ fn render_npc_shop_panel(
             bounds,
         );
     }
-    let sell: Vec<_> = inventory
-        .items
-        .iter()
-        .filter(|i| i.inventory_type == state.tab && i.slot > 0)
-        .collect();
+    let sell = npc_shop_sell_items(inventory, state.tab);
     for (right, count, offset) in [
         (false, state.buy_item_indices.len(), state.buy_scroll),
         (true, sell.len(), state.sell_scroll),
@@ -872,7 +881,13 @@ impl ClientApp {
         let Some(state) = self.npc_shop.as_ref() else {
             return;
         };
-        let hovered_button = self.cursor.and_then(|cursor| {
+        let cursor = self
+            .cursor
+            .filter(|cursor| {
+                self.topmost_dialog_window_at(*cursor) == Some(DialogWindow::NpcShop)
+            })
+            .map(|cursor| self.dialog_window_input_cursor(cursor));
+        let hovered_button = cursor.and_then(|cursor| {
             NPC_SHOP_BUTTONS
                 .into_iter()
                 .find(|(name, x, y)| {
@@ -892,7 +907,7 @@ impl ClientApp {
         let hovered_item = if state.quantity.is_some() {
             None
         } else {
-            self.cursor.and_then(|cursor| {
+            cursor.and_then(|cursor| {
                 let x = cursor.x - NPC_SHOP_X;
                 let y = cursor.y - NPC_SHOP_Y;
                 if let Some(row) = npc_shop_row_at(x, y, false) {
@@ -902,10 +917,8 @@ impl ClientApp {
                     self.inventory
                         .as_ref()
                         .and_then(|inventory| {
-                            inventory
-                                .items
-                                .iter()
-                                .filter(|item| item.inventory_type == state.tab && item.slot > 0)
+                            npc_shop_sell_items(inventory, state.tab)
+                                .into_iter()
                                 .nth(state.sell_scroll + row)
                         })
                         .map(|item| NpcShopItemHover::Sell(item.slot))
@@ -940,11 +953,7 @@ impl ClientApp {
         state.buy_scroll = state
             .buy_scroll
             .min(state.buy_item_indices.len().saturating_sub(NPC_SHOP_ROWS));
-        let sell: Vec<_> = inventory
-            .items
-            .iter()
-            .filter(|i| i.inventory_type == state.tab && i.slot > 0)
-            .collect();
+        let sell = npc_shop_sell_items(inventory, state.tab);
         state.sell_scroll = state
             .sell_scroll
             .min(sell.len().saturating_sub(NPC_SHOP_ROWS));
@@ -1047,6 +1056,7 @@ impl ClientApp {
         }
         self.npc_shop_texture = None;
         self.inventory_tooltip_texture = None;
+        self.inventory_comparison_tooltip_texture = None;
         self.refresh_inventory_texture();
     }
 
@@ -1171,9 +1181,8 @@ impl ClientApp {
                 .inventory
                 .as_ref()
                 .and_then(|inv| {
-                    inv.items
-                        .iter()
-                        .filter(|i| i.inventory_type == state.tab && i.slot > 0)
+                    npc_shop_sell_items(inv, state.tab)
+                        .into_iter()
                         .nth(state.sell_scroll + row)
                 })
                 .map(|i| i.slot);

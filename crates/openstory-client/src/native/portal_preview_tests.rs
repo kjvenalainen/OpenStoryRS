@@ -109,6 +109,7 @@ fn check_portal(map_id: i32, anchor: (f64, f64), floor_y: f64, destination: i32)
         let map_name = format!("Map {map_id}");
         let panel = minimap::render(
             minimap,
+            &ui,
             &minimap::UiAssets::load(&ui).unwrap(),
             LogicalSize::new(1024.0, 768.0),
             &map_name,

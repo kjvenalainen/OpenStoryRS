@@ -36,6 +36,10 @@ while their replacements are outstanding.
 - Window chrome and controls use original NX artwork. Item tooltips draw their
   own translucent frame and size it to the visible content. They use the
   installed NX archives for icons, names, descriptions, and base equipment data.
+  Hovering an equipment item on the inventory's Equip tab also shows the worn
+  item for that slot nearby, marked `EQUIPPED`. The comparison tries the right,
+  below, left, then above the hovered item's tooltip, allowing up to 50% of its
+  bounds to extend beyond the logical canvas before choosing another position.
   Equipment flavor text wraps below the stat rows, including mount descriptions
   from `String.nx/Eqp.img/Eqp/Taming`.
 
@@ -47,8 +51,8 @@ while their replacements are outstanding.
 | `hud-chat` | Transparent nine-row history, native target/edge art, input strip | Pointer focus, scroll history and exact channel/frame alignment |
 | `hud-quickslot` | Native plate, shared hit cells, default legends, live rebindings | Match custom key/icon placement and exercise drag/rebinding live |
 | `hud-minimap-collapsed` | Compact native plate and native title | Reference-height border and disabled-control appearance |
-| `hud-minimap-normal` | Corrected v83 six-pixel frame construction | Match reference map viewport/zoom and dimensions |
-| `hud-minimap-expanded` | Corrected native frame, title and map marks | Match reference map viewport/zoom, title area and dimensions |
+| `hud-minimap-normal` | Shared standard window chrome and aligned title controls | Match reference map viewport/zoom and dimensions |
+| `hud-minimap-expanded` | Shared standard window chrome, full map labels and aligned controls | Match reference map viewport/zoom and dimensions |
 | `panel-item-inventory` | Fresh NX layers, tabs, clipped native icons/counts, live scrollbar and meso | Match exact fixture items, borders and tab styling; live drag verification |
 | `panel-item-inventory-tabs` | Five fixtures using the live inventory renderer | Match reference item sets, tab-strip spacing and montage scaling |
 | `panel-equipment-inventory` and its Deco, Beauty and Pet variants | Shared NX window, worn equipment and cash overlays, current appearance previews, worn pet gear and auto-potion assignments | Verify gear changes and potion assignments on a live v83 server |
@@ -96,8 +100,16 @@ recharge but are omitted from the buy list.
 The dialog alignment audit centers inventory, skill and shop tab labels using
 NX bitmap dimensions and origins. The Pet tab uses Character Info artwork for the summoned
 pet's portrait and stats. Right-click a worn pet gear slot to remove it. The Pet equipment
-shortcut opens this tab directly. The expanded stats window stays within the logical canvas when moved, and both
-stat sheets are included in the standalone and menu previews.
+shortcut opens this tab directly. Equip the Item Ignore Pendant and click its slot to open the
+Exception List to its right. The list supports name search, closest-match registration, `*` wildcard
+registration (expanding all matching names), inventory drag registration, selection and deletion,
+plus separate Meso and Low Lvl toggles. Red toggle buttons mean filtering is active; green means
+pickup is allowed. Item rows show scaled NX icons; the panel matches the equipment window's height
+and uses its native list scrollbar and buttons.
+Item IDs and toggle states persist in the per-user settings folder. `panel-pet-item-filter`
+previews the combined layout.
+The expanded stats window stays within the logical canvas when moved, and both stat sheets are
+included in the standalone and menu previews.
 NPC names fit their nameplate before centering. AP and SP
 allocation hitboxes now match the visible NX buttons; stat value fields, skill
 row gaps and the skill scrollbar no longer allocate points. Keyboard item counts

@@ -2292,7 +2292,8 @@ impl ClientApp {
             return;
         }
         if let Some(scene) = self.map_scene.as_mut() {
-            scene.spawn_drop(spawn, frames);
+            let required_level = equipment_required_level(spawn.item_id, &self.character_archive);
+            scene.spawn_drop(spawn, frames, required_level);
         }
     }
 
@@ -2543,6 +2544,9 @@ impl ClientApp {
                 body,
                 loot_target: None,
                 loot_excursion: false,
+                owner_was_climbing: false,
+                follow_stuck_ticks: 0,
+                best_follow_distance: f64::INFINITY,
                 movement_ticks: 0,
                 last_sent_movement: None,
                 stance: spawn.stance,

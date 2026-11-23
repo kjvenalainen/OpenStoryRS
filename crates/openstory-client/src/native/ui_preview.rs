@@ -227,6 +227,8 @@ pub(super) fn run(
                 strings,
                 font,
             )?
+        } else if *name == "panel-pet-item-filter" {
+            build_pet_item_filter_scene(map, legacy_ui, characters, items, strings, font)?
         } else if name.starts_with("panel-merchant-") || *name == "panel-personal-shop" {
             build_merchant_panel_scene(name, map, legacy_ui, characters, items, strings, font)?
         } else if name.starts_with("panel-trade-room") {
@@ -260,6 +262,7 @@ pub(super) fn run(
         } else if matches!(
             *name,
             "panel-npc-chat"
+                | "panel-npc-chat-inventory"
                 | "panel-npc-chat-long"
                 | "panel-npc-chat-long-scrolled"
                 | "panel-npc-chat-tutorial"
@@ -382,6 +385,39 @@ pub(super) fn run(
                 texture_height: height.round() as u32,
                 pixels: Arc::from(pixels),
             });
+            if *name == "panel-npc-chat-inventory" {
+                let inventory = preview_inventory();
+                let pixels = super::render_inventory_panel(
+                    font,
+                    &inventory,
+                    openstory_protocol::InventoryType::Use,
+                    0,
+                    None,
+                    None,
+                    None,
+                    None,
+                    legacy_ui,
+                    items,
+                    characters,
+                    strings,
+                    &mut HashMap::new(),
+                    &mut HashMap::new(),
+                );
+                scene.sprites.push(DecodedSprite {
+                    texture_key: "native-npc-chat-inventory-preview".to_owned(),
+                    rect: SpriteRect {
+                        x: super::INVENTORY_PANEL_X,
+                        y: super::INVENTORY_PANEL_Y,
+                        width: super::INVENTORY_PANEL_WIDTH as f32,
+                        height: super::INVENTORY_PANEL_HEIGHT as f32,
+                        blend_mode: BlendMode::Alpha,
+                    },
+                    depth_order: 1,
+                    texture_width: super::INVENTORY_PANEL_WIDTH,
+                    texture_height: super::INVENTORY_PANEL_HEIGHT,
+                    pixels: Arc::from(pixels),
+                });
+            }
             scene
         } else if *name == "panel-revive-character" {
             let mut scene = build_scene(
@@ -994,6 +1030,23 @@ pub(super) fn run(
                         SpriteRect {
                             x: x + rect.x,
                             y: y + rect.y,
+                            width: rect.width,
+                            height: rect.height,
+                            blend_mode: BlendMode::Alpha,
+                        },
+                        hitbox_color(index),
+                    );
+                }
+            }
+            if *name == "panel-pet-item-filter" {
+                for (index, rect) in ui_pet_item_filter::hitboxes().into_iter().enumerate() {
+                    draw_rect_outline(
+                        &mut image,
+                        CANVAS_WIDTH,
+                        CANVAS_HEIGHT,
+                        SpriteRect {
+                            x: PET_ITEM_FILTER_PANEL_X + rect.x,
+                            y: PET_ITEM_FILTER_PANEL_Y + rect.y,
                             width: rect.width,
                             height: rect.height,
                             blend_mode: BlendMode::Alpha,
@@ -2394,6 +2447,7 @@ fn build_minimap_scene(
         map_string_street_name(string_archive, map_id).unwrap_or_else(|| map_name.clone());
     let panel = minimap::render(
         &data,
+        ui_archive,
         &ui_assets,
         LogicalSize::LEGACY_1024X768,
         &map_name,
@@ -2907,6 +2961,7 @@ fn build_inventory_tabs_scene(
             strings,
             &mut HashMap::new(),
             &mut HashMap::new(),
+            false,
         );
         scene.sprites.push(DecodedSprite {
             texture_key: format!("inventory-tab:{index}"),
@@ -3013,6 +3068,7 @@ fn build_inventory_panel_scene(
         string_archive,
         &mut HashMap::new(),
         &mut HashMap::new(),
+        false,
     );
     let mut sprites = gameplay_backdrop(map_archive, character_archive, font)?;
     sprites.push(DecodedSprite {
@@ -3476,6 +3532,7 @@ fn build_npc_shop_panel_scene(
             Some(&inventory),
             &mut HashMap::new(),
             &mut HashMap::new(),
+            false,
         );
         let point = item_tooltip::position(
             Point {
@@ -3623,6 +3680,7 @@ fn build_item_tooltip_scene(
 ) -> Result<LoginSceneAssets, String> {
     use openstory_protocol::{CharacterStats, EquipInventoryData, InventoryItem, InventoryType};
 
+    let comparison_case = preview_case.starts_with("panel-item-tooltip-equipped-comparison");
     let mut stats = CharacterStats {
         level: 30,
         strength: 30,
@@ -3735,14 +3793,63 @@ fn build_item_tooltip_scene(
         None,
         &mut HashMap::new(),
         &mut HashMap::new(),
+        false,
     );
     let mut sprites = gameplay_backdrop(map_archive, character_archive, font)?;
-    sprites.push(item_tooltip_preview_sprite(
-        "inventory-tooltip:preview",
-        tooltip,
-        Point { x: 520.0, y: 240.0 },
-        0,
-    ));
+    if comparison_case {
+        let mut equipped = item.clone();
+        if let Some(equip) = equipped.equip.as_mut() {
+            equip.level = 3;
+            equip.upgrade_slots = 0;
+            equip.stats[0] = 6;
+            equip.stats[1] = 4;
+            equip.stats[8] = 7;
+        }
+        let equipped_tooltip = item_tooltip::render(
+            font,
+            &equipped,
+            item_archive,
+            character_archive,
+            string_archive,
+            Some(&stats),
+            None,
+            &mut HashMap::new(),
+            &mut HashMap::new(),
+            true,
+        );
+        let (item_point, equipped_point) = item_tooltip::comparison_positions(
+            if preview_case.ends_with("-edge") {
+                Point { x: 930.0, y: 160.0 }
+            } else if preview_case.ends_with("-overflow") {
+                Point { x: 900.0, y: 160.0 }
+            } else {
+                Point { x: 470.0, y: 240.0 }
+            },
+            tooltip.width,
+            tooltip.height,
+            equipped_tooltip.width,
+            equipped_tooltip.height,
+        );
+        sprites.push(item_tooltip_preview_sprite(
+            "inventory-tooltip:preview",
+            tooltip,
+            item_point,
+            0,
+        ));
+        sprites.push(item_tooltip_preview_sprite(
+            "inventory-tooltip:equipped-preview",
+            equipped_tooltip,
+            equipped_point,
+            1,
+        ));
+    } else {
+        sprites.push(item_tooltip_preview_sprite(
+            "inventory-tooltip:preview",
+            tooltip,
+            Point { x: 520.0, y: 240.0 },
+            0,
+        ));
+    }
     Ok(LoginSceneAssets {
         sprites,
         actions: Vec::new(),
@@ -3857,27 +3964,23 @@ fn preview_equipment_tabs_inventory(name: &str) -> openstory_protocol::Inventory
     ];
     inventory
         .items
-        .extend(
-            items
-                .into_iter()
-                .map(|(slot, item_id)| {
-                    let mut item = openstory_protocol::InventoryItem {
-                        inventory_type: openstory_protocol::InventoryType::Equipped,
-                        slot,
-                        item_id,
-                        count: 1,
-                        cash: slot > 100,
-                        ..Default::default()
-                    };
-                    if name == "panel-equipment-inventory-scroll-drop" {
-                        item.equip = Some(openstory_protocol::EquipInventoryData {
-                            upgrade_slots: 2,
-                            ..Default::default()
-                        });
-                    }
-                    item
-                }),
-        );
+        .extend(items.into_iter().map(|(slot, item_id)| {
+            let mut item = openstory_protocol::InventoryItem {
+                inventory_type: openstory_protocol::InventoryType::Equipped,
+                slot,
+                item_id,
+                count: 1,
+                cash: slot > 100,
+                ..Default::default()
+            };
+            if name == "panel-equipment-inventory-scroll-drop" {
+                item.equip = Some(openstory_protocol::EquipInventoryData {
+                    upgrade_slots: 2,
+                    ..Default::default()
+                });
+            }
+            item
+        }));
     inventory
 }
 
@@ -3939,6 +4042,88 @@ fn build_equipment_panel_scene(
         login_buttons: Vec::new(),
         save_id_indicator_draws: None,
     })
+}
+
+fn build_pet_item_filter_scene(
+    map_archive: &NxArchive,
+    legacy_ui_archive: &NxArchive,
+    character_archive: &NxArchive,
+    item_archive: &NxArchive,
+    string_archive: &NxArchive,
+    font: &fontdue::Font,
+) -> Result<LoginSceneAssets, String> {
+    let mut scene = build_equipment_panel_scene(
+        "panel-equipment-inventory-pet",
+        EquipmentTab::Pet,
+        None,
+        map_archive,
+        legacy_ui_archive,
+        character_archive,
+        item_archive,
+        string_archive,
+        font,
+    )?;
+    let mut ignored_item_ids = vec![1_050_058, 1_112_001, 1_442_005, 2_000_000];
+    for (_, item_id) in build_owl_item_name_index(string_archive) {
+        if ignored_item_ids.len() >= 14 {
+            break;
+        }
+        if !ignored_item_ids.contains(&item_id) {
+            ignored_item_ids.push(item_id);
+        }
+    }
+    let mut filter = ui_pet_item_filter::State {
+        open: true,
+        ignored_item_lookup: Arc::new(ignored_item_ids.iter().copied().collect()),
+        ignored_item_ids,
+        ignore_meso: true,
+        ignore_below_level_equipment: false,
+        query: String::new(),
+        scroll: 0,
+        selected_item_id: Some(1_050_058),
+        search_focused: true,
+        key_text_for_ime_dedup: None,
+        notice: None,
+        item_labels: HashMap::new(),
+        item_labels_lower: HashMap::new(),
+        item_labels_loaded: true,
+        display_order: Vec::new(),
+    };
+    let mut name_cache = HashMap::new();
+    for item_id in &filter.ignored_item_ids {
+        let label = item_name(*item_id, string_archive, &mut name_cache);
+        filter
+            .item_labels_lower
+            .insert(*item_id, label.to_lowercase());
+        filter.item_labels.insert(*item_id, label);
+    }
+    ui_pet_item_filter::sort_item_order(&mut filter);
+    filter.selected_item_id = filter.display_order.get(3).copied();
+    let pixels = ui_pet_item_filter::render(
+        font,
+        legacy_ui_archive,
+        item_archive,
+        character_archive,
+        string_archive,
+        &filter,
+        &mut name_cache,
+        &mut HashMap::new(),
+    );
+    scene.sprites.push(DecodedSprite {
+        texture_key: "nx-window:live-pet-item-filter".to_owned(),
+        rect: SpriteRect {
+            x: PET_ITEM_FILTER_PANEL_X,
+            y: PET_ITEM_FILTER_PANEL_Y,
+            width: PET_ITEM_FILTER_PANEL_WIDTH as f32,
+            height: PET_ITEM_FILTER_PANEL_HEIGHT as f32,
+            blend_mode: BlendMode::Alpha,
+        },
+        depth_order: 1,
+        texture_width: PET_ITEM_FILTER_PANEL_WIDTH,
+        texture_height: PET_ITEM_FILTER_PANEL_HEIGHT,
+        pixels: Arc::from(pixels),
+    });
+    Ok(scene)
 }
 
 fn build_quest_log_panel_scene(
@@ -4957,6 +5142,7 @@ fn build_native_window_scene(
                 Some(&inventory),
                 &mut HashMap::new(),
                 &mut HashMap::new(),
+                false,
             );
             let point = item_tooltip::position(cursor, tooltip.width, tooltip.height);
             sprites.push(item_tooltip_preview_sprite(
@@ -4997,18 +5183,26 @@ fn build_native_window_scene(
             skill_archive,
             &format!("{:03}.img/skill/{:07}/icon", skill.id / 10_000, skill.id),
         ) {
+            let pixels = super::render_buff_list_pixels(&[(
+                width,
+                height,
+                pixels,
+                Some(std::time::Duration::from_secs(83)),
+                180_000,
+                std::time::Duration::from_secs(97),
+            )]);
             sprites.push(DecodedSprite {
                 texture_key: "buff-icon:active-preview".to_owned(),
                 rect: SpriteRect {
-                    x: 989.0,
+                    x: 0.0,
                     y: 24.0,
-                    width: 32.0,
+                    width: CANVAS_WIDTH as f32,
                     height: 32.0,
                     blend_mode: BlendMode::Alpha,
                 },
                 depth_order: 0,
-                texture_width: width,
-                texture_height: height,
+                texture_width: CANVAS_WIDTH,
+                texture_height: 32,
                 pixels: Arc::from(pixels),
             });
         }
@@ -5620,6 +5814,7 @@ fn geometry_report(name: &str, scene: &LoginSceneAssets, width: u32, height: u32
         scene.actions.len()
     );
     let native_window_preview = equipment_preview_tab(name).is_some()
+        || name == "panel-pet-item-filter"
         || matches!(
             name,
             "panel-game-menu"

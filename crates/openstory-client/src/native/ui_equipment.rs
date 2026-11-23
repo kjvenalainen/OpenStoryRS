@@ -7,6 +7,7 @@ use ui_foundation::{UiRect, UiTextRole, draw_text_role, measure_text};
 const WIDTH: usize = EQUIPMENT_INVENTORY_PANEL_WIDTH as usize;
 const HEIGHT: usize = EQUIPMENT_INVENTORY_PANEL_HEIGHT as usize;
 pub(super) const CLOSE: UiRect = ui_dialog::inventory_close(WIDTH as f32);
+pub(super) const ITEM_IGNORE_PENDANT_ID: i32 = 1_812_007;
 #[derive(Clone, Copy)]
 struct PetControlSlots {
     pet: UiRect,
@@ -310,6 +311,10 @@ const PET_CELLS: [GearCell; 11] = [
     pet_cell(1820, "Name Tag", 1, 2),
     pet_cell(1830, "Quote Ring", 2, 2),
 ];
+
+pub(super) fn item_ignore_bounds() -> UiRect {
+    pet_cell_bounds(3, 0)
+}
 
 fn is_pet_gear(item_id: i32) -> bool {
     (180..=183).contains(&(item_id / 10_000))
