@@ -3,13 +3,15 @@ struct VertexOutput {
 }
 
 struct UpscaleParameters {
-    // Window-space origin and logical-to-physical scale of the fitted game canvas.
+    // Window-space origin, logical-to-physical scale, and unclamped Lanczos blend.
     viewport: vec4<f32>,
 }
 
 @group(0) @binding(0) var scene_texture: texture_2d<f32>;
 @group(0) @binding(1) var scene_sampler: sampler;
 @group(0) @binding(2) var<uniform> parameters: UpscaleParameters;
+
+const PI: f32 = 3.14159265359;
 
 @vertex
 fn vertex_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
@@ -23,15 +25,15 @@ fn vertex_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
     return output;
 }
 
-fn catmull_rom_weights(t: f32) -> vec4<f32> {
-    let t2 = t * t;
-    let t3 = t2 * t;
-    return vec4<f32>(
-        -0.5 * t + t2 - 0.5 * t3,
-        1.0 - 2.5 * t2 + 1.5 * t3,
-        0.5 * t + 2.0 * t2 - 1.5 * t3,
-        -0.5 * t2 + 0.5 * t3,
-    );
+fn lanczos2(x: f32) -> f32 {
+    if abs(x) < 1e-5 {
+        return 1.0;
+    }
+    if abs(x) >= 2.0 {
+        return 0.0;
+    }
+    let pi_x = PI * x;
+    return (sin(pi_x) / pi_x) * (sin(pi_x * 0.5) / (pi_x * 0.5));
 }
 
 @fragment
@@ -40,29 +42,48 @@ fn fragment_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let logical_position = (input.position.xy - parameters.viewport.xy) / parameters.viewport.z;
     let uv = logical_position / canvas_size;
 
-    // Linear filtering remains the best choice when reducing the logical canvas.
+    // Linear filtering remains preferable when reducing the logical canvas.
     if parameters.viewport.z < 1.0 {
         return textureSampleLevel(scene_texture, scene_sampler, uv, 0.0);
     }
 
-    // Reconstruct the complete composited frame with a sharper cubic kernel when
-    // enlarging it. Pixel-center coordinates keep 1:1 rendering unchanged.
-    let texel_position = logical_position - vec2<f32>(0.5);
-    let base = vec2<i32>(floor(texel_position));
-    let fraction = fract(texel_position);
-    let weight_x = catmull_rom_weights(fraction.x);
-    let weight_y = catmull_rom_weights(fraction.y);
+    // Map each destination pixel center into source texel coordinates.
+    let source_position = logical_position - vec2<f32>(0.5);
+    let base = vec2<i32>(floor(source_position));
+    let fraction = fract(source_position);
     let canvas_size_i = vec2<i32>(textureDimensions(scene_texture));
-    var color = vec4<f32>(0.0);
+    let max_coordinate = canvas_size_i - vec2<i32>(1);
 
-    for (var y = 0u; y < 4u; y += 1u) {
-        for (var x = 0u; x < 4u; x += 1u) {
-            let offset = vec2<i32>(i32(x), i32(y)) - vec2<i32>(1);
-            let coordinate = clamp(base + offset, vec2<i32>(0), canvas_size_i - vec2<i32>(1));
-            color += textureLoad(scene_texture, coordinate, 0) * weight_x[x] * weight_y[y];
+    var color = vec4<f32>(0.0);
+    var total_weight = 0.0;
+    var min_color = vec4<f32>(1.0);
+    var max_color = vec4<f32>(0.0);
+
+    // Four taps per axis cover the Lanczos-2 support around this pixel.
+    for (var y: i32 = -1; y <= 2; y += 1) {
+        let weight_y = lanczos2(fraction.y - f32(y));
+        for (var x: i32 = -1; x <= 2; x += 1) {
+            let weight_x = lanczos2(fraction.x - f32(x));
+            let weight = weight_x * weight_y;
+            let coordinate = clamp(base + vec2<i32>(x, y), vec2<i32>(0), max_coordinate);
+            let texel = textureLoad(scene_texture, coordinate, 0);
+
+            // The nearest 2x2 source pixels bound overshoot around text edges.
+            if x >= 0 && x <= 1 && y >= 0 && y <= 1 {
+                min_color = min(min_color, texel);
+                max_color = max(max_color, texel);
+            }
+
+            color += texel * weight;
+            total_weight += weight;
         }
     }
 
-    // Catmull-Rom can overshoot around high-contrast text edges.
-    return clamp(color, vec4<f32>(0.0), vec4<f32>(1.0));
+    color /= total_weight;
+    let clamped_color = clamp(color, min_color, max_color);
+    let sharpness = clamp(parameters.viewport.w, 0.0, 1.0);
+
+    // A small unconstrained contribution keeps the Lanczos result crisp while
+    // the local clamp suppresses bright and dark ringing around text.
+    return clamp(mix(clamped_color, color, sharpness), vec4<f32>(0.0), vec4<f32>(1.0));
 }

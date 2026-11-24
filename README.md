@@ -19,7 +19,8 @@ Item and meso balances change only when confirmed by server updates.
 
 The native client opens v83 login and world/channel artwork in a resizable GPU-backed
 window, keeps a 1024x768 logical canvas, and scales with letterboxing. Enlarged frames
-use sharper cubic reconstruction to keep bitmap text and sprite edges clearer. The
+use linear-light Lanczos-2 reconstruction with anti-ringing clamping to keep bitmap text
+and sprite edges crisp. Downscaled frames use linear sampling. The
 account and password fields accept text; the password is masked. The selected world and channel
 can be used to request a character list. Characters display name, level, job, and map.
 In the field, the camera keeps the player above the status bar and uses the visible

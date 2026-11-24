@@ -58,6 +58,32 @@ fn quest_description_is_displayable(description: &str) -> bool {
             .all(|character| !character.is_control() || matches!(character, '\r' | '\n' | '\t'))
 }
 
+fn clean_quest_detail_text(text: &str) -> String {
+    let normalized = text
+        .replace("\\r\\n", "\n")
+        .replace("\\n", "\n")
+        .replace("\\r", "\n")
+        .replace("\r\n", "\n")
+        .replace('\r', "\n");
+    let prose = normalized
+        .lines()
+        .filter(|line| !is_quest_item_progress_markup_row(line))
+        .collect::<Vec<_>>()
+        .join("\n");
+    clean_npc_markup(&prose).trim().to_owned()
+}
+
+fn is_quest_item_progress_markup_row(line: &str) -> bool {
+    let line = line.trim();
+    let Some((markup, count)) = line.rsplit_once('/') else {
+        return false;
+    };
+    markup.contains("#t")
+        && markup.contains("#c")
+        && !count.is_empty()
+        && count.chars().all(|character| character.is_ascii_digit())
+}
+
 fn quest_node_integer(node: &openstory_assets::NxNode, field: &str) -> Option<i32> {
     let node = node.child(field).ok()??;
     match node.value().ok()? {
@@ -1635,7 +1661,7 @@ fn render_quest_log_panel(
             quest_info_text(archive, id, "0")
                 .filter(|description| quest_description_is_displayable(description))
         };
-        let description = description.map(|description| clean_npc_markup(&description));
+        let description = description.map(|description| clean_quest_detail_text(&description));
         let reward_choices = if active {
             character.map_or_else(Vec::new, |character| {
                 quest_reward_choices(id, archive, string_archive, character, item_name_cache)
@@ -1663,7 +1689,7 @@ fn render_quest_log_panel(
         let note = if completed {
             quest_info_text(archive, id, "2")
                 .filter(|note| quest_description_is_displayable(note))
-                .map(|note| clean_npc_markup(&note))
+                .map(|note| clean_quest_detail_text(&note))
         } else {
             None
         };

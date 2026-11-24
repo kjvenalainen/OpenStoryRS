@@ -8,6 +8,11 @@ use wgpu::CurrentSurfaceTexture;
 use winit::dpi::PhysicalSize as WindowSize;
 use winit::window::Window;
 
+/// Blend factor between anti-ringing-clamped and raw Lanczos-2 output when upscaling.
+/// `0.0` uses only the clamped result; `1.0` uses the unmodified Lanczos result.
+/// The current `0.3` keeps 70% clamped output to limit halos while restoring some crispness.
+const UPSCALE_SHARPNESS: f32 = 0.3;
+
 #[derive(Debug)]
 pub enum RendererError {
     Surface(String),
@@ -205,10 +210,22 @@ impl GpuRenderer {
 
         let window_size = window.inner_size();
         let initial = safe_surface_size(window_size);
-        let config = surface
+        let mut config = surface
             .get_default_config(&adapter, initial.width, initial.height)
             .ok_or(RendererError::AdapterUnavailable)?;
+        if let Some(srgb_format) = surface
+            .get_capabilities(&adapter)
+            .formats
+            .into_iter()
+            .find(|format| format.is_srgb())
+        {
+            config.format = srgb_format;
+        }
         surface.configure(&device, &config);
+
+        // Composite and reconstruct in linear light even if the window
+        // surface's preferred format is a non-sRGB UNORM format.
+        let scene_format = config.format.add_srgb_suffix();
 
         let scene_size = WindowSize::new(
             logical_size.width.ceil() as u32,
@@ -235,7 +252,7 @@ impl GpuRenderer {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: config.format,
+            format: scene_format,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
         });
@@ -366,7 +383,7 @@ impl GpuRenderer {
             &device,
             &pipeline_layout,
             &shader,
-            config.format,
+            scene_format,
             wgpu::BlendState::ALPHA_BLENDING,
             "openstory-sprite-alpha-pipeline",
         );
@@ -374,7 +391,7 @@ impl GpuRenderer {
             &device,
             &pipeline_layout,
             &shader,
-            config.format,
+            scene_format,
             wgpu::BlendState {
                 color: wgpu::BlendComponent {
                     src_factor: wgpu::BlendFactor::SrcAlpha,
@@ -804,7 +821,7 @@ impl GpuRenderer {
         self.queue.write_buffer(
             &self.scene_uniform,
             0,
-            cast_slice(&[viewport.x, viewport.y, viewport.scale, 0.0]),
+            cast_slice(&[viewport.x, viewport.y, viewport.scale, UPSCALE_SHARPNESS]),
         );
         let mut encoder = self
             .device

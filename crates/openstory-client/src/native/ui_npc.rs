@@ -334,7 +334,17 @@ fn clean_npc_markup(text: &str) -> String {
             chars.next();
             output.push('\n');
         } else if character == '#' {
-            if let Some(next) = chars.next() {
+            if chars.peek() == Some(&'L') {
+                chars.next();
+                while chars.peek().is_some_and(char::is_ascii_digit) {
+                    chars.next();
+                }
+                if chars.peek() == Some(&'#') {
+                    chars.next();
+                }
+            } else if chars.peek() == Some(&'l') {
+                chars.next();
+            } else if let Some(next) = chars.next() {
                 if next.is_ascii_alphabetic() {
                     if !matches!(next, 'b' | 'k' | 'r' | 'g' | 'e' | 'n' | 'h') {
                         while chars.next().is_some_and(|value| value != '#') {}
