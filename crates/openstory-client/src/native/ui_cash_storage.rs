@@ -12,6 +12,21 @@ fn cash_filtered_indices(
             if !cash_product_matches_category(product.item_id, state.category) {
                 return None;
             }
+            if state.category == 1 && state.subcategory > 0 {
+                let prefix = product.item_id / 10_000;
+                let matches = match state.subcategory {
+                    1 => prefix == 100, 2 => prefix == 101, 3 => prefix == 102,
+                    4 => prefix == 105, 5 => prefix == 104, 6 => prefix == 106,
+                    7 => prefix == 107, 8 => prefix == 108,
+                    9 => (130..=170).contains(&prefix), 10 => prefix == 111,
+                    11 => prefix == 110, _ => false,
+                };
+                if !matches { return None; }
+            }
+            if state.category == 7 && state.subcategory > 0 {
+                let prefix = product.item_id / 10_000;
+                if (state.subcategory == 1 && prefix != 180) || (state.subcategory == 2 && prefix != 181) { return None; }
+            }
             if !query.is_empty()
                 && !item_name(product.item_id, string_archive, name_cache)
                     .to_lowercase()
@@ -30,13 +45,14 @@ fn cash_product_matches_category(item_id: i32, category: usize) -> bool {
     match category {
         0 => true,
         1 => item_type == 1 && !(180..=183).contains(&item_prefix),
-        2 => item_type == 2,
+        2 => item_type == 2 || item_id / 1_000 == 5_211,
         3 => item_type == 3,
         4 => item_type == 4,
         5 => item_type >= 5,
         6 => item_prefix == 500,
         7 => item_prefix == 180 || item_prefix == 181,
         8 => (182..190).contains(&item_prefix) || item_prefix == 212,
+        10 => item_prefix == 910,
         _ => false,
     }
 }
@@ -659,6 +675,16 @@ fn draw_storage_keeper(
 #[cfg(test)]
 mod storage_layout_tests {
     use super::*;
+
+    #[test]
+    fn exp_cards_are_listed_with_use_items() {
+        for item in [5_211_000, 5_211_048, 5_211_060, 2_000_000] {
+            assert!(cash_product_matches_category(item, 2), "item {item}");
+        }
+        for item in [5_220_000, 5_000_000, 1_002_000] {
+            assert!(!cash_product_matches_category(item, 2), "item {item}");
+        }
+    }
 
     #[test]
     fn row_hit_testing_matches_both_native_lists_and_their_gaps() {

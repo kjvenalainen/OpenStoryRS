@@ -31,6 +31,11 @@ pub enum CashShopOperation {
         character_slots: u16,
     },
     PurchaseAccepted,
+    InventorySlotsExpanded {
+        inventory_type: u8,
+        slots: u16,
+    },
+    StorageSlotsExpanded(u16),
     ItemPurchased(CashShopItem),
     ItemsPurchased(Vec<CashShopItem>),
     ItemWithdrawn {
@@ -86,6 +91,11 @@ pub fn parse_cash_shop_operation(body: &[u8]) -> Result<CashShopOperation, Packe
             })
         }
         0x4A => Ok(CashShopOperation::PurchaseAccepted),
+        0x60 => Ok(CashShopOperation::InventorySlotsExpanded {
+            inventory_type: packet.read_u8()?,
+            slots: packet.read_u16()?,
+        }),
+        0x62 => Ok(CashShopOperation::StorageSlotsExpanded(packet.read_u16()?)),
         0x57 => Ok(CashShopOperation::ItemPurchased(read_cash_shop_item(
             &mut packet,
         )?)),
@@ -169,6 +179,19 @@ pub fn buy_cash_item_packet(currency: u8, commodity_sn: i32) -> Vec<u8> {
     packet.into_bytes()
 }
 
+/// Purchases four inventory or storage slots using the server's standard price.
+pub fn expand_cash_shop_slots_packet(currency: u8, inventory_type: Option<u8>) -> Vec<u8> {
+    let mut packet = PacketWriter::new(OPCODE_BUY_CASH_ITEM);
+    packet.write_u8(if inventory_type.is_some() { 0x06 } else { 0x07 });
+    packet.write_u8(0);
+    packet.write_i32(i32::from(currency));
+    packet.write_u8(0);
+    if let Some(inventory_type) = inventory_type {
+        packet.write_u8(inventory_type);
+    }
+    packet.into_bytes()
+}
+
 /// Withdraws a locker item. Cosmic reports this identifier as a 64-bit field in
 /// locker snapshots, but reads the withdrawal request as a 32-bit cash ID.
 pub fn withdraw_cash_item_packet(instance_id: i32) -> Vec<u8> {
@@ -209,5 +232,41 @@ fn expect_opcode(packet: &mut PacketReader<'_>, expected: u16) -> Result<(), Pac
         Ok(())
     } else {
         Err(PacketError::UnexpectedOpcode { expected, actual })
+    }
+}
+
+#[cfg(test)]
+mod slot_tests {
+    use super::*;
+
+    #[test]
+    fn slot_expansion_requests_follow_v83_wire_format() {
+        assert_eq!(
+            expand_cash_shop_slots_packet(1, Some(2)),
+            vec![229, 0, 6, 0, 1, 0, 0, 0, 0, 2]
+        );
+        assert_eq!(
+            expand_cash_shop_slots_packet(4, None),
+            vec![229, 0, 7, 0, 4, 0, 0, 0, 0]
+        );
+    }
+
+    #[test]
+    fn slot_expansion_responses_are_bounded() {
+        let packet = [69, 1, 0x60, 2, 32, 0];
+        assert_eq!(
+            parse_cash_shop_operation(&packet).unwrap(),
+            CashShopOperation::InventorySlotsExpanded {
+                inventory_type: 2,
+                slots: 32
+            }
+        );
+        for len in 0..packet.len() {
+            assert!(parse_cash_shop_operation(&packet[..len]).is_err());
+        }
+        assert_eq!(
+            parse_cash_shop_operation(&[69, 1, 0x62, 40, 0]).unwrap(),
+            CashShopOperation::StorageSlotsExpanded(40)
+        );
     }
 }

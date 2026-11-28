@@ -1104,7 +1104,6 @@ impl ClientApp {
                 inventory,
             );
         }
-        self.pending_npc_talk = None;
         self.pending_scripted_quest_end = None;
         self.gameplay_input = GameplayInput::default();
         self.npc_dialogue_scroll_dragging = None;
@@ -1283,6 +1282,25 @@ impl ClientApp {
                 state.character_slots = character_slots;
                 state.pending_withdrawal = None;
             }
+            openstory_protocol::CashShopOperation::InventorySlotsExpanded {
+                inventory_type,
+                slots,
+            } => {
+                if let Some(inventory) = self.inventory.as_mut() {
+                    if let Some(index) = inventory_type
+                        .checked_sub(1)
+                        .map(usize::from)
+                        .filter(|index| *index < 5)
+                    {
+                        inventory.slot_maxima[index] = slots.min(u16::from(u8::MAX)) as u8;
+                        inventory_changed = true;
+                    }
+                }
+                state.notice = Some(format!("Inventory expanded to {slots} slots."));
+            }
+            openstory_protocol::CashShopOperation::StorageSlotsExpanded(slots) => {
+                state.notice = Some(format!("Storage expanded to {slots} slots."));
+            }
             openstory_protocol::CashShopOperation::PurchaseAccepted => {
                 state.notice = Some("Purchase request accepted by the server.".to_owned());
             }
@@ -1455,6 +1473,37 @@ impl ClientApp {
         }
         let currency_index = state.currency.min(2);
         let currency = [1_u8, 2, 4][currency_index];
+        if let Some(index) = state.expand_slots {
+            if state.balances[currency_index] < 4000 {
+                if let Some(state) = self.cash_shop.as_mut() {
+                    state.notice = Some("You need 4,000 cash to expand slots.".to_owned());
+                    state.confirmation = false;
+                    state.expand_slots = None;
+                }
+            } else if let Some(session) = self.session.as_ref() {
+                let inventory_type = (index < 4).then_some(index as u8 + 1);
+                match session.send_packet(openstory_protocol::expand_cash_shop_slots_packet(
+                    currency,
+                    inventory_type,
+                )) {
+                    Ok(()) => {
+                        if let Some(state) = self.cash_shop.as_mut() {
+                            state.notice = Some(
+                                "Slot expansion requested; waiting for the server.".to_owned(),
+                            );
+                            state.confirmation = false;
+                            state.expand_slots = None;
+                        }
+                    }
+                    Err(error) => {
+                        eprintln!("OpenStoryRS: could not expand slots: {error}");
+                        self.channel_connected = false;
+                    }
+                }
+            }
+            self.refresh_cash_shop_texture();
+            return;
+        }
         let Some(product) = self
             .cash_products
             .iter()
@@ -1638,6 +1687,7 @@ impl ClientApp {
             cash_shop_ui::HitAction::BuyPreviewedItem => {
                 if let Some(state) = self.cash_shop.as_mut() {
                     if state.selected_sn.is_some() && state.entered {
+                        state.expand_slots = None;
                         state.confirmation = true;
                         state.search_focused = false;
                     } else if state.selected_sn.is_some() {
@@ -1732,6 +1782,16 @@ impl ClientApp {
             cash_shop_ui::HitAction::Search => {
                 if let Some(state) = self.cash_shop.as_mut() {
                     state.coupon_focused = false;
+                    state.category = 0;
+                    state.subcategory = 0;
+                    state.view = CashShopView::Catalog;
+                    state.page = 0;
+                    state.preview_left_held = false;
+                    state.preview_right_held = false;
+                    state.preview_move_direction = 0;
+                    if state.preview_motion == AvatarMotion::Walk {
+                        state.preview_motion = AvatarMotion::Stand;
+                    }
                     state.search_focused = true;
                 }
             }
@@ -1752,9 +1812,73 @@ impl ClientApp {
             cash_shop_ui::HitAction::Category(category) => {
                 if let Some(state) = self.cash_shop.as_mut() {
                     state.category = category;
+                    state.notice = match category {
+                        9 => Some("Event catalog is not available yet.".to_owned()),
+                        11 => Some("Wish list is not available yet.".to_owned()),
+                        _ => None,
+                    };
+                    state.subcategory = usize::from(category == 1);
+                    state.view = CashShopView::Catalog;
                     state.page = 0;
                     state.selected_sn = None;
                     state.search_focused = false;
+                }
+            }
+            cash_shop_ui::HitAction::Subcategory(index) => {
+                if let Some(state) = self.cash_shop.as_mut() {
+                    state.subcategory = if state.subcategory == index { 0 } else { index };
+                    state.notice = if state.subcategory == 12 {
+                        Some("Premium catalog is not available yet.".to_owned())
+                    } else {
+                        None
+                    };
+                    state.page = 0;
+                    state.search_focused = false;
+                }
+            }
+            cash_shop_ui::HitAction::PetCategory(category, subcategory) => {
+                if let Some(state) = self.cash_shop.as_mut() {
+                    state.category = category;
+                    state.subcategory = subcategory;
+                    state.page = 0;
+                    state.search_focused = false;
+                }
+            }
+            cash_shop_ui::HitAction::GiftProduct | cash_shop_ui::HitAction::ReserveProduct => {
+                if let Some(state) = self.cash_shop.as_mut() {
+                    state.notice = Some("This shop action is not available yet.".to_owned());
+                }
+            }
+            cash_shop_ui::HitAction::InventoryTab(index) => {
+                if let Some(state) = self.cash_shop.as_mut() {
+                    state.inventory_tab = index;
+                    state.cash_inventory_scroll_row = 0;
+                    state.search_focused = false;
+                }
+            }
+            cash_shop_ui::HitAction::PreviewBackground(index) => {
+                if let Some(state) = self.cash_shop.as_mut() {
+                    state.preview_background = index;
+                    state.search_focused = false;
+                }
+            }
+            cash_shop_ui::HitAction::ExpandSlots(index) => {
+                if let Some(state) = self.cash_shop.as_mut() {
+                    if state.entered {
+                        state.expand_slots = Some(index);
+                        state.confirmation = true;
+                        state.search_focused = false;
+                    } else {
+                        state.notice = Some("Waiting for the server to open the shop.".to_owned());
+                    }
+                }
+            }
+            cash_shop_ui::HitAction::LockerScroll => {
+                if let Some(state) = self.cash_shop.as_mut() {
+                    let maximum = state.locker.len().div_ceil(6).saturating_sub(2);
+                    let y = cursor.y / (768.0 / 600.0);
+                    state.locker_scroll_row =
+                        (((y - 348.0) / 68.0).clamp(0.0, 1.0) * maximum as f32).round() as usize;
                 }
             }
             cash_shop_ui::HitAction::Product(index) => {
@@ -1776,6 +1900,7 @@ impl ClientApp {
                     state.preview_remove_all = false;
                     state.search_focused = false;
                     if state.entered {
+                        state.expand_slots = None;
                         state.confirmation = true;
                     } else {
                         state.notice = Some("Waiting for the server to open the shop.".to_owned());
@@ -1811,10 +1936,14 @@ impl ClientApp {
                 }
             }
             cash_shop_ui::HitAction::CashInventoryScroll => {
-                let maximum = self
-                    .inventory
-                    .as_ref()
-                    .map_or(0, cash_shop_ui::cash_inventory_scroll_max);
+                let maximum = self.inventory.as_ref().map_or(0, |inventory| {
+                    cash_shop_ui::cash_inventory_scroll_max(
+                        inventory,
+                        self.cash_shop
+                            .as_ref()
+                            .map_or(0, |state| state.inventory_tab),
+                    )
+                });
                 if let Some(state) = self.cash_shop.as_mut() {
                     state.cash_inventory_scroll_row =
                         cash_shop_ui::cash_inventory_scroll_from_click(cursor.y, maximum);
@@ -1844,6 +1973,7 @@ impl ClientApp {
             cash_shop_ui::HitAction::CancelPurchase => {
                 if let Some(state) = self.cash_shop.as_mut() {
                     state.confirmation = false;
+                    state.expand_slots = None;
                 }
             }
         }
@@ -1868,15 +1998,39 @@ impl ClientApp {
     }
 
     pub(super) fn scroll_cash_shop_inventory(&mut self, cursor: Point, amount: f32) -> bool {
+        let locker_area = cash_shop_ui::Rect {
+            x: 0.0,
+            y: 340.0 * 1.28,
+            width: 245.0 * 1.28,
+            height: 80.0 * 1.28,
+        };
+        if locker_area.contains(cursor.x, cursor.y) {
+            if let Some(state) = self.cash_shop.as_mut() {
+                let maximum = state.locker.len().div_ceil(6).saturating_sub(2);
+                state.locker_scroll_row = if amount > 0.0 {
+                    state.locker_scroll_row.saturating_sub(1)
+                } else if amount < 0.0 {
+                    (state.locker_scroll_row + 1).min(maximum)
+                } else {
+                    state.locker_scroll_row
+                };
+            }
+            self.refresh_cash_shop_texture();
+            return true;
+        }
         if !self.cash_shop.as_ref().is_some_and(|_| {
             cash_shop_ui::cash_inventory_scroll_area().contains(cursor.x, cursor.y)
         }) {
             return false;
         }
-        let maximum = self
-            .inventory
-            .as_ref()
-            .map_or(0, cash_shop_ui::cash_inventory_scroll_max);
+        let maximum = self.inventory.as_ref().map_or(0, |inventory| {
+            cash_shop_ui::cash_inventory_scroll_max(
+                inventory,
+                self.cash_shop
+                    .as_ref()
+                    .map_or(0, |state| state.inventory_tab),
+            )
+        });
         let Some(state) = self.cash_shop.as_mut() else {
             return false;
         };

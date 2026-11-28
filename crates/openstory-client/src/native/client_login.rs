@@ -403,7 +403,6 @@ impl ClientApp {
                 self.chat_input_focused = false;
                 self.chat_input.clear();
                 self.npc_dialogue = None;
-                self.pending_npc_talk = None;
                 self.pending_scripted_quest_end = None;
                 self.character_info = None;
                 self.character_info_texture = None;
@@ -1582,15 +1581,6 @@ impl ClientApp {
                             eprintln!("OpenStory: could not start login session: {error}");
                         }
                     }
-                    if returning_to_character_select {
-                        if self.selected_world.is_some() {
-                            self.request_characters();
-                            self.pending_relog_to_character_select = false;
-                        } else {
-                            eprintln!("OpenStory: missing selected world after relog response");
-                            self.pending_relog_to_character_select = false;
-                        }
-                    }
                     if let Some(packet) = self.pending_login_packet.take()
                         && let Some(session) = self.session.as_ref()
                         && let Err(error) = session.send_packet(packet)
@@ -1614,6 +1604,8 @@ impl ClientApp {
                 }
                 openstory_protocol::SessionEvent::Disconnected(message) => {
                     self.pending_login_packet = None;
+                    self.pending_relog_to_character_select = false;
+                    self.relog_retry = None;
                     self.session = None;
                     self.login_server_connected = false;
                     self.channel_connected = false;

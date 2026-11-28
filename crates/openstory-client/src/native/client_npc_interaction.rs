@@ -1,7 +1,5 @@
 use super::*;
 
-pub(super) const UNIMPLEMENTED_NPC_TEXT: &str = "Nothing to say...";
-
 impl ClientApp {
     const NPC_CHAT_HORIZONTAL_RANGE: f64 = 200.0;
     const NPC_CHAT_VERTICAL_RANGE: f64 = 400.0;
@@ -115,34 +113,10 @@ impl ClientApp {
         let Some(session) = self.session.as_ref() else {
             return;
         };
-        match session.send_packet(openstory_protocol::talk_to_npc(object_id)) {
-            Ok(()) => self.pending_npc_talk = Some((object_id, Instant::now())),
-            Err(error) => {
-                eprintln!("OpenStory: could not request NPC dialogue: {error}");
-                self.channel_connected = false;
-            }
+        if let Err(error) = session.send_packet(openstory_protocol::talk_to_npc(object_id)) {
+            eprintln!("OpenStory: could not request NPC dialogue: {error}");
+            self.channel_connected = false;
         }
-    }
-
-    pub(super) fn expire_pending_npc_talk(&mut self, now: Instant) {
-        let Some((object_id, sent)) = self.pending_npc_talk else {
-            return;
-        };
-        if now.saturating_duration_since(sent) < Duration::from_millis(1500) {
-            return;
-        }
-        self.pending_npc_talk = None;
-        if self.npc_dialogue.is_some() || self.storage.is_some() || self.npc_shop.is_some() {
-            return;
-        }
-        let Some(npc_id) = self
-            .map_scene
-            .as_ref()
-            .and_then(|scene| scene.npcs.get(&object_id).map(|npc| npc.npc_id))
-        else {
-            return;
-        };
-        self.show_unimplemented_npc_dialogue(npc_id);
     }
 
     pub(super) fn retry_silent_scripted_quest_end(&mut self, now: Instant) {
@@ -179,20 +153,6 @@ impl ClientApp {
                 [255, 180, 120],
             );
         }
-    }
-
-    fn show_unimplemented_npc_dialogue(&mut self, npc_id: i32) {
-        self.show_local_quest_conversation(
-            npc_id,
-            LocalQuestConversation {
-                pages: vec![UNIMPLEMENTED_NPC_TEXT.to_owned()],
-                page: 0,
-                request: None,
-                accepted_pages: Vec::new(),
-                questions: HashMap::new(),
-                feedback: None,
-            },
-        );
     }
 
     pub(super) fn open_npc_quest_conversation(

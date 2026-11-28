@@ -134,6 +134,15 @@ pub(super) fn run(
         if name.starts_with("page-cash-shop") {
             let variant = match *name {
                 "page-cash-shop" => "catalog",
+                "page-cash-shop-search" => "search",
+                "page-cash-shop-equip" => "equip",
+                "page-cash-shop-equip-face" => "equip-face",
+                "page-cash-shop-equip-notice" => "equip-notice",
+                "page-cash-shop-long-names" => "long-names",
+                "page-cash-shop-use-exp" => "use-exp",
+                "page-cash-shop-background-2" => "background-2",
+                "page-cash-shop-background-3" => "background-3",
+                "page-cash-shop-pet-gear" => "pet-gear",
                 "page-cash-shop-remove-all" => "remove-all",
                 "page-cash-shop-tooltip" => "catalog-tooltip",
                 "page-cash-shop-locker" => "locker",
@@ -279,7 +288,6 @@ pub(super) fn run(
                 | "panel-npc-chat-navigation"
                 | "panel-npc-chat-text-input"
                 | "panel-npc-chat-number-input"
-                | "panel-npc-chat-unimplemented"
         ) {
             let mut scene = build_scene(
                 "page-first-map",
@@ -297,8 +305,6 @@ pub(super) fn run(
                 let (npc_id, message_type, navigation, raw_text) = match *name {
                     "panel-npc-chat-long" | "panel-npc-chat-long-scrolled" => (2004, 0, None,
                         (1..=18).map(|index| format!("Line {index}: A longer dialogue should remain inside the window.\n")).collect()),
-                    "panel-npc-chat-unimplemented" => (2004, 0, None,
-                        super::client_npc_interaction::UNIMPLEMENTED_NPC_TEXT.to_owned()),
                     "panel-npc-chat-menu" => {
                         let choices = vec![NpcQuestChoice { quest_id: 1038, side: 1, ready: true },
                             NpcQuestChoice { quest_id: 1040, side: 0, ready: true }];
@@ -747,6 +753,32 @@ pub(super) fn run(
                 false,
                 &mut MapArtCache::default(),
             )?;
+            if let Some((width, height, pixels)) =
+                decode_nx_icon(skills, "100.img/skill/1001004/icon")
+            {
+                let pixels = super::render_buff_list_pixels(&[(
+                    width,
+                    height,
+                    pixels,
+                    Some(std::time::Duration::from_secs(83)),
+                    180_000,
+                    std::time::Duration::from_secs(97),
+                )]);
+                sprites.push(DecodedSprite {
+                    texture_key: "buff-icon:banner-overlay-preview".to_owned(),
+                    rect: SpriteRect {
+                        x: 0.0,
+                        y: BUFF_LIST_Y,
+                        width: CANVAS_WIDTH as f32,
+                        height: 32.0,
+                        blend_mode: BlendMode::Alpha,
+                    },
+                    depth_order: 1,
+                    texture_width: CANVAS_WIDTH,
+                    texture_height: 32,
+                    pixels: Arc::from(pixels),
+                });
+            }
             LoginSceneAssets {
                 sprites,
                 actions: Vec::new(),
@@ -5395,7 +5427,7 @@ fn build_native_window_scene(
                 texture_key: "buff-icon:active-preview".to_owned(),
                 rect: SpriteRect {
                     x: 0.0,
-                    y: 24.0,
+                    y: BUFF_LIST_Y,
                     width: CANVAS_WIDTH as f32,
                     height: 32.0,
                     blend_mode: BlendMode::Alpha,

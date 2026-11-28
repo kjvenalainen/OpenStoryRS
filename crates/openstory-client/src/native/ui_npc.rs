@@ -1718,12 +1718,15 @@ fn draw_dialogue_text_with_icons_scrolled_in_viewport(
                 {
                     continue;
                 }
-                let alpha = coverage[row * metrics.width + column];
+                let alpha = u32::from(coverage[row * metrics.width + column]);
                 if alpha == 0 {
                     continue;
                 }
+                // Small unhinted glyphs have many partially covered pixels. Give
+                // those pixels more contrast before the panel is scaled, while
+                // retaining antialiasing and fully covered glyph interiors.
+                let source_alpha = alpha + alpha * (255 - alpha) / 510;
                 let index = (py as usize * width + px as usize) * 4;
-                let source_alpha = u32::from(alpha);
                 let destination_alpha = u32::from(pixels[index + 3]);
                 let inverse = 255 - source_alpha;
                 let output_alpha = source_alpha + destination_alpha * inverse / 255;

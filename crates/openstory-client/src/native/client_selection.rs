@@ -290,13 +290,35 @@ impl ClientApp {
             );
             return;
         }
-        let Some(session) = self.session.as_ref() else {
-            eprintln!("OpenStory: cannot return to character selection without a server session");
-            return;
-        };
-        if let Err(error) = session.send_packet(openstory_protocol::relog_packet()) {
-            eprintln!("OpenStory: could not request character selection: {error}");
-        }
+        self.reconnect_for_character_select();
+    }
+
+    pub(super) fn reconnect_for_character_select(&mut self) {
+        let login = self.login_packet().or_else(|_| configured_login_packet());
+        self.session = None;
+        self.login_server_connected = false;
+        self.channel_connected = false;
+        self.server_ui_disabled = false;
+        self.active_character = None;
+        self.taming_mount_stats = None;
+        self.inventory = None;
+        self.marked_inventory_items.clear();
+        self.inventory_pending_move = None;
+        self.session_energy = None;
+        self.gm_account = false;
+        self.gm_hidden = false;
+        self.mts_open = false;
+        self.mts_open_snapshot = None;
+        self.mts_balances = None;
+        self.auto_buff_skills.clear();
+        self.auto_buff_skill_entries.clear();
+        self.auto_buff_retry_at.clear();
+        self.channel_switch_open = false;
+        self.return_to_login();
+        self.pending_relog_to_character_select = login.is_ok() && self.selected_world.is_some();
+        self.relog_retry = None;
+        self.pending_login_packet = login.ok();
+        self.session = Some(session::connect(self.server_address.clone()));
     }
 
     pub(super) fn show_character_selection(

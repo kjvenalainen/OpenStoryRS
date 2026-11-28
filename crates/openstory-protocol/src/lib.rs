@@ -56,8 +56,9 @@ pub use cash_shop::{
     CashShopItem, CashShopOperation, OPCODE_BUY_CASH_ITEM, OPCODE_CASH_SHOP_OPERATION,
     OPCODE_CHECK_CASH, OPCODE_COUPON_CODE, OPCODE_ENTER_CASH_SHOP, OPCODE_QUERY_CASH_RESULT,
     OPCODE_SET_CASH_SHOP, buy_cash_item_packet, cash_shop_coupon_packet, charge_nx_credit_packet,
-    enter_cash_shop_packet, exit_cash_shop_packet, parse_cash_balances, parse_cash_shop_open,
-    parse_cash_shop_operation, query_cash_balance_packet, withdraw_cash_item_packet,
+    enter_cash_shop_packet, exit_cash_shop_packet, expand_cash_shop_slots_packet,
+    parse_cash_balances, parse_cash_shop_open, parse_cash_shop_operation,
+    query_cash_balance_packet, withdraw_cash_item_packet,
 };
 pub use events::{
     EventReward, OPCODE_EVENT_INFO, OPCODE_REQUEST_EVENT_INFO, ServerEventInfo, parse_event_info,

@@ -183,8 +183,9 @@ impl ApplicationHandler for ClientApp {
                     let was_moving = shop.preview_move_direction != 0;
                     shop.preview_left_held = false;
                     shop.preview_right_held = false;
+                    shop.preview_up_held = false;
+                    shop.preview_down_held = false;
                     shop.preview_move_direction = 0;
-                    shop.preview_move_elapsed = Duration::ZERO;
                     if was_moving {
                         shop.preview_motion = AvatarMotion::Stand;
                         shop.preview_frame_index = 0;
@@ -1704,9 +1705,6 @@ impl ApplicationHandler for ClientApp {
                 }
             }
             WindowEvent::KeyboardInput { mut event, .. } => {
-                if self.map_loading_started_at.is_some() {
-                    return;
-                }
                 // Some macOS input paths report named keys while leaving
                 // physical_key unidentified. Normalize keys used by modal and
                 // gameplay controls before routing the event.
@@ -1725,6 +1723,21 @@ impl ApplicationHandler for ClientApp {
                 }
                 if event.state == ElementState::Released {
                     self.release_gameplay_key(event.physical_key);
+                    if self.cash_shop.is_some()
+                        && self.handle_cash_shop_preview_key(
+                            event.physical_key,
+                            event.state,
+                            event.repeat,
+                        )
+                    {
+                        if let Some(window) = self.window.as_ref() {
+                            window.request_redraw();
+                        }
+                        return;
+                    }
+                }
+                if self.map_loading_started_at.is_some() {
+                    return;
                 }
                 if self.server_notice_popup.is_some() {
                     if event.state == ElementState::Pressed && !event.repeat {
@@ -1921,6 +1934,9 @@ impl ApplicationHandler for ClientApp {
                 self.login_key_text_for_ime_dedup = None;
                 self.character_creation_key_text_for_ime_dedup = None;
                 self.chat_key_text_for_ime_dedup = None;
+                if let Some(shop) = self.cash_shop.as_mut() {
+                    shop.key_text_for_ime_dedup = None;
+                }
                 if let Some(input) = self.family_ui.input.as_mut() {
                     input.key_text_for_ime_dedup = None;
                 }
@@ -3036,6 +3052,39 @@ impl ApplicationHandler for ClientApp {
                     }
                     return;
                 }
+                if event.state == ElementState::Pressed
+                    && let Some(shop) = self.cash_shop.as_mut()
+                    && (shop.search_focused || shop.coupon_focused)
+                    && let Some(text) = event
+                        .text
+                        .as_deref()
+                        .filter(|text| text.chars().any(|c| !c.is_control()))
+                {
+                    if shop.search_focused {
+                        for c in text.chars().filter(|c| !c.is_control()) {
+                            if shop.query.chars().count() < 40 {
+                                shop.query.push(c);
+                            }
+                        }
+                        shop.page = 0;
+                    } else {
+                        for c in text
+                            .chars()
+                            .filter(|c| c.is_ascii_alphanumeric() || *c == '-')
+                        {
+                            if shop.coupon_code.chars().count() < 32 {
+                                shop.coupon_code.push(c.to_ascii_uppercase());
+                            }
+                        }
+                        shop.notice = None;
+                    }
+                    shop.key_text_for_ime_dedup = Some(text.to_owned());
+                    self.refresh_cash_shop_texture();
+                    if let Some(window) = self.window.as_ref() {
+                        window.request_redraw();
+                    }
+                    return;
+                }
                 if self.set_gameplay_key(event.physical_key, event.state, event.repeat) {
                     if self.quit_requested {
                         event_loop.exit();
@@ -3426,6 +3475,9 @@ impl ApplicationHandler for ClientApp {
                     self.refresh_chat_texture();
                 } else if self.cash_shop.is_some() {
                     if let Some(shop) = self.cash_shop.as_mut() {
+                        if shop.key_text_for_ime_dedup.take().as_deref() == Some(text.as_str()) {
+                            return;
+                        }
                         if shop.coupon_focused {
                             for character in text.chars() {
                                 if (character.is_ascii_alphanumeric() || character == '-')
@@ -3750,6 +3802,7 @@ impl ApplicationHandler for ClientApp {
                     }
                 }
                 if self.current_field.is_some()
+                    && self.cash_shop.is_none()
                     && let Some(notice) = self.scrolling_notice.as_ref()
                 {
                     if let Some(background) = self.solid_textures.first() {
@@ -3914,22 +3967,6 @@ impl ApplicationHandler for ClientApp {
                             opacity: 1.0,
                         });
                     }
-                }
-                if self.current_field.is_some()
-                    && let Some(texture) = self.buff_list_texture.as_ref()
-                {
-                    draws.push(SpriteDraw {
-                        texture,
-                        x: 0.0,
-                        y: 24.0,
-                        width: 1024.0,
-                        height: 32.0,
-                        uv: [0.0, 0.0, 1.0, 1.0],
-                        tint: [1.0, 1.0, 1.0],
-                        blend_mode: BlendMode::Alpha,
-                        flip_x: false,
-                        opacity: 1.0,
-                    });
                 }
                 if self.current_field.is_some()
                     && self.show_quickslots
@@ -4345,6 +4382,37 @@ impl ApplicationHandler for ClientApp {
                             opacity: 1.0,
                         });
                     }
+                }
+                // Server notices remain above the cash shop, as in the v83 view.
+                if self.cash_shop.is_some()
+                    && let Some(notice) = self.scrolling_notice.as_ref()
+                {
+                    if let Some(background) = self.solid_textures.first() {
+                        draws.push(SpriteDraw {
+                            texture: background,
+                            x: 0.0,
+                            y: 0.0,
+                            width: 1024.0,
+                            height: 32.0,
+                            uv: [0.0, 0.0, 1.0, 1.0],
+                            tint: [0.0, 0.0, 0.0],
+                            blend_mode: BlendMode::Alpha,
+                            flip_x: false,
+                            opacity: 0.535,
+                        });
+                    }
+                    draws.push(SpriteDraw {
+                        texture: &notice.texture,
+                        x: notice.x,
+                        y: 4.0,
+                        width: notice.width,
+                        height: 24.0,
+                        uv: [0.0, 0.0, 1.0, 1.0],
+                        tint: [1.0, 1.0, 0.0],
+                        blend_mode: BlendMode::Alpha,
+                        flip_x: false,
+                        opacity: 1.0,
+                    });
                 }
                 if self.current_field.is_some()
                     && self.active_whisper.is_some()
@@ -4925,6 +4993,22 @@ impl ApplicationHandler for ClientApp {
                         }
                     }
                 }
+                if self.current_field.is_some()
+                    && let Some(texture) = self.buff_list_texture.as_ref()
+                {
+                    draws.push(SpriteDraw {
+                        texture,
+                        x: 0.0,
+                        y: BUFF_LIST_Y,
+                        width: 1024.0,
+                        height: 32.0,
+                        uv: [0.0, 0.0, 1.0, 1.0],
+                        tint: [1.0, 1.0, 1.0],
+                        blend_mode: BlendMode::Alpha,
+                        flip_x: false,
+                        opacity: 1.0,
+                    });
+                }
                 if let Some(popup) = self.server_notice_popup.as_ref() {
                     if let Some(black) = self.solid_textures.first() {
                         draws.push(SpriteDraw {
@@ -5253,6 +5337,22 @@ impl ApplicationHandler for ClientApp {
         }
         self.process_map_prefetch_results();
         self.process_network_events();
+        if let Some((deadline, attempts)) = self.relog_retry
+            && self.pending_relog_to_character_select
+            && Instant::now() >= deadline
+        {
+            self.relog_retry = Some((Instant::now() + Duration::from_secs(60), attempts));
+            if let (Ok(packet), Some(session)) = (
+                self.login_packet().or_else(|_| configured_login_packet()),
+                self.session.as_ref(),
+            ) {
+                if let Err(error) = session.send_packet(packet) {
+                    eprintln!("OpenStory: could not retry character selection login: {error}");
+                    self.pending_relog_to_character_select = false;
+                    self.relog_retry = None;
+                }
+            }
+        }
         self.finish_initial_npc_loading_if_idle(Instant::now());
         self.advance_initial_npc_spawns();
         self.process_map_load_completion();
@@ -5332,7 +5432,6 @@ impl ApplicationHandler for ClientApp {
         if self.map_loading_started_at.is_none() {
             self.advance_npc_dialogue_text(elapsed);
         }
-        self.expire_pending_npc_talk(now);
         self.retry_silent_scripted_quest_end(now);
         self.advance_login_animations(elapsed);
         if self.map_loading_started_at.is_none()

@@ -398,6 +398,7 @@ impl ClientApp {
             session: connect_to.map(session::connect),
             pending_login_packet: None,
             pending_relog_to_character_select: false,
+            relog_retry: None,
             login_server_connected: false,
             channel_connected: false,
             server_ui_disabled: false,
@@ -528,7 +529,6 @@ impl ClientApp {
             show_login_fields: true,
             map_scene: None,
             last_npc_talk_at: None,
-            pending_npc_talk: None,
             pending_scripted_quest_end: None,
             last_local_skill_cast: None,
             pending_zombify_heal_feedback_until: None,
@@ -2109,8 +2109,8 @@ impl ClientApp {
         match item {
             0 => self.open_channel_switch(),
             1 => self.open_settings(),
-            2 => self.open_quit_confirmation(),
-            3 => self.return_to_character_select(),
+            2 => self.return_to_character_select(),
+            3 => self.open_quit_confirmation(),
             _ => {}
         }
     }
@@ -3803,7 +3803,10 @@ impl ClientApp {
                         });
                         if let Some(shop) = self.cash_shop.as_mut() {
                             match modal {
-                                1 => shop.confirmation = false,
+                                1 => {
+                                    shop.confirmation = false;
+                                    shop.expand_slots = None;
+                                }
                                 2 => {
                                     shop.coupon_open = false;
                                     shop.coupon_focused = false;
@@ -4025,7 +4028,6 @@ impl ClientApp {
         self.face_expression_cache.clear();
         self.teleport_effect_frames = None;
         self.npc_dialogue = None;
-        self.pending_npc_talk = None;
         self.pending_scripted_quest_end = None;
         self.rps_game = None;
         self.inventory_drag_source = None;

@@ -321,7 +321,7 @@ impl ClientApp {
             return true;
         }
         if self.show_game_menu {
-            self.show_game_menu = false;
+            self.activate_game_menu_item(3);
             self.game_menu_texture = None;
             return true;
         }

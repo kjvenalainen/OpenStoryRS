@@ -355,7 +355,7 @@ impl ClientApp {
                     && !self.wedding_panel_open
                     && self.server_notice_popup.is_none()
                     && self.rps_game.is_none()
-                    && (24.0..56.0).contains(&cursor.y)
+                    && (BUFF_LIST_Y..BUFF_LIST_Y + 32.0).contains(&cursor.y)
             })
             .and_then(|cursor| {
                 self.buff_list_skill_ids

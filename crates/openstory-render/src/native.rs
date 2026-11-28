@@ -8,11 +8,6 @@ use wgpu::CurrentSurfaceTexture;
 use winit::dpi::PhysicalSize as WindowSize;
 use winit::window::Window;
 
-/// Blend factor between anti-ringing-clamped and raw Lanczos-2 output when upscaling.
-/// `0.0` uses only the clamped result; `1.0` uses the unmodified Lanczos result.
-/// The current `0.3` keeps 70% clamped output to limit halos while restoring some crispness.
-const UPSCALE_SHARPNESS: f32 = 0.3;
-
 #[derive(Debug)]
 pub enum RendererError {
     Surface(String),
@@ -169,7 +164,6 @@ pub struct GpuRenderer {
     config: wgpu::SurfaceConfiguration,
     window_size: WindowSize<u32>,
     logical_size: LogicalSize,
-    scene_size: WindowSize<u32>,
     _scene_texture: wgpu::Texture,
     scene_view: wgpu::TextureView,
     scene_uniform: wgpu::Buffer,
@@ -228,8 +222,8 @@ impl GpuRenderer {
         let scene_format = config.format.add_srgb_suffix();
 
         let scene_size = WindowSize::new(
-            logical_size.width.ceil() as u32,
-            logical_size.height.ceil() as u32,
+            (logical_size.width * 3.0).ceil() as u32,
+            (logical_size.height * 3.0).ceil() as u32,
         );
         if scene_size.width == 0
             || scene_size.height == 0
@@ -243,7 +237,7 @@ impl GpuRenderer {
             });
         }
         let scene_texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("openstory-logical-frame"),
+            label: Some("openstory-supersampled-frame"),
             size: wgpu::Extent3d {
                 width: scene_size.width,
                 height: scene_size.height,
@@ -422,7 +416,6 @@ impl GpuRenderer {
             config,
             window_size,
             logical_size,
-            scene_size,
             _scene_texture: scene_texture,
             scene_view,
             scene_uniform,
@@ -815,13 +808,19 @@ impl GpuRenderer {
                 .write_buffer(&self.instance_buffer, 0, instance_bytes);
         }
 
+        let integer_scale = supersample_scale(viewport.scale);
         let view = frame
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
         self.queue.write_buffer(
             &self.scene_uniform,
             0,
-            cast_slice(&[viewport.x, viewport.y, viewport.scale, UPSCALE_SHARPNESS]),
+            cast_slice(&[
+                viewport.x,
+                viewport.y,
+                viewport.scale / integer_scale,
+                integer_scale,
+            ]),
         );
         let mut encoder = self
             .device
@@ -854,8 +853,8 @@ impl GpuRenderer {
             pass.set_viewport(
                 0.0,
                 0.0,
-                self.scene_size.width as f32,
-                self.scene_size.height as f32,
+                self.logical_size.width * integer_scale,
+                self.logical_size.height * integer_scale,
                 0.0,
                 1.0,
             );
@@ -999,6 +998,36 @@ fn create_upscale_pipeline(
     })
 }
 
+fn supersample_scale(scale: f32) -> f32 {
+    if scale > 2.0 { 3.0 } else { 2.0 }
+}
+
 fn safe_surface_size(size: WindowSize<u32>) -> WindowSize<u32> {
     WindowSize::new(size.width.max(1), size.height.max(1))
+}
+
+#[cfg(test)]
+mod scaling_tests {
+    use super::supersample_scale;
+
+    #[test]
+    fn sprite_shader_is_valid() {
+        let source = include_str!("sprite.wgsl");
+        let module = wgpu::naga::front::wgsl::parse_str(source)
+            .unwrap_or_else(|error| panic!("{}", error.emit_to_string(source)));
+        wgpu::naga::valid::Validator::new(
+            wgpu::naga::valid::ValidationFlags::all(),
+            wgpu::naga::valid::Capabilities::all(),
+        )
+        .validate(&module)
+        .expect("sprite shader must validate");
+    }
+
+    #[test]
+    fn chooses_integer_scene_scale_for_window() {
+        assert_eq!(supersample_scale(0.75), 2.0);
+        assert_eq!(supersample_scale(1.5), 2.0);
+        assert_eq!(supersample_scale(2.0), 2.0);
+        assert_eq!(supersample_scale(2.5), 3.0);
+    }
 }

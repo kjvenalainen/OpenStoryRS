@@ -84,6 +84,140 @@ pub(super) fn can_spend_skill_point(
             .all(|(id, required)| skills.get(id).map_or(0, |learned| learned.level) >= *required)
 }
 
+fn apply_cash_shop_preview_action(
+    shop: &mut CashShopUi,
+    action: i32,
+    pressed: bool,
+    repeat: bool,
+) -> bool {
+    let mut changed = false;
+    if action == 202 {
+        shop.preview_up_held = pressed;
+    } else if action == 203 {
+        shop.preview_down_held = pressed;
+    }
+    if !pressed && matches!(action, 202 | 203) && shop.preview_motion == AvatarMotion::Ladder {
+        if !shop.preview_up_held && !shop.preview_down_held {
+            shop.preview_frame_elapsed = Duration::ZERO;
+        }
+        changed = true;
+    }
+    match action {
+        200 | 201 => {
+            let direction = if action == 200 { -1_i8 } else { 1_i8 };
+            if pressed {
+                if direction < 0 {
+                    shop.preview_left_held = true;
+                } else {
+                    shop.preview_right_held = true;
+                }
+                shop.preview_move_direction = direction;
+                let entering_walk = shop.preview_motion != AvatarMotion::Walk;
+                shop.preview_on_ladder = false;
+                if shop.preview_jump_elapsed.is_none() {
+                    shop.preview_y = cash_shop_ui::PREVIEW_FLOOR_Y;
+                    shop.preview_motion = AvatarMotion::Walk;
+                }
+                shop.preview_facing_right = direction > 0;
+                if entering_walk {
+                    shop.preview_frame_index = 0;
+                    shop.preview_frame_elapsed = Duration::ZERO;
+                }
+                if !repeat {
+                    changed = true;
+                }
+            } else {
+                if direction < 0 {
+                    shop.preview_left_held = false;
+                } else {
+                    shop.preview_right_held = false;
+                }
+                if shop.preview_move_direction == direction {
+                    shop.preview_move_direction = if shop.preview_right_held {
+                        1
+                    } else if shop.preview_left_held {
+                        -1
+                    } else {
+                        0
+                    };
+                }
+                if shop.preview_move_direction != 0 {
+                    shop.preview_facing_right = shop.preview_move_direction > 0;
+                } else if shop.preview_motion == AvatarMotion::Walk {
+                    shop.preview_motion = AvatarMotion::Stand;
+                    shop.preview_frame_index = 0;
+                    shop.preview_frame_elapsed = Duration::ZERO;
+                }
+                changed = true;
+            }
+        }
+        202 if pressed => {
+            if shop.preview_on_ladder
+                || (shop.preview_x - cash_shop_ui::PREVIEW_LADDER_X).abs() <= 16.0
+            {
+                shop.preview_on_ladder = true;
+                shop.preview_x = cash_shop_ui::PREVIEW_LADDER_X;
+                shop.preview_y = (shop.preview_y - cash_shop_ui::PREVIEW_STEP)
+                    .max(cash_shop_ui::PREVIEW_LADDER_TOP_Y);
+                if shop.preview_motion != AvatarMotion::Ladder {
+                    shop.preview_frame_index = 0;
+                    shop.preview_frame_elapsed = Duration::ZERO;
+                }
+                shop.preview_motion = AvatarMotion::Ladder;
+                changed = true;
+            }
+        }
+        203 if pressed => {
+            if shop.preview_on_ladder {
+                let next_y = shop.preview_y + cash_shop_ui::PREVIEW_STEP;
+                if next_y >= cash_shop_ui::PREVIEW_FLOOR_Y {
+                    shop.preview_y = cash_shop_ui::PREVIEW_FLOOR_Y;
+                    shop.preview_on_ladder = false;
+                    shop.preview_motion = AvatarMotion::Stand;
+                    shop.preview_frame_index = 0;
+                    shop.preview_frame_elapsed = Duration::ZERO;
+                } else {
+                    shop.preview_y = next_y;
+                    if shop.preview_motion != AvatarMotion::Ladder {
+                        shop.preview_frame_index = 0;
+                        shop.preview_frame_elapsed = Duration::ZERO;
+                    }
+                    shop.preview_motion = AvatarMotion::Ladder;
+                }
+                changed = true;
+            } else {
+                if shop.preview_motion != AvatarMotion::Crouch {
+                    shop.preview_frame_index = 0;
+                    shop.preview_frame_elapsed = Duration::ZERO;
+                }
+                shop.preview_motion = AvatarMotion::Crouch;
+                changed = true;
+            }
+        }
+        202 | 203 if !pressed && shop.preview_motion == AvatarMotion::Crouch => {
+            shop.preview_motion = AvatarMotion::Stand;
+            shop.preview_frame_index = 0;
+            shop.preview_frame_elapsed = Duration::ZERO;
+            changed = true;
+        }
+        53 if pressed && !repeat => {
+            shop.preview_on_ladder = false;
+            if shop.preview_jump_elapsed.is_some() {
+                return false;
+            }
+            shop.preview_jump_elapsed = Some(Duration::ZERO);
+            if shop.preview_motion != AvatarMotion::Jump {
+                shop.preview_frame_elapsed = Duration::ZERO;
+            }
+            shop.preview_motion = AvatarMotion::Jump;
+            shop.preview_frame_index = 0;
+            changed = true;
+        }
+        _ => {}
+    }
+    changed
+}
+
 impl ClientApp {
     pub(super) fn open_skill_book(&mut self) {
         self.skill_book_tab = self
@@ -136,6 +270,7 @@ impl ClientApp {
             self.inventory.as_ref(),
             &mut self.inventory_icon_cache,
             &mut self.item_name_cache,
+            &mut self.remote_art_cache,
         ) {
             Ok(scene) => scene,
             Err(error) => {
@@ -178,7 +313,9 @@ impl ClientApp {
         let Some(shop) = self.cash_shop.as_ref() else {
             return false;
         };
-        if shop.confirmation || shop.coupon_open || shop.search_focused || shop.coupon_focused {
+        if (shop.confirmation || shop.coupon_open || shop.search_focused || shop.coupon_focused)
+            && state == ElementState::Pressed
+        {
             return false;
         }
 
@@ -187,6 +324,7 @@ impl ClientApp {
             Some(binding) if binding.kind == 5 => Some(binding.action),
             Some(binding) if binding.kind != 0 => None,
             _ => match key {
+                PhysicalKey::Code(KeyCode::Space) => Some(53),
                 PhysicalKey::Code(KeyCode::ArrowLeft) => Some(200),
                 PhysicalKey::Code(KeyCode::ArrowRight) => Some(201),
                 PhysicalKey::Code(KeyCode::ArrowUp) => Some(202),
@@ -198,134 +336,9 @@ impl ClientApp {
             return false;
         };
 
-        let pressed = state == ElementState::Pressed;
-        let mut changed = false;
-        if let Some(shop) = self.cash_shop.as_mut() {
-            match action {
-                200 | 201 => {
-                    let direction = if action == 200 { -1_i8 } else { 1_i8 };
-                    if pressed {
-                        if direction < 0 {
-                            shop.preview_left_held = true;
-                        } else {
-                            shop.preview_right_held = true;
-                        }
-                        shop.preview_move_direction = direction;
-                        let entering_walk = shop.preview_motion != AvatarMotion::Walk;
-                        shop.preview_on_ladder = false;
-                        shop.preview_y = cash_shop_ui::PREVIEW_FLOOR_Y;
-                        shop.preview_motion = AvatarMotion::Walk;
-                        shop.preview_facing_right = direction > 0;
-                        if entering_walk {
-                            shop.preview_frame_index = 0;
-                            shop.preview_frame_elapsed = Duration::ZERO;
-                            shop.preview_move_elapsed = Duration::ZERO;
-                        }
-                        if !repeat {
-                            shop.preview_x = (shop.preview_x
-                                + f32::from(direction) * cash_shop_ui::PREVIEW_STEP)
-                                .clamp(
-                                    cash_shop_ui::PREVIEW_LEFT_BOUND,
-                                    cash_shop_ui::PREVIEW_RIGHT_BOUND,
-                                );
-                            changed = true;
-                        }
-                    } else {
-                        if direction < 0 {
-                            shop.preview_left_held = false;
-                        } else {
-                            shop.preview_right_held = false;
-                        }
-                        if shop.preview_move_direction == direction {
-                            shop.preview_move_direction = if shop.preview_right_held {
-                                1
-                            } else if shop.preview_left_held {
-                                -1
-                            } else {
-                                0
-                            };
-                        }
-                        if shop.preview_move_direction != 0 {
-                            shop.preview_facing_right = shop.preview_move_direction > 0;
-                        } else if shop.preview_motion == AvatarMotion::Walk {
-                            shop.preview_motion = AvatarMotion::Stand;
-                            shop.preview_frame_index = 0;
-                            shop.preview_frame_elapsed = Duration::ZERO;
-                            shop.preview_move_elapsed = Duration::ZERO;
-                        }
-                        changed = true;
-                    }
-                }
-                202 if pressed => {
-                    if shop.preview_on_ladder
-                        || (shop.preview_x - cash_shop_ui::PREVIEW_LADDER_X).abs() <= 16.0
-                    {
-                        shop.preview_on_ladder = true;
-                        shop.preview_x = cash_shop_ui::PREVIEW_LADDER_X;
-                        shop.preview_y = (shop.preview_y - cash_shop_ui::PREVIEW_STEP)
-                            .max(cash_shop_ui::PREVIEW_LADDER_TOP_Y);
-                        if shop.preview_motion != AvatarMotion::Ladder {
-                            shop.preview_frame_index = 0;
-                            shop.preview_frame_elapsed = Duration::ZERO;
-                        }
-                        shop.preview_motion = AvatarMotion::Ladder;
-                        changed = true;
-                    }
-                }
-                203 if pressed => {
-                    if shop.preview_on_ladder {
-                        let next_y = shop.preview_y + cash_shop_ui::PREVIEW_STEP;
-                        if next_y >= cash_shop_ui::PREVIEW_FLOOR_Y {
-                            shop.preview_y = cash_shop_ui::PREVIEW_FLOOR_Y;
-                            shop.preview_on_ladder = false;
-                            shop.preview_motion = AvatarMotion::Stand;
-                            shop.preview_frame_index = 0;
-                            shop.preview_frame_elapsed = Duration::ZERO;
-                        } else {
-                            shop.preview_y = next_y;
-                            if shop.preview_motion != AvatarMotion::Ladder {
-                                shop.preview_frame_index = 0;
-                                shop.preview_frame_elapsed = Duration::ZERO;
-                            }
-                            shop.preview_motion = AvatarMotion::Ladder;
-                        }
-                        changed = true;
-                    } else {
-                        if shop.preview_motion != AvatarMotion::Crouch {
-                            shop.preview_frame_index = 0;
-                            shop.preview_frame_elapsed = Duration::ZERO;
-                        }
-                        shop.preview_motion = AvatarMotion::Crouch;
-                        changed = true;
-                    }
-                }
-                202 | 203 if !pressed && shop.preview_motion == AvatarMotion::Crouch => {
-                    shop.preview_motion = AvatarMotion::Stand;
-                    shop.preview_frame_index = 0;
-                    shop.preview_frame_elapsed = Duration::ZERO;
-                    changed = true;
-                }
-                53 if pressed && !repeat => {
-                    shop.preview_on_ladder = false;
-                    shop.preview_y = (cash_shop_ui::PREVIEW_FLOOR_Y - 22.0)
-                        .max(cash_shop_ui::PREVIEW_LADDER_TOP_Y);
-                    if shop.preview_motion != AvatarMotion::Jump {
-                        shop.preview_frame_elapsed = Duration::ZERO;
-                    }
-                    shop.preview_motion = AvatarMotion::Jump;
-                    shop.preview_frame_index = 0;
-                    changed = true;
-                }
-                53 if !pressed && shop.preview_motion == AvatarMotion::Jump => {
-                    shop.preview_y = cash_shop_ui::PREVIEW_FLOOR_Y;
-                    shop.preview_motion = AvatarMotion::Stand;
-                    shop.preview_frame_index = 0;
-                    shop.preview_frame_elapsed = Duration::ZERO;
-                    changed = true;
-                }
-                _ => {}
-            }
-        }
+        let changed = self.cash_shop.as_mut().is_some_and(|shop| {
+            apply_cash_shop_preview_action(shop, action, state == ElementState::Pressed, repeat)
+        });
         if changed {
             self.refresh_cash_shop_texture();
         }
@@ -1474,5 +1487,46 @@ impl ClientApp {
             Ok(None) => {}
             Err(error) => eprintln!("OpenStory: could not update quest helper: {error}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod cash_shop_preview_input_tests {
+    use super::*;
+
+    #[test]
+    fn releasing_walk_keys_stops_or_keeps_the_other_direction() {
+        let mut shop = CashShopUi::new();
+        apply_cash_shop_preview_action(&mut shop, 200, true, false);
+        assert_eq!(shop.preview_move_direction, -1);
+        apply_cash_shop_preview_action(&mut shop, 201, true, false);
+        apply_cash_shop_preview_action(&mut shop, 201, false, false);
+        assert_eq!(shop.preview_move_direction, -1);
+        apply_cash_shop_preview_action(&mut shop, 200, false, false);
+        assert_eq!(shop.preview_move_direction, 0);
+        assert_eq!(shop.preview_motion, AvatarMotion::Stand);
+    }
+
+    #[test]
+    fn releasing_ladder_and_crouch_keys_stops_their_motion() {
+        let mut shop = CashShopUi::new();
+        shop.preview_x = cash_shop_ui::PREVIEW_LADDER_X;
+        apply_cash_shop_preview_action(&mut shop, 202, true, false);
+        apply_cash_shop_preview_action(&mut shop, 202, true, true);
+        assert_eq!(shop.preview_motion, AvatarMotion::Ladder);
+        shop.preview_frame_elapsed = Duration::from_millis(80);
+        apply_cash_shop_preview_action(&mut shop, 202, false, false);
+        assert!(!shop.preview_up_held);
+        assert_eq!(shop.preview_frame_elapsed, Duration::ZERO);
+        apply_cash_shop_preview_action(&mut shop, 203, true, false);
+        assert!(shop.preview_down_held);
+        assert_eq!(shop.preview_motion, AvatarMotion::Ladder);
+        apply_cash_shop_preview_action(&mut shop, 203, false, false);
+        assert!(!shop.preview_down_held);
+        shop.preview_on_ladder = false;
+        apply_cash_shop_preview_action(&mut shop, 203, true, false);
+        assert_eq!(shop.preview_motion, AvatarMotion::Crouch);
+        apply_cash_shop_preview_action(&mut shop, 203, false, false);
+        assert_eq!(shop.preview_motion, AvatarMotion::Stand);
     }
 }

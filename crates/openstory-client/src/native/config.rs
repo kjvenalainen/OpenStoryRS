@@ -167,7 +167,9 @@ const QUEST_LOG_LIST_WIDTH: u32 = 245;
 const QUEST_LOG_VISIBLE_ROWS: usize = 15;
 const QUEST_HELPER_PANEL_WIDTH: u32 = 202;
 const QUEST_HELPER_PANEL_X: f32 = 806.0;
-const QUEST_HELPER_PANEL_Y: f32 = 90.0;
+const TOP_RIGHT_HUD_SHIFT_Y: f32 = 20.0;
+const BUFF_LIST_Y: f32 = 24.0 - TOP_RIGHT_HUD_SHIFT_Y;
+const QUEST_HELPER_PANEL_Y: f32 = 90.0 - TOP_RIGHT_HUD_SHIFT_Y;
 const KEY_CONFIG_PANEL_WIDTH: u32 = 633;
 const KEY_CONFIG_PANEL_HEIGHT: u32 = 343;
 const KEY_CONFIG_PANEL_X: f32 = (1024.0 - KEY_CONFIG_PANEL_WIDTH as f32) * 0.5;
@@ -190,8 +192,8 @@ const GAME_MENU_HEIGHT: u32 = 125;
 const GAME_MENU_ROWS: [&str; 4] = [
     "Change Channel",
     "System Menu",
-    "Quit Game",
     "Back to Character Select",
+    "Quit Game",
 ];
 const EVENT_LIST_PANEL_X: f32 = (1024.0 - EVENT_LIST_PANEL_WIDTH as f32) * 0.5;
 const EVENT_LIST_PANEL_Y: f32 = (768.0 - EVENT_LIST_PANEL_HEIGHT as f32) * 0.5;
@@ -233,18 +235,6 @@ fn mob_disease_skill_parts(encoded_skill_id: i32) -> Option<(u16, u16)> {
 }
 
 const NPC_DIALOGUE_SCROLL_STEP: usize = 16;
-const CASH_SHOP_CATEGORIES: [&str; 9] = [
-    "All items",
-    "Equipment",
-    "Use",
-    "Setup",
-    "Etc.",
-    "Cash",
-    "Pets",
-    "Pet gear",
-    "Pet misc",
-];
-
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum LoginField {
     Account,

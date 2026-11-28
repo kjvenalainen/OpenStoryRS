@@ -67,7 +67,6 @@ impl ClientApp {
         self.death_respawn_pending = false;
         self.gameplay_input = GameplayInput::default();
         self.npc_dialogue = None;
-        self.pending_npc_talk = None;
         self.pending_scripted_quest_end = None;
         self.inventory_drag_source = None;
         self.inventory_drop_prompt = None;
@@ -274,8 +273,10 @@ impl ClientApp {
             .enumerate()
             .find_map(|(index, skill_id)| {
                 let left = 1024.0 - 35.0 - 32.0 * index as f32;
-                (cursor.x >= left && cursor.x < left + 32.0 && (24.0..56.0).contains(&cursor.y))
-                    .then_some(*skill_id)
+                (cursor.x >= left
+                    && cursor.x < left + 32.0
+                    && (BUFF_LIST_Y..BUFF_LIST_Y + 32.0).contains(&cursor.y))
+                .then_some(*skill_id)
             });
         let Some(skill_id) = skill_id else {
             return false;

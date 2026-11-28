@@ -1144,7 +1144,11 @@ impl ClientApp {
                     Ok(openstory_protocol::LoginResult::Accepted(account)) => {
                         eprintln!("OpenStory: account login accepted");
                         self.accept_tos_pending = false;
-                        if account.gender != 10 {
+                        if self.pending_relog_to_character_select && account.gender != 10 {
+                            self.pending_relog_to_character_select = false;
+                            self.relog_retry = None;
+                            self.request_characters();
+                        } else if account.gender != 10 {
                             self.worlds.clear();
                             if let Some(session) = self.session.as_ref() {
                                 if let Err(error) =
@@ -1157,6 +1161,18 @@ impl ClientApp {
                     }
                     Ok(openstory_protocol::LoginResult::Rejected { reason }) => {
                         eprintln!("OpenStory: login rejected (reason {reason})");
+                        if reason == 7 && self.pending_relog_to_character_select {
+                            let attempts = self.relog_retry.map_or(0, |(_, attempts)| attempts);
+                            if attempts < 10 {
+                                self.relog_retry = Some((
+                                    Instant::now() + Duration::from_millis(500),
+                                    attempts + 1,
+                                ));
+                                return;
+                            }
+                        }
+                        self.pending_relog_to_character_select = false;
+                        self.relog_retry = None;
                         if reason == 23 {
                             self.accept_tos_pending = true;
                             self.show_server_notice_popup(
@@ -2403,7 +2419,6 @@ impl ClientApp {
             openstory_protocol::OPCODE_OPEN_NPC_SHOP => {
                 match openstory_protocol::parse_npc_shop(packet) {
                     Ok(shop) => {
-                        self.pending_npc_talk = None;
                         self.pending_scripted_quest_end = None;
                         self.npc_dialogue = None;
                         let auto_sell_items = self
@@ -3248,30 +3263,7 @@ impl ClientApp {
 
         match event {
             Event::RelogResponse { success: true } => {
-                self.pending_relog_to_character_select = true;
-                self.login_server_connected = false;
-                self.channel_connected = false;
-                self.server_ui_disabled = false;
-                self.pending_login_packet = None;
-                self.session = Some(session::connect(self.server_address.clone()));
-                self.auto_buff_skills.clear();
-                self.auto_buff_skill_entries.clear();
-                self.auto_buff_retry_at.clear();
-                self.active_character = None;
-                self.taming_mount_stats = None;
-                self.inventory = None;
-                self.marked_inventory_items.clear();
-                self.inventory_pending_move = None;
-                self.current_field = None;
-                self.session_energy = None;
-                self.gm_account = false;
-                self.gm_hidden = false;
-                self.mts_open = false;
-                self.mts_open_snapshot = None;
-                self.mts_balances = None;
-                self.show_game_menu = false;
-                self.channel_switch_open = false;
-                eprintln!("OpenStory: reconnecting to the login server after relog response");
+                self.reconnect_for_character_select();
             }
             Event::RelogResponse { success: false } => {
                 self.pending_relog_to_character_select = false;

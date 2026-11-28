@@ -18,9 +18,9 @@ from the closest lower multiple of five through the next multiple (levels 15–2
 Item and meso balances change only when confirmed by server updates.
 
 The native client opens v83 login and world/channel artwork in a resizable GPU-backed
-window, keeps a 1024x768 logical canvas, and scales with letterboxing. Enlarged frames
-use linear-light Lanczos-2 reconstruction with anti-ringing clamping to keep bitmap text
-and sprite edges crisp. Downscaled frames use linear sampling. The
+window, keeps a 1024x768 logical canvas, and scales with letterboxing. Frames render at a 2x or 3x integer scale with sharp bilinear sprite sampling, then
+use linear-light Lanczos-2 filtering to fit the window while keeping bitmap text and
+sprite edges crisp. The
 account and password fields accept text; the password is masked. The selected world and channel
 can be used to request a character list. Characters display name, level, job, and map.
 In the field, the camera keeps the player above the status bar and uses the visible
@@ -205,9 +205,8 @@ The NPC menu lists every available or active quest alongside Talk, so normal ser
 scripts and services remain reachable. Local quizzes use the NX answer and feedback
 branches; Rain's quizzes and Robin's multi-page quiz must be answered before turn-in.
 Pio's recycling returns to its starting NPC when the end NPC is omitted. Lucas's
-training turn-in checks all prerequisite quests. NPCs without a server response
-open a local dialogue saying `Nothing to say...` after 1.5 seconds. Shops and travel
-stay server-authoritative.
+training turn-in checks all prerequisite quests. NPC scripts and services stay
+server-authoritative.
 The dialogue panel handles selection lists, yes/no and accept/decline prompts, text and
 number input, and page navigation. Its frame and standard controls use the NX
 `UIWindow.img/UtilDlgEx` artwork. Long dialogue pages scroll inside their panel with the
@@ -497,10 +496,12 @@ the panel waits for the authoritative stat update. Server `FORCED_STAT_SET` upda
 apply to combat and movement totals, appear in the stats panel, and are cleared by the
 server's `RECALCULATE_STATS` packet. Use the Cash Shop binding or the HUD Cash Shop button to enter the
 rebuilt Cash Shop. Its resizable catalog reads only
-on-sale products with a valid commodity SN from `Etc.nx/Commodity.img`; it supports search,
-category filters, item icons, and avatar try-on previews for equipment, plus currency balance
-refresh, purchase confirmation, and the server-backed cash inventory, locker, and withdrawal
-flow. Click an item in either the cash inventory strip or locker list to move it into the
+on-sale products with a valid commodity SN from `Etc.nx/Commodity.img`; experience cards appear
+in the Use section. The shop supports search, category and equipment-slot filters, item icons,
+background selection, and avatar try-on previews. The preview supports movement, jumping, and
+ladder climbing. Server scrolling notices remain visible above the shop. The shop also provides
+inventory tabs, slot-expansion purchases, currency balance refresh, purchase confirmation, and a scrollable
+server-backed cash locker. Click an item in the locker strip or locker list to move it into the
 character inventory. Charge feedback confirms when NX increases and explains when the server
 does not grant it. Single-item and package purchase results appear in the cash inventory. Server
 responses show reason-specific notices for purchase failures and stock availability. The

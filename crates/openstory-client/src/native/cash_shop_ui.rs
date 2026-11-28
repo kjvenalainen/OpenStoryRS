@@ -29,7 +29,7 @@ pub(super) const PREVIEW_LADDER_TOP_Y: f32 = 52.0;
 pub(super) const PREVIEW_LEFT_BOUND: f32 = 22.0;
 pub(super) const PREVIEW_RIGHT_BOUND: f32 = 186.0;
 pub(super) const PREVIEW_STEP: f32 = 12.0;
-const PREVIEW_MOVE_INTERVAL: std::time::Duration = std::time::Duration::from_millis(140);
+const PREVIEW_MOVE_SPEED: f32 = 85.0;
 
 /// A logical-coordinate region used by both the Cash Shop view and input code.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -70,6 +70,14 @@ pub(super) enum HitAction {
     CatalogView,
     LockerView,
     Category(usize),
+    Subcategory(usize),
+    PetCategory(usize, usize),
+    GiftProduct,
+    ReserveProduct,
+    InventoryTab(usize),
+    PreviewBackground(usize),
+    ExpandSlots(usize),
+    LockerScroll,
     Product(usize),
     BuyProduct(usize),
     Currency(usize),
@@ -112,6 +120,22 @@ pub(super) struct Scene {
     pub hit_regions: Vec<HitRegion>,
 }
 
+fn preview_tab_hit_region(index: usize) -> HitRegion {
+    let (left, width) = [(144, 36), (180, 33), (213, 33)][index];
+    logical_region(
+        (CASH_SHOP_X + left) as f32,
+        (CASH_SHOP_Y + 11) as f32,
+        width as f32,
+        29.0,
+        HitAction::PreviewBackground(index),
+    )
+}
+
+fn shop_tab_bounds(selected_tab: usize, index: usize) -> (usize, usize) {
+    let left = index * 52 + usize::from(index > selected_tab && selected_tab < 8) * 14;
+    (left, if index == selected_tab { 66 } else { 52 })
+}
+
 pub(super) fn hit_test(regions: &[HitRegion], x: f32, y: f32) -> Option<HitAction> {
     regions
         .iter()
@@ -133,11 +157,14 @@ pub(super) fn cash_inventory_scroll_area() -> Rect {
 
 pub(super) fn cash_inventory_scroll_max(
     inventory: &openstory_protocol::InventorySnapshot,
+    tab: usize,
 ) -> usize {
-    cash_inventory_items(inventory)
-        .len()
-        .div_ceil(INVENTORY_COLUMNS)
-        .saturating_sub(INVENTORY_VISIBLE_ROWS)
+    usize::from(super::inventory_slot_max(
+        inventory,
+        super::storage_tabs()[tab.min(4)],
+    ))
+    .div_ceil(INVENTORY_COLUMNS)
+    .saturating_sub(INVENTORY_VISIBLE_ROWS)
 }
 
 pub(super) fn cash_inventory_scroll_from_click(y: f32, maximum: usize) -> usize {
@@ -146,22 +173,6 @@ pub(super) fn cash_inventory_scroll_from_click(y: f32, maximum: usize) -> usize 
     let track_height = 104.0 * scale_y;
     let fraction = ((y - track_top) / track_height).clamp(0.0, 1.0);
     (fraction * maximum as f32).round() as usize
-}
-
-fn cash_inventory_items(
-    inventory: &openstory_protocol::InventorySnapshot,
-) -> Vec<&openstory_protocol::InventoryItem> {
-    let mut items = inventory
-        .items
-        .iter()
-        .filter(|item| {
-            (item.inventory_type == openstory_protocol::InventoryType::Cash
-                || super::is_cash_equipment_item(item))
-                && item.slot > 0
-        })
-        .collect::<Vec<_>>();
-    items.sort_by_key(|item| item.slot);
-    items
 }
 
 /// Draws the catalog or locker using the legacy CashShopGL art and a stable
@@ -179,6 +190,7 @@ pub(super) fn render(
     inventory: Option<&openstory_protocol::InventorySnapshot>,
     icon_cache: &mut HashMap<i32, Option<(u32, u32, Arc<[u8]>)>>,
     name_cache: &mut HashMap<i32, Option<String>>,
+    avatar_cache: &mut super::MapArtCache,
 ) -> Result<Scene, String> {
     const X: usize = CASH_SHOP_X;
     const Y: usize = CASH_SHOP_Y;
@@ -198,7 +210,10 @@ pub(super) fn render(
     draw_asset(
         &mut pixels,
         ui_archive,
-        "CashShop.img/Base/Preview/0",
+        &format!(
+            "CashShop.img/Base/Preview/{}",
+            state.preview_background.min(2)
+        ),
         (X + 22) as f32,
         (Y + 41) as f32,
         1.0,
@@ -209,7 +224,13 @@ pub(super) fn render(
     });
     if let Some(character) = preview_character.as_ref() {
         let mut stage = vec![0; 212 * 165 * 4];
-        draw_cash_shop_preview_avatar(&mut stage, state, &character.look, character_archive)?;
+        draw_cash_shop_preview_avatar(
+            &mut stage,
+            state,
+            &character.look,
+            character_archive,
+            avatar_cache,
+        )?;
         super::composite_bgra_pixels(
             &mut pixels,
             WIDTH,
@@ -253,77 +274,211 @@ pub(super) fn render(
             [30, 30, 30],
         );
     }
-    for (index, label) in super::CASH_SHOP_CATEGORIES.iter().enumerate() {
-        let left = X + 278 + index * 55;
-        let selected = state.category == index;
-        let tab_y = Y + 52;
-        super::composite_nx_ui_tab(
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            ui_archive,
-            super::ui_foundation::UiRect::new(left as f32, tab_y as f32, 53.0, 19.0),
-            selected,
-        )?;
-        add_text(
-            font,
-            &mut text_pixels,
-            label,
-            left as i32 + 4,
-            (tab_y + 2) as i32,
-            9.0,
-            48,
-            13,
-            [35, 35, 35],
-        );
+    let selected_background = state.preview_background.min(2);
+    // The inactive icons sit inside the gray tab plates beneath the preview
+    // frame; the selected icon sits directly on the preview background.
+    for index in 0..3 {
+        if index != selected_background {
+            super::composite_nx_ui_tab(
+                &mut pixels,
+                WIDTH,
+                HEIGHT,
+                ui_archive,
+                super::ui_foundation::UiRect::new(
+                    (X + 147 + index * 33) as f32,
+                    (Y + 14) as f32,
+                    31.0,
+                    22.0,
+                ),
+                false,
+            )?;
+        }
+    }
+    // The preview frame overlaps the inactive tabs. The active tab is drawn
+    // last so its icon sits in front of the frame.
+    for selected in [false, true] {
+        if selected {
+            draw_asset(
+                &mut pixels,
+                ui_archive,
+                "CashShop.img/Base/PreviewOnOff/On/0",
+                (X + 16) as f32,
+                (Y + 9) as f32,
+                1.0,
+            )?;
+        }
+        for index in 0..3 {
+            if (index == selected_background) != selected {
+                continue;
+            }
+            let path = format!(
+                "CashShop.img/Base/Tab/{}/{index}",
+                if selected { "Enable" } else { "Disable" },
+            );
+            if draw_asset(
+                &mut pixels,
+                ui_archive,
+                &path,
+                (X + 150 + index * 33) as f32,
+                (Y + if selected { 15 } else { 18 }) as f32,
+                1.0,
+            )?
+            .is_some()
+            {
+                hit_regions.push(preview_tab_hit_region(index));
+            }
+        }
+    }
+    // Each native bitmap contains the entire attached tab strip and its
+    // matching colored subheading bar. Keep its authored 508x78 footprint.
+    let tab_art: usize = match state.category {
+        1 => 3,
+        2 => 4,
+        3 => 5,
+        4 => 6,
+        6..=8 => 7,
+        9 => 2,
+        10 => 8,
+        11 => 9,
+        _ => 1,
+    };
+    draw_asset(
+        &mut pixels,
+        ui_archive,
+        &format!("CashShop.img/CSTab/Tab/{tab_art}"),
+        (X + 275) as f32,
+        (Y + 20) as f32,
+        1.0,
+    )?;
+    let selected_tab = tab_art - 1;
+    for (index, category) in [0, 9, 1, 2, 3, 4, 6, 10].into_iter().enumerate() {
+        let (left, width) = shop_tab_bounds(selected_tab, index);
         hit_regions.push(logical_region(
-            left as f32,
-            tab_y as f32,
-            53.0,
-            19.0,
-            HitAction::Category(index),
+            (X + 275 + left) as f32,
+            (Y + 30) as f32,
+            width as f32,
+            43.0,
+            HitAction::Category(category),
         ));
     }
-    let query = if state.query.is_empty() {
-        "New Event"
-    } else {
-        &state.query
-    };
-    add_text(
-        font,
-        &mut text_pixels,
-        query,
-        (X + 282) as i32,
-        (Y + 76) as i32,
-        11.0,
-        400,
-        15,
-        [20, 45, 30],
-    );
     hit_regions.push(logical_region(
-        (X + 278) as f32,
-        (Y + 73) as f32,
-        498.0,
-        21.0,
-        HitAction::Search,
+        (X + 723) as f32,
+        (Y + 30) as f32,
+        60.0,
+        43.0,
+        HitAction::Category(11),
     ));
+    if state.category == 1 {
+        let labels = [
+            ("Hat", 1),
+            ("Face", 2),
+            ("Eye", 3),
+            ("Overall", 4),
+            ("Top", 5),
+            ("Bottom", 6),
+            ("Shoes", 7),
+            ("Glove", 8),
+            ("Weapon", 9),
+            ("Ring", 10),
+            ("Premium", 12),
+            ("Cape", 11),
+        ];
+        let mut left = X + 278;
+        for (index, (label, subcategory)) in labels.iter().enumerate() {
+            let width = draw_cash_shop_subheading(
+                font,
+                &mut text_pixels,
+                left,
+                Y + 76,
+                label,
+                index + 1 < labels.len(),
+                state.subcategory == *subcategory,
+            );
+            hit_regions.push(logical_region(
+                left as f32,
+                (Y + 73) as f32,
+                width as f32,
+                21.0,
+                HitAction::Subcategory(*subcategory),
+            ));
+            left += width;
+        }
+    } else if (6..=8).contains(&state.category) {
+        let labels = [
+            ("Pet", 6, 0),
+            ("Pet Equip", 7, 1),
+            ("Pet Accessories", 7, 2),
+            ("Pet Misc", 8, 0),
+        ];
+        let mut left = X + 278;
+        for (index, (label, category, subcategory)) in labels.iter().enumerate() {
+            let width = draw_cash_shop_subheading(
+                font,
+                &mut text_pixels,
+                left,
+                Y + 76,
+                label,
+                index + 1 < labels.len(),
+                state.category == *category && state.subcategory == *subcategory,
+            );
+            hit_regions.push(logical_region(
+                left as f32,
+                (Y + 73) as f32,
+                width as f32,
+                21.0,
+                HitAction::PetCategory(*category, *subcategory),
+            ));
+            left += width;
+        }
+    } else {
+        if !state.query.is_empty() {
+            add_text(
+                font,
+                &mut text_pixels,
+                &state.query,
+                (X + 282) as i32,
+                (Y + 76) as i32,
+                11.0,
+                390,
+                15,
+                [20, 45, 30],
+            );
+        }
+        hit_regions.push(logical_region(
+            (X + 278) as f32,
+            (Y + 73) as f32,
+            400.0,
+            21.0,
+            HitAction::Search,
+        ));
+    }
+    if let Some(bounds) = draw_asset(
+        &mut pixels,
+        ui_archive,
+        "CashShop.img/CSItemSearch/BtSearch/normal/0",
+        (X + 691) as f32,
+        (Y + 101) as f32,
+        1.0,
+    )? {
+        hit_regions.push(region(bounds, HitAction::Search));
+    }
     for (path, x, y, action) in [
         (
             "CashShop.img/CSChar/BtBuyAvatar/normal/0",
-            19,
-            237,
+            17,
+            239,
             HitAction::BuyPreviewedItem,
         ),
         (
             "CashShop.img/CSChar/BtDefaultAvatar/normal/0",
-            104,
-            237,
+            102,
+            239,
             HitAction::DefaultAvatarPreview,
         ),
         (
             "CashShop.img/CSChar/BtTakeoffAvatar/normal/0",
-            189,
-            237,
+            187,
+            239,
             HitAction::RemoveAvatarEquipment,
         ),
         (
@@ -379,7 +534,16 @@ pub(super) fn render(
         8.0,
         HitAction::CatalogView,
     ));
-    for (index, item) in state.locker.iter().take(12).enumerate() {
+    let locker_max = state.locker.len().div_ceil(6).saturating_sub(2);
+    let locker_row = state.locker_scroll_row.min(locker_max);
+    for (visible, item) in state
+        .locker
+        .iter()
+        .skip(locker_row * 6)
+        .take(12)
+        .enumerate()
+    {
+        let index = locker_row * 6 + visible;
         if let Some((w, h, icon)) =
             super::inventory_item_icon(item.item_id, item_archive, character_archive, icon_cache)
         {
@@ -390,69 +554,139 @@ pub(super) fn render(
                 &icon,
                 w as usize,
                 h as usize,
-                X + 22 + index % 6 * 34,
-                Y + 348 + index / 6 * 34,
+                X + 22 + visible % 6 * 34,
+                Y + 348 + visible / 6 * 34,
                 32,
             );
         }
         hit_regions.push(logical_region(
-            (X + 22 + index % 6 * 34) as f32,
-            (Y + 348 + index / 6 * 34) as f32,
+            (X + 22 + visible % 6 * 34) as f32,
+            (Y + 348 + visible / 6 * 34) as f32,
             32.0,
             32.0,
             HitAction::LockerItem(index),
         ));
     }
-    if let Some(inventory) = inventory {
-        let inventory_items = cash_inventory_items(inventory);
-        let total_rows = inventory_items.len().div_ceil(INVENTORY_COLUMNS);
-        let max_scroll = total_rows.saturating_sub(INVENTORY_VISIBLE_ROWS);
-        let scroll_row = state.cash_inventory_scroll_row.min(max_scroll);
-        for (index, item) in inventory_items
-            .iter()
-            .skip(scroll_row * INVENTORY_COLUMNS)
-            .take(INVENTORY_COLUMNS * INVENTORY_VISIBLE_ROWS)
-            .enumerate()
-        {
-            if let Some((w, h, icon)) = super::inventory_item_icon(
-                item.item_id,
-                item_archive,
-                character_archive,
-                icon_cache,
-            ) {
-                super::composite_inventory_icon(
-                    &mut pixels,
-                    WIDTH,
-                    HEIGHT,
-                    &icon,
-                    w as usize,
-                    h as usize,
-                    X + 22 + index % 4 * 34,
-                    Y + 484 + index / 4 * 34,
-                    32,
-                );
+    super::ui_foundation::draw_scrollbar(
+        &mut pixels,
+        WIDTH,
+        HEIGHT,
+        ui_archive,
+        (X + 229) as i32,
+        (Y + 348) as i32,
+        68,
+        super::ui_foundation::scroll_fraction(locker_row, state.locker.len().div_ceil(6), 2),
+    );
+    hit_regions.push(logical_region(
+        (X + 229) as f32,
+        (Y + 348) as f32,
+        12.0,
+        68.0,
+        HitAction::LockerScroll,
+    ));
+    let tabs = super::storage_tabs();
+    for (index, label_width) in [28, 17, 29, 15, 20].into_iter().enumerate() {
+        let x = X + 19 + index * 31;
+        super::composite_nx_ui_tab(
+            &mut pixels,
+            WIDTH,
+            HEIGHT,
+            ui_archive,
+            super::ui_foundation::UiRect::new(x as f32, (Y + 457) as f32, 30.0, 19.0),
+            state.inventory_tab == index,
+        )?;
+        let path = format!(
+            "CashShop.img/Base/Tab2/{}/{index}",
+            if state.inventory_tab == index {
+                "Enable"
+            } else {
+                "Disable"
+            }
+        );
+        draw_asset(
+            &mut pixels,
+            ui_archive,
+            &path,
+            (x + (30 - label_width) / 2) as f32,
+            (Y + 460) as f32,
+            1.0,
+        )?;
+        hit_regions.push(logical_region(
+            x as f32,
+            (Y + 457) as f32,
+            30.0,
+            19.0,
+            HitAction::InventoryTab(index),
+        ));
+    }
+    for (index, name) in ["Equip", "Consume", "Install", "Etc", "Trunk"]
+        .iter()
+        .enumerate()
+    {
+        let enabled =
+            index == 4 || inventory.is_some_and(|inventory| inventory.slot_maxima[index] <= 92);
+        let path = format!(
+            "CashShop.img/CSInventory/BtEx{name}/{}/0",
+            if enabled { "normal" } else { "disabled" }
+        );
+        if let Some(bounds) = draw_asset(
+            &mut pixels,
+            ui_archive,
+            &path,
+            (X + 176) as f32,
+            (Y + 455 + index * 27) as f32,
+            1.0,
+        )? {
+            if enabled {
+                hit_regions.push(region(bounds, HitAction::ExpandSlots(index)));
             }
         }
-        let scroll_x = X + 159;
-        let scroll_y = Y + 484;
-        let scroll_height = 104;
-        let fraction =
-            super::ui_foundation::scroll_fraction(scroll_row, total_rows, INVENTORY_VISIBLE_ROWS);
+    }
+    if let Some(inventory) = inventory {
+        let tab = tabs[state.inventory_tab.min(4)];
+        let total_rows =
+            usize::from(super::inventory_slot_max(inventory, tab)).div_ceil(INVENTORY_COLUMNS);
+        let scroll_row = state
+            .cash_inventory_scroll_row
+            .min(total_rows.saturating_sub(INVENTORY_VISIBLE_ROWS));
+        for index in 0..INVENTORY_COLUMNS * INVENTORY_VISIBLE_ROWS {
+            let slot = (scroll_row * INVENTORY_COLUMNS + index + 1) as u16;
+            if let Some(item) = super::inventory_display_item_at_slot(inventory, tab, slot) {
+                if let Some((w, h, icon)) = super::inventory_item_icon(
+                    item.item_id,
+                    item_archive,
+                    character_archive,
+                    icon_cache,
+                ) {
+                    super::composite_inventory_icon(
+                        &mut pixels,
+                        WIDTH,
+                        HEIGHT,
+                        &icon,
+                        w as usize,
+                        h as usize,
+                        X + 22 + index % 4 * 34,
+                        Y + 484 + index / 4 * 34,
+                        32,
+                    );
+                }
+            }
+        }
         super::ui_foundation::draw_scrollbar(
             &mut pixels,
             WIDTH,
             HEIGHT,
             ui_archive,
-            scroll_x as i32,
-            scroll_y as i32,
-            scroll_height,
-            fraction,
+            (X + 159) as i32,
+            (Y + 484) as i32,
+            104,
+            super::ui_foundation::scroll_fraction(scroll_row, total_rows, INVENTORY_VISIBLE_ROWS),
         );
         hit_regions.push(logical_region(
-            scroll_x as f32,
-            scroll_y as f32,
+            (X + 159) as f32,
+            (Y + 484) as f32,
             15.0,
-            scroll_height as f32,
+            104.0,
             HitAction::CashInventoryScroll,
         ));
     }
@@ -471,8 +705,8 @@ pub(super) fn render(
     let page = state.page.min(pages - 1);
     for slot in 0..page_size {
         let index = page * page_size + slot;
-        let left = X + 278 + slot % 2 * 206;
-        let top = Y + 101 + slot / 2 * 81;
+        let left = X + 277 + slot % 2 * 206;
+        let top = Y + 99 + slot / 2 * 81;
         let product = if state.view == super::CashShopView::Catalog {
             filtered.get(index).and_then(|i| products.get(*i))
         } else {
@@ -513,7 +747,8 @@ pub(super) fn render(
             );
         }
         let name = super::item_name(item_id, string_archive, name_cache);
-        let name = super::ui_foundation::ellipsize(font, &name, 11.0, 121.0);
+        // The name plate occupies x=74..194 within the native card.
+        let name = super::ui_foundation::ellipsize(font, &name, 11.0, 116.0);
         add_text(
             font,
             &mut text_pixels,
@@ -521,7 +756,7 @@ pub(super) fn render(
             left as i32 + 76,
             top as i32 + 6,
             11.0,
-            121,
+            116,
             14,
             [25, 30, 35],
         );
@@ -550,8 +785,8 @@ pub(super) fn render(
                 &mut pixels,
                 ui_archive,
                 "CashShop.img/CSList/BtBuy/normal/0",
-                (left + 76) as f32,
-                (top + 54) as f32,
+                (left + 78) as f32,
+                (top + 52) as f32,
                 1.0,
             )? {
                 let product_index = filtered[index];
@@ -559,6 +794,29 @@ pub(super) fn render(
                     bounds,
                     action: HitAction::BuyProduct(product_index),
                 });
+            }
+            for (path, offset, action) in [
+                (
+                    "CashShop.img/CSList/BtGift/normal/0",
+                    117,
+                    HitAction::GiftProduct,
+                ),
+                (
+                    "CashShop.img/CSList/BtReserve/normal/0",
+                    156,
+                    HitAction::ReserveProduct,
+                ),
+            ] {
+                if let Some(bounds) = draw_asset(
+                    &mut pixels,
+                    ui_archive,
+                    path,
+                    (left + offset) as f32,
+                    (top + 52) as f32,
+                    1.0,
+                )? {
+                    hit_regions.push(region(bounds, action));
+                }
             }
         }
     }
@@ -730,11 +988,56 @@ pub(super) fn render(
     })
 }
 
+fn draw_cash_shop_subheading(
+    font: &fontdue::Font,
+    pixels: &mut [u8],
+    x: usize,
+    y: usize,
+    label: &str,
+    separator: bool,
+    selected: bool,
+) -> usize {
+    let text = if separator {
+        format!("{label}|")
+    } else {
+        label.to_owned()
+    };
+    let scale = WIDTH as f32 / CASH_SHOP_WIDTH as f32;
+    let width =
+        (super::ui_foundation::measure_text(font, &text, 12.5 * scale) / scale).ceil() as usize + 2;
+    add_text(
+        font,
+        pixels,
+        &text,
+        x as i32,
+        y as i32,
+        12.5,
+        width,
+        15,
+        [20, 20, 20],
+    );
+    if selected {
+        add_text(
+            font,
+            pixels,
+            label,
+            (x + 1) as i32,
+            y as i32,
+            12.5,
+            width.saturating_sub(1),
+            15,
+            [20, 20, 20],
+        );
+    }
+    width
+}
+
 fn draw_cash_shop_preview_avatar(
     stage: &mut [u8],
     state: &super::CashShopUi,
     look: &openstory_protocol::CharacterLook,
     character_archive: &NxArchive,
+    avatar_cache: &mut super::MapArtCache,
 ) -> Result<(), String> {
     const STAGE_WIDTH: usize = 212;
     const STAGE_HEIGHT: usize = 165;
@@ -772,7 +1075,7 @@ fn draw_cash_shop_preview_avatar(
             frame_id,
             state.preview_x,
             state.preview_y,
-            &mut super::MapArtCache::default(),
+            avatar_cache,
         )?;
         if !sprites.is_empty() {
             break;
@@ -855,26 +1158,16 @@ pub(super) fn advance_preview_animation(
     }
     let mut changed = false;
 
-    let direction = state.preview_move_direction;
-    if direction == 0 || state.preview_motion != super::AvatarMotion::Walk {
-        state.preview_move_elapsed = std::time::Duration::ZERO;
-    } else {
-        state.preview_move_elapsed = state
-            .preview_move_elapsed
-            .saturating_add(elapsed.min(std::time::Duration::from_secs(1)));
-        while state.preview_move_elapsed >= PREVIEW_MOVE_INTERVAL {
-            state.preview_move_elapsed -= PREVIEW_MOVE_INTERVAL;
-            let old_x = state.preview_x;
-            state.preview_x = (state.preview_x + f32::from(direction) * PREVIEW_STEP)
-                .clamp(PREVIEW_LEFT_BOUND, PREVIEW_RIGHT_BOUND);
-            changed |= (state.preview_x - old_x).abs() > f32::EPSILON;
-        }
-    }
+    changed |= advance_preview_motion(state, elapsed);
 
     let Some(look) = look.map(|look| preview_look(look, state)) else {
         return changed;
     };
     changed |= advance_preview_pet_animation(state, &look, item_archive, elapsed);
+    if preview_ladder_animation_paused(state) {
+        state.preview_frame_elapsed = std::time::Duration::ZERO;
+        return changed;
+    }
     let motion = preview_stance_candidates(state, &look)[0];
     let stance_path = format!("000020{:02}.img/{motion}", look.skin);
     let Some(stance_node) = character_archive
@@ -915,6 +1208,50 @@ pub(super) fn advance_preview_animation(
         state.preview_frame_index = (state.preview_frame_index + 1) % frames.len();
         changed = true;
     }
+    changed
+}
+
+fn preview_ladder_animation_paused(state: &super::CashShopUi) -> bool {
+    state.preview_motion == super::AvatarMotion::Ladder
+        && !state.preview_up_held
+        && !state.preview_down_held
+}
+
+fn advance_preview_motion(state: &mut super::CashShopUi, elapsed: std::time::Duration) -> bool {
+    let mut changed = false;
+    if let Some(jump_elapsed) = state.preview_jump_elapsed {
+        let jump_elapsed =
+            jump_elapsed.saturating_add(elapsed.min(std::time::Duration::from_millis(100)));
+        let t = jump_elapsed.as_secs_f32() / 0.55;
+        if t >= 1.0 {
+            state.preview_jump_elapsed = None;
+            state.preview_y = PREVIEW_FLOOR_Y;
+            state.preview_motion = if state.preview_move_direction == 0 {
+                super::AvatarMotion::Stand
+            } else {
+                super::AvatarMotion::Walk
+            };
+        } else {
+            state.preview_jump_elapsed = Some(jump_elapsed);
+            state.preview_y = PREVIEW_FLOOR_Y - 60.0 * 4.0 * t * (1.0 - t);
+        }
+        changed = true;
+    }
+    let direction = state.preview_move_direction;
+    if direction != 0
+        && (state.preview_motion == super::AvatarMotion::Walk
+            || state.preview_motion == super::AvatarMotion::Jump)
+    {
+        let old_x = state.preview_x;
+        let distance = PREVIEW_MOVE_SPEED
+            * elapsed
+                .min(std::time::Duration::from_millis(100))
+                .as_secs_f32();
+        state.preview_x = (state.preview_x + f32::from(direction) * distance)
+            .clamp(PREVIEW_LEFT_BOUND, PREVIEW_RIGHT_BOUND);
+        changed |= (state.preview_x - old_x).abs() > f32::EPSILON;
+    }
+
     changed
 }
 
@@ -1291,7 +1628,7 @@ pub(super) fn add_try_on_item(state: &mut super::CashShopUi, item_id: i32) {
             return;
         }
         183 => {
-            state.try_on_pet_quote_ring = true;
+            state.try_on_pet_quote_ring = false;
             return;
         }
         _ => {}
@@ -1365,6 +1702,12 @@ pub(super) fn render_preview(
     let mut fixture_names = HashMap::new();
     products.sort_by_cached_key(|product| {
         let name = super::item_name(product.item_id, string_archive, &mut fixture_names);
+        if variant == "long-names" {
+            return usize::from(!name.contains("Horoscope Hat"));
+        }
+        if variant == "use-exp" {
+            return usize::from(product.item_id / 1_000 != 5_211);
+        }
         names
             .iter()
             .position(|wanted| name.contains(wanted))
@@ -1383,12 +1726,28 @@ pub(super) fn render_preview(
     }
     state.try_on_pet_equipment = Some(1_802_000);
     state.try_on_pet_label_ring = true;
-    state.try_on_pet_quote_ring = true;
+    state.try_on_pet_quote_ring = false;
     state.notice = Some("Offline preview data; no server is connected.".to_owned());
     let preview_inventory = cash_shop_preview_inventory();
 
     match variant {
         "catalog" | "catalog-tooltip" => state.category = 0,
+        "search" => {
+            state.category = 0;
+            state.query = "Mushroom".to_owned();
+            state.search_focused = true;
+        }
+        "equip" | "equip-face" | "equip-notice" | "long-names" => {
+            state.category = 1;
+            state.subcategory = if variant == "equip-face" { 2 } else { 1 };
+        }
+        "use-exp" => state.category = 2,
+        "background-2" => state.preview_background = 1,
+        "background-3" => state.preview_background = 2,
+        "pet-gear" => {
+            state.category = 7;
+            state.subcategory = 1;
+        }
         "locker" => {
             state.view = super::CashShopView::Locker;
             state.locker = products
@@ -1439,6 +1798,7 @@ pub(super) fn render_preview(
         Some(&preview_inventory),
         &mut icon_cache,
         &mut name_cache,
+        &mut super::MapArtCache::default(),
     )?;
     if variant == "catalog-tooltip" {
         if let Some(product) = products.first() {
@@ -1472,11 +1832,28 @@ pub(super) fn render_preview(
             );
         }
     }
+    if variant == "equip-notice" {
+        blend_rect(&mut scene.pixels, 0, 0, WIDTH, 32, [0, 0, 0, 136]);
+        super::draw_dialogue_text(
+            font,
+            &mut scene.pixels,
+            WIDTH,
+            HEIGHT,
+            "Welcome to the Cash Shop!",
+            665,
+            4,
+            14.0,
+            359,
+            24,
+            [255, 255, 0],
+        );
+    }
     Ok(scene)
 }
 
 fn cash_shop_preview_inventory() -> openstory_protocol::InventorySnapshot {
     let mut inventory = super::ui_preview::preview_inventory();
+    inventory.slot_maxima[..4].fill(96);
     if let Some(pet) = inventory.items.iter_mut().find(|item| {
         item.inventory_type == openstory_protocol::InventoryType::Cash && item.item_id == 5_000_000
     }) {
@@ -1534,7 +1911,33 @@ fn draw_purchase_confirmation(
         380,
         318,
     )?;
-    if let Some(product) = state
+    if let Some(index) = state.expand_slots {
+        let name = ["Equip", "Use", "Set-up", "Etc", "Storage"][index.min(4)];
+        add_dialog_text(
+            font,
+            text_pixels,
+            &format!("Add 4 {name} slots?"),
+            410,
+            343,
+            super::ui_foundation::UiTextRole::Label,
+            11.0,
+            204,
+            18,
+            [35, 35, 35],
+        );
+        add_dialog_text(
+            font,
+            text_pixels,
+            "Price: 4,000 cash",
+            410,
+            365,
+            super::ui_foundation::UiTextRole::Value,
+            11.0,
+            204,
+            18,
+            [35, 35, 35],
+        );
+    } else if let Some(product) = state
         .selected_sn
         .and_then(|sn| products.iter().find(|p| p.sn == sn))
     {
@@ -1733,8 +2136,24 @@ fn draw_asset(
         .map_err(|error| error.to_string())?;
     // Keep the authored 800x600 footprint; the GPU's linear sampler filters
     // the full scene as the window is resized, while this restores backdrop detail.
-    let sharpened_source = (path == "CashShop.img/Base/backgrnd")
-        .then(|| sharpen_cash_shop_background(&source, width, height));
+    let sharpened_source = if path == "CashShop.img/Base/backgrnd" {
+        thread_local! {
+            static BACKGROUND: std::cell::RefCell<Option<(Arc<[u8]>, Arc<[u8]>)>> = const { std::cell::RefCell::new(None) };
+        }
+        Some(BACKGROUND.with(|cache| {
+            let mut cache = cache.borrow_mut();
+            if let Some((original, sharpened)) = cache.as_ref() {
+                if Arc::ptr_eq(original, &source) {
+                    return Arc::clone(sharpened);
+                }
+            }
+            let sharpened: Arc<[u8]> = sharpen_cash_shop_background(&source, width, height).into();
+            *cache = Some((Arc::clone(&source), Arc::clone(&sharpened)));
+            sharpened
+        }))
+    } else {
+        None
+    };
     let source = sharpened_source.as_deref().unwrap_or(&source);
     let x = anchor_x - origin.0 * scale;
     let y = anchor_y - origin.1 * scale;
@@ -1945,6 +2364,69 @@ impl Rect {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn preview_tab_hit_regions_cover_the_authored_headers() {
+        let regions: Vec<_> = (0..3).map(preview_tab_hit_region).collect();
+        for (x, index) in [
+            (144.0, 0),
+            (179.0, 0),
+            (180.0, 1),
+            (212.0, 1),
+            (213.0, 2),
+            (245.0, 2),
+        ] {
+            assert_eq!(
+                hit_test(&regions, CASH_SHOP_X as f32 + x, CASH_SHOP_Y as f32 + 12.0),
+                Some(HitAction::PreviewBackground(index))
+            );
+        }
+    }
+
+    #[test]
+    fn tab_hit_regions_follow_the_wider_selected_tab() {
+        assert_eq!(shop_tab_bounds(2, 2), (104, 66));
+        assert_eq!(shop_tab_bounds(2, 3), (170, 52));
+        assert_eq!(shop_tab_bounds(6, 6), (312, 66));
+        assert_eq!(shop_tab_bounds(6, 7), (378, 52));
+        assert_eq!(shop_tab_bounds(8, 7), (364, 52));
+    }
+
+    #[test]
+    fn ladder_animation_pauses_without_a_held_direction() {
+        let mut state = super::super::CashShopUi::new();
+        state.preview_motion = super::super::AvatarMotion::Ladder;
+        assert!(preview_ladder_animation_paused(&state));
+        state.preview_up_held = true;
+        assert!(!preview_ladder_animation_paused(&state));
+        state.preview_up_held = false;
+        state.preview_down_held = true;
+        assert!(!preview_ladder_animation_paused(&state));
+        state.preview_down_held = false;
+        assert!(preview_ladder_animation_paused(&state));
+    }
+
+    #[test]
+    fn preview_moves_smoothly_and_jump_lands_without_key_release() {
+        let mut state = super::super::CashShopUi::new();
+        state.preview_motion = super::super::AvatarMotion::Walk;
+        state.preview_move_direction = 1;
+        let start = state.preview_x;
+        assert!(advance_preview_motion(
+            &mut state,
+            std::time::Duration::from_millis(16)
+        ));
+        assert!(state.preview_x > start && state.preview_x < start + PREVIEW_STEP);
+        state.preview_move_direction = 0;
+        state.preview_motion = super::super::AvatarMotion::Jump;
+        state.preview_jump_elapsed = Some(std::time::Duration::ZERO);
+        for _ in 0..6 {
+            advance_preview_motion(&mut state, std::time::Duration::from_millis(100));
+        }
+        assert_eq!(state.preview_jump_elapsed, None);
+        assert_eq!(state.preview_y, PREVIEW_FLOOR_Y);
+        assert_eq!(state.preview_motion, super::super::AvatarMotion::Stand);
+    }
 
     #[test]
     fn buy_controls_take_priority_over_the_product_card() {
