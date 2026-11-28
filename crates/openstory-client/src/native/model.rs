@@ -3702,17 +3702,19 @@ impl MapPetRuntime {
             && owner_is_on_lower_foothold;
         const NORMAL_OWNER_LEASH: f64 = 150.0;
         const LOOT_OWNER_LEASH: f64 = 800.0;
+        const NORMAL_OWNER_VERTICAL_LEASH: f64 = 60.0;
+        const LOOT_OWNER_VERTICAL_LEASH: f64 = 160.0;
         if self.loot_target.is_some() {
             self.loot_excursion = true;
         } else {
             self.loot_excursion = false;
         }
-        let max_owner_distance = if self.loot_target.is_some() {
-            LOOT_OWNER_LEASH
+        let (max_owner_distance, max_owner_vertical_distance) = if self.loot_target.is_some() {
+            (LOOT_OWNER_LEASH, LOOT_OWNER_VERTICAL_LEASH)
         } else {
-            NORMAL_OWNER_LEASH
+            (NORMAL_OWNER_LEASH, NORMAL_OWNER_VERTICAL_LEASH)
         };
-        if owner_distance > max_owner_distance {
+        if owner_distance > max_owner_distance || owner_delta_y.abs() > max_owner_vertical_distance {
             self.teleport_to_owner(owner, owner_foothold_id, owner_on_ground, footholds);
             self.loot_target = None;
             self.loot_excursion = false;
@@ -8086,6 +8088,27 @@ mod pet_pathing_tests {
         pet.follow_local((0.0, 80.0), 0.0, 0.0, 2, true, false, Some(&tree));
         assert_eq!(pet.body.foothold_id, 2);
         assert_eq!(pet.body.y, 80.0);
+    }
+
+    #[test]
+    fn vertical_leash_recovers_pet_on_lower_platform() {
+        let mut pet = test_pet();
+        pet.loot_target = None;
+        pet.follow_local((0.0, -80.0), 0.0, 0.0, 0, true, false, None);
+        assert_eq!(pet.body.y, -80.0);
+    }
+
+    #[test]
+    fn vertical_leash_preserves_horizontal_follow_and_loot_range() {
+        let mut pet = test_pet();
+        pet.loot_target = None;
+        pet.follow_local((100.0, 0.0), 0.0, 0.0, 0, true, false, None);
+        assert_eq!(pet.body.x, 0.0);
+
+        let mut pet = test_pet();
+        pet.follow_local((0.0, 170.0), 0.0, 0.0, 0, true, false, None);
+        assert_eq!(pet.body.y, 170.0);
+        assert_eq!(pet.loot_target, None);
     }
 
     #[test]
