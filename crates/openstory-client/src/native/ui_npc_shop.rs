@@ -13,7 +13,6 @@ const NPC_SHOP_SCROLL_X: [usize; 2] = [209, 440];
 const NPC_SHOP_SCROLL_WIDTH: usize = 15;
 const NPC_SHOP_SCROLL_ARROW: usize = 13;
 const NPC_SHOP_SCROLL_THUMB: usize = 25;
-const NPC_SHOP_RECOMMENDED_LEVEL_STEP: i64 = 5;
 
 #[derive(Clone, Copy)]
 enum NpcShopScrollSide {
@@ -220,9 +219,8 @@ fn npc_shop_recommended_buy_indices(
         return Vec::new();
     };
     let current_level = i64::from(character.stats.level);
-    let current_level_band =
-        current_level.div_euclid(NPC_SHOP_RECOMMENDED_LEVEL_STEP) * NPC_SHOP_RECOMMENDED_LEVEL_STEP;
-    let recommended_level_range = current_level_band..=current_level.saturating_add(10);
+    let recommended_level_range =
+        current_level.saturating_sub(10)..=current_level.saturating_add(10);
     buy_item_indices
         .iter()
         .copied()
@@ -1145,7 +1143,11 @@ impl ClientApp {
             let inventory = self.inventory.as_ref()?;
             npc_shop_tooltip_item(state, inventory)
         });
-        self.update_item_tooltip(item);
+        let comparison = item.as_ref().and_then(|item| {
+            let inventory = self.inventory.as_ref()?;
+            equipped_comparison_item(item, inventory)
+        });
+        self.update_item_tooltip_with_comparison(item, comparison);
     }
 
     fn close_npc_shop(&mut self) {

@@ -82,6 +82,291 @@ fn append_chalkboard_draw<'a>(
     });
 }
 
+#[derive(Clone, Copy)]
+enum MapActor<'a> {
+    Drop(&'a MapDropRuntime),
+    Door(&'a MapDoorRuntime),
+    Reactor(&'a MapReactorRuntime),
+    Summon(&'a MapSummonRuntime),
+    Dragon(&'a MapDragonRuntime),
+    Pet(&'a MapPetRuntime),
+    Mob(&'a MapMobRuntime),
+    Mist(&'a openstory_protocol::MapMistSpawn),
+    Npc(&'a MapNpcRuntime),
+    HiredMerchant(&'a MapHiredMerchantRuntime),
+    CharacterSkillEffect(&'a MapCharacterSkillEffect),
+    RemotePlayer(&'a RemotePlayerState),
+    RemoteDeath(&'a RemotePlayerState, &'a LocalDeathArtRuntime),
+    LocalPlayer(&'a AvatarFrameRuntime),
+    LocalDeath(&'a LocalDeathArtRuntime),
+    Projectile(&'a MapProjectileRuntime),
+}
+
+type MapActorDraw<'a> = (f64, u8, i32, MapActor<'a>);
+
+struct MapEntityDrawFrame<'a> {
+    layers: [Vec<MapActorDraw<'a>>; 8],
+    overlays: Vec<MapActorDraw<'a>>,
+}
+
+impl<'a> MapEntityDrawFrame<'a> {
+    fn new(scene: &'a MapSceneRuntime, graphics_quality: u8) -> Self {
+        let layer_capacity = (scene.drops.len()
+            + scene.doors.len()
+            + scene.reactors.len()
+            + scene.summons.len()
+            + scene.dragons.len()
+            + scene.pets.len()
+            + scene.mobs.len()
+            + scene.npcs.len()
+            + scene.character_effects.len()
+            + scene.remote_players.len()
+            + 1)
+            .div_ceil(8);
+        let mut frame = Self {
+            layers: std::array::from_fn(|_| Vec::with_capacity(layer_capacity)),
+            overlays: Vec::with_capacity(
+                scene.hired_merchants.len() + scene.projectiles.len(),
+            ),
+        };
+        let local_player_layer = if scene.local_ladder.is_some() {
+            scene.player.foothold_layer
+        } else {
+            map_entity_foothold_layer(
+                scene,
+                scene.player.foothold_id,
+                scene.player.x,
+                scene.player.y,
+            )
+        };
+        for (&object_id, drop) in &scene.drops {
+            if drop.frames.get(drop.frame_index).is_some() {
+                let layer = map_entity_foothold_layer(scene, drop.body.foothold_id, drop.x, drop.y);
+                frame.push_layer(layer, (drop.y, 0, object_id, MapActor::Drop(drop)));
+            }
+        }
+        for (&object_id, reactor) in &scene.reactors {
+            frame.push_layer(
+                reactor.foothold_layer,
+                (reactor.y, 1, object_id, MapActor::Reactor(reactor)),
+            );
+        }
+        for (&object_id, door) in &scene.doors {
+            if scene.door_frames.get(door.frame_index).is_some() {
+                frame.push_layer(7, (door.y, 5, object_id, MapActor::Door(door)));
+            }
+        }
+        for (&object_id, summon) in &scene.summons {
+            if summon.frames.get(summon.frame_index).is_some() {
+                let layer = map_entity_foothold_layer(
+                    scene,
+                    summon.body.foothold_id,
+                    summon.x,
+                    summon.y,
+                );
+                frame.push_layer(layer, (summon.y, 2, object_id, MapActor::Summon(summon)));
+            }
+        }
+        for (&owner_id, dragon) in &scene.dragons {
+            if dragon.frames.get(dragon.frame_index).is_some() {
+                let layer = map_entity_foothold_layer(
+                    scene,
+                    dragon.body.foothold_id,
+                    dragon.x,
+                    dragon.y,
+                );
+                frame.push_layer(layer, (dragon.y, 2, owner_id, MapActor::Dragon(dragon)));
+            }
+        }
+        for (&(owner_id, slot), pet) in &scene.pets {
+            let local_pet_on_ladder = scene.local_ladder.is_some()
+                && !scene.remote_players.contains_key(&owner_id);
+            let layer = if local_pet_on_ladder {
+                local_player_layer
+            } else {
+                map_entity_foothold_layer(scene, pet.body.foothold_id, pet.x, pet.y)
+            };
+            if pet.frames().get(pet.frame_index()).is_some() {
+                let (sort_priority, sort_id) = if local_pet_on_ladder {
+                    (6, i32::MAX - 3 + i32::from(slot))
+                } else {
+                    (
+                        3,
+                        owner_id.saturating_mul(3).saturating_add(i32::from(slot)),
+                    )
+                };
+                frame.push_layer(
+                    layer,
+                    (pet.y, sort_priority, sort_id, MapActor::Pet(pet)),
+                );
+            }
+        }
+        for (&object_id, mob) in &scene.mobs {
+            if mob
+                .animations
+                .get(&mob.motion)
+                .and_then(|frames| frames.get(mob.frame_index))
+                .is_some()
+            {
+                let layer =
+                    map_entity_foothold_layer(scene, mob.body.foothold_id, mob.x, mob.y);
+                frame.push_layer(layer, (mob.y, 3, object_id, MapActor::Mob(mob)));
+            }
+        }
+        for (&object_id, npc) in &scene.npcs {
+            if npc.imitated_look_sprites.is_some() || npc.frames().get(npc.frame_index).is_some() {
+                let layer = map_entity_foothold_layer(scene, npc.foothold, npc.x, npc.y);
+                frame.push_layer(layer, (npc.y, 4, object_id, MapActor::Npc(npc)));
+            }
+        }
+        if graphics_quality > 25 {
+            for (&object_id, mist) in &scene.mists {
+                if mist.right <= mist.left || mist.bottom <= mist.top {
+                    continue;
+                }
+                let layer = map_entity_foothold_layer(
+                    scene,
+                    0,
+                    (f64::from(mist.left) + f64::from(mist.right)) / 2.0,
+                    f64::from(mist.bottom),
+                );
+                let y = (f64::from(mist.top) + f64::from(mist.bottom)) / 2.0;
+                frame.push_layer(layer, (y, 5, object_id, MapActor::Mist(mist)));
+            }
+        }
+        for (&owner_id, merchant) in &scene.hired_merchants {
+            frame.overlays.push((
+                merchant.y,
+                4,
+                owner_id,
+                MapActor::HiredMerchant(merchant),
+            ));
+        }
+        for (index, effect) in scene.character_effects.iter().enumerate() {
+            let (actor_y, foothold, actor_x) = if let Some((x, y)) = effect.point_position {
+                (Some(y), 0, x)
+            } else {
+                effect.character_id.map_or(
+                    (
+                        Some(scene.player.y),
+                        scene.player.foothold_id,
+                        scene.player.x,
+                    ),
+                    |character_id| {
+                        scene
+                            .remote_players
+                            .get(&character_id)
+                            .map_or((None, 0, 0.0), |player| {
+                                (Some(player.y), player.foothold, player.x)
+                            })
+                    },
+                )
+            };
+            let layer = if effect.point_position.is_some() {
+                7
+            } else {
+                map_entity_foothold_layer(scene, foothold, actor_x, actor_y.unwrap_or(0.0))
+            };
+            if let Some(actor_y) = actor_y
+                && effect.frames.get(effect.frame_index).is_some()
+            {
+                frame.push_layer(
+                    layer,
+                    (
+                        actor_y,
+                        if effect.point_position.is_some() || effect.z < 0 {
+                            5
+                        } else {
+                            7
+                        },
+                        index as i32,
+                        MapActor::CharacterSkillEffect(effect),
+                    ),
+                );
+            }
+        }
+        for (&character_id, player) in &scene.remote_players {
+            let layer = map_entity_foothold_layer(scene, player.foothold, player.x, player.y);
+            if player.dead
+                && let Some(art) = player.death_art.as_ref()
+            {
+                frame.push_layer(
+                    layer,
+                    (
+                        player.y,
+                        6,
+                        character_id,
+                        MapActor::RemoteDeath(player, art),
+                    ),
+                );
+            } else if player
+                .active_avatar_frame
+                .and_then(|index| player.avatar_frames.get(index))
+                .is_some()
+            {
+                frame.push_layer(
+                    layer,
+                    (player.y, 6, character_id, MapActor::RemotePlayer(player)),
+                );
+            }
+        }
+        if let Some(death_art) = scene.local_death_art.as_ref() {
+            frame.push_layer(
+                local_player_layer,
+                (scene.player.y, 6, 0, MapActor::LocalDeath(death_art)),
+            );
+        } else if let Some(avatar_frame) = scene
+            .active_avatar_frame
+            .and_then(|index| scene.avatar_frames.get(index))
+        {
+            frame.push_layer(
+                local_player_layer,
+                (scene.player.y, 6, 0, MapActor::LocalPlayer(avatar_frame)),
+            );
+        }
+        for (index, projectile) in scene.projectiles.iter().enumerate() {
+            if projectile.launch_delay.is_zero()
+                && projectile.frames.get(projectile.frame_index).is_some()
+            {
+                frame.overlays.push((
+                    projectile.y,
+                    8,
+                    index as i32,
+                    MapActor::Projectile(projectile),
+                ));
+            }
+        }
+        for actors in &mut frame.layers {
+            actors.sort_by(sort_map_actor_draws);
+        }
+        frame.overlays.sort_by(sort_map_actor_draws);
+        frame
+    }
+
+    fn push_layer(&mut self, layer: u8, actor: MapActorDraw<'a>) {
+        if let Some(actors) = self.layers.get_mut(usize::from(layer)) {
+            actors.push(actor);
+        }
+    }
+
+    fn actors(&self, pass: MapEntityDrawPass) -> &[MapActorDraw<'a>] {
+        match pass {
+            MapEntityDrawPass::Layer(layer) => self
+                .layers
+                .get(usize::from(layer))
+                .map_or(&[], Vec::as_slice),
+            MapEntityDrawPass::Overlays => &self.overlays,
+        }
+    }
+}
+
+fn sort_map_actor_draws(left: &MapActorDraw<'_>, right: &MapActorDraw<'_>) -> std::cmp::Ordering {
+    left.0
+        .total_cmp(&right.0)
+        .then_with(|| left.1.cmp(&right.1))
+        .then_with(|| left.2.cmp(&right.2))
+}
+
 fn append_map_entity_draws<'a>(
     scene: &MapSceneRuntime,
     active_buffs: &CharacterBuffs,
@@ -99,251 +384,16 @@ fn append_map_entity_draws<'a>(
     local_speech_texture: Option<&'a GpuTexture>,
     local_chalkboard_texture: Option<&'a GpuTexture>,
     damage_glyphs: &[DamageGlyph],
-    graphics_quality: u8,
     effect_budget: &mut usize,
     pass: MapEntityDrawPass,
+    actor_frame: &MapEntityDrawFrame<'_>,
     draws: &mut Vec<SpriteDraw<'a>>,
 ) {
     let actor_draw_start = draws.len();
-    enum Actor<'a> {
-        Drop(&'a MapDropRuntime),
-        Door(&'a MapDoorRuntime),
-        Reactor(&'a MapReactorRuntime),
-        Summon(&'a MapSummonRuntime),
-        Dragon(&'a MapDragonRuntime),
-        Pet(&'a MapPetRuntime),
-        Mob(&'a MapMobRuntime),
-        Mist(&'a openstory_protocol::MapMistSpawn),
-        Npc(&'a MapNpcRuntime),
-        HiredMerchant(&'a MapHiredMerchantRuntime),
-        CharacterSkillEffect(&'a MapCharacterSkillEffect),
-        RemotePlayer(&'a RemotePlayerState),
-        RemoteDeath(&'a RemotePlayerState, &'a LocalDeathArtRuntime),
-        LocalPlayer(&'a AvatarFrameRuntime),
-        LocalDeath(&'a LocalDeathArtRuntime),
-        Projectile(&'a MapProjectileRuntime),
-    }
-
-    let mut actors = Vec::with_capacity(
-        scene.drops.len()
-            + scene.doors.len()
-            + scene.reactors.len()
-            + scene.summons.len()
-            + scene.dragons.len()
-            + scene.pets.len()
-            + scene.mobs.len()
-            + scene.npcs.len()
-            + scene.hired_merchants.len()
-            + scene.character_effects.len()
-            + scene.remote_players.len()
-            + scene.projectiles.len()
-            + 1,
-    );
-    let local_player_layer = if scene.local_ladder.is_some() {
-        // While climbing, the player keeps the foothold from the ground they
-        // left. Draw on the foreground layer instead so rope art cannot cover
-        // the character.
-        scene.player.foothold_layer
-    } else {
-        map_entity_foothold_layer(
-            scene,
-            scene.player.foothold_id,
-            scene.player.x,
-            scene.player.y,
-        )
-    };
-    for (&object_id, drop) in &scene.drops {
-        let layer = map_entity_foothold_layer(scene, drop.body.foothold_id, drop.x, drop.y);
-        if matches!(pass, MapEntityDrawPass::Layer(pass_layer) if pass_layer == layer)
-            && drop.frames.get(drop.frame_index).is_some()
-        {
-            actors.push((drop.y, 0, object_id, Actor::Drop(drop)));
-        }
-    }
-    for (&object_id, reactor) in &scene.reactors {
-        if matches!(pass, MapEntityDrawPass::Layer(layer) if layer == reactor.foothold_layer) {
-            actors.push((reactor.y, 1, object_id, Actor::Reactor(reactor)));
-        }
-    }
-    if matches!(pass, MapEntityDrawPass::Layer(layer) if layer == 7) {
-        for (&owner_id, door) in &scene.doors {
-            if scene.door_frames.get(door.frame_index).is_some() {
-                actors.push((door.y, 5, owner_id, Actor::Door(door)));
-            }
-        }
-    }
-    for (&object_id, summon) in &scene.summons {
-        let layer = map_entity_foothold_layer(scene, summon.body.foothold_id, summon.x, summon.y);
-        if matches!(pass, MapEntityDrawPass::Layer(pass_layer) if pass_layer == layer)
-            && summon.frames.get(summon.frame_index).is_some()
-        {
-            actors.push((summon.y, 2, object_id, Actor::Summon(summon)));
-        }
-    }
-    for (&owner_id, dragon) in &scene.dragons {
-        let layer = map_entity_foothold_layer(scene, dragon.body.foothold_id, dragon.x, dragon.y);
-        if matches!(pass, MapEntityDrawPass::Layer(pass_layer) if pass_layer == layer)
-            && dragon.frames.get(dragon.frame_index).is_some()
-        {
-            actors.push((dragon.y, 2, owner_id, Actor::Dragon(dragon)));
-        }
-    }
-    for (&(owner_id, slot), pet) in &scene.pets {
-        // The local pet is positioned on the player while climbing, but keeps
-        // the foothold it had on the ground. Keep it with the player and draw
-        // it after the character so it appears on their back.
-        let local_pet_on_ladder = scene.local_ladder.is_some()
-            && !scene.remote_players.contains_key(&owner_id);
-        let layer = if local_pet_on_ladder {
-            local_player_layer
-        } else {
-            map_entity_foothold_layer(scene, pet.body.foothold_id, pet.x, pet.y)
-        };
-        if matches!(pass, MapEntityDrawPass::Layer(pass_layer) if pass_layer == layer)
-            && pet.frames().get(pet.frame_index()).is_some()
-        {
-            let (sort_priority, sort_id) = if local_pet_on_ladder {
-                // Keep the pet above all character sprites and below positive
-                // character effects, which sort at priority 7.
-                (6, i32::MAX - 3 + i32::from(slot))
-            } else {
-                (
-                    3,
-                    owner_id.saturating_mul(3).saturating_add(i32::from(slot)),
-                )
-            };
-            actors.push((pet.y, sort_priority, sort_id, Actor::Pet(pet)));
-        }
-    }
-    for (&object_id, mob) in &scene.mobs {
-        let layer = map_entity_foothold_layer(scene, mob.body.foothold_id, mob.x, mob.y);
-        if matches!(pass, MapEntityDrawPass::Layer(pass_layer) if pass_layer == layer)
-            && mob
-                .animations
-                .get(&mob.motion)
-                .and_then(|frames| frames.get(mob.frame_index))
-                .is_some()
-        {
-            actors.push((mob.y, 3, object_id, Actor::Mob(mob)));
-        }
-    }
-    for (&object_id, npc) in &scene.npcs {
-        let layer = map_entity_foothold_layer(scene, npc.foothold, npc.x, npc.y);
-        if matches!(pass, MapEntityDrawPass::Layer(pass_layer) if pass_layer == layer)
-            && (npc.imitated_look_sprites.is_some()
-                || npc.frames().get(npc.frame_index).is_some())
-        {
-            actors.push((npc.y, 4, object_id, Actor::Npc(npc)));
-        }
-    }
-    for (&object_id, mist) in &scene.mists {
-        if graphics_quality <= 25 || mist.right <= mist.left || mist.bottom <= mist.top {
-            continue;
-        }
-        let layer = map_entity_foothold_layer(
-            scene,
-            0,
-            (f64::from(mist.left) + f64::from(mist.right)) / 2.0,
-            f64::from(mist.bottom),
-        );
-        if matches!(pass, MapEntityDrawPass::Layer(pass_layer) if pass_layer == layer) {
-            let y = (f64::from(mist.top) + f64::from(mist.bottom)) / 2.0;
-            actors.push((y, 5, object_id, Actor::Mist(mist)));
-        }
-    }
-    if matches!(pass, MapEntityDrawPass::Overlays) {
-        for (&owner_id, merchant) in &scene.hired_merchants {
-            actors.push((merchant.y, 4, owner_id, Actor::HiredMerchant(merchant)));
-        }
-    }
-    for (index, effect) in scene.character_effects.iter().enumerate() {
-        let (actor_y, foothold, actor_x) = if let Some((x, y)) = effect.point_position {
-            (Some(y), 0, x)
-        } else {
-            effect.character_id.map_or(
-                (
-                    Some(scene.player.y),
-                    scene.player.foothold_id,
-                    scene.player.x,
-                ),
-                |character_id| {
-                    scene
-                        .remote_players
-                        .get(&character_id)
-                        .map_or((None, 0, 0.0), |player| {
-                            (Some(player.y), player.foothold, player.x)
-                        })
-                },
-            )
-        };
-        let layer = if effect.point_position.is_some() {
-            7
-        } else {
-            map_entity_foothold_layer(scene, foothold, actor_x, actor_y.unwrap_or(0.0))
-        };
-        if let Some(actor_y) = actor_y
-            && matches!(pass, MapEntityDrawPass::Layer(pass_layer) if pass_layer == layer)
-            && effect.frames.get(effect.frame_index).is_some()
-        {
-            actors.push((
-                actor_y,
-                if effect.point_position.is_some() || effect.z < 0 {
-                    5
-                } else {
-                    7
-                },
-                index as i32,
-                Actor::CharacterSkillEffect(effect),
-            ));
-        }
-    }
-    for (&character_id, player) in &scene.remote_players {
-        let layer = map_entity_foothold_layer(scene, player.foothold, player.x, player.y);
-        if matches!(pass, MapEntityDrawPass::Layer(pass_layer) if pass_layer == layer) {
-            if player.dead
-                && let Some(art) = player.death_art.as_ref()
-            {
-                actors.push((player.y, 6, character_id, Actor::RemoteDeath(player, art)));
-            } else if player
-                .active_avatar_frame
-                .and_then(|index| player.avatar_frames.get(index))
-                .is_some()
-            {
-                actors.push((player.y, 6, character_id, Actor::RemotePlayer(player)));
-            }
-        }
-    }
-    if let Some(death_art) = scene.local_death_art.as_ref() {
-        if matches!(pass, MapEntityDrawPass::Layer(layer) if layer == local_player_layer) {
-            actors.push((scene.player.y, 6, 0, Actor::LocalDeath(death_art)));
-        }
-    } else if let Some(frame) = scene
-        .active_avatar_frame
-        .and_then(|index| scene.avatar_frames.get(index))
-    {
-        if matches!(pass, MapEntityDrawPass::Layer(layer) if layer == local_player_layer) {
-            actors.push((scene.player.y, 6, 0, Actor::LocalPlayer(frame)));
-        }
-    }
-    if matches!(pass, MapEntityDrawPass::Overlays) {
-        for (index, projectile) in scene.projectiles.iter().enumerate() {
-            if projectile.launch_delay.is_zero()
-                && projectile.frames.get(projectile.frame_index).is_some()
-            {
-                actors.push((projectile.y, 8, index as i32, Actor::Projectile(projectile)));
-            }
-        }
-    }
-    actors.sort_by(|left, right| {
-        left.0
-            .total_cmp(&right.0)
-            .then_with(|| left.1.cmp(&right.1))
-            .then_with(|| left.2.cmp(&right.2))
-    });
-
-    for (_, _, object_id, actor) in actors {
+    let actors = actor_frame.actors(pass);
+    for (_, _, object_id, actor) in actors.iter().copied() {
         match actor {
-            Actor::Drop(drop) => {
+            MapActor::Drop(drop) => {
                 let Some(frame) = drop.frames.get(drop.frame_index) else {
                     continue;
                 };
@@ -370,7 +420,7 @@ fn append_map_entity_draws<'a>(
                     opacity,
                 });
             }
-            Actor::Door(door) => {
+            MapActor::Door(door) => {
                 let Some(frame) = scene.door_frames.get(door.frame_index) else {
                     continue;
                 };
@@ -394,7 +444,7 @@ fn append_map_entity_draws<'a>(
                     });
                 }
             }
-            Actor::Reactor(reactor) => {
+            MapActor::Reactor(reactor) => {
                 let frame = reactor
                     .active_frames
                     .as_ref()
@@ -427,7 +477,7 @@ fn append_map_entity_draws<'a>(
                     });
                 }
             }
-            Actor::Summon(summon) => {
+            MapActor::Summon(summon) => {
                 let Some(frame) = summon.frames.get(summon.frame_index) else {
                     continue;
                 };
@@ -456,7 +506,7 @@ fn append_map_entity_draws<'a>(
                     });
                 }
             }
-            Actor::Dragon(dragon) => {
+            MapActor::Dragon(dragon) => {
                 let Some(frame) = dragon.frames.get(dragon.frame_index) else {
                     continue;
                 };
@@ -484,7 +534,7 @@ fn append_map_entity_draws<'a>(
                     });
                 }
             }
-            Actor::Pet(pet) => {
+            MapActor::Pet(pet) => {
                 let Some(frame) = pet.frames().get(pet.frame_index()) else {
                     continue;
                 };
@@ -554,7 +604,7 @@ fn append_map_entity_draws<'a>(
                     });
                 }
             }
-            Actor::Mob(mob) => {
+            MapActor::Mob(mob) => {
                 let Some(frame) = mob
                     .animations
                     .get(&mob.motion)
@@ -671,7 +721,7 @@ fn append_map_entity_draws<'a>(
                     }
                 }
             }
-            Actor::Npc(npc) => {
+            MapActor::Npc(npc) => {
                 let offset_x = (npc.x - scene.player.x) as f32;
                 let offset_y = (npc.y - scene.player.y) as f32;
                 let sprite_draws = if let Some(imitated) = npc.imitated_look_sprites.as_ref() {
@@ -828,7 +878,7 @@ fn append_map_entity_draws<'a>(
                     }
                 }
             }
-            Actor::Mist(mist) => {
+            MapActor::Mist(mist) => {
                 let Some(texture) = solid_textures.get(1) else {
                     continue;
                 };
@@ -850,7 +900,7 @@ fn append_map_entity_draws<'a>(
                     opacity: 0.3,
                 });
             }
-            Actor::HiredMerchant(merchant) => {
+            MapActor::HiredMerchant(merchant) => {
                 let offset_x = (merchant.x - scene.player.x) as f32;
                 let offset_y = (merchant.y - scene.player.y) as f32;
                 if let Some(frame) = merchant.frames.get(merchant.frame_index) {
@@ -905,7 +955,7 @@ fn append_map_entity_draws<'a>(
                     }
                 }
             }
-            Actor::CharacterSkillEffect(effect) => {
+            MapActor::CharacterSkillEffect(effect) => {
                 if *effect_budget == 0 {
                     continue;
                 }
@@ -949,7 +999,7 @@ fn append_map_entity_draws<'a>(
                     });
                 }
             }
-            Actor::RemoteDeath(player, art) => {
+            MapActor::RemoteDeath(player, art) => {
                 let offset_x = (player.x - scene.player.x + player.recoil_offset_x) as f32;
                 let offset_y = (player.y - scene.player.y) as f32;
                 append_item_aura_draws(
@@ -1016,7 +1066,7 @@ fn append_map_entity_draws<'a>(
                     });
                 }
             }
-            Actor::RemotePlayer(player) => {
+            MapActor::RemotePlayer(player) => {
                 let Some(frame) = player
                     .active_avatar_frame
                     .and_then(|index| player.avatar_frames.get(index))
@@ -1164,7 +1214,7 @@ fn append_map_entity_draws<'a>(
                     });
                 }
             }
-            Actor::LocalPlayer(frame) => {
+            MapActor::LocalPlayer(frame) => {
                 let facing_right = scene.facing_right;
                 let hidden = scene.gm_hidden
                     || character_has_buff(
@@ -1318,7 +1368,7 @@ fn append_map_entity_draws<'a>(
                     });
                 }
             }
-            Actor::LocalDeath(art) => {
+            MapActor::LocalDeath(art) => {
                 append_item_aura_draws(
                     scene.local_item_aura.as_ref(),
                     true,
@@ -1344,7 +1394,7 @@ fn append_map_entity_draws<'a>(
                     draws,
                 );
             }
-            Actor::Projectile(projectile) => {
+            MapActor::Projectile(projectile) => {
                 if *effect_budget == 0 {
                     continue;
                 }

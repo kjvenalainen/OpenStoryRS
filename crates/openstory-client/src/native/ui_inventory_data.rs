@@ -34,10 +34,92 @@ fn inventory_slot_max(
         openstory_protocol::InventoryType::Use => u16::from(inventory.slot_maxima[1]),
         openstory_protocol::InventoryType::Setup => u16::from(inventory.slot_maxima[2]),
         openstory_protocol::InventoryType::Etc => u16::from(inventory.slot_maxima[3]),
-        openstory_protocol::InventoryType::Cash => u16::from(inventory.slot_maxima[4]),
+        openstory_protocol::InventoryType::Cash => cash_inventory_display_slot_max(inventory),
         // Includes the sparse v83 bonus slots (medal, belt, pocket, pendant,
         // shoulder, android, and newer gear); INVENTORY_GROW can update it.
         openstory_protocol::InventoryType::Equipped => u16::from(inventory.equipped_slot_maximum),
+    }
+}
+
+// The server keeps cash-tagged equipment in Equip; show it in the Cash view
+// without changing the inventory type or slot used for server actions.
+fn is_cash_equipment_item(item: &openstory_protocol::InventoryItem) -> bool {
+    item.inventory_type == openstory_protocol::InventoryType::Equip
+        && item.item_id / 1_000_000 == 1
+        && item.cash
+        && item.equip.is_some()
+}
+
+fn cash_equipment_display_slots(
+    inventory: &openstory_protocol::InventorySnapshot,
+) -> Vec<(&openstory_protocol::InventoryItem, u16)> {
+    let mut occupied: HashSet<u16> = inventory
+        .items
+        .iter()
+        .filter(|item| item.inventory_type == openstory_protocol::InventoryType::Cash)
+        .map(|item| item.slot)
+        .collect();
+    let mut cash_equipment: Vec<_> = inventory
+        .items
+        .iter()
+        .filter(|item| is_cash_equipment_item(item))
+        .collect();
+    cash_equipment.sort_by_key(|item| item.slot);
+
+    let mut next_slot = 1_u32;
+    let mut displayed = Vec::with_capacity(cash_equipment.len());
+    for item in cash_equipment {
+        while next_slot <= u32::from(u16::MAX) && occupied.contains(&(next_slot as u16)) {
+            next_slot += 1;
+        }
+        let Ok(slot) = u16::try_from(next_slot) else {
+            break;
+        };
+        occupied.insert(slot);
+        displayed.push((item, slot));
+        next_slot += 1;
+    }
+    displayed
+}
+
+fn cash_inventory_display_slot_max(inventory: &openstory_protocol::InventorySnapshot) -> u16 {
+    let cash_item_maximum = inventory
+        .items
+        .iter()
+        .filter(|item| item.inventory_type == openstory_protocol::InventoryType::Cash)
+        .map(|item| item.slot)
+        .max()
+        .unwrap_or_default();
+    let maximum = u16::from(inventory.slot_maxima[4]).max(cash_item_maximum);
+    cash_equipment_display_slots(inventory)
+        .last()
+        .map_or(maximum, |(_, slot)| maximum.max(*slot))
+}
+
+fn inventory_display_item_at_slot(
+    inventory: &openstory_protocol::InventorySnapshot,
+    inventory_type: openstory_protocol::InventoryType,
+    slot: u16,
+) -> Option<&openstory_protocol::InventoryItem> {
+    match inventory_type {
+        openstory_protocol::InventoryType::Equip => inventory.items.iter().find(|item| {
+            item.inventory_type == inventory_type
+                && !is_cash_equipment_item(item)
+                && item.slot == slot
+        }),
+        openstory_protocol::InventoryType::Cash => inventory
+            .items
+            .iter()
+            .find(|item| item.inventory_type == inventory_type && item.slot == slot)
+            .or_else(|| {
+                cash_equipment_display_slots(inventory)
+                    .into_iter()
+                    .find_map(|(item, display_slot)| (display_slot == slot).then_some(item))
+            }),
+        _ => inventory
+            .items
+            .iter()
+            .find(|item| item.inventory_type == inventory_type && item.slot == slot),
     }
 }
 
@@ -199,16 +281,8 @@ fn equipment_block_reason_with_level_check(
     check_level: bool,
 ) -> Option<&'static str> {
     let category = character_equip_category(item_id)?;
-    let item_prefix = item_id / 10_000;
-    let gender =
-        if (item_id / 1_000_000 != 1 && item_prefix != 254) || matches!(item_prefix, 119 | 168) {
-            2
-        } else {
-            let gender_digit = item_id / 1_000 % 10;
-            if gender_digit > 1 { 2 } else { gender_digit }
-        };
-    if (gender == 0 && character.stats.female) || (gender == 1 && !character.stats.female) {
-        return Some("This equipment is for a different character gender.");
+    if let Some(reason) = equipment_gender_block_reason(item_id, character) {
+        return Some(reason);
     }
 
     if matches!(character.stats.job, 900 | 910) {
@@ -248,6 +322,24 @@ fn equipment_block_reason_with_level_check(
     (!requirements_met).then_some("Your level or stats are too low to equip this item.")
 }
 
+fn equipment_gender_block_reason(
+    item_id: i32,
+    character: &openstory_protocol::CharacterInfo,
+) -> Option<&'static str> {
+    let item_prefix = item_id / 10_000;
+    let gender =
+        if (item_id / 1_000_000 != 1 && item_prefix != 254) || matches!(item_prefix, 119 | 168) {
+            2
+        } else {
+            let gender_digit = item_id / 1_000 % 10;
+            if gender_digit > 1 { 2 } else { gender_digit }
+        };
+    if (gender == 0 && character.stats.female) || (gender == 1 && !character.stats.female) {
+        return Some("This equipment is for a different character gender.");
+    }
+    None
+}
+
 fn equipment_required_level(item_id: i32, archive: &NxArchive) -> Option<i64> {
     let category = character_equip_category(item_id)?;
     let info_path = format!("{category}/0{item_id}.img/info");
@@ -256,15 +348,19 @@ fn equipment_required_level(item_id: i32, archive: &NxArchive) -> Option<i64> {
 }
 
 fn job_can_equip(job_id: u16, required_job: u16) -> bool {
-    match required_job {
-        0 => true,
-        1 => job_id / 100 == 1 || job_id / 100 >= 20,
-        2 => job_id / 100 == 2,
-        4 => job_id / 100 == 3,
-        8 => job_id / 100 == 4,
-        16 => job_id / 100 == 5,
-        _ => false,
+    if required_job == 0 {
+        return true;
     }
+    let job_class = match job_id / 100 {
+        0 | 10 | 20 | 30 => 32, // Beginners
+        1 | 11 | 21 | 31 => 1,  // Warriors
+        2 | 12 | 22 | 32 => 2, // Magicians
+        3 | 13 | 33 => 4,       // Bowmen
+        4 | 14 => 8,            // Thieves
+        5 | 15 | 35 => 16,      // Pirates
+        _ => 0,
+    };
+    required_job & job_class != 0
 }
 
 fn inventory_item_icon(

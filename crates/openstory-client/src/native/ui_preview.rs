@@ -3014,6 +3014,15 @@ pub(super) fn preview_inventory() -> openstory_protocol::InventorySnapshot {
             });
         }
     }
+    inventory.items.push(InventoryItem {
+        inventory_type: InventoryType::Equip,
+        slot: 13,
+        item_id: 1_702_181,
+        count: 1,
+        cash: true,
+        equip: Some(Default::default()),
+        ..Default::default()
+    });
     inventory
 }
 
@@ -3441,8 +3450,11 @@ fn build_npc_shop_panel_scene(
     let empty = variant == "panel-npc-shop-empty";
     let recharge = variant == "panel-npc-shop-recharge";
     let recommended = variant == "panel-npc-shop-recommended";
+    let comparison = variant == "panel-npc-shop-hover-buy-comparison";
     let no_zero_price_refills = variant == "panel-npc-shop-no-zero-price-refills";
-    let shop_item_ids: &[i32] = if recommended {
+    let shop_item_ids: &[i32] = if comparison {
+        &[1_040_010]
+    } else if recommended {
         &[1_332_000, 1_472_000, 1_472_001, 1_472_003, 1_472_004]
     } else {
         &[
@@ -3551,8 +3563,20 @@ fn build_npc_shop_panel_scene(
         state.buy_selection = Some(1);
         state.sell_selection = Some(2);
     }
+    if comparison {
+        inventory.items.push(openstory_protocol::InventoryItem {
+            inventory_type: openstory_protocol::InventoryType::Equipped,
+            slot: 5,
+            item_id: 1_040_002,
+            count: 1,
+            equip: Some(Default::default()),
+            ..Default::default()
+        });
+    }
     if variant == "panel-npc-shop-hover-buy" {
         state.hovered_item = Some(NpcShopItemHover::Buy(1));
+    } else if comparison {
+        state.hovered_item = Some(NpcShopItemHover::Buy(0));
     } else if variant == "panel-npc-shop-hover-sell" {
         state.hovered_item = Some(NpcShopItemHover::Sell(2));
     }
@@ -3635,6 +3659,10 @@ fn build_npc_shop_panel_scene(
             Some(NpcShopItemHover::Sell(_)) => (NPC_SHOP_X + 350.0, NPC_SHOP_Y + 144.0),
             None => unreachable!(),
         };
+        let cursor = Point {
+            x: cursor_x,
+            y: cursor_y,
+        };
         let tooltip = item_tooltip::render(
             font,
             &item,
@@ -3647,20 +3675,48 @@ fn build_npc_shop_panel_scene(
             &mut HashMap::new(),
             false,
         );
-        let point = item_tooltip::position(
-            Point {
-                x: cursor_x,
-                y: cursor_y,
-            },
-            tooltip.width,
-            tooltip.height,
-        );
-        sprites.push(item_tooltip_preview_sprite(
-            "npc-shop-item-tooltip:preview",
-            tooltip,
-            point,
-            1,
-        ));
+        let equipped = equipped_comparison_item(&item, &inventory);
+        if let Some(equipped) = equipped {
+            let equipped_tooltip = item_tooltip::render(
+                font,
+                &equipped,
+                items,
+                characters,
+                strings,
+                Some(&character.stats),
+                Some(&inventory),
+                &mut HashMap::new(),
+                &mut HashMap::new(),
+                true,
+            );
+            let (item_point, equipped_point) = item_tooltip::comparison_positions(
+                cursor,
+                tooltip.width,
+                tooltip.height,
+                equipped_tooltip.width,
+                equipped_tooltip.height,
+            );
+            sprites.push(item_tooltip_preview_sprite(
+                "npc-shop-item-tooltip:preview",
+                tooltip,
+                item_point,
+                1,
+            ));
+            sprites.push(item_tooltip_preview_sprite(
+                "npc-shop-item-tooltip:equipped-preview",
+                equipped_tooltip,
+                equipped_point,
+                2,
+            ));
+        } else {
+            let point = item_tooltip::position(cursor, tooltip.width, tooltip.height);
+            sprites.push(item_tooltip_preview_sprite(
+                "npc-shop-item-tooltip:preview",
+                tooltip,
+                point,
+                1,
+            ));
+        }
     }
     if let Some(quantity) = state.quantity.as_ref() {
         let pixels = render_npc_shop_quantity(

@@ -2213,9 +2213,7 @@ impl ClientApp {
                             if self.show_skill_book {
                                 self.close_skill_book();
                             } else {
-                                self.show_skill_book = true;
-                                self.refresh_skill_book_entries();
-                                self.refresh_skill_book_texture();
+                                self.open_skill_book();
                             }
                         }
                         Some(4) => self.toggle_key_config(),
@@ -3373,9 +3371,7 @@ impl ClientApp {
                     if self.show_skill_book {
                         self.close_skill_book();
                     } else {
-                        self.show_skill_book = true;
-                        self.refresh_skill_book_entries();
-                        self.refresh_skill_book_texture();
+                        self.open_skill_book();
                     }
                 }
                 4 => {

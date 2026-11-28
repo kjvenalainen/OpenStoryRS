@@ -3476,7 +3476,10 @@ impl ApplicationHandler for ClientApp {
             }
             WindowEvent::RedrawRequested => {
                 self.refresh_skill_tooltip();
-                let mut draws = Vec::with_capacity(self.sprite_draws.len() + 128);
+                let drop_draw_capacity =
+                    self.map_scene.as_ref().map_or(0, |scene| scene.drops.len());
+                let mut draws =
+                    Vec::with_capacity(self.sprite_draws.len() + 128 + drop_draw_capacity);
                 let maple_tv_ad_texture = self
                     .maple_tv_ad_animations
                     .get(self.maple_tv_ad_index)
@@ -3489,6 +3492,10 @@ impl ApplicationHandler for ClientApp {
                 let mut next_map_layer = 0;
                 let mut map_overlays_inserted = false;
                 let graphics_quality = self.gameplay_settings.graphics_quality;
+                let map_entity_draw_frame = self
+                    .map_scene
+                    .as_ref()
+                    .map(|scene| MapEntityDrawFrame::new(scene, graphics_quality));
                 let mut effect_budget =
                     2 + usize::from(self.gameplay_settings.effects_quality) * 48 / 100;
                 for (draw_index, (texture_index, rect)) in self.sprite_draws.iter().enumerate() {
@@ -3513,9 +3520,11 @@ impl ApplicationHandler for ClientApp {
                                 self.local_speech_texture.as_ref(),
                                 self.local_chalkboard_texture.as_ref(),
                                 &self.damage_glyphs,
-                                graphics_quality,
                                 &mut effect_budget,
                                 MapEntityDrawPass::Layer(next_map_layer as u8),
+                                map_entity_draw_frame
+                                    .as_ref()
+                                    .expect("map draw frame exists"),
                                 &mut draws,
                             );
                             next_map_layer += 1;
@@ -3538,9 +3547,11 @@ impl ApplicationHandler for ClientApp {
                                 self.local_speech_texture.as_ref(),
                                 self.local_chalkboard_texture.as_ref(),
                                 &self.damage_glyphs,
-                                graphics_quality,
                                 &mut effect_budget,
                                 MapEntityDrawPass::Overlays,
+                                map_entity_draw_frame
+                                    .as_ref()
+                                    .expect("map draw frame exists"),
                                 &mut draws,
                             );
                             map_overlays_inserted = true;
@@ -3634,9 +3645,11 @@ impl ApplicationHandler for ClientApp {
                             self.local_speech_texture.as_ref(),
                             self.local_chalkboard_texture.as_ref(),
                             &self.damage_glyphs,
-                            graphics_quality,
                             &mut effect_budget,
                             MapEntityDrawPass::Layer(next_map_layer as u8),
+                            map_entity_draw_frame
+                                .as_ref()
+                                .expect("map draw frame exists"),
                             &mut draws,
                         );
                         next_map_layer += 1;
@@ -3659,9 +3672,11 @@ impl ApplicationHandler for ClientApp {
                             self.local_speech_texture.as_ref(),
                             self.local_chalkboard_texture.as_ref(),
                             &self.damage_glyphs,
-                            graphics_quality,
                             &mut effect_budget,
                             MapEntityDrawPass::Overlays,
+                            map_entity_draw_frame
+                                .as_ref()
+                                .expect("map draw frame exists"),
                             &mut draws,
                         );
                     }

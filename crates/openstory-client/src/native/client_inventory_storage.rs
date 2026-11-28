@@ -356,8 +356,10 @@ impl ClientApp {
         }
         let comparison = if self.equipment_hover.is_none()
             && self.show_inventory
-            && self.inventory_tab == openstory_protocol::InventoryType::Equip
-        {
+            && matches!(
+                self.inventory_tab,
+                openstory_protocol::InventoryType::Equip | openstory_protocol::InventoryType::Cash
+            ) {
             self.inventory_hover_slot.and_then(|slot| {
                 let inventory = self.inventory.as_ref()?;
                 let item = inventory_display_item(

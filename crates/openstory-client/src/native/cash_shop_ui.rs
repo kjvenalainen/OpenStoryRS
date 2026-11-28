@@ -155,7 +155,9 @@ fn cash_inventory_items(
         .items
         .iter()
         .filter(|item| {
-            item.inventory_type == openstory_protocol::InventoryType::Cash && item.slot > 0
+            (item.inventory_type == openstory_protocol::InventoryType::Cash
+                || super::is_cash_equipment_item(item))
+                && item.slot > 0
         })
         .collect::<Vec<_>>();
     items.sort_by_key(|item| item.slot);
@@ -1487,7 +1489,10 @@ fn cash_shop_preview_inventory() -> openstory_protocol::InventorySnapshot {
     let cash_items = inventory
         .items
         .iter()
-        .filter(|item| item.inventory_type == openstory_protocol::InventoryType::Cash)
+        .filter(|item| {
+            item.inventory_type == openstory_protocol::InventoryType::Cash
+                || super::is_cash_equipment_item(item)
+        })
         .cloned()
         .collect::<Vec<_>>();
     if cash_items.is_empty() {

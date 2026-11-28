@@ -2718,6 +2718,7 @@ struct MapDropRuntime {
     item_id: i32,
     required_level: Option<i64>,
     meso: bool,
+    pet_pickup_blocked: bool,
     x: f64,
     y: f64,
     destination_x: f64,
@@ -2737,6 +2738,7 @@ struct LootDropSnapshot {
     item_id: i32,
     required_level: Option<i64>,
     meso: bool,
+    pet_pickup_blocked: bool,
     x: f64,
     y: f64,
     picked_up: bool,
@@ -2754,7 +2756,8 @@ struct PetLootFilterSnapshot {
 
 impl PetLootFilterSnapshot {
     fn ignores(&self, drop: &LootDropSnapshot) -> bool {
-        (drop.meso && self.ignore_meso)
+        drop.pet_pickup_blocked
+            || (drop.meso && self.ignore_meso)
             || self.ignored_item_ids.contains(&drop.item_id)
             || (self.ignore_below_level_equipment
                 && drop
@@ -3260,6 +3263,8 @@ struct MapMobRuntime {
     ai_counter: u16,
     random_state: u32,
     fly_direction: i8,
+    jump_origin_foothold: Option<u16>,
+    return_foothold: Option<u16>,
     aggro_target: Option<MobAggroTarget>,
     aggro_remaining: Duration,
 }
@@ -3665,9 +3670,19 @@ impl MapPetRuntime {
                 .and_then(|floor| floor.ground_y(owner.0))
                 .is_some_and(|owner_ground| owner_ground < pet_ground - 1.0)
         });
-        let owner_on_walkable_route = footholds.is_some_and(|tree| {
-            pet_can_walk_to_floor(tree, self.body.foothold_id, owner_foothold_id, owner.0, self.body.x)
-        });
+        // While airborne, foothold_id is only the floor below the pet, not a
+        // floor the pet has reached. Treating it as the pet's route can clear
+        // follow recovery during a jump that never lands on the owner's level.
+        let owner_on_walkable_route = self.body.on_ground
+            && footholds.is_some_and(|tree| {
+                pet_can_walk_to_floor(
+                    tree,
+                    self.body.foothold_id,
+                    owner_foothold_id,
+                    owner.0,
+                    self.body.x,
+                )
+            });
         let owner_is_above = self.loot_target.is_none()
             && !owner_on_walkable_route
             && (owner_delta_y < -40.0 || owner_is_on_higher_foothold);
@@ -3682,6 +3697,9 @@ impl MapPetRuntime {
                 .and_then(|floor| floor.ground_y(owner.0))
                 .is_some_and(|owner_ground| owner_ground > pet_ground + 1.0)
         });
+        let owner_is_on_disconnected_lower_foothold = self.loot_target.is_none()
+            && !owner_on_walkable_route
+            && owner_is_on_lower_foothold;
         const NORMAL_OWNER_LEASH: f64 = 150.0;
         const LOOT_OWNER_LEASH: f64 = 800.0;
         if self.loot_target.is_some() {
@@ -3706,7 +3724,10 @@ impl MapPetRuntime {
         let following_disconnected_owner = self.loot_target.is_none()
             && owner_on_ground
             && !owner_on_walkable_route
-            && owner_distance > FOLLOW_STOP_DEADZONE;
+            // Keep an active recovery window through the jump arc. Vertical
+            // motion can briefly put the pet inside the distance deadzone even
+            // when it has not closed the horizontal gap or reached the floor.
+            && (owner_distance > FOLLOW_STOP_DEADZONE || self.follow_stuck_ticks > 0);
         if following_disconnected_owner {
             if owner_follow_distance + FOLLOW_PROGRESS_DISTANCE < self.best_follow_distance {
                 self.best_follow_distance = owner_follow_distance;
@@ -3737,7 +3758,7 @@ impl MapPetRuntime {
         self.body.vertical_force = 0.0;
         let mut loot_jump_started = false;
 
-        let jump_target = if owner_is_above {
+        let jump_target = if owner_is_above || owner_is_on_disconnected_lower_foothold {
             Some(owner)
         } else {
             self.loot_target
@@ -3803,7 +3824,10 @@ impl MapPetRuntime {
 
         match self.state() {
             0 | 1 => {
-                if self.body.on_ground && self.loot_target.is_none() && !owner_on_walkable_route && owner_is_on_lower_foothold {
+                if self.body.on_ground
+                    && !loot_jump_started
+                    && owner_is_on_disconnected_lower_foothold
+                {
                     // The owner selected a lower foothold by dropping through
                     // the platform. Step off this floor so gravity carries the
                     // pet down to the same level.
@@ -4038,6 +4062,108 @@ struct BasicAttackStats {
 }
 
 impl MapMobRuntime {
+    // Mobs normally turn at ledges. After landing on a new foothold from a
+    // jump, allow a drop only when that ledge can reach the jump's lower floor.
+    fn can_drop_to_return_foothold_toward(
+        &self,
+        footholds: &FootholdTree,
+        going_right: bool,
+    ) -> bool {
+        const MAX_RETURN_DROP: f64 = 600.0;
+        const GRAVITY: f64 = 0.14;
+        const LANDING_MARGIN: f64 = 8.0;
+
+        if self.traits.can_fly || !self.traits.can_move || !self.body.on_ground {
+            return false;
+        }
+        let Some(return_id) = self.return_foothold else {
+            return false;
+        };
+        let Some(current) = footholds.get(self.body.foothold_id).copied() else {
+            return false;
+        };
+        let Some(destination) = footholds.get(return_id).copied() else {
+            return false;
+        };
+        if current.id == destination.id || destination.is_wall() {
+            return false;
+        }
+
+        let direction = if going_right { 1.0 } else { -1.0 };
+        let edge_x = f64::from(if going_right {
+            current.right()
+        } else {
+            current.left()
+        });
+        let Some(edge_y) = current.ground_y(edge_x) else {
+            return false;
+        };
+
+        let destination_x = if going_right {
+            edge_x.max(f64::from(destination.left()))
+        } else {
+            edge_x.min(f64::from(destination.right()))
+        };
+        if destination_x < f64::from(destination.left())
+            || destination_x > f64::from(destination.right())
+        {
+            return false;
+        }
+        let Some(destination_y) = destination.ground_y(destination_x) else {
+            return false;
+        };
+        let drop = destination_y - edge_y;
+        if drop <= 0.0 || drop >= MAX_RETURN_DROP {
+            return false;
+        }
+
+        let distance = (destination_x - edge_x) * direction;
+        let fall_ticks = (2.0 * drop / GRAVITY).sqrt();
+        let horizontal_speed = self
+            .body
+            .horizontal_speed
+            .abs()
+            .max(self.traits.speed.abs());
+        horizontal_speed > 0.0
+            && distance >= 0.0
+            && distance <= horizontal_speed * fall_ticks + LANDING_MARGIN
+    }
+
+    fn return_drop_direction(&self, footholds: &FootholdTree) -> Option<bool> {
+        let can_drop_left = self.can_drop_to_return_foothold_toward(footholds, false);
+        let can_drop_right = self.can_drop_to_return_foothold_toward(footholds, true);
+        match (can_drop_left, can_drop_right) {
+            (false, false) => None,
+            (true, false) => Some(false),
+            (false, true) => Some(true),
+            (true, true) => {
+                let floor = footholds.get(self.body.foothold_id)?;
+                let left_distance = (self.body.x - f64::from(floor.left())).abs();
+                let right_distance = (f64::from(floor.right()) - self.body.x).abs();
+                Some(right_distance < left_distance)
+            }
+        }
+    }
+
+    fn has_reached_return_foothold(&self, footholds: &FootholdTree) -> bool {
+        if !self.body.on_ground {
+            return false;
+        }
+        let Some(return_id) = self.return_foothold else {
+            return false;
+        };
+        let Some(return_floor) = footholds.get(return_id) else {
+            return false;
+        };
+        pet_can_walk_to_floor(
+            footholds,
+            self.body.foothold_id,
+            return_id,
+            (f64::from(return_floor.left()) + f64::from(return_floor.right())) * 0.5,
+            self.body.x,
+        )
+    }
+
     fn current_bounds(&self) -> Option<(f64, f64, f64, f64)> {
         let frame = self
             .animations
@@ -4132,10 +4258,18 @@ impl MapMobRuntime {
                 self.fly_direction = (self.random() % 3) as i8 - 1;
             }
         }
+        if self.motion == MobMotion::Jump && self.body.on_ground {
+            self.jump_origin_foothold = Some(self.body.foothold_id);
+        }
         self.refresh_server_stance();
     }
 
-    fn move_toward_aggro_target(&mut self, target_x: f64, target_y: f64) {
+    fn move_toward_aggro_target(
+        &mut self,
+        target_x: f64,
+        target_y: f64,
+        footholds: Option<&FootholdTree>,
+    ) {
         if !self.traits.can_move
             || self.dying
             || matches!(
@@ -4150,13 +4284,33 @@ impl MapMobRuntime {
         let old_flip = self.server_flip;
         let old_fly_direction = self.fly_direction;
         let dx = target_x - self.x;
-        self.server_flip = dx >= 0.0;
-        if dx.abs() > MOB_AGGRO_STOP_DISTANCE
-            || (self.traits.can_fly && (target_y - self.y).abs() > MOB_AGGRO_STOP_DISTANCE)
-        {
+        let return_route = if target_y > self.y + MOB_AGGRO_STOP_DISTANCE {
+            footholds.and_then(|tree| {
+                self.return_drop_direction(tree)
+                    .map(|direction| (direction, tree))
+            })
+        } else {
+            None
+        };
+        if let Some((return_direction, footholds)) = return_route {
+            let chase_direction = dx >= 0.0;
+            self.server_flip = if dx.abs() > MOB_AGGRO_STOP_DISTANCE
+                && self.can_drop_to_return_foothold_toward(footholds, chase_direction)
+            {
+                chase_direction
+            } else {
+                return_direction
+            };
             self.set_motion(MobMotion::Move);
         } else {
-            self.set_motion(MobMotion::Stand);
+            self.server_flip = dx >= 0.0;
+            if dx.abs() > MOB_AGGRO_STOP_DISTANCE
+                || (self.traits.can_fly && (target_y - self.y).abs() > MOB_AGGRO_STOP_DISTANCE)
+            {
+                self.set_motion(MobMotion::Move);
+            } else {
+                self.set_motion(MobMotion::Stand);
+            }
         }
         if self.traits.can_fly {
             self.fly_direction = if target_y < self.y - MOB_AGGRO_STOP_DISTANCE {
@@ -4178,14 +4332,19 @@ impl MapMobRuntime {
         }
     }
 
-    fn finish_aggro_action(&mut self, target_x: f64, target_y: f64) {
+    fn finish_aggro_action(
+        &mut self,
+        target_x: f64,
+        target_y: f64,
+        footholds: Option<&FootholdTree>,
+    ) {
         let old_motion = self.motion;
         self.set_motion(MobMotion::Stand);
         if old_motion != self.motion {
             self.refresh_server_stance();
             self.movement_dirty = true;
         }
-        self.move_toward_aggro_target(target_x, target_y);
+        self.move_toward_aggro_target(target_x, target_y, footholds);
     }
 
     fn set_motion(&mut self, desired: MobMotion) {
@@ -5663,6 +5822,7 @@ impl MapSceneRuntime {
         spawn: openstory_protocol::MapDropSpawn,
         frames: Vec<DropFrameRuntime>,
         required_level: Option<i64>,
+        pet_pickup_blocked: bool,
     ) {
         let mut body = PhysicsBody::new(f64::from(spawn.source_x), f64::from(spawn.source_y) - 4.0);
         body.horizontal_speed = (f64::from(spawn.destination_x) - f64::from(spawn.source_x)) / 48.0;
@@ -5680,6 +5840,7 @@ impl MapSceneRuntime {
             item_id: spawn.item_id,
             required_level,
             meso: spawn.meso,
+            pet_pickup_blocked,
             x: f64::from(spawn.source_x),
             y: f64::from(spawn.source_y) - 4.0,
             destination_x: f64::from(spawn.destination_x),
@@ -5760,6 +5921,7 @@ impl MapSceneRuntime {
                 item_id: drop.item_id,
                 required_level: drop.required_level,
                 meso: drop.meso,
+                pet_pickup_blocked: drop.pet_pickup_blocked,
                 x: drop.x,
                 y: drop.y,
                 picked_up: matches!(drop.motion, DropMotion::PickedUp { .. }),
@@ -5796,6 +5958,7 @@ impl MapSceneRuntime {
             item_id: drop.item_id,
             required_level: drop.required_level,
             meso: drop.meso,
+            pet_pickup_blocked: drop.pet_pickup_blocked,
             x: drop.x,
             y: drop.y,
             picked_up: matches!(drop.motion, DropMotion::PickedUp { .. }),
@@ -6374,6 +6537,11 @@ impl MapSceneRuntime {
         let Some(local_character_id) = local_character_id else {
             return;
         };
+        // Pet looting is best-effort. Never scan a map's full drop list on the
+        // simulation thread if the background worker could not be started.
+        if self.loot_search.requests.is_none() {
+            return;
+        }
         if self.loot_search.pet_pending {
             return;
         }
@@ -6397,18 +6565,6 @@ impl MapSceneRuntime {
         let drops = self.loot_drop_snapshots();
         let inventory_has_space = inventory_has_free_slots(inventory);
         let target_range = pet_loot_target_range(inventory);
-        if self.loot_search.requests.is_none() {
-            self.loot_search.pet_result = Some(search_pet_drops(
-                player,
-                target_range,
-                &pets,
-                &drops,
-                inventory_has_space,
-                filter,
-                now,
-            ));
-            return;
-        }
         self.loot_search.request_pets(LootSearchRequest::Pets {
             player,
             target_range,
@@ -6455,6 +6611,7 @@ impl MapSceneRuntime {
                     item_id: drop.item_id,
                     required_level: drop.required_level,
                     meso: drop.meso,
+                    pet_pickup_blocked: drop.pet_pickup_blocked,
                     x: drop.x,
                     y: drop.y,
                     picked_up: matches!(drop.motion, DropMotion::PickedUp { .. }),
@@ -6489,6 +6646,7 @@ impl MapSceneRuntime {
                     item_id: drop.item_id,
                     required_level: drop.required_level,
                     meso: drop.meso,
+                    pet_pickup_blocked: drop.pet_pickup_blocked,
                     x: drop.x,
                     y: drop.y,
                     picked_up: matches!(drop.motion, DropMotion::PickedUp { .. }),
@@ -6512,6 +6670,7 @@ impl MapSceneRuntime {
                         item_id: drop.item_id,
                         required_level: drop.required_level,
                         meso: drop.meso,
+                        pet_pickup_blocked: drop.pet_pickup_blocked,
                         x: drop.x,
                         y: drop.y,
                         picked_up: matches!(drop.motion, DropMotion::PickedUp { .. }),
@@ -6862,7 +7021,7 @@ impl MapSceneRuntime {
                     (mob.control_mode == 2).then_some(local_player_position)
                 });
                 if let Some((target_x, target_y)) = aggro_position {
-                    mob.move_toward_aggro_target(target_x, target_y);
+                    mob.move_toward_aggro_target(target_x, target_y, footholds);
                 }
 
                 mob.ai_counter = mob.ai_counter.saturating_add(1);
@@ -6897,28 +7056,63 @@ impl MapSceneRuntime {
                         MobMotion::Jump => mob.body.apply_force(0.0, -5.0),
                         _ => mob.body.apply_force(0.0, 0.0),
                     }
+                    if mob.motion == MobMotion::Jump
+                        && mob.body.on_ground
+                        && mob.jump_origin_foothold.is_none()
+                    {
+                        mob.jump_origin_foothold = Some(mob.body.foothold_id);
+                    }
+                    let return_drop_allowed = mob.motion == MobMotion::Move
+                        && mob.can_drop_to_return_foothold_toward(footholds, mob.server_flip);
+                    mob.body.flags.turn_at_edges = !return_drop_allowed;
                     PhysicsEngine.move_body(footholds, &mut mob.body);
                     mob.x = mob.body.x;
                     mob.y = mob.body.y;
                     mob.foothold = mob.body.foothold_id;
                     if !mob.body.flags.turn_at_edges {
-                        mob.server_flip = !mob.server_flip;
                         mob.body.flags.turn_at_edges = true;
-                        if mob.motion == MobMotion::Hit {
-                            mob.set_motion(MobMotion::Stand);
+                        let stopped_at_edge =
+                            mob.body.on_ground && mob.body.horizontal_speed == 0.0;
+                        if !return_drop_allowed || stopped_at_edge {
+                            mob.server_flip = !mob.server_flip;
+                            if mob.motion == MobMotion::Hit {
+                                mob.set_motion(MobMotion::Stand);
+                            }
                         }
                     }
                 }
 
                 if mob.motion == MobMotion::Jump && mob.body.on_ground {
+                    if let Some(origin) = mob.jump_origin_foothold.take()
+                        && origin != mob.body.foothold_id
+                        && footholds
+                            .and_then(|tree| tree.get(origin))
+                            .and_then(|floor| {
+                                floor.ground_y(
+                                    mob.body
+                                        .x
+                                        .clamp(f64::from(floor.left()), f64::from(floor.right())),
+                                )
+                            })
+                            .is_some_and(|ground_y| ground_y > mob.body.y)
+                        && mob.return_foothold.is_none()
+                    {
+                        mob.return_foothold = Some(origin);
+                    }
+                    if footholds.is_some_and(|tree| mob.has_reached_return_foothold(tree)) {
+                        mob.return_foothold = None;
+                    }
                     if let Some((target_x, target_y)) = aggro_position {
-                        mob.finish_aggro_action(target_x, target_y);
+                        mob.finish_aggro_action(target_x, target_y, footholds);
                     } else {
                         mob.choose_next_move();
                     }
                     packets.push(mob_movement_packet(*object_id, mob, 0));
                     mob.ai_counter = 0;
                     continue;
+                }
+                if footholds.is_some_and(|tree| mob.has_reached_return_foothold(tree)) {
+                    mob.return_foothold = None;
                 }
 
                 let just_claimed = !mob.control_acked;
@@ -6946,7 +7140,7 @@ impl MapSceneRuntime {
                     || (aggro_expired && matches!(mob.motion, MobMotion::Move | MobMotion::Stand));
                 if next {
                     if let Some((target_x, target_y)) = aggro_position {
-                        mob.finish_aggro_action(target_x, target_y);
+                        mob.finish_aggro_action(target_x, target_y, footholds);
                     } else {
                         mob.choose_next_move();
                     }
@@ -7407,6 +7601,8 @@ impl MapSceneRuntime {
         if spawn.is_new_spawn {
             mob.aggro_target = None;
             mob.aggro_remaining = Duration::ZERO;
+            mob.jump_origin_foothold = None;
+            mob.return_foothold = None;
         }
         if mob.control_mode <= 0 {
             mob.x = f64::from(spawn.x);
@@ -7419,6 +7615,8 @@ impl MapSceneRuntime {
             mob.body.vertical_speed = 0.0;
             mob.body.foothold_id = spawn.foothold;
             mob.foothold = spawn.foothold;
+            mob.jump_origin_foothold = None;
+            mob.return_foothold = None;
             mob.server_flip = spawn.stance & 1 == 0;
             mob.server_stance = spawn.stance;
             let desired = if mob.is_immobilized() {
@@ -7740,6 +7938,7 @@ mod pet_pathing_tests {
             item_id: 4_000_000,
             required_level: None,
             meso: false,
+            pet_pickup_blocked: false,
             x: 799.0,
             y: 0.0,
             picked_up: false,
@@ -7776,6 +7975,7 @@ mod pet_pathing_tests {
     fn pet_selects_next_nearby_drop_after_pickup() {
         let drop = |object_id, x| LootDropSnapshot {
             object_id, item_id: 4_000_000, required_level: None, meso: false,
+            pet_pickup_blocked: false,
             x, y: 0.0, picked_up: false, pickup_attempt: None, pet_pickup_attempt: None,
         };
         let pet = LootPetSnapshot { slot: 0, unique_id: 1, x: 200.0, y: 0.0 };

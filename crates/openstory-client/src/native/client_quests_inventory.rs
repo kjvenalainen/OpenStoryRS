@@ -1324,14 +1324,12 @@ impl ClientApp {
             return true;
         }
         if let Some(slot) = inventory_slot_at(cursor, self.inventory_scroll_row) {
-            let item_exists = self.inventory.as_ref().is_some_and(|inventory| {
-                inventory
-                    .items
-                    .iter()
-                    .any(|item| item.inventory_type == self.inventory_tab && item.slot == slot)
+            let source = self.inventory.as_ref().and_then(|inventory| {
+                inventory_display_item(inventory, self.inventory_tab, slot, None)
+                    .map(|item| (item.inventory_type, item.slot))
             });
-            if item_exists {
-                self.inventory_drag_source = Some((self.inventory_tab, slot, cursor));
+            if let Some((inventory_type, source_slot)) = source {
+                self.inventory_drag_source = Some((inventory_type, source_slot, cursor));
                 self.refresh_inventory_drag_texture();
                 self.update_inventory_hover();
                 self.refresh_inventory_texture();
@@ -1352,15 +1350,8 @@ impl ClientApp {
             return false;
         };
         let mark = self.inventory.as_ref().and_then(|inventory| {
-            inventory
-                .items
-                .iter()
-                .find(|item| {
-                    item.inventory_type == self.inventory_tab
-                        && item.slot == slot
-                        && item.slot > 0
-                        && item.count > 0
-                })
+            inventory_display_item(inventory, self.inventory_tab, slot, None)
+                .filter(|item| item.slot > 0 && item.count > 0)
                 .map(inventory_sell_mark)
         });
         let Some(mark) = mark else {
@@ -1586,6 +1577,11 @@ impl ClientApp {
         }
         let destination =
             cursor.and_then(|cursor| inventory_slot_at(cursor, self.inventory_scroll_row));
+        let destination_is_source = self.inventory.as_ref().is_some_and(|inventory| {
+            destination
+                .and_then(|slot| inventory_display_item(inventory, self.inventory_tab, slot, None))
+                .is_some_and(|item| item.inventory_type == source_type && item.slot == source_slot)
+        });
         let merchant_stock_drop = cursor.is_some_and(|cursor| {
             self.hired_merchant_room.as_ref().is_some_and(|room| {
                 room.state.my_slot == 0
@@ -1620,7 +1616,7 @@ impl ClientApp {
             self.refresh_inventory_texture();
             return;
         }
-        if !moved || destination == Some(source_slot) {
+        if !moved || destination_is_source {
             let double_click =
                 self.register_inventory_equip_click(Some((source_type, source_slot)));
             let activate = match source_type {

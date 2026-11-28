@@ -85,6 +85,22 @@ pub(super) fn can_spend_skill_point(
 }
 
 impl ClientApp {
+    pub(super) fn open_skill_book(&mut self) {
+        self.skill_book_tab = self
+            .active_character
+            .as_ref()
+            .and_then(|character| {
+                (0..5)
+                    .rev()
+                    .find(|tab| skill_subjob_for_tab(character.stats.job, *tab).is_some())
+            })
+            .unwrap_or(0);
+        self.skill_book_scroll_row = 0;
+        self.show_skill_book = true;
+        self.refresh_skill_book_entries();
+        self.refresh_skill_book_texture();
+    }
+
     pub(super) fn refresh_cash_shop_texture(&mut self) {
         let Some(state) = self.cash_shop.as_ref() else {
             self.cash_shop_texture = None;

@@ -88,6 +88,8 @@ fn scene_with_mob() -> MapSceneRuntime {
             ai_counter: 0,
             random_state: 1,
             fly_direction: 0,
+            jump_origin_foothold: None,
+            return_foothold: None,
             aggro_target: None,
             aggro_remaining: Duration::ZERO,
         },
@@ -606,7 +608,7 @@ fn flying_mob_can_chase_a_target_directly_above() {
             sprites: Vec::new(),
         }],
     );
-    mob.move_toward_aggro_target(100.0, -100.0);
+    mob.move_toward_aggro_target(100.0, -100.0, None);
     assert_eq!(mob.motion, MobMotion::Move);
     assert_eq!(mob.fly_direction, -1);
 }

@@ -419,10 +419,7 @@ fn inventory_display_item<'a>(
         }
         _ => slot,
     };
-    inventory
-        .items
-        .iter()
-        .find(|item| item.inventory_type == active_tab && item.slot == lookup_slot)
+    inventory_display_item_at_slot(inventory, active_tab, lookup_slot)
 }
 
 fn render_inventory_panel(
@@ -500,7 +497,7 @@ fn render_inventory_panel(
             else {
                 continue;
             };
-            if drag_source != Some((active_tab, slot)) {
+            if drag_source != Some((item.inventory_type, item.slot)) {
                 let cell_pixels = render_inventory_item_cell(
                     item,
                     ui_archive,

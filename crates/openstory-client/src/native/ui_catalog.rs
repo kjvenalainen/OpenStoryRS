@@ -85,6 +85,7 @@ pub(super) const CASES: &[&str] = &[
     "panel-npc-shop-recommended",
     "panel-npc-shop-no-zero-price-refills",
     "panel-npc-shop-hover-buy",
+    "panel-npc-shop-hover-buy-comparison",
     "panel-npc-shop-hover-sell",
     "panel-npc-shop-recharge",
     "panel-npc-shop-empty",

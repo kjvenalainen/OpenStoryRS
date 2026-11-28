@@ -2517,7 +2517,12 @@ impl ClientApp {
         }
         if let Some(scene) = self.map_scene.as_mut() {
             let required_level = equipment_required_level(spawn.item_id, &self.character_archive);
-            scene.spawn_drop(spawn, frames, required_level);
+            let pet_pickup_blocked = spawn.player_drop
+                && self
+                    .active_character
+                    .as_ref()
+                    .is_some_and(|character| character.id == spawn.owner_id);
+            scene.spawn_drop(spawn, frames, required_level, pet_pickup_blocked);
         }
     }
 
@@ -2615,6 +2620,8 @@ impl ClientApp {
                 ^ 0xA341_316C)
                 .max(1),
             fly_direction: 0,
+            jump_origin_foothold: None,
+            return_foothold: None,
             aggro_target: None,
             aggro_remaining: Duration::ZERO,
         };
@@ -3768,9 +3775,7 @@ impl ClientApp {
             }
             openstory_protocol::OpenUiRequest::SkillBook => {
                 if !self.show_skill_book {
-                    self.show_skill_book = true;
-                    self.refresh_skill_book_entries();
-                    self.refresh_skill_book_texture();
+                    self.open_skill_book();
                 }
             }
             openstory_protocol::OpenUiRequest::BuddyList => {

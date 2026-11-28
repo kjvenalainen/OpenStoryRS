@@ -222,7 +222,8 @@ lists, with a Recommended view that checks equipment against job, gender, stats,
 and keeps required levels from the closest lower multiple of five through the next multiple
 (15–20 at level 17). Inventory
 category tabs, scrolling, and hover details work on
-their respective lists. Double-click an equipment row or select it and use the matching
+their respective lists. Hovering shop equipment also shows a comparison with the currently
+worn item for that slot. Double-click an equipment row or select it and use the matching
 button to buy or sell one piece. Double-clicking a stackable offer or selling a stack
 opens a quantity prompt when multiple units are available. Recharge is available for
 supported projectile stacks below their charge limit. Item and currency changes remain
