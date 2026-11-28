@@ -186,8 +186,13 @@ const V83_STATUS_BAR_BIG_BUTTON_X: f32 = V83_STATUS_BAR_WIDTH
     - (3.0 * V83_STATUS_BAR_BIG_BUTTON_WIDTH
         + 2.0 * (V83_STATUS_BAR_BIG_BUTTON_STEP - V83_STATUS_BAR_BIG_BUTTON_WIDTH));
 const GAME_MENU_WIDTH: u32 = 174;
-const GAME_MENU_HEIGHT: u32 = 103;
-const GAME_MENU_ROWS: [&str; 3] = ["Change Channel", "System Menu", "Quit Game"];
+const GAME_MENU_HEIGHT: u32 = 125;
+const GAME_MENU_ROWS: [&str; 4] = [
+    "Change Channel",
+    "System Menu",
+    "Quit Game",
+    "Back to Character Select",
+];
 const EVENT_LIST_PANEL_X: f32 = (1024.0 - EVENT_LIST_PANEL_WIDTH as f32) * 0.5;
 const EVENT_LIST_PANEL_Y: f32 = (768.0 - EVENT_LIST_PANEL_HEIGHT as f32) * 0.5;
 const SPEECH_BUBBLE_WIDTH: u32 = 360;

@@ -558,7 +558,10 @@ fn basic_attack_stats(
         magic_damage: false,
         fixed_damage: None,
         accuracy,
-        critical: 0.05,
+        // This client does not currently derive critical chance from a
+        // character skill or equipment stat. Do not grant every character a
+        // synthetic 5% chance.
+        critical: 0.0,
     }))
 }
 
@@ -670,7 +673,12 @@ fn basic_attack_damage(
         return (0, false);
     }
     let mut damage = min_damage + (max_damage - min_damage) * scene.next_attack_random();
-    let critical = scene.next_attack_random() < attack.critical;
+    // Magic attacks cannot critically hit. Keep consuming the roll so the
+    // damage sequence for following hits stays deterministic.
+    let critical_roll = scene.next_attack_random();
+    let critical = attack.attack_type != openstory_protocol::AttackType::Magic
+        && !attack.magic_damage
+        && critical_roll < attack.critical;
     if critical {
         damage *= 1.5;
     }

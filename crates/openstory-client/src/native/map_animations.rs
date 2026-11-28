@@ -814,7 +814,9 @@ fn append_skill_use_effects(
         let z = integer_property(&source, "z")
             .unwrap_or(0)
             .clamp(i64::from(i8::MIN), i64::from(i8::MAX)) as i8;
+        let first_sprite = sprites.len();
         let frames = append_summon_frames_from_node(sprites, &source, &path, cache)?;
+        shift_magic_claw_use_effect(sprites, first_sprite, skill_id);
         if !frames.is_empty() {
             animations.push(CharacterSkillEffectAsset { z, frames });
         }
@@ -830,17 +832,30 @@ fn append_skill_use_effects(
         let z = integer_property(&effect, "z")
             .unwrap_or(0)
             .clamp(i64::from(i8::MIN), i64::from(i8::MAX)) as i8;
+        let first_sprite = sprites.len();
         let frames = append_summon_frames_from_node(
             sprites,
             &effect,
             &format!("skill:{skill_path}/level/{skill_level}/effect"),
             cache,
         )?;
+        shift_magic_claw_use_effect(sprites, first_sprite, skill_id);
         if !frames.is_empty() {
             animations.push(CharacterSkillEffectAsset { z, frames });
         }
     }
     Ok(animations)
+}
+
+fn shift_magic_claw_use_effect(sprites: &mut [DecodedSprite], first_sprite: usize, skill_id: i32) {
+    const MAGIC_CLAW_REARWARD_OFFSET: f32 = 32.0;
+    if skill_id == 2_001_005 {
+        for sprite in &mut sprites[first_sprite..] {
+            // The NX origin places the yellow slash too far forward. Shifting
+            // it in source coordinates moves it back for either facing.
+            sprite.rect.x += MAGIC_CLAW_REARWARD_OFFSET;
+        }
+    }
 }
 
 fn append_skill_hit_effects(
@@ -983,7 +998,16 @@ fn append_skill_projectile_animation(
         };
         (ball, format!("skill:{skill_path}/ball"))
     };
-    let frames = append_summon_frames_from_node(sprites, &source, &source_path, cache)?;
+    // Projectile sprites are positioned relative to their moving actor at draw
+    // time, so keep their art offsets relative to (0, 0), like item bullets.
+    let frames = append_animation_frames_from_node_at(
+        sprites,
+        &source,
+        &source_path,
+        0.0,
+        0.0,
+        cache,
+    )?;
     Ok(Some(frames))
 }
 
@@ -1944,6 +1968,7 @@ fn append_mob_animations(
         };
         for frame_node in numeric_children(&state_node)? {
             let frame_name = frame_node.name().map_err(|error| error.to_string())?;
+            let head_offset = mob_frame_head_offset(&frame_node)?;
             let first_sprite = sprites.len();
             append_map_art_sprite(
                 sprites,
@@ -1963,6 +1988,7 @@ fn append_mob_animations(
                 frames.push(MobFrameAsset {
                     motion,
                     delay_ms,
+                    head_offset,
                     sprites: first_sprite..sprites.len(),
                 });
             }
@@ -1993,4 +2019,33 @@ fn append_mob_animations(
         }
     }
     Ok((frames, no_flip, faces_right, traits, skill_actions))
+}
+
+fn mob_frame_head_offset(frame: &openstory_assets::NxNode) -> Result<Option<(f32, f32)>, String> {
+    let art = if frame
+        .bitmap()
+        .map_err(|error| error.to_string())?
+        .is_some()
+    {
+        frame.clone()
+    } else {
+        let Some(bitmap_frame) = frame.child("0").map_err(|error| error.to_string())? else {
+            return Ok(None);
+        };
+        if bitmap_frame
+            .bitmap()
+            .map_err(|error| error.to_string())?
+            .is_none()
+        {
+            return Ok(None);
+        }
+        bitmap_frame
+    };
+    let Some(head) = art.child("head").map_err(|error| error.to_string())? else {
+        return Ok(None);
+    };
+    Ok(match head.value().map_err(|error| error.to_string())? {
+        openstory_assets::NodeValue::Vector { x, y } => Some((x as f32, y as f32)),
+        _ => None,
+    })
 }

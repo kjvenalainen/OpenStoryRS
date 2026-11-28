@@ -61,6 +61,7 @@ fn scene_with_mob() -> MapSceneRuntime {
                 MobMotion::Stand,
                 vec![MobFrameRuntime {
                     delay: Duration::from_millis(100),
+                    head_offset: None,
                     sprites: vec![(
                         0,
                         SpriteRect {
@@ -216,6 +217,7 @@ fn mob_hit_reaction_uses_push_threshold_and_attack_direction() {
         MobMotion::Hit,
         vec![MobFrameRuntime {
             delay: Duration::from_millis(100),
+            head_offset: None,
             sprites: Vec::new(),
         }],
     );
@@ -278,6 +280,40 @@ fn delayed_damage_survives_mob_removal_and_expires() {
 }
 
 #[test]
+fn remote_magic_damage_ignores_critical_display_flags() {
+    let mut scene = scene_with_mob();
+    scene.apply_remote_attack(
+        openstory_protocol::RemoteCharacterAttack {
+            attacker_id: 7,
+            attack_type: openstory_protocol::RemoteAttackType::Magic,
+            skill_level: 1,
+            skill_id: 2_100_000,
+            display: 0,
+            to_left: false,
+            stance: 0,
+            speed: 6,
+            bullet_id: 0,
+            hit_count: 1,
+            targets: vec![openstory_protocol::RemoteAttackTarget {
+                object_id: 1,
+                damage_lines: vec![openstory_protocol::RemoteAttackDamage {
+                    damage: 123,
+                    critical: true,
+                }],
+            }],
+        },
+        None,
+        Vec::new(),
+        vec![Duration::ZERO],
+    );
+    scene.advance_mobs(1);
+
+    assert_eq!(scene.damage_numbers.len(), 1);
+    assert_eq!(scene.damage_numbers[0].digits, [1, 2, 3]);
+    assert!(!scene.damage_numbers[0].critical);
+}
+
+#[test]
 fn delayed_projectile_hit_is_canceled_after_target_removal() {
     let mut scene = scene_with_mob();
     scene.schedule_mob_attack_impact(
@@ -332,6 +368,12 @@ fn damage_roll_preserves_critical_for_local_presentation() {
     assert_eq!(basic_attack_damage(&mut scene, attack, mob), (100, false));
     attack.critical = 1.0;
     assert_eq!(basic_attack_damage(&mut scene, attack, mob), (150, true));
+    attack.magic_damage = true;
+    assert_eq!(basic_attack_damage(&mut scene, attack, mob), (100, false));
+    attack.magic_damage = false;
+    attack.attack_type = openstory_protocol::AttackType::Magic;
+    assert_eq!(basic_attack_damage(&mut scene, attack, mob), (100, false));
+    attack.attack_type = openstory_protocol::AttackType::Close;
     attack.fixed_damage = Some(10);
     assert_eq!(basic_attack_damage(&mut scene, attack, mob), (10, false));
     attack.fixed_damage = Some(1_000_001);
@@ -535,6 +577,7 @@ fn aggressive_controller_chases_without_a_recent_hit() {
         MobMotion::Move,
         vec![MobFrameRuntime {
             delay: Duration::from_millis(100),
+            head_offset: None,
             sprites: Vec::new(),
         }],
     );
@@ -559,6 +602,7 @@ fn flying_mob_can_chase_a_target_directly_above() {
         MobMotion::Move,
         vec![MobFrameRuntime {
             delay: Duration::from_millis(100),
+            head_offset: None,
             sprites: Vec::new(),
         }],
     );

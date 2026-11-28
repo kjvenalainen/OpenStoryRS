@@ -874,6 +874,7 @@ fn mob_frames_runtime(
                 .or_default()
                 .push(MobFrameRuntime {
                     delay: Duration::from_millis(u64::from(frame.delay_ms.max(1))),
+                    head_offset: frame.head_offset,
                     sprites,
                 });
         }
@@ -3183,13 +3184,41 @@ fn first_mob_motion(
 
 struct MobFrameRuntime {
     delay: Duration,
+    head_offset: Option<(f32, f32)>,
     sprites: Vec<(usize, SpriteRect)>,
 }
 
 struct MobFrameAsset {
     motion: MobMotion,
     delay_ms: u16,
+    head_offset: Option<(f32, f32)>,
     sprites: Range<usize>,
+}
+
+fn mob_head_offset(mob: &MapMobRuntime, frame: &MobFrameRuntime) -> (f32, f32) {
+    if let Some((x, y)) = frame.head_offset {
+        let flipped = !mob.no_flip && (mob.server_flip != mob.faces_right);
+        return (if flipped { -x } else { x }, y);
+    }
+    frame
+        .sprites
+        .iter()
+        .fold(None, |bounds: Option<(f32, f32, f32)>, (_, rect)| {
+            Some(match bounds {
+                Some((top, left, right)) => (
+                    top.min(rect.y),
+                    left.min(rect.x),
+                    right.max(rect.x + rect.width),
+                ),
+                None => (rect.y, rect.x, rect.x + rect.width),
+            })
+        })
+        .map_or((0.0, 0.0), |(top, left, right)| {
+            (
+                (left + right) * 0.5 - 512.0,
+                top - GAMEPLAY_CAMERA_CENTER_Y,
+            )
+        })
 }
 
 #[derive(Clone, Copy)]
@@ -3621,6 +3650,10 @@ impl MapPetRuntime {
         let owner_delta_x = owner.0 - self.body.x;
         let owner_delta_y = owner.1 - self.body.y;
         let owner_distance = owner_delta_x.hypot(owner_delta_y);
+        // For disconnected footholds, only closing the horizontal gap counts
+        // as follow progress. Vertical jump arcs can briefly shrink the full
+        // distance while the pet is still jumping in place.
+        let owner_follow_distance = owner_delta_x.abs();
         let owner_is_on_higher_foothold = footholds.is_some_and(|tree| {
             let Some(pet_ground) = tree
                 .get(self.body.foothold_id)
@@ -3673,11 +3706,10 @@ impl MapPetRuntime {
         let following_disconnected_owner = self.loot_target.is_none()
             && owner_on_ground
             && !owner_on_walkable_route
-            && owner_delta_y.abs() > 25.0
             && owner_distance > FOLLOW_STOP_DEADZONE;
         if following_disconnected_owner {
-            if owner_distance + FOLLOW_PROGRESS_DISTANCE < self.best_follow_distance {
-                self.best_follow_distance = owner_distance;
+            if owner_follow_distance + FOLLOW_PROGRESS_DISTANCE < self.best_follow_distance {
+                self.best_follow_distance = owner_follow_distance;
                 self.follow_stuck_ticks = 0;
             } else {
                 self.follow_stuck_ticks = self.follow_stuck_ticks.saturating_add(1);
@@ -5131,6 +5163,8 @@ impl MapSceneRuntime {
             }
             let mut stack_offset = 0.0;
             for (hit_index, damage) in target.damage_lines.into_iter().enumerate() {
+                let critical = damage.critical
+                    && attack.attack_type != openstory_protocol::RemoteAttackType::Magic;
                 let mob_damage = openstory_protocol::MobDamage {
                     object_id: target.object_id,
                     damage: damage.damage,
@@ -5139,7 +5173,7 @@ impl MapSceneRuntime {
                     target.object_id,
                     Arc::clone(&skill_hit_effects),
                     hit_effect_flip,
-                    Some((mob_damage, damage.critical, stack_offset)),
+                    Some((mob_damage, critical, stack_offset)),
                     has_projectile,
                     hit_delays
                         .get(hit_index)
@@ -5147,7 +5181,7 @@ impl MapSceneRuntime {
                         .unwrap_or_default()
                         .saturating_add(projectile_travel),
                 );
-                stack_offset += if damage.critical { 36.0 } else { 30.0 };
+                stack_offset += if critical { 36.0 } else { 30.0 };
             }
         }
     }
@@ -6605,24 +6639,8 @@ impl MapSceneRuntime {
             .animations
             .get(&mob.motion)
             .and_then(|frames| frames.get(mob.frame_index))
-            .and_then(|frame| {
-                frame
-                    .sprites
-                    .iter()
-                    .fold(None, |bounds: Option<(f32, f32, f32)>, (_, rect)| {
-                        Some(match bounds {
-                            Some((top, left, right)) => (
-                                top.min(rect.y),
-                                left.min(rect.x),
-                                right.max(rect.x + rect.width),
-                            ),
-                            None => (rect.y, rect.x, rect.x + rect.width),
-                        })
-                    })
-            })
-            .map_or((0.0, 0.0), |(top, left, right)| {
-                ((left + right) * 0.5 - 512.0, top - GAMEPLAY_CAMERA_CENTER_Y)
-            });
+            .map(|frame| mob_head_offset(mob, frame))
+            .unwrap_or((0.0, 0.0));
         for animation in animations {
             if animation.frames.is_empty() {
                 continue;
@@ -7134,25 +7152,12 @@ impl MapSceneRuntime {
         else {
             return None;
         };
-        let Some((top, left, right)) =
-            frame
-                .sprites
-                .iter()
-                .fold(None, |bounds: Option<(f32, f32, f32)>, (_, rect)| {
-                    Some(match bounds {
-                        Some((top, left, right)) => (
-                            top.min(rect.y),
-                            left.min(rect.x),
-                            right.max(rect.x + rect.width),
-                        ),
-                        None => (rect.y, rect.x, rect.x + rect.width),
-                    })
-                })
-        else {
+        if frame.sprites.is_empty() {
             return None;
-        };
-        let world_x = mob.x + f64::from((left + right) * 0.5 - 512.0);
-        let world_y = mob.y + f64::from(top - GAMEPLAY_CAMERA_CENTER_Y - 4.0 - stack_offset);
+        }
+        let (head_x, head_y) = mob_head_offset(mob, frame);
+        let world_x = mob.x + f64::from(head_x);
+        let world_y = mob.y + f64::from(head_y - 4.0 - stack_offset);
         Some(MobDamageNumber {
             world_x,
             world_y,
@@ -7877,7 +7882,7 @@ mod pet_pathing_tests {
         pet.body.on_ground = true;
         pet.body.foothold_id = 1;
         pet.follow_stuck_ticks = 239;
-        pet.best_follow_distance = 80.0;
+        pet.best_follow_distance = 0.0;
         pet.follow_local((0.0, 80.0), 0.0, 0.0, 2, true, false, Some(&tree));
         assert_eq!(pet.body.foothold_id, 2);
         assert_eq!(pet.body.y, 80.0);

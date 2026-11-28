@@ -6,6 +6,14 @@ struct SkillCooldownState {
     expires_at: Instant,
 }
 
+#[derive(Clone, Copy)]
+struct PendingScriptedQuestEnd {
+    quest_id: i16,
+    npc_id: i32,
+    last_sent_at: Instant,
+    retries: u8,
+}
+
 struct PendingMapSceneUpload {
     map_id: i32,
     portal: u8,
@@ -309,6 +317,7 @@ struct ClientApp {
     session: Option<Box<dyn openstory_protocol::SessionTransport>>,
     server_address: String,
     pending_login_packet: Option<Vec<u8>>,
+    pending_relog_to_character_select: bool,
     login_server_connected: bool,
     channel_connected: bool,
     server_ui_disabled: bool,
@@ -441,6 +450,7 @@ struct ClientApp {
     map_scene: Option<MapSceneRuntime>,
     last_npc_talk_at: Option<Instant>,
     pending_npc_talk: Option<(i32, Instant)>,
+    pending_scripted_quest_end: Option<PendingScriptedQuestEnd>,
     last_local_skill_cast: Option<(i32, Instant)>,
     pending_zombify_heal_feedback_until: Option<Instant>,
     gameplay_input: GameplayInput,

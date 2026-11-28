@@ -1114,6 +1114,7 @@ impl ClientApp {
             );
         }
         self.pending_npc_talk = None;
+        self.pending_scripted_quest_end = None;
         self.gameplay_input = GameplayInput::default();
         self.npc_dialogue_scroll_dragging = None;
         let player_name = self

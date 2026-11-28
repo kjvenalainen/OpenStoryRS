@@ -801,12 +801,14 @@ and sends the matching selection index.
   including the legacy magic-skill range. Mob hit animations now resolve their NX variants
   by character level, skill level, and weapon hand, then follow local and broadcast target
   lists with mob head anchors and z ordering. Damage range, level scaling, physical/magic
-  defense, accuracy/avoid hit chance, critical rolls, fixed damage, and caps now follow the
+  defense, accuracy/avoid hit chance, fixed damage, and caps now follow the
   upstream `CharStats` and `Mob` formulas, including equipped stats, weapon mastery, Maple
   Warrior, Angel's Blessing, and Berserk. Upstream treats `mad` as the magic-defense selector
   without folding MATK into the weapon-derived range; it parses `prop` and `elemAttr` but does
-  not apply either to mob damage. Mob touch damage also rolls mob ACC against player EVA and
-  the level difference before applying defense, so contact attacks can miss.
+  not apply either to mob damage. Critical chance is zero until the client derives it from
+  character skills or equipment, and magic attacks cannot critically hit. Mob touch damage also
+  rolls mob ACC against player EVA and the level difference before applying defense, so contact
+  attacks can miss.
   Other active skills emit `USE_SKILL`; teleport uses the learned NX range with foothold
   collision checks, and Flash Jump applies its aerial movement locally. Fourth-job master
   levels, skill prerequisites,

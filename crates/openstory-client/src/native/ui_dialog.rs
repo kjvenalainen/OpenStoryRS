@@ -95,6 +95,18 @@ impl<'a> NxDialog<'a> {
         frame.and(self.close(close))
     }
 
+    /// Renders authored window art and its native, anchor-positioned controls
+    /// through the shared dialog renderer.
+    pub(super) fn authored_window_with_controls(
+        &mut self,
+        layers: &[(&str, i32, i32)],
+        controls: &[(&str, i32, i32)],
+    ) -> Result<(), String> {
+        self.layers(layers)?;
+        self.anchored_buttons(controls);
+        Ok(())
+    }
+
     pub(super) fn close(&mut self, bounds: UiRect) -> Result<(), String> {
         self.buttons(&[(CLOSE_BUTTON_ART, bounds)])
     }

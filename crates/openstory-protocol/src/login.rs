@@ -32,6 +32,7 @@ pub const OPCODE_DELETE_CHARACTER_RESULT: u16 = 15;
 pub const OPCODE_PLAYER_LOGIN: u16 = 20;
 pub const OPCODE_PONG: u16 = 24;
 pub const OPCODE_LOGIN_START: u16 = 35;
+pub const OPCODE_RELOG: u16 = 28;
 pub const OPCODE_SET_FIELD: u16 = 125;
 pub const OPCODE_CHARACTER_STAT_UPDATE: u16 = 31;
 pub const OPCODE_CHARACTER_NAME_REQUEST: u16 = 21;
@@ -741,6 +742,12 @@ pub(crate) fn expect_opcode(
 
 pub fn login_start() -> Vec<u8> {
     PacketWriter::new(OPCODE_LOGIN_START).into_bytes()
+}
+
+/// Requests the v83 channel server to return the authenticated session to
+/// character selection.
+pub fn relog_packet() -> Vec<u8> {
+    PacketWriter::new(OPCODE_RELOG).into_bytes()
 }
 
 /// Confirms the server's Terms of Service after the user explicitly accepts.

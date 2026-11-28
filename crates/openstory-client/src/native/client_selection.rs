@@ -283,6 +283,22 @@ impl ClientApp {
         }
     }
 
+    pub(super) fn return_to_character_select(&mut self) {
+        if !self.channel_connected {
+            eprintln!(
+                "OpenStory: cannot return to character selection without a channel connection"
+            );
+            return;
+        }
+        let Some(session) = self.session.as_ref() else {
+            eprintln!("OpenStory: cannot return to character selection without a server session");
+            return;
+        };
+        if let Err(error) = session.send_packet(openstory_protocol::relog_packet()) {
+            eprintln!("OpenStory: could not request character selection: {error}");
+        }
+    }
+
     pub(super) fn show_character_selection(
         &mut self,
         characters: openstory_protocol::CharacterList,

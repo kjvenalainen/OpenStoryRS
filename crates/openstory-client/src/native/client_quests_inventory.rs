@@ -97,6 +97,17 @@ impl ClientApp {
     }
 
     pub(super) fn apply_quest_update(&mut self, update: openstory_protocol::QuestUpdate) {
+        let updated_quest_id = match &update {
+            openstory_protocol::QuestUpdate::Forfeited { id }
+            | openstory_protocol::QuestUpdate::Progress { id, .. }
+            | openstory_protocol::QuestUpdate::Completed { id, .. } => *id,
+        };
+        if self
+            .pending_scripted_quest_end
+            .is_some_and(|pending| pending.quest_id == updated_quest_id)
+        {
+            self.pending_scripted_quest_end = None;
+        }
         self.quest_log.apply(update);
         self.refresh_npc_quest_marks();
         self.refresh_quest_helper_texture();

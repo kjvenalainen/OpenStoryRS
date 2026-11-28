@@ -669,30 +669,6 @@ pub(super) fn render(
             [255, 255, 255],
         );
     }
-    if state.confirmation {
-        hit_regions.clear();
-        draw_purchase_confirmation(
-            ui_archive,
-            font,
-            state,
-            products,
-            string_archive,
-            name_cache,
-            &mut pixels,
-            &mut dialog_text_pixels,
-            &mut hit_regions,
-        )?;
-    } else if state.coupon_open {
-        hit_regions.clear();
-        draw_coupon_dialog(
-            ui_archive,
-            font,
-            state,
-            &mut pixels,
-            &mut dialog_text_pixels,
-            &mut hit_regions,
-        )?;
-    }
     // Keep NX art on its authored 800x600 raster, then composite text rendered
     // at the final 1024x768 logical resolution.
     scale_cash_shop_to_canvas(&mut pixels, &mut hit_regions);
@@ -713,9 +689,38 @@ pub(super) fn render(
             state.preview_y,
         );
     }
-    let dim_under_dialog = state.confirmation || state.coupon_open;
-    composite_cash_shop_layer(&mut pixels, &nameplate_pixels, dim_under_dialog);
-    composite_cash_shop_layer(&mut pixels, &text_pixels, dim_under_dialog);
+    composite_cash_shop_layer(&mut pixels, &nameplate_pixels, false);
+    composite_cash_shop_layer(&mut pixels, &text_pixels, false);
+    if state.confirmation || state.coupon_open {
+        // Composite the modal after all catalog text so prices and labels remain
+        // behind its opaque NX frame instead of showing through the window.
+        let mut dialog_pixels = vec![0; WIDTH * HEIGHT * 4];
+        hit_regions.clear();
+        if state.confirmation {
+            draw_purchase_confirmation(
+                ui_archive,
+                font,
+                state,
+                products,
+                string_archive,
+                name_cache,
+                &mut dialog_pixels,
+                &mut dialog_text_pixels,
+                &mut hit_regions,
+            )?;
+        } else {
+            draw_coupon_dialog(
+                ui_archive,
+                font,
+                state,
+                &mut dialog_pixels,
+                &mut dialog_text_pixels,
+                &mut hit_regions,
+            )?;
+        }
+        scale_cash_shop_to_canvas(&mut dialog_pixels, &mut hit_regions);
+        composite_cash_shop_layer(&mut pixels, &dialog_pixels, false);
+    }
     composite_cash_shop_layer(&mut pixels, &dialog_text_pixels, false);
     Ok(Scene {
         pixels,
@@ -1529,25 +1534,26 @@ fn draw_purchase_confirmation(
         .and_then(|sn| products.iter().find(|p| p.sn == sn))
     {
         let name = super::item_name(product.item_id, string_archive, name_cache);
-        let name = super::ui_foundation::ellipsize(font, &name, 11.0, 170.0);
-        add_text(
+        add_dialog_text(
             font,
             text_pixels,
             &format!("Buy {name}?"),
             410,
             343,
+            super::ui_foundation::UiTextRole::Label,
             11.0,
             204,
             18,
             [35, 35, 35],
         );
         let currency = ["NX Credit", "Maple Points", "NX Prepaid"][state.currency.min(2)];
-        add_text(
+        add_dialog_text(
             font,
             text_pixels,
             &format!("Price: {} {currency}", grouped_number(product.price)),
             410,
             365,
+            super::ui_foundation::UiTextRole::Value,
             11.0,
             204,
             18,
@@ -1563,24 +1569,26 @@ fn draw_purchase_confirmation(
         } else {
             "Permanent".to_owned()
         };
-        add_text(
+        add_dialog_text(
             font,
             text_pixels,
             &format!("{gender} · {duration}"),
             410,
             385,
-            10.0,
+            super::ui_foundation::UiTextRole::Small,
+            9.0,
             204,
             15,
             [60, 60, 60],
         );
     } else {
-        add_text(
+        add_dialog_text(
             font,
             text_pixels,
             "Select a product first",
             410,
             343,
+            super::ui_foundation::UiTextRole::Label,
             11.0,
             204,
             18,
@@ -1612,7 +1620,7 @@ fn draw_coupon_dialog(
         380,
         318,
     )?;
-    add_text(
+    add_dialog_text(
         font,
         text_pixels,
         if state.coupon_pending {
@@ -1622,18 +1630,20 @@ fn draw_coupon_dialog(
         },
         410,
         343,
+        super::ui_foundation::UiTextRole::Label,
         11.0,
         204,
         18,
         [35, 35, 35],
     );
     let code = super::ui_foundation::ellipsize(font, &state.coupon_code, 11.0, 206.0);
-    add_text(
+    add_dialog_text(
         font,
         text_pixels,
         &code,
         409,
         372,
+        super::ui_foundation::UiTextRole::Value,
         11.0,
         206,
         16,
@@ -1643,13 +1653,14 @@ fn draw_coupon_dialog(
         && let Some(notice) = state.notice.as_deref()
     {
         let notice = super::ui_foundation::ellipsize(font, notice, 10.0, 218.0);
-        add_text(
+        add_dialog_text(
             font,
             text_pixels,
             &notice,
             403,
             394,
-            10.0,
+            super::ui_foundation::UiTextRole::Small,
+            9.0,
             218,
             15,
             [150, 35, 35],
@@ -1862,6 +1873,39 @@ fn add_text(
         (max_width as f32 * scale_x).round() as usize,
         (max_height as f32 * scale_y).round() as usize,
         color,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn add_dialog_text(
+    font: &fontdue::Font,
+    pixels: &mut [u8],
+    text: &str,
+    x: i32,
+    y: i32,
+    role: super::ui_foundation::UiTextRole,
+    size: f32,
+    max_width: usize,
+    max_height: usize,
+    color: [u8; 3],
+) {
+    let scale_x = WIDTH as f32 / CASH_SHOP_WIDTH as f32;
+    let scale_y = HEIGHT as f32 / CASH_SHOP_HEIGHT as f32;
+    let x = ((x as f32 - CASH_SHOP_X as f32) * scale_x).round() as i32;
+    let y = ((y as f32 - CASH_SHOP_Y as f32) * scale_y).round() as i32;
+    super::ui_foundation::draw_text_role_at_size(
+        font,
+        pixels,
+        WIDTH,
+        HEIGHT,
+        text,
+        x,
+        y,
+        role,
+        size * scale_y,
+        (max_width as f32 * scale_x).round() as usize,
+        (max_height as f32 * scale_y).round() as usize,
+        Some(color),
     );
 }
 

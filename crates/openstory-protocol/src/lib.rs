@@ -242,7 +242,7 @@ pub use login::{
     OPCODE_CHECK_PIC_RESULT, OPCODE_CREATE_CHARACTER, OPCODE_CREATE_CHARACTER_RESULT,
     OPCODE_DELETE_CHARACTER, OPCODE_DELETE_CHARACTER_RESULT, OPCODE_LAST_CONNECTED_WORLD,
     OPCODE_LOGIN, OPCODE_LOGIN_RESULT, OPCODE_LOGIN_START, OPCODE_PLAYER_LOGIN, OPCODE_PONG,
-    OPCODE_RECOMMENDED_WORLDS, OPCODE_REGISTER_PIC, OPCODE_SELECT_CHARACTER,
+    OPCODE_RECOMMENDED_WORLDS, OPCODE_REGISTER_PIC, OPCODE_RELOG, OPCODE_SELECT_CHARACTER,
     OPCODE_SELECT_CHARACTER_PIC, OPCODE_SERVER_IP, OPCODE_SERVERLIST_REQUEST,
     OPCODE_SERVERLIST_RESULT, OPCODE_SERVERSTATUS_REQUEST, OPCODE_SERVERSTATUS_RESULT,
     OPCODE_SET_FIELD, PicResult, RecommendedWorld, ServerListBatch, ServerRedirect, ServerStatus,
@@ -252,8 +252,8 @@ pub use login::{
     parse_delete_character_result, parse_last_connected_world, parse_login_result,
     parse_map_change, parse_pic_result, parse_recommended_worlds, parse_server_list,
     parse_server_redirect, parse_server_status, parse_set_field, player_login, pong,
-    register_character_pic, request_character_name, request_characters, request_server_status,
-    request_world_list, select_character, select_character_with_pic,
+    register_character_pic, relog_packet, request_character_name, request_characters,
+    request_server_status, request_world_list, select_character, select_character_with_pic,
 };
 pub use maker::{MakerResult, OPCODE_MAKER_RESULT, parse_maker_result};
 pub use maple::{MAX_ENCRYPTED_PACKET_LENGTH, MapleCipher, MapleFrameDecoder};

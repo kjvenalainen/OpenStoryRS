@@ -506,17 +506,18 @@ fn render_storage_reference_panel(
     const WIDTH: usize = STORAGE_PANEL_WIDTH;
     const HEIGHT: usize = STORAGE_PANEL_HEIGHT;
     let mut pixels = vec![0_u8; WIDTH * HEIGHT * 4];
-    let _ = NxDialog::new(&mut pixels, WIDTH, HEIGHT, ui_archive)
-        .frame("UIWindow.img/Trunk/backgrnd", 0, 0);
+    let _ = NxDialog::new(&mut pixels, WIDTH, HEIGHT, ui_archive).authored_window_with_controls(
+        &[("UIWindow.img/Trunk/backgrnd", 0, 0)],
+        &[
+            ("UIWindow.img/Trunk/BtGet/normal/0", 151, 12),
+            ("UIWindow.img/Trunk/BtSort/disabled/0", 186, 43),
+            ("UIWindow.img/Trunk/BtPut/normal/0", 383, 12),
+            ("UIWindow.img/Trunk/BtExit/normal/0", 383, 56),
+            ("UIWindow.img/Trunk/BtInCoin/normal/0", 3, 293),
+            ("UIWindow.img/Trunk/BtOutCoin/normal/0", 424, 293),
+        ],
+    );
     draw_storage_keeper(&mut pixels, WIDTH, HEIGHT, npc_archive, storage.npc_id, 53, 73);
-    NxDialog::new(&mut pixels, WIDTH, HEIGHT, ui_archive).anchored_buttons(&[
-        ("UIWindow.img/Trunk/BtGet/normal/0", 151, 12),
-        ("UIWindow.img/Trunk/BtSort/disabled/0", 186, 43),
-        ("UIWindow.img/Trunk/BtPut/normal/0", 383, 12),
-        ("UIWindow.img/Trunk/BtExit/normal/0", 383, 56),
-        ("UIWindow.img/Trunk/BtInCoin/normal/0", 3, 293),
-        ("UIWindow.img/Trunk/BtOutCoin/normal/0", 424, 293),
-    ]);
     let tabs = [openstory_protocol::InventoryType::Equip, openstory_protocol::InventoryType::Use, openstory_protocol::InventoryType::Setup, openstory_protocol::InventoryType::Etc, openstory_protocol::InventoryType::Cash];
     let tab_labels = ["Equip", "Use", "Setup", "Etc", "Cash"];
     for (index, tab) in tabs.into_iter().enumerate() {
@@ -569,9 +570,11 @@ fn render_storage_reference_panel(
             if item.count > 1 { draw_dialogue_text(font, &mut pixels, WIDTH, HEIGHT, &format!("x{}", item.count), (x + 40) as i32, (y + 19) as i32, 9.0, 155, 12, [60, 65, 68]); }
         }
     }
-    for (value, x, width) in [(storage.meso.to_string(), 43, 150), (inventory.meso.to_string(), 274, 146)] {
-        let value = ui_foundation::ellipsize(font, &value, 10.0, width as f32);
-        draw_dialogue_text(font, &mut pixels, WIDTH, HEIGHT, &value, x, 297, 10.0, width, 14, [45, 45, 45]);
+    for (value, right, width) in [
+        (i64::from(storage.meso), 193, 150),
+        (inventory.meso, 420, 146),
+    ] {
+        draw_inventory_meso_amount(font, &mut pixels, WIDTH, HEIGHT, value, right, 297, width);
     }
     // The amount field is shared by the two native transfer buttons.
     draw_dialogue_text(font, &mut pixels, WIDTH, HEIGHT, "Amount", 263, 35, 10.0, 104, 14, [55, 55, 55]);

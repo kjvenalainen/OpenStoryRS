@@ -68,6 +68,7 @@ impl ClientApp {
         self.gameplay_input = GameplayInput::default();
         self.npc_dialogue = None;
         self.pending_npc_talk = None;
+        self.pending_scripted_quest_end = None;
         self.inventory_drag_source = None;
         self.inventory_drop_prompt = None;
         self.inventory_drop_prompt_texture = None;

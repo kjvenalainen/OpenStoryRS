@@ -16,6 +16,7 @@ impl ClientApp {
         {
             return;
         }
+        self.pending_scripted_quest_end = None;
         let Some(npc_id) = self
             .map_scene
             .as_ref()
@@ -144,6 +145,42 @@ impl ClientApp {
         self.show_unimplemented_npc_dialogue(npc_id);
     }
 
+    pub(super) fn retry_silent_scripted_quest_end(&mut self, now: Instant) {
+        let Some(pending) = self.pending_scripted_quest_end else {
+            return;
+        };
+        let elapsed = now.saturating_duration_since(pending.last_sent_at);
+        if pending.retries == 0 && elapsed >= Duration::from_millis(600) {
+            self.pending_scripted_quest_end = Some(PendingScriptedQuestEnd {
+                last_sent_at: now,
+                retries: 1,
+                ..pending
+            });
+            let packet = openstory_protocol::complete_quest_packet(
+                pending.quest_id,
+                pending.npc_id,
+                None,
+                true,
+            );
+            if let Some(session) = self.session.as_ref()
+                && let Err(error) = session.send_packet(packet)
+            {
+                eprintln!("OpenStory: could not retry scripted quest completion: {error}");
+                self.channel_connected = false;
+                self.pending_scripted_quest_end = None;
+            }
+            return;
+        }
+        if pending.retries > 0 && elapsed >= Duration::from_millis(1500) {
+            self.pending_scripted_quest_end = None;
+            self.push_chat_line(
+                "[Quest] The quest NPC did not respond. Please try talking to them again."
+                    .to_owned(),
+                [255, 180, 120],
+            );
+        }
+    }
+
     fn show_unimplemented_npc_dialogue(&mut self, npc_id: i32) {
         self.show_local_quest_conversation(
             npc_id,
@@ -185,11 +222,22 @@ impl ClientApp {
             } else {
                 openstory_protocol::complete_quest_packet(quest_id, npc_id, reward_selection, true)
             };
-            if let Some(session) = self.session.as_ref()
-                && let Err(error) = session.send_packet(packet)
-            {
-                eprintln!("OpenStory: could not request quest dialogue: {error}");
-                self.channel_connected = false;
+            if let Some(session) = self.session.as_ref() {
+                match session.send_packet(packet) {
+                    Ok(()) if side == 1 => {
+                        self.pending_scripted_quest_end = Some(PendingScriptedQuestEnd {
+                            quest_id,
+                            npc_id,
+                            last_sent_at: Instant::now(),
+                            retries: 0,
+                        });
+                    }
+                    Ok(()) => {}
+                    Err(error) => {
+                        eprintln!("OpenStory: could not request quest dialogue: {error}");
+                        self.channel_connected = false;
+                    }
+                }
             }
             return;
         }

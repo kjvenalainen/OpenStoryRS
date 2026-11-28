@@ -3571,36 +3571,42 @@ impl ApplicationHandler for ClientApp {
                         continue;
                     }
                     if let Some(texture) = self.sprite_textures.get(*texture_index) {
-                        // Keep tiled edges on logical pixel boundaries as camera offsets move.
-                        let (x, y) = self
-                            .map_scene
-                            .as_ref()
-                            .and_then(|scene| {
-                                scene
-                                    .map_backgrounds
-                                    .iter()
-                                    .find(|background| background.sprites.contains(&draw_index))
+                        let background = self.map_scene.as_ref().and_then(|scene| {
+                            scene
+                                .map_backgrounds
+                                .iter()
+                                .find(|background| background.sprites.contains(&draw_index))
+                        });
+                        // Extend repeated tiles one logical pixel into the next tile so
+                        // camera movement cannot expose a flashing seam between quads.
+                        let (horizontal_tiled, vertical_tiled) = background
+                            .map(|background| {
+                                (background.horizontal_tiled, background.vertical_tiled)
                             })
-                            .map_or((rect.x, rect.y), |background| {
-                                (
-                                    if background.horizontal_tiled {
-                                        rect.x.round()
-                                    } else {
-                                        rect.x
-                                    },
-                                    if background.vertical_tiled {
-                                        rect.y.round()
-                                    } else {
-                                        rect.y
-                                    },
-                                )
-                            });
+                            .unwrap_or((false, false));
+                        let width = rect.width + if horizontal_tiled { 1.0 } else { 0.0 };
+                        let height = rect.height + if vertical_tiled { 1.0 } else { 0.0 };
+                        // Keep tiled edges on logical pixel boundaries as camera offsets move.
+                        let (x, y) = background.map_or((rect.x, rect.y), |background| {
+                            (
+                                if background.horizontal_tiled {
+                                    rect.x.round()
+                                } else {
+                                    rect.x
+                                },
+                                if background.vertical_tiled {
+                                    rect.y.round()
+                                } else {
+                                    rect.y
+                                },
+                            )
+                        });
                         draws.push(SpriteDraw {
                             texture,
                             x,
                             y,
-                            width: rect.width,
-                            height: rect.height,
+                            width,
+                            height,
                             uv: [0.0, 0.0, 1.0, 1.0],
                             tint: [1.0, 1.0, 1.0],
                             blend_mode: rect.blend_mode,
@@ -5312,6 +5318,7 @@ impl ApplicationHandler for ClientApp {
             self.advance_npc_dialogue_text(elapsed);
         }
         self.expire_pending_npc_talk(now);
+        self.retry_silent_scripted_quest_end(now);
         self.advance_login_animations(elapsed);
         if self.map_loading_started_at.is_none()
             && self.monster_book.open

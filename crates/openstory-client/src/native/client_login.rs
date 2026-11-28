@@ -408,6 +408,7 @@ impl ClientApp {
                 self.chat_input.clear();
                 self.npc_dialogue = None;
                 self.pending_npc_talk = None;
+                self.pending_scripted_quest_end = None;
                 self.character_info = None;
                 self.character_info_texture = None;
                 self.cash_shop = None;
@@ -1596,9 +1597,19 @@ impl ClientApp {
                         window.request_redraw();
                     }
                     eprintln!("OpenStory: connected; starting the login session");
+                    let returning_to_character_select = self.pending_relog_to_character_select;
                     if let Some(session) = self.session.as_ref() {
                         if let Err(error) = session.send_packet(openstory_protocol::login_start()) {
                             eprintln!("OpenStory: could not start login session: {error}");
+                        }
+                    }
+                    if returning_to_character_select {
+                        if self.selected_world.is_some() {
+                            self.request_characters();
+                            self.pending_relog_to_character_select = false;
+                        } else {
+                            eprintln!("OpenStory: missing selected world after relog response");
+                            self.pending_relog_to_character_select = false;
                         }
                     }
                     if let Some(packet) = self.pending_login_packet.take()
@@ -1607,7 +1618,9 @@ impl ClientApp {
                     {
                         eprintln!("OpenStory: could not send queued login request: {error}");
                     }
-                    if std::env::var("OPENSTORY_AUTO_LOGIN").as_deref() == Ok("1") {
+                    if !returning_to_character_select
+                        && std::env::var("OPENSTORY_AUTO_LOGIN").as_deref() == Ok("1")
+                    {
                         if let Some(session) = self.session.as_ref() {
                             if let Err(error) = configured_login_packet()
                                 .and_then(|packet| session.send_packet(packet))

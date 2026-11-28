@@ -397,6 +397,7 @@ impl ClientApp {
                 .unwrap_or_else(|| "127.0.0.1:8484".to_owned()),
             session: connect_to.map(session::connect),
             pending_login_packet: None,
+            pending_relog_to_character_select: false,
             login_server_connected: false,
             channel_connected: false,
             server_ui_disabled: false,
@@ -529,6 +530,7 @@ impl ClientApp {
             map_scene: None,
             last_npc_talk_at: None,
             pending_npc_talk: None,
+            pending_scripted_quest_end: None,
             last_local_skill_cast: None,
             pending_zombify_heal_feedback_until: None,
             gameplay_input: GameplayInput::default(),
@@ -1679,7 +1681,7 @@ impl ClientApp {
         }) else {
             return;
         };
-        let attack_range = skill
+        let mut attack_range = skill
             .and_then(|skill| skill.attack_range)
             .or_else(|| {
                 let regular_action = skill_id == 0
@@ -1700,6 +1702,13 @@ impl ClientApp {
                     .flatten()
             })
             .unwrap_or([-400, -5, -50, 50]);
+        if skill_id == 2_001_005 {
+            // Magic Claw's hit box is centered at the character's feet, but
+            // the cast effect is centered around the torso.
+            const MAGIC_CLAW_TARGET_CENTER_Y_OFFSET: i16 = -26;
+            attack_range[2] = attack_range[2].saturating_add(MAGIC_CLAW_TARGET_CENTER_Y_OFFSET);
+            attack_range[3] = attack_range[3].saturating_add(MAGIC_CLAW_TARGET_CENTER_Y_OFFSET);
+        }
         let skill_hit_delays = attack_hit_delays(
             &self.character_archive,
             &self.skill_archive,
@@ -2102,6 +2111,7 @@ impl ClientApp {
             0 => self.open_channel_switch(),
             1 => self.open_settings(),
             2 => self.open_quit_confirmation(),
+            3 => self.return_to_character_select(),
             _ => {}
         }
     }
@@ -4021,6 +4031,7 @@ impl ClientApp {
         self.teleport_effect_frames = None;
         self.npc_dialogue = None;
         self.pending_npc_talk = None;
+        self.pending_scripted_quest_end = None;
         self.rps_game = None;
         self.inventory_drag_source = None;
         self.inventory_hover_slot = None;

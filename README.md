@@ -25,7 +25,8 @@ account and password fields accept text; the password is masked. The selected wo
 can be used to request a character list. Characters display name, level, job, and map.
 In the field, the camera keeps the player above the status bar and uses the visible
 field area for map limits. When no other window is open, Escape opens the game menu;
-select Quit Game to open the quit confirmation.
+Back to Character Select returns to the character list, and Quit Game opens the quit
+confirmation.
 The login background's six light beams animate independently using their NX frame delays;
 login buttons use their NX disabled, mouse-over, and pressed art. Keyboard focus uses NX
 focus art when available and a gold outline otherwise. Tab cycles through the account field,

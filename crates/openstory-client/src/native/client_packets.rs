@@ -2404,6 +2404,7 @@ impl ClientApp {
                 match openstory_protocol::parse_npc_shop(packet) {
                     Ok(shop) => {
                         self.pending_npc_talk = None;
+                        self.pending_scripted_quest_end = None;
                         self.npc_dialogue = None;
                         let auto_sell_items = self
                             .inventory
@@ -3247,6 +3248,7 @@ impl ClientApp {
 
         match event {
             Event::RelogResponse { success: true } => {
+                self.pending_relog_to_character_select = true;
                 self.login_server_connected = false;
                 self.channel_connected = false;
                 self.server_ui_disabled = false;
@@ -3271,7 +3273,14 @@ impl ClientApp {
                 self.channel_switch_open = false;
                 eprintln!("OpenStory: reconnecting to the login server after relog response");
             }
-            Event::RelogResponse { success: false } | Event::GenderSet(_) => {}
+            Event::RelogResponse { success: false } => {
+                self.pending_relog_to_character_select = false;
+                self.push_chat_line(
+                    "[System] The server could not return you to character selection.".to_owned(),
+                    [255, 105, 105],
+                );
+            }
+            Event::GenderSet(_) => {}
             Event::MemoResult(MemoResult::Sent) => {
                 self.push_chat_line("[Memo] Your note was sent.".to_owned(), [255, 255, 0])
             }
