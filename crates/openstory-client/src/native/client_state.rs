@@ -438,7 +438,6 @@ struct ClientApp {
     map_loading_texture: Option<GpuTexture>,
     map_initial_npc_loading_until: Option<Instant>,
     initial_npc_spawns: VecDeque<openstory_protocol::MapNpcSpawn>,
-    initial_npc_nearby_pending: usize,
     map_entry_refresh_pending: bool,
     map_entry_refresh_step: u8,
     pending_map_transition_ack: Option<(i32, u8)>,

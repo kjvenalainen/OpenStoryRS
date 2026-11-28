@@ -123,7 +123,6 @@ impl ClientApp {
         self.map_loading_frame_rendered = false;
         self.map_initial_npc_loading_until = None;
         self.initial_npc_spawns.clear();
-        self.initial_npc_nearby_pending = 0;
         let character_look = self
             .active_character
             .as_ref()
@@ -174,7 +173,6 @@ impl ClientApp {
                 self.map_loading_frame_rendered = false;
                 self.map_initial_npc_loading_until = None;
                 self.initial_npc_spawns.clear();
-                self.initial_npc_nearby_pending = 0;
                 self.map_entry_refresh_pending = false;
                 self.pending_map_transition_ack = None;
                 eprintln!("OpenStoryRS: could not start loading map {map_id}: {error}");
@@ -199,7 +197,6 @@ impl ClientApp {
                 self.map_loading_frame_rendered = false;
                 self.map_initial_npc_loading_until = None;
                 self.initial_npc_spawns.clear();
-                self.initial_npc_nearby_pending = 0;
                 self.map_entry_refresh_pending = false;
                 if let Some(window) = self.window.as_ref() {
                     window.request_redraw();
@@ -273,7 +270,6 @@ impl ClientApp {
         self.map_loading_frame_rendered = false;
         self.map_initial_npc_loading_until = None;
         self.initial_npc_spawns.clear();
-        self.initial_npc_nearby_pending = 0;
         self.map_entry_refresh_pending = false;
         self.map_entry_refresh_step = 0;
         self.pending_map_transition_ack = None;
@@ -446,7 +442,6 @@ impl ClientApp {
             self.map_loading_frame_rendered = false;
             self.map_initial_npc_loading_until = None;
             self.initial_npc_spawns.clear();
-            self.initial_npc_nearby_pending = 0;
         }
         if let Some(window) = self.window.as_ref() {
             window.request_redraw();
@@ -504,9 +499,9 @@ impl ClientApp {
                 // NPC batch, so use a short quiet window after the transfer ack.
                 self.map_initial_npc_loading_until =
                     Some(Instant::now() + INITIAL_NPC_LOADING_QUIET_WINDOW);
-                if let Some(window) = self.window.as_ref() {
-                    window.request_redraw();
-                }
+                // The uploaded map scene already contains the local avatar;
+                // let queued NPC spawns finish after gameplay is unfrozen.
+                self.release_map_loading_screen();
                 return;
             }
         }
@@ -525,14 +520,10 @@ impl ClientApp {
         }
         self.map_initial_npc_loading_until = None;
         self.prioritize_initial_npc_spawns();
-        if self.initial_npc_nearby_pending == 0 {
-            self.release_map_loading_screen();
-        }
     }
 
     fn prioritize_initial_npc_spawns(&mut self) {
         let Some(scene) = self.map_scene.as_ref() else {
-            self.initial_npc_nearby_pending = 0;
             return;
         };
         self.initial_npc_spawns
@@ -550,11 +541,6 @@ impl ClientApp {
                     left_distance.total_cmp(&right_distance)
                 })
             });
-        self.initial_npc_nearby_pending = self
-            .initial_npc_spawns
-            .iter()
-            .take_while(|spawn| initial_npc_spawn_in_view(spawn, scene))
-            .count();
     }
 
     pub(super) fn advance_initial_npc_spawns(&mut self) {
@@ -564,14 +550,7 @@ impl ClientApp {
         let Some(spawn) = self.initial_npc_spawns.pop_front() else {
             return;
         };
-        let nearby = self.initial_npc_nearby_pending > 0;
         self.spawn_npc_inner(spawn);
-        if nearby {
-            self.initial_npc_nearby_pending = self.initial_npc_nearby_pending.saturating_sub(1);
-        }
-        if self.initial_npc_nearby_pending == 0 && self.map_loading_started_at.is_some() {
-            self.release_map_loading_screen();
-        }
         if let Some(window) = self.window.as_ref() {
             window.request_redraw();
         }

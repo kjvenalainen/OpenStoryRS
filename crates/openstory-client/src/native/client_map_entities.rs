@@ -1014,15 +1014,6 @@ impl ClientApp {
             .position(|spawn| spawn.object_id == object_id)
         {
             self.initial_npc_spawns.remove(index);
-            if index < self.initial_npc_nearby_pending {
-                self.initial_npc_nearby_pending -= 1;
-                if self.initial_npc_nearby_pending == 0
-                    && self.map_initial_npc_loading_until.is_none()
-                    && self.map_loading_started_at.is_some()
-                {
-                    self.release_map_loading_screen();
-                }
-            }
         }
         if let Some(scene) = self.map_scene.as_mut() {
             scene.npcs.remove(&object_id);
@@ -2578,6 +2569,9 @@ impl ClientApp {
         };
         let mut body = PhysicsBody::new(f64::from(spawn.x), f64::from(spawn.y));
         body.foothold_id = spawn.foothold;
+        // Upstream PhysicsObject starts grounded. This lets the first support
+        // update keep the server foothold when the spawn position is on it.
+        body.on_ground = true;
         body.mode = if traits.can_fly {
             PhysicsMode::Flying
         } else {

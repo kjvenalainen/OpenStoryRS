@@ -29,7 +29,7 @@ fn cash_product_matches_category(item_id: i32, category: usize) -> bool {
     let item_prefix = item_id / 10_000;
     match category {
         0 => true,
-        1 => item_type == 1,
+        1 => item_type == 1 && !(180..=183).contains(&item_prefix),
         2 => item_type == 2,
         3 => item_type == 3,
         4 => item_type == 4,

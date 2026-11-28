@@ -518,7 +518,6 @@ impl ClientApp {
             map_loading_texture: None,
             map_initial_npc_loading_until: None,
             initial_npc_spawns: VecDeque::new(),
-            initial_npc_nearby_pending: 0,
             map_entry_refresh_pending: false,
             map_entry_refresh_step: 0,
             pending_map_transition_ack: None,
