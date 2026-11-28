@@ -219,7 +219,11 @@ pub(super) fn run(
             build_equipment_panel_scene(
                 name,
                 tab,
-                (*name == "panel-equipment-inventory-scroll-drop").then_some(2_043_000),
+                match *name {
+                    "panel-equipment-inventory-scroll-drop" => Some(2_043_000),
+                    "panel-equipment-inventory-pet-scroll-drop" => Some(2_048_000),
+                    _ => None,
+                },
                 map,
                 legacy_ui,
                 characters,
@@ -255,6 +259,7 @@ pub(super) fn run(
                 | "panel-quests-detail"
                 | "panel-quests-detail-flow"
                 | "panel-quests-detail-scrolled"
+                | "panel-quests-forfeit-confirmation"
         ) {
             build_quest_log_panel_scene(
                 name, map, legacy_ui, quests, strings, characters, npcs, font,
@@ -396,6 +401,7 @@ pub(super) fn run(
                     None,
                     None,
                     None,
+                    &HashSet::new(),
                     legacy_ui,
                     items,
                     characters,
@@ -453,7 +459,7 @@ pub(super) fn run(
                 ui,
                 super::ui_clock::ClockState::Countdown {
                     remaining_seconds: 83 * 60 + 7,
-                    elapsed_ms: 0,
+                    elapsed: Duration::ZERO,
                 },
             )?;
             let mut sprites = gameplay_backdrop(map, characters, font)?;
@@ -1122,6 +1128,7 @@ pub(super) fn run(
                     | "panel-quests-detail"
                     | "panel-quests-detail-flow"
                     | "panel-quests-detail-scrolled"
+                    | "panel-quests-forfeit-confirmation"
             ) {
                 let mut bounds = vec![ui_foundation::QUEST_LIST_CLOSE_BUTTON];
                 bounds.extend((0..3).map(ui_foundation::quest_tab));
@@ -1149,6 +1156,28 @@ pub(super) fn run(
                         },
                         hitbox_color(3 + super::QUEST_LOG_VISIBLE_ROWS + index),
                     );
+                }
+                if *name == "panel-quests-forfeit-confirmation" {
+                    let modal_bounds = [
+                        super::quest_forfeit_close_button(),
+                        super::quest_forfeit_action_buttons()[0],
+                        super::quest_forfeit_action_buttons()[1],
+                    ];
+                    for (index, bounds) in modal_bounds.into_iter().enumerate() {
+                        draw_rect_outline(
+                            &mut image,
+                            CANVAS_WIDTH,
+                            CANVAS_HEIGHT,
+                            SpriteRect {
+                                x: super::QUEST_LOG_PANEL_X + bounds.x,
+                                y: super::QUEST_LOG_PANEL_Y + bounds.y,
+                                width: bounds.width,
+                                height: bounds.height,
+                                blend_mode: BlendMode::Alpha,
+                            },
+                            hitbox_color(index + 3),
+                        );
+                    }
                 }
                 for row in 0..super::QUEST_LOG_VISIBLE_ROWS {
                     let cell = ui_foundation::QUEST_GRID.cell(row);
@@ -1740,6 +1769,7 @@ fn build_scene(
                     &std::array::from_fn(|_| None),
                     &[0; 8],
                     &[0.0; 8],
+                    &[false; 8],
                 );
                 sprites.push(DecodedSprite {
                     texture_key: "quickslots:gain-feed-preview".to_owned(),
@@ -1914,26 +1944,53 @@ fn build_scene(
         | "page-world-map-link"
         | "page-world-map-marker"
         | "page-world-map-search"
-        | "page-world-map-result" => {
-            let query = if matches!(name, "page-world-map-search" | "page-world-map-result") {
+        | "page-world-map-search-pending"
+        | "page-world-map-result"
+        | "page-world-map-towns"
+        | "page-world-map-teleport-confirmation" => {
+            let query = if matches!(
+                name,
+                "page-world-map-search" | "page-world-map-search-pending" | "page-world-map-result"
+            ) {
                 "Orbis"
             } else {
                 ""
             };
+            let search_pending = name == "page-world-map-search-pending";
             let search_catalog = world_map::load_search_catalog(map, strings)?;
+            let visited_towns = if matches!(
+                name,
+                "page-world-map-towns" | "page-world-map-teleport-confirmation"
+            ) {
+                std::collections::HashSet::from([200_000_000])
+            } else {
+                std::collections::HashSet::new()
+            };
             let panel = world_map::render(
                 map,
                 ui,
                 100_000_000,
-                (name == "page-world-map-result").then_some("WorldMap020"),
+                matches!(
+                    name,
+                    "page-world-map-result"
+                        | "page-world-map-towns"
+                        | "page-world-map-teleport-confirmation"
+                )
+                .then_some("WorldMap020"),
                 true,
                 query,
-                name == "page-world-map-search",
+                if search_pending { "" } else { query },
+                search_pending,
+                matches!(
+                    name,
+                    "page-world-map-search" | "page-world-map-search-pending"
+                ),
                 Some(&search_catalog),
                 0,
                 (name == "page-world-map-link").then_some(0),
                 (name == "page-world-map-marker").then_some(0),
                 (name == "page-world-map-result").then_some(200_000_000),
+                &visited_towns,
                 strings,
                 font,
             )?;
@@ -1951,8 +2008,38 @@ fn build_scene(
                 texture_height: panel.height,
                 pixels: Arc::from(panel.pixels),
             };
+            let mut sprites = vec![sprite];
+            if name == "page-world-map-teleport-confirmation" {
+                sprites.push(DecodedSprite {
+                    texture_key: "world-map-teleport-confirmation:dim".to_owned(),
+                    rect: SpriteRect {
+                        x: 0.0,
+                        y: 0.0,
+                        width: CANVAS_WIDTH as f32,
+                        height: CANVAS_HEIGHT as f32,
+                        blend_mode: BlendMode::Alpha,
+                    },
+                    depth_order: 1,
+                    texture_width: 1,
+                    texture_height: 1,
+                    pixels: Arc::from([0_u8, 0, 0, 140]),
+                });
+                let message =
+                    "Travel to Orbis? Click OK or press Enter to confirm. Press Esc to cancel.";
+                let (width, height, pixels, panel, _, _) =
+                    build_server_notice_art(legacy_ui, font, message, 0)
+                        .or_else(|_| build_server_notice_art(ui, font, message, 0))?;
+                sprites.push(DecodedSprite {
+                    texture_key: "world-map-teleport-confirmation:dialog".to_owned(),
+                    rect: panel,
+                    depth_order: 2,
+                    texture_width: width,
+                    texture_height: height,
+                    pixels: Arc::from(pixels),
+                });
+            }
             Ok(LoginSceneAssets {
-                sprites: vec![sprite],
+                sprites,
                 actions: Vec::new(),
                 map_scene: None,
                 animated_art: Vec::new(),
@@ -1985,7 +2072,7 @@ fn build_scene(
                 }
             } else {
                 let mut look = fixture_look();
-                look.masked_equips.push((1, 1_002_812));
+                look.masked_equips.push((1, 1_002_235));
                 look.weapon_sticker_id = 1_702_000;
                 look.pet_ids[0] = 5_000_000;
                 // One selected character plus five open slots shows the native
@@ -2087,12 +2174,14 @@ fn build_scene(
         | "hud-quickslot"
         | "hud-quickslot-item-tooltip"
         | "hud-quickslot-skill-tooltip"
+        | "hud-quickslot-auto-buff"
         | "hud-active-skill-tooltip"
         | "hud-quickslot-cooldown"
         | "panel-skill-macros"
         | "panel-skill-macros-drag"
         | "panel-skill-macros-book"
         | "panel-item-inventory"
+        | "panel-inventory-marked"
         | "panel-inventory-drop"
         | "panel-meso-drop"
         | "panel-equipment-inventory"
@@ -2744,7 +2833,8 @@ fn build_map_name_tags_preview(
         .and_then(|pets| {
             pets.into_iter().find_map(|pet| {
                 let name = pet.name().ok()?;
-                name.strip_suffix(".img")?.parse::<i32>().ok()
+                let pet_id = name.strip_suffix(".img")?.parse::<i32>().ok()?;
+                pet_name_tag_style_id(item_archive, pet_id).map(|_| pet_id)
             })
         })
     {
@@ -2774,18 +2864,19 @@ fn build_map_name_tags_preview(
                 sprites.push(sprite);
             }
         }
+        append_pet_name_tag_sprite_scaled(
+            &mut sprites,
+            font,
+            ui_archive,
+            item_archive,
+            pet_item_id,
+            true,
+            "Bobby",
+            pet_center_x,
+            GAMEPLAY_CAMERA_CENTER_Y,
+            1.0,
+        );
     }
-    append_map_name_tag_sprite(
-        &mut sprites,
-        font,
-        ui_archive,
-        None,
-        None,
-        "Bobby",
-        pet_center_x,
-        GAMEPLAY_CAMERA_CENTER_Y,
-        MapNameTagKind::Pet,
-    );
 
     let npc_id = fixture_named_id(string_archive, "Npc.img", "Silver", 1_001_000);
     let mut npc_sprites = Vec::new();
@@ -2955,6 +3046,7 @@ fn build_inventory_tabs_scene(
             None,
             None,
             None,
+            &HashSet::new(),
             ui,
             items,
             characters,
@@ -3052,6 +3144,24 @@ fn build_inventory_panel_scene(
         1,
         4,
     ));
+    let marked_items = if variant == "panel-inventory-marked" {
+        HashSet::from([
+            InventorySellMark {
+                inventory_type: openstory_protocol::InventoryType::Etc,
+                slot: 1,
+                item_id: 4_000_000,
+                cash_id: None,
+            },
+            InventorySellMark {
+                inventory_type: openstory_protocol::InventoryType::Etc,
+                slot: 4,
+                item_id: 4_000_003,
+                cash_id: None,
+            },
+        ])
+    } else {
+        HashSet::new()
+    };
     let pixels = super::render_inventory_panel(
         font,
         &inventory,
@@ -3061,6 +3171,7 @@ fn build_inventory_panel_scene(
         drag,
         pending_move,
         None,
+        &marked_items,
         legacy_ui_archive,
         item_archive,
         character_archive,
@@ -3450,6 +3561,10 @@ fn build_npc_shop_panel_scene(
         state.sell_scroll = 5;
         state.buy_selection = Some(6);
         state.sell_selection = Some(7);
+    }
+    if recharge {
+        state.buy_scroll = state.buy_item_indices.len().saturating_sub(NPC_SHOP_ROWS);
+        state.buy_selection = state.buy_item_indices.len().checked_sub(1);
     }
     if variant == "panel-npc-shop-stacks" {
         for (index, item) in inventory.items.iter_mut().enumerate() {
@@ -3865,9 +3980,9 @@ fn equipment_preview_tab(name: &str) -> Option<EquipmentTab> {
         }
         "panel-equipment-inventory-deco" => EquipmentTab::Deco,
         "panel-equipment-inventory-beauty" => EquipmentTab::Beauty,
-        "panel-equipment-inventory-pet" | "panel-equipment-inventory-pet-empty" => {
-            EquipmentTab::Pet
-        }
+        "panel-equipment-inventory-pet"
+        | "panel-equipment-inventory-pet-scroll-drop"
+        | "panel-equipment-inventory-pet-empty" => EquipmentTab::Pet,
         _ => return None,
     })
 }
@@ -3971,7 +4086,11 @@ fn preview_equipment_tabs_inventory(name: &str) -> openstory_protocol::Inventory
                 cash: slot > 100,
                 ..Default::default()
             };
-            if name == "panel-equipment-inventory-scroll-drop" {
+            if matches!(
+                name,
+                "panel-equipment-inventory-scroll-drop"
+                    | "panel-equipment-inventory-pet-scroll-drop"
+            ) {
                 item.equip = Some(openstory_protocol::EquipInventoryData {
                     upgrade_slots: 2,
                     ..Default::default()
@@ -4009,6 +4128,7 @@ fn build_equipment_panel_scene(
         Some(&fixture_look()),
         tab,
         active_scroll_item_id,
+        None,
         pet,
         ui_archive,
         item_archive,
@@ -4062,26 +4182,34 @@ fn build_pet_item_filter_scene(
         font,
     )?;
     let mut ignored_item_ids = vec![1_050_058, 1_112_001, 1_442_005, 2_000_000];
-    for (_, item_id) in build_owl_item_name_index(string_archive) {
+    let item_name_index = build_owl_item_name_index(string_archive);
+    for (_, item_id) in &item_name_index {
         if ignored_item_ids.len() >= 14 {
             break;
         }
-        if !ignored_item_ids.contains(&item_id) {
-            ignored_item_ids.push(item_id);
+        if !ignored_item_ids.contains(item_id) {
+            ignored_item_ids.push(*item_id);
         }
     }
+    let ignored_item_lookup = Arc::new(ignored_item_ids.iter().copied().collect());
+    let query = "potion".to_owned();
+    let (search_results, search_result_count) =
+        ui_pet_item_filter::search_item_ids(&query, &item_name_index, &ignored_item_lookup);
     let mut filter = ui_pet_item_filter::State {
         open: true,
-        ignored_item_lookup: Arc::new(ignored_item_ids.iter().copied().collect()),
+        ignored_item_lookup,
         ignored_item_ids,
         ignore_meso: true,
         ignore_below_level_equipment: false,
-        query: String::new(),
+        query,
         scroll: 0,
         selected_item_id: Some(1_050_058),
         search_focused: true,
         key_text_for_ime_dedup: None,
         notice: None,
+        search_due_at: None,
+        search_results,
+        search_result_count,
         item_labels: HashMap::new(),
         item_labels_lower: HashMap::new(),
         item_labels_loaded: true,
@@ -4145,6 +4273,7 @@ fn build_quest_log_panel_scene(
     let detail_scrolled_preview = name == "panel-quests-detail-scrolled";
     let available_preview = name == "panel-quests-available";
     let collapsed_preview = name == "panel-quests-collapsed";
+    let forfeit_preview = name == "panel-quests-forfeit-confirmation";
     let desired = [
         "The Right Path",
         "Stomping the Castle",
@@ -4189,6 +4318,9 @@ fn build_quest_log_panel_scene(
     };
     if ids.is_empty() {
         ids.extend([1000, 1001, 1002]);
+    }
+    if forfeit_preview && quest_is_displayable(quest_archive, 2055, font) && !ids.contains(&2055) {
+        ids.push(2055);
     }
     let log = openstory_protocol::QuestLog {
         started: if available_preview {
@@ -4260,10 +4392,15 @@ fn build_quest_log_panel_scene(
                     .is_some_and(|name| name.contains("Helping Out Yoona"))
             })
             .unwrap_or_else(|| visible_ids.len().saturating_sub(1).min(10))
+    } else if forfeit_preview {
+        visible_ids
+            .iter()
+            .position(|id| *id == 2055)
+            .unwrap_or_else(|| 10.min(visible_ids.len().saturating_sub(1)))
     } else {
         10.min(visible_ids.len().saturating_sub(1))
     };
-    let scroll = if available_preview {
+    let scroll = if available_preview || forfeit_preview {
         selected.saturating_sub(super::QUEST_LOG_VISIBLE_ROWS - 1)
     } else {
         0
@@ -4283,7 +4420,7 @@ fn build_quest_log_panel_scene(
         if detail_scrolled_preview { 72 } else { 0 },
         0,
         None,
-        None,
+        forfeit_preview.then_some(2055),
         legacy_ui_archive,
         npcs,
     );
@@ -4425,7 +4562,10 @@ fn build_native_window_scene(
 ) -> Result<LoginSceneAssets, String> {
     let mut sprites = if name == "page-cash-shop" {
         Vec::new()
-    } else if matches!(name, "panel-inventory-drop" | "panel-meso-drop") {
+    } else if matches!(
+        name,
+        "panel-inventory-marked" | "panel-inventory-drop" | "panel-meso-drop"
+    ) {
         build_inventory_panel_scene(
             name,
             map_archive,
@@ -4453,13 +4593,14 @@ fn build_native_window_scene(
         "hud-quickslot"
         | "hud-quickslot-item-tooltip"
         | "hud-quickslot-skill-tooltip"
+        | "hud-quickslot-auto-buff"
         | "hud-active-skill-tooltip"
         | "hud-quickslot-cooldown"
         | "panel-skill-macros"
         | "panel-skill-macros-drag"
         | "panel-skill-macros-book" => &[],
         "panel-item-inventory" => &[("UIWindow.img/Item/backgrnd", 300.0, 160.0)],
-        "panel-inventory-drop" => &[],
+        "panel-inventory-drop" | "panel-inventory-marked" => &[],
         "panel-meso-drop" => &[],
         name if equipment_preview_tab(name).is_some() => &[],
         "panel-skill-inventory"
@@ -5012,7 +5153,9 @@ fn build_native_window_scene(
         bindings[preview_key] = openstory_protocol::KeyBinding {
             kind: if matches!(
                 name,
-                "hud-quickslot-skill-tooltip" | "hud-quickslot-cooldown"
+                "hud-quickslot-skill-tooltip"
+                    | "hud-quickslot-cooldown"
+                    | "hud-quickslot-auto-buff"
             ) {
                 1
             } else {
@@ -5023,6 +5166,8 @@ fn build_native_window_scene(
                 "hud-quickslot-skill-tooltip" | "hud-quickslot-cooldown"
             ) {
                 1_001_004
+            } else if name == "hud-quickslot-auto-buff" {
+                4_101_004
             } else {
                 PREVIEW_ITEM_ID
             },
@@ -5107,6 +5252,7 @@ fn build_native_window_scene(
                     0.0
                 }
             }),
+            &std::array::from_fn(|slot| name == "hud-quickslot-auto-buff" && slot == 1),
         );
         sprites.push(DecodedSprite {
             texture_key: "quickslots:preview".to_owned(),
@@ -5230,7 +5376,13 @@ fn build_native_window_scene(
     }
 
     if name.starts_with("panel-keyboard-settings") {
-        let fixture = keyboard_preview_fixture(name);
+        let mut fixture = keyboard_preview_fixture(name);
+        if name == "panel-keyboard-settings" {
+            fixture.bindings[20] = openstory_protocol::KeyBinding {
+                kind: 1,
+                action: 4_101_004,
+            };
+        }
         let pixels = render_key_config_panel(
             font,
             ui_archive,
@@ -5243,6 +5395,7 @@ fn build_native_window_scene(
             fixture.quickslot_capture,
             fixture.first_row,
             &fixture.actions,
+            &HashSet::from([4_101_004]),
             &mut HashMap::new(),
             &if name.ends_with("-large-values") {
                 HashMap::from([(2_000_006, 65_535), (2_000_002, 123_456)])
@@ -5266,11 +5419,59 @@ fn build_native_window_scene(
         });
     }
 
+    if name.starts_with("panel-skill-macros") {
+        let macros = [
+            openstory_protocol::SkillMacro {
+                skills: [1_001_004, 1_001_005, 1_001_003],
+                ..Default::default()
+            },
+            openstory_protocol::SkillMacro {
+                skills: [1_101_004, 0, 0],
+                ..Default::default()
+            },
+            openstory_protocol::SkillMacro::default(),
+        ];
+        let pixels = skill_macros::render(font, ui_archive, skill_archive, &macros);
+        sprites.push(DecodedSprite {
+            texture_key: "skill-macros-preview".to_owned(),
+            rect: SpriteRect {
+                x: skill_macros::PANEL_X,
+                y: skill_macros::PANEL_Y,
+                width: skill_macros::PANEL_WIDTH as f32,
+                height: skill_macros::PANEL_HEIGHT as f32,
+                blend_mode: BlendMode::Alpha,
+            },
+            depth_order: 0,
+            texture_width: skill_macros::PANEL_WIDTH,
+            texture_height: skill_macros::PANEL_HEIGHT,
+            pixels: Arc::from(pixels),
+        });
+        if name == "panel-skill-macros-drag"
+            && let Some((width, height, pixels)) =
+                decode_nx_icon(skill_archive, "100.img/skill/1001005/icon")
+        {
+            sprites.push(DecodedSprite {
+                texture_key: "skill-macros-preview:drag".to_owned(),
+                rect: SpriteRect {
+                    x: skill_macros::PANEL_X + 73.0,
+                    y: skill_macros::PANEL_Y + 87.0,
+                    width: 32.0,
+                    height: 32.0,
+                    blend_mode: BlendMode::Alpha,
+                },
+                depth_order: 0,
+                texture_width: width,
+                texture_height: height,
+                pixels,
+            });
+        }
+    }
+
     if name == "panel-skill-inventory"
         || name == "panel-skill-inventory-disabled"
         || name == "panel-skill-inventory-beginner"
         || name == "panel-skill-inventory-beginner-job"
-        || name == "panel-skill-macros-book"
+        || name.starts_with("panel-skill-macros")
         || name.starts_with("panel-skill-tooltip")
     {
         let beginner_preview = name == "panel-skill-inventory-beginner";
@@ -5324,12 +5525,12 @@ fn build_native_window_scene(
             }
             entries.truncate(4);
         }
-        if name == "panel-skill-macros-book" {
+        if name.starts_with("panel-skill-macros") {
             for (entry, (id, name)) in entries.iter_mut().zip([
                 (1_001_004, "Power Strike"),
                 (1_001_005, "Slash Blast"),
                 (1_001_003, "Iron Body"),
-                (1_101_003, "Booster"),
+                (1_101_004, "Booster"),
             ]) {
                 entry.id = id;
                 entry.name = name.to_owned();
@@ -5431,6 +5632,10 @@ fn build_native_window_scene(
         } else {
             HashMap::new()
         };
+        let known_persistent_skills = match name {
+            "panel-skill-macros-book" => HashSet::from([1_101_004]),
+            _ => HashSet::new(),
+        };
         let pixels = render_skill_book_panel(
             font,
             ui_archive,
@@ -5440,9 +5645,11 @@ fn build_native_window_scene(
             book_icon,
             skill_points,
             &preview_skills,
+            &known_persistent_skills,
             tab,
             visible_tabs,
             0,
+            name.starts_with("panel-skill-macros"),
         );
         sprites.push(DecodedSprite {
             texture_key: "nx-window:rendered-v83-skills".to_owned(),
@@ -5491,61 +5698,6 @@ fn build_native_window_scene(
                 pixels: Arc::from(pixels),
             });
         }
-    }
-
-    if name.starts_with("panel-skill-macros") {
-        let skills = vec![
-            (1_001_004, "Power Strike".to_owned()),
-            (1_001_005, "Slash Blast".to_owned()),
-            (1_001_003, "Iron Body".to_owned()),
-            (1_101_003, "Booster".to_owned()),
-            (1_101_004, "Soul Arrow".to_owned()),
-            (1_101_005, "Final Attack".to_owned()),
-            (1_201_003, "Magic Guard".to_owned()),
-            (1_201_004, "Magic Armor".to_owned()),
-            (1_301_003, "Critical Shot".to_owned()),
-            (1_301_004, "Double Shot".to_owned()),
-        ];
-        let macros = [
-            openstory_protocol::SkillMacro {
-                name: "Power Combo".to_owned(),
-                shout: true,
-                skills: [1_001_004, 1_001_005, 1_001_003],
-            },
-            openstory_protocol::SkillMacro {
-                name: "Ranged Setup".to_owned(),
-                shout: false,
-                skills: [1_101_003, 1_101_004, 0],
-            },
-            openstory_protocol::SkillMacro {
-                name: "Magic Guard".to_owned(),
-                shout: false,
-                skills: [1_201_003, 1_201_004, 0],
-            },
-        ];
-        let mut editor = skill_macros::State::default();
-        editor.open(&macros);
-        editor.selected_macro = 1;
-        editor.selected_slot = 2;
-        if name == "panel-skill-macros-drag" {
-            editor.begin_skill_drag(1_001_005, 12.0, 295.0, true);
-            editor.update_skill_drag(104.0, 105.0);
-        }
-        let pixels = skill_macros::render(font, ui_archive, skill_archive, &editor, &skills);
-        sprites.push(DecodedSprite {
-            texture_key: "skill-macros-preview".to_owned(),
-            rect: SpriteRect {
-                x: skill_macros::PANEL_X,
-                y: skill_macros::PANEL_Y,
-                width: skill_macros::PANEL_WIDTH as f32,
-                height: skill_macros::PANEL_HEIGHT as f32,
-                blend_mode: BlendMode::Alpha,
-            },
-            depth_order: 0,
-            texture_width: skill_macros::PANEL_WIDTH,
-            texture_height: skill_macros::PANEL_HEIGHT,
-            pixels: Arc::from(pixels),
-        });
     }
 
     Ok(LoginSceneAssets {
@@ -5617,6 +5769,7 @@ fn preview_skill_entry() -> SkillUiEntry {
         required_weapon: None,
         passive: false,
         attack: true,
+        stat_buff: false,
         magic_damage: false,
         attack_count: 1,
         bullet_count: 0,
@@ -5824,6 +5977,7 @@ fn geometry_report(name: &str, scene: &LoginSceneAssets, width: u32, height: u32
                 | "panel-keyboard-settings-large-values"
                 | "panel-skill-macros"
                 | "panel-item-inventory"
+                | "panel-inventory-marked"
                 | "panel-inventory-drop"
                 | "panel-meso-drop"
                 | "panel-skill-inventory"
@@ -5847,6 +6001,7 @@ fn geometry_report(name: &str, scene: &LoginSceneAssets, width: u32, height: u32
                 | "panel-quests-detail"
                 | "panel-quests-detail-flow"
                 | "panel-quests-detail-scrolled"
+                | "panel-quests-forfeit-confirmation"
                 | "hud-chat"
                 | "panel-owl"
                 | "panel-owl-results"
@@ -6054,3 +6209,124 @@ mod portal_preview_tests;
 #[cfg(test)]
 #[path = "menu_preview_tests.rs"]
 mod menu_preview_tests;
+
+#[cfg(test)]
+#[test]
+#[ignore = "requires OPENSTORY_DATA_DIR; writes target/ui-previews avatar screenshot"]
+fn buddy_tina_climbing_preview() {
+    let data_dir = std::env::var("OPENSTORY_DATA_DIR").expect("set OPENSTORY_DATA_DIR");
+    let archive = NxArchive::open(Path::new(&data_dir).join("Character.nx")).unwrap();
+    let mut look = preview_character().look;
+    look.weapon_sticker_id = 1_702_169;
+    let mut sprites = Vec::new();
+    let mut cache = MapArtCache::default();
+    for (stance, x) in [("stand1", 200.0), ("rope", 400.0), ("ladder", 600.0)] {
+        let start = sprites.len();
+        append_character_avatar(
+            &mut sprites,
+            &archive,
+            &look,
+            stance,
+            0,
+            x,
+            200.0,
+            &mut cache,
+        )
+        .unwrap();
+        let mut without_tina = look.clone();
+        without_tina.weapon_sticker_id = 0;
+        without_tina.weapon_id = 0;
+        without_tina
+            .equips
+            .retain(|(_, id)| !(130..=170).contains(&(id / 10_000)));
+        without_tina
+            .masked_equips
+            .retain(|(_, id)| !(130..=170).contains(&(id / 10_000)));
+        let mut baseline = Vec::new();
+        append_character_avatar(
+            &mut baseline,
+            &archive,
+            &without_tina,
+            stance,
+            0,
+            x,
+            200.0,
+            &mut cache,
+        )
+        .unwrap();
+        assert_eq!(
+            sprites.len() - start > baseline.len(),
+            stance == "stand1",
+            "{stance}"
+        );
+    }
+    let output = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/ui-previews");
+    fs::create_dir_all(&output).unwrap();
+    write_png(
+        &output.join("buddy-tina-climbing.png"),
+        800,
+        300,
+        &compose_scene(&sprites, 800, 300),
+    )
+    .unwrap();
+}
+
+#[test]
+#[ignore = "requires OPENSTORY_DATA_DIR; writes target/ui-previews cash weapon screenshots"]
+fn cash_weapon_climbing_frames_preview() {
+    let data_dir = std::env::var("OPENSTORY_DATA_DIR").expect("set OPENSTORY_DATA_DIR");
+    let archive = NxArchive::open(Path::new(&data_dir).join("Character.nx")).unwrap();
+    let mut sprites = Vec::new();
+    let mut cache = MapArtCache::default();
+    for (row, (id, rope, ladder)) in [
+        (1_702_169, false, false),
+        (1_702_008, true, true),
+        (1_702_017, true, true),
+        (1_702_028, false, true),
+        (1_702_115, true, true),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut look = preview_character().look;
+        look.weapon_sticker_id = id;
+        for (column, (stance, expected)) in
+            [("rope", rope), ("ladder", ladder)].into_iter().enumerate()
+        {
+            for frame in 0..=1 {
+                let resolved = resolve_equipment_frame(
+                    &archive,
+                    &format!("Weapon/0{id}.img"),
+                    stance,
+                    frame,
+                    170,
+                )
+                .unwrap();
+                assert_eq!(resolved.is_some(), expected, "{id} {stance} {frame}");
+                if let Some((path, _)) = resolved {
+                    assert!(path.contains(&format!("/{stance}/")), "{path}");
+                }
+                append_character_avatar(
+                    &mut sprites,
+                    &archive,
+                    &look,
+                    stance,
+                    frame,
+                    100.0 + column as f32 * 300.0 + frame as f32 * 100.0,
+                    100.0 + row as f32 * 110.0,
+                    &mut cache,
+                )
+                .unwrap();
+            }
+        }
+    }
+    let output = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/ui-previews");
+    fs::create_dir_all(&output).unwrap();
+    write_png(
+        &output.join("cash-weapons-climbing.png"),
+        600,
+        600,
+        &compose_scene(&sprites, 600, 600),
+    )
+    .unwrap();
+}

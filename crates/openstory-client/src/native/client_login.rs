@@ -77,6 +77,7 @@ impl ClientApp {
             }
             return;
         }
+        let town_teleport = self.pending_world_map_teleport.take();
         self.server_notice_popup = None;
         if self.accept_tos_pending {
             self.accept_tos_pending = false;
@@ -91,6 +92,9 @@ impl ClientApp {
                     None => eprintln!("OpenStory: no login connection for server terms acceptance"),
                 }
             }
+        }
+        if accept && let Some(map_id) = town_teleport {
+            self.teleport_to_town(map_id);
         }
         if let Some(window) = self.window.as_ref() {
             window.request_redraw();
@@ -933,6 +937,9 @@ impl ClientApp {
             } else {
                 self.monster_book = monster_book::State::default();
                 self.monster_book_animation_texture = None;
+                self.auto_buff_skills.clear();
+                self.auto_buff_skill_entries.clear();
+                self.auto_buff_retry_at.clear();
                 self.active_character = Some(character);
                 eprintln!("OpenStory: sent character selection request");
             }

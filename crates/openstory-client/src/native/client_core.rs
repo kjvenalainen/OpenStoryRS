@@ -130,6 +130,7 @@ impl ClientApp {
             summon_frames_cache: HashMap::new(),
             dragon_frames_cache: HashMap::new(),
             pet_frames_cache: HashMap::new(),
+            pet_equipment_frames_cache: HashMap::new(),
             pet_interaction_frames_cache: HashMap::new(),
             skill_projectile_cache: HashMap::new(),
             skill_effect_cache: HashMap::new(),
@@ -141,6 +142,7 @@ impl ClientApp {
             weather_texture: None,
             scrolling_notice: None,
             server_notice_popup: None,
+            pending_world_map_teleport: None,
             avatar_megaphone: None,
             monster_carnival: None,
             clock_state: None,
@@ -254,6 +256,8 @@ impl ClientApp {
                 color: [255, 255, 0],
             }]),
             chat_input: String::new(),
+            chat_history: Default::default(),
+            chat_modifiers: Default::default(),
             chat_key_text_for_ime_dedup: None,
             chat_scroll: 0,
             chat_open: true,
@@ -295,6 +299,7 @@ impl ClientApp {
             show_buddy_panel: false,
             buddy_scroll: 0,
             chat_balloon_skin,
+            pet_chat_balloon_skins: HashMap::new(),
             local_speech_texture: None,
             remote_speech_textures: HashMap::new(),
             local_chalkboard_texture: None,
@@ -331,7 +336,7 @@ impl ClientApp {
             combo_displayed: 0,
             combo_fade_remaining: Duration::ZERO,
             combo_texture: None,
-            skill_macro_editor: skill_macros::State::default(),
+            skill_macro_opened_at: None,
             skill_macros: vec![
                 openstory_protocol::SkillMacro::default();
                 openstory_protocol::SKILL_MACRO_COUNT
@@ -363,12 +368,16 @@ impl ClientApp {
             skills: HashMap::new(),
             skill_book_entries: Vec::new(),
             active_buffs: CharacterBuffs::default(),
+            auto_buff_skills: HashSet::new(),
+            auto_buff_skill_entries: HashMap::new(),
+            auto_buff_retry_at: HashMap::new(),
             pending_skill_hit_sounds: Vec::new(),
             pending_mob_hit_sounds: Vec::new(),
             skill_cooldowns: HashMap::new(),
             quickslot_cooldown_refreshed_at: None,
             forced_equipment_stats: ForcedEquipmentStats::default(),
             inventory_tab: openstory_protocol::InventoryType::Equip,
+            marked_inventory_items: HashSet::new(),
             inventory_scroll_row: 0,
             inventory_hover_slot: None,
             equipment_hover: None,
@@ -740,7 +749,7 @@ impl ClientApp {
 
     pub(super) fn update_map_simulation(&mut self, elapsed: Duration) {
         let frame = self.simulation_clock.advance(elapsed);
-        self.advance_clock(frame.updates);
+        self.advance_clock(elapsed);
         if frame.updates > 0 && !self.boss_hp_gauge_remaining.is_zero() {
             self.boss_hp_gauge_remaining = self
                 .boss_hp_gauge_remaining
@@ -2191,8 +2200,10 @@ impl ClientApp {
                             self.open_inventory_tab(openstory_protocol::InventoryType::Equip)
                         }
                         Some(3) => {
-                            self.show_skill_book = !self.show_skill_book;
                             if self.show_skill_book {
+                                self.close_skill_book();
+                            } else {
+                                self.show_skill_book = true;
                                 self.refresh_skill_book_entries();
                                 self.refresh_skill_book_texture();
                             }
@@ -2398,6 +2409,10 @@ impl ClientApp {
                 .then(|| self.quickslot_icon_pixels(binding))
                 .flatten()
         });
+        let active_skill_slots = std::array::from_fn(|slot| {
+            let binding = slot_bindings.get(slot).copied().unwrap_or_default();
+            binding.kind == 1 && self.auto_buff_skills.contains(&binding.action)
+        });
         let cooldown_remaining: [f32; 8] = std::array::from_fn(|slot| {
             let binding = slot_bindings.get(slot).copied().unwrap_or_default();
             if binding.kind != 1 {
@@ -2426,6 +2441,7 @@ impl ClientApp {
             &icons,
             &item_counts,
             &cooldown_remaining,
+            &active_skill_slots,
         );
 
         let Some(renderer) = self.renderer.as_ref() else {
@@ -2497,7 +2513,6 @@ impl ClientApp {
                 self.key_config_draft
                     .as_deref()
                     .or(self.server_keymap.as_deref()),
-                &self.skill_macros,
                 &self.string_archive,
                 &mut self.item_name_cache,
             );
@@ -2540,6 +2555,7 @@ impl ClientApp {
             self.quickslot_key_capture,
             self.key_config_scroll_row,
             &self.key_config_actions,
+            &self.auto_buff_skills,
             &mut self.inventory_icon_cache,
             &counts,
         );
@@ -2560,47 +2576,50 @@ impl ClientApp {
         }
     }
 
-    pub(super) fn skill_macro_choices(&self) -> Vec<(i32, String)> {
-        self.skills
-            .values()
-            .filter(|skill| skill.id > 0 && skill.level > 0 && (skill.id % 10_000) / 1_000 != 0)
-            .map(|skill| {
-                (
-                    skill.id,
-                    key_config_skill_name(skill.id, &self.string_archive),
-                )
+    pub(super) fn skill_macro_width(&self) -> f32 {
+        self.skill_macro_opened_at
+            .filter(|_| self.show_skill_book)
+            .map_or(0.0, |opened| {
+                let progress = (opened.elapsed().as_secs_f32() / 0.16).min(1.0);
+                (skill_macros::PANEL_WIDTH as f32 * (1.0 - (1.0 - progress).powi(3))).ceil()
             })
-            .collect::<BTreeMap<_, _>>()
-            .into_iter()
-            .collect()
+    }
+
+    pub(super) fn toggle_skill_macro_panel(&mut self) {
+        if self.skill_macro_opened_at.take().is_none() {
+            self.skill_macro_opened_at = Some(Instant::now());
+            self.refresh_skill_macro_texture();
+        }
+        self.refresh_skill_book_texture();
+    }
+
+    pub(super) fn close_skill_book(&mut self) {
+        self.show_skill_book = false;
+        self.skill_macro_opened_at = None;
     }
 
     pub(super) fn refresh_skill_macro_texture(&mut self) {
-        if !self.skill_macro_editor.open {
+        if self.skill_macro_opened_at.is_none() {
             return;
         }
-        let skills = self.skill_macro_choices();
-        self.skill_macro_editor.scroll_skills(0, skills.len());
+        let Some(renderer) = self.renderer.as_ref() else {
+            return;
+        };
         let pixels = skill_macros::render(
             &self.font,
             &self.ui_archive,
             &self.skill_archive,
-            &self.skill_macro_editor,
-            &skills,
+            &self.skill_macros,
         );
-        let Some(renderer) = self.renderer.as_ref() else {
-            return;
-        };
-        let result = if let Some(texture) = self.skill_macro_texture.as_ref() {
-            renderer.update_bgra(texture, &pixels).map(|()| None)
-        } else {
-            renderer
+        let result = match self.skill_macro_texture.as_ref() {
+            Some(texture) => renderer.update_bgra(texture, &pixels).map(|()| None),
+            None => renderer
                 .upload_bgra(
                     skill_macros::PANEL_WIDTH,
                     skill_macros::PANEL_HEIGHT,
                     &pixels,
                 )
-                .map(Some)
+                .map(Some),
         };
         match result {
             Ok(Some(texture)) => self.skill_macro_texture = Some(texture),
@@ -2609,111 +2628,47 @@ impl ClientApp {
         }
     }
 
-    pub(super) fn open_skill_macro_editor(&mut self) {
-        self.skill_macro_editor.open(&self.skill_macros);
-        self.refresh_skill_macro_texture();
-    }
-
-    fn begin_macro_skill_drag(&mut self, skill_id: i32, cursor: Point, assign_on_click: bool) {
-        self.skill_macro_editor.begin_skill_drag(
-            skill_id,
-            cursor.x - skill_macros::PANEL_X,
-            cursor.y - skill_macros::PANEL_Y,
-            assign_on_click,
-        );
-        self.skill_macro_drag_texture = decode_nx_icon(
-            &self.skill_archive,
-            &format!("{:03}.img/skill/{skill_id:07}/icon", skill_id / 10_000),
-        )
-        .and_then(|(width, height, pixels)| {
-            self.renderer
-                .as_ref()
-                .and_then(|renderer| renderer.upload_bgra(width, height, &pixels).ok())
-        });
-    }
-
-    pub(super) fn click_skill_macro_editor(&mut self, cursor: Point) {
-        let bounds = SpriteRect {
-            x: skill_macros::PANEL_X,
-            y: skill_macros::PANEL_Y,
-            width: skill_macros::PANEL_WIDTH as f32,
-            height: skill_macros::PANEL_HEIGHT as f32,
-            blend_mode: BlendMode::Alpha,
+    pub(super) fn skill_macro_point(&self, cursor: Point) -> Option<Point> {
+        if !self.dialog_window_hit_test(DialogWindow::SkillBook, cursor) {
+            return None;
+        }
+        let (offset_x, offset_y) = self.dialog_window_offset(DialogWindow::SkillBook);
+        let visible_width = self.skill_macro_width();
+        let point = Point {
+            x: cursor.x - offset_x - skill_macros::PANEL_X,
+            y: cursor.y - offset_y - skill_macros::PANEL_Y,
         };
-        let skills = self.skill_macro_choices();
-        if !rect_contains(bounds, cursor) {
-            let book_x = cursor.x - SKILL_BOOK_PANEL_X;
-            let book_y = cursor.y - SKILL_BOOK_PANEL_Y;
-            let in_book = self.show_skill_book
-                && (0.0..SKILL_BOOK_PANEL_WIDTH as f32).contains(&book_x)
-                && (0.0..SKILL_BOOK_PANEL_HEIGHT as f32).contains(&book_y);
-            if in_book && ui_foundation::SKILL_CLOSE_BUTTON.contains(book_x, book_y) {
-                self.begin_skill_book_pointer(cursor);
-                if !self.show_skill_book {
-                    self.skill_macro_editor.close();
-                    self.skill_macro_drag_texture = None;
-                }
-                self.refresh_skill_macro_texture();
-                return;
-            }
-            if in_book && (24.0..44.0).contains(&book_y) {
-                self.begin_skill_book_pointer(cursor);
-                return;
-            }
-            let skill =
-                if in_book && (10.0..42.0).contains(&book_x) && (100.0..260.0).contains(&book_y) {
-                    let row = ((book_y - 100.0) / 40.0).floor() as usize;
-                    self.skill_book_entries
-                        .get(self.skill_book_scroll_row.saturating_add(row))
-                        .filter(|entry| entry.level > 0 && !entry.passive)
-                        .filter(|entry| skills.iter().any(|(id, _)| *id == entry.id))
-                        .map(|entry| entry.id)
-                } else {
-                    None
-                };
-            if let Some(skill_id) = skill {
-                self.begin_macro_skill_drag(skill_id, cursor, false);
-                self.refresh_skill_macro_texture();
-            } else if !in_book {
-                self.skill_macro_editor.close();
-            }
+        ((skill_macros::DOCK_OVERLAP..visible_width).contains(&point.x)
+            && (0.0..skill_macros::PANEL_HEIGHT as f32).contains(&point.y))
+        .then_some(Point {
+            x: point.x + skill_macros::PANEL_WIDTH as f32 - visible_width,
+            y: point.y,
+        })
+    }
+
+    pub(super) fn set_macro_skill(&mut self, row: usize, slot: usize, skill_id: i32) {
+        if !self.channel_connected {
             return;
         }
-        let action = skill_macros::hit_test(
-            cursor.x - bounds.x,
-            cursor.y - bounds.y,
-            &self.skill_macro_editor,
-            &skills,
-        );
-        match action {
-            Some(skill_macros::Action::Close) => self.skill_macro_editor.close(),
-            Some(skill_macros::Action::Save) => self.save_skill_macro_editor(),
-            Some(skill_macros::Action::SelectMacro(index)) => {
-                self.skill_macro_editor.select_macro(index);
-            }
-            Some(skill_macros::Action::FocusName) => {
-                self.skill_macro_editor.name_focused = true;
-            }
-            Some(skill_macros::Action::ToggleShout) => {
-                self.skill_macro_editor.toggle_shout();
-            }
-            Some(skill_macros::Action::SelectSlot(row, slot)) => {
-                self.skill_macro_editor.select_macro(row);
-                self.skill_macro_editor.select_slot(slot);
-            }
-            Some(skill_macros::Action::ClearSkill(slot)) => {
-                self.skill_macro_editor.clear_skill(slot);
-            }
-            Some(skill_macros::Action::AssignSkill(skill_id)) => {
-                self.begin_macro_skill_drag(skill_id, cursor, true);
-            }
-            None => {}
+        let mut macros = self.skill_macros.clone();
+        let Some(current) = macros
+            .get_mut(row)
+            .and_then(|entry| entry.skills.get_mut(slot))
+        else {
+            return;
+        };
+        if *current == skill_id {
+            return;
         }
-        self.refresh_skill_macro_texture();
-    }
+        *current = skill_id;
+        for (entry, name) in macros.iter_mut().zip(skill_macros::NAMES) {
+            entry.name = name.to_owned();
+            entry.shout = false;
+        }
 
-    pub(super) fn save_skill_macro_editor(&mut self) {
-        let macros = self.skill_macro_editor.drafts().to_vec();
+        let Some(session) = self.session.as_ref() else {
+            return;
+        };
         let packet = match openstory_protocol::save_skill_macros_packet(&macros) {
             Ok(packet) => packet,
             Err(error) => {
@@ -2721,80 +2676,15 @@ impl ClientApp {
                 return;
             }
         };
-        let Some(session) = self.session.as_ref() else {
-            eprintln!("OpenStoryRS: cannot save skill macros while disconnected");
+        if let Err(error) = session.send_packet(packet) {
+            eprintln!("OpenStoryRS: could not save skill macros: {error}");
+            self.channel_connected = false;
             return;
-        };
-        match session.send_packet(packet) {
-            Ok(()) => {
-                self.skill_macros = macros;
-                self.skill_macro_editor.close();
-                self.key_config_actions_dirty = true;
-                self.refresh_key_config_texture();
-            }
-            Err(error) => {
-                eprintln!("OpenStoryRS: could not save skill macros: {error}");
-                self.channel_connected = false;
-            }
         }
-    }
-
-    pub(super) fn handle_skill_macro_editor_key(
-        &mut self,
-        key: PhysicalKey,
-        state: ElementState,
-        repeat: bool,
-        text: Option<&str>,
-    ) -> bool {
-        if !self.skill_macro_editor.open {
-            return false;
-        }
-        if state == ElementState::Pressed {
-            match key {
-                PhysicalKey::Code(KeyCode::Escape) if !repeat => {
-                    self.skill_macro_editor.close();
-                }
-                PhysicalKey::Code(KeyCode::Enter | KeyCode::NumpadEnter) if !repeat => {
-                    self.save_skill_macro_editor();
-                }
-                PhysicalKey::Code(KeyCode::Backspace) => {
-                    self.skill_macro_editor.backspace();
-                }
-                PhysicalKey::Code(KeyCode::Tab) if !repeat => {
-                    self.skill_macro_editor.name_focused = !self.skill_macro_editor.name_focused;
-                }
-                PhysicalKey::Code(KeyCode::ArrowUp) if !self.skill_macro_editor.name_focused => {
-                    self.skill_macro_editor
-                        .scroll_skills(-1, self.skill_macro_choices().len());
-                }
-                PhysicalKey::Code(KeyCode::ArrowDown) if !self.skill_macro_editor.name_focused => {
-                    self.skill_macro_editor
-                        .scroll_skills(1, self.skill_macro_choices().len());
-                }
-                PhysicalKey::Code(KeyCode::PageUp) => {
-                    self.skill_macro_editor.scroll_skills(
-                        -(skill_macros::VISIBLE_SKILLS as isize),
-                        self.skill_macro_choices().len(),
-                    );
-                }
-                PhysicalKey::Code(KeyCode::PageDown) => {
-                    self.skill_macro_editor.scroll_skills(
-                        skill_macros::VISIBLE_SKILLS as isize,
-                        self.skill_macro_choices().len(),
-                    );
-                }
-                _ => {}
-            }
-            if self.skill_macro_editor.open
-                && let Some(text) =
-                    text.filter(|text| text.chars().any(|character| !character.is_control()))
-            {
-                self.skill_macro_editor.insert_text(text);
-                self.skill_macro_editor.key_text_for_ime_dedup = Some(text.to_owned());
-            }
-        }
+        self.skill_macros = macros;
+        self.key_config_actions_dirty = true;
+        self.refresh_key_config_texture();
         self.refresh_skill_macro_texture();
-        true
     }
 
     pub(super) fn capture_key_config_tray_action(&mut self, offset: usize) {
@@ -3110,6 +3000,23 @@ impl ClientApp {
         }
         self.skill_book_last_click = None;
 
+        if let Some(point) = self.skill_macro_point(cursor) {
+            let target = skill_macros::slot_at(point.x, point.y).or_else(|| {
+                let row = skill_macros::emblem_at(point.x, point.y)?;
+                let slot = self
+                    .skill_macros
+                    .get(row)?
+                    .skills
+                    .iter()
+                    .position(|&id| id == 0)?;
+                Some((row, slot))
+            });
+            if let Some((row, slot)) = target {
+                self.set_macro_skill(row, slot, drag.skill_id);
+            }
+            return;
+        }
+
         if self.show_key_config
             && self.dialog_window_hit_test(DialogWindow::KeyConfig, cursor)
             && self.topmost_dialog_window_at(cursor) == Some(DialogWindow::KeyConfig)
@@ -3199,7 +3106,41 @@ impl ClientApp {
             );
             return;
         };
+        if skill.stat_buff {
+            if self.auto_buff_skills.remove(&skill_id) {
+                self.auto_buff_skill_entries.remove(&skill_id);
+                self.auto_buff_retry_at.remove(&skill_id);
+                self.push_chat_line(
+                    format!("[Skills] {} auto-recast disabled.", skill.name),
+                    [180, 220, 255],
+                );
+            } else {
+                self.auto_buff_skills.insert(skill_id);
+                self.auto_buff_skill_entries.insert(skill_id, skill.clone());
+                self.auto_buff_retry_at.remove(&skill_id);
+                self.push_chat_line(
+                    format!("[Skills] {} auto-recast enabled.", skill.name),
+                    [180, 255, 190],
+                );
+                self.maintain_auto_buff_skills(Instant::now());
+            }
+            self.refresh_auto_buff_indicators();
+            self.refresh_chat_texture();
+            return;
+        }
         self.use_skill(&skill);
+    }
+
+    pub(super) fn refresh_auto_buff_indicators(&mut self) {
+        if self.show_skill_book {
+            self.refresh_skill_book_texture();
+        }
+        if self.show_quickslots {
+            self.refresh_quickslots_texture();
+        }
+        if self.show_key_config {
+            self.refresh_key_config_texture();
+        }
     }
 
     pub(super) fn skill_ui_entry_by_id(&mut self, skill_id: i32) -> Option<SkillUiEntry> {
@@ -3246,21 +3187,6 @@ impl ClientApp {
         else {
             return;
         };
-        if macro_entry.shout && !macro_entry.name.is_empty() {
-            match openstory_protocol::general_chat_packet(&macro_entry.name, true) {
-                Ok(packet) => {
-                    if let Some(session) = self.session.as_ref()
-                        && let Err(error) = session.send_packet(packet)
-                    {
-                        eprintln!("OpenStoryRS: could not shout skill macro: {error}");
-                        self.channel_connected = false;
-                    }
-                }
-                Err(error) => {
-                    eprintln!("OpenStoryRS: invalid skill macro shout: {error}")
-                }
-            }
-        }
         self.pending_macro_skills.clear();
         self.pending_macro_skills.extend(
             macro_entry
@@ -3293,7 +3219,9 @@ impl ClientApp {
             return;
         }
         if let Some(skill_id) = self.pending_macro_skills.pop_front() {
-            self.use_keybound_skill(skill_id);
+            if let Some(skill) = self.skill_ui_entry_by_id(skill_id) {
+                self.use_skill(&skill);
+            }
             self.next_macro_skill_at = now + Duration::from_millis(250);
         }
     }
@@ -3432,8 +3360,10 @@ impl ClientApp {
                 1 => self.open_inventory_tab(self.inventory_tab),
                 2 => self.open_status_window(),
                 3 => {
-                    self.show_skill_book = !self.show_skill_book;
                     if self.show_skill_book {
+                        self.close_skill_book();
+                    } else {
+                        self.show_skill_book = true;
                         self.refresh_skill_book_entries();
                         self.refresh_skill_book_texture();
                     }
@@ -3793,7 +3723,7 @@ impl ClientApp {
             && !repeat
             && matches!(key, PhysicalKey::Code(KeyCode::Escape))
         {
-            self.show_skill_book = false;
+            self.close_skill_book();
             self.skill_book_texture = None;
             return true;
         }
@@ -3949,7 +3879,7 @@ impl ClientApp {
         }
         if pressed && !repeat && matches!(key, PhysicalKey::Code(KeyCode::Escape)) {
             if self.show_skill_book {
-                self.show_skill_book = false;
+                self.close_skill_book();
             } else if self.show_family_tree {
                 self.show_family_tree = false;
                 self.refresh_family_tree_texture();
@@ -4078,6 +4008,7 @@ impl ClientApp {
         self.summon_frames_cache.clear();
         self.dragon_frames_cache.clear();
         self.pet_frames_cache.clear();
+        self.pet_equipment_frames_cache.clear();
         self.pet_interaction_frames_cache.clear();
         self.skill_projectile_cache.clear();
         self.skill_effect_cache.clear();

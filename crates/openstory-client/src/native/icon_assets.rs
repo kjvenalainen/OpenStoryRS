@@ -55,6 +55,7 @@ fn render_quickslot_panel_pixels(
     icons: &[Option<(u32, u32, Arc<[u8]>)>; 8],
     item_counts: &[u32; 8],
     cooldown_remaining: &[f32; 8],
+    active_skill_slots: &[bool; 8],
 ) -> Vec<u8> {
     const WIDTH: usize = 151;
     const HEIGHT: usize = 80;
@@ -183,8 +184,46 @@ fn render_quickslot_panel_pixels(
                 glyph_y,
             );
         }
+        if active_skill_slots[slot] {
+            draw_auto_buff_sparkle(&mut pixels, WIDTH, HEIGHT, x + 32, y + 30);
+        }
     }
     pixels
+}
+
+fn draw_auto_buff_sparkle(
+    pixels: &mut [u8],
+    width: usize,
+    height: usize,
+    icon_right: usize,
+    icon_bottom: usize,
+) {
+    // A dark outline keeps the sparkle readable over both light and dark skill art.
+    const SPARKLE: [&[u8; 11]; 11] = [
+        b".....o.....",
+        b"....ogo....",
+        b"....ogo....",
+        b"...og*go...",
+        b".oog***goo.",
+        b"ogg*****ggo",
+        b".oog***goo.",
+        b"...og*go...",
+        b"....ogo....",
+        b"....ogo....",
+        b".....o.....",
+    ];
+    let (x, y) = (icon_right - 12, icon_bottom - 12);
+    for (row, pattern) in SPARKLE.iter().enumerate() {
+        for (column, &pixel) in pattern.iter().enumerate() {
+            let color = match pixel {
+                b'o' => [23, 42, 79, 255],
+                b'g' => [62, 184, 255, 255],
+                b'*' => [191, 248, 255, 255],
+                _ => continue,
+            };
+            fill_dialogue_rect(pixels, width, height, x + column, y + row, 1, 1, color);
+        }
+    }
 }
 
 fn map_texture_key(path: &str, opacity: u8, flipped: bool) -> String {

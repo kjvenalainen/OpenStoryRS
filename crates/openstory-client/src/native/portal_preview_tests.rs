@@ -240,3 +240,44 @@ fn visible_portal_glow_is_usable_without_crossing_platforms() {
     portal.portal_type = 10;
     assert!(!portal_activation_contains(&portal, 665.0, 215.0, &frames));
 }
+
+#[test]
+#[ignore = "requires OPENSTORY_DATA_DIR"]
+fn orbis_boat_cabin_ladder_exits_are_touch_portals() {
+    let data_dir = std::env::var("OPENSTORY_DATA_DIR").expect("set OPENSTORY_DATA_DIR");
+    let maps = NxArchive::open(Path::new(&data_dir).join("Map.nx")).unwrap();
+    let font = load_system_font().unwrap();
+    for (map_id, destination) in [(200_090_001, 200_090_000), (200_090_011, 200_090_010)] {
+        for (name, ladder_x) in [("out00", -291), ("out01", 61)] {
+            let mut assets = load_map_scene(&maps, None, map_id, 0, None, &font).unwrap();
+            let data = assets.map_scene.take().unwrap();
+            let mut draws = assets
+                .sprites
+                .iter()
+                .enumerate()
+                .map(|(i, s)| (i, s.rect))
+                .collect::<Vec<_>>();
+            let mut scene = MapSceneRuntime::new(data, &mut draws);
+            let portal = scene
+                .portals
+                .iter()
+                .find(|portal| portal.name == name)
+                .unwrap();
+            let (x, y) = (f64::from(ladder_x), portal.y);
+            assert!(scene.map_ladders.iter().any(|ladder| ladder.x == ladder_x
+                && (f64::from(ladder.y1)..=f64::from(ladder.y2)).contains(&y)));
+            scene.player.x = x;
+            scene.player.y = y;
+            assert!(scene.is_touch_portal_at_player());
+            match scene.advance_portals(false, true, 1) {
+                Some(PortalWarp::ChangeMap {
+                    map_id,
+                    portal_name,
+                }) => {
+                    assert_eq!((map_id, portal_name.as_str()), (destination, name));
+                }
+                _ => panic!("{map_id} ladder exit {name} did not request a map change"),
+            }
+        }
+    }
+}

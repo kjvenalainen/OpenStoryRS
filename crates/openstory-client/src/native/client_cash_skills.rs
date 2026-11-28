@@ -1,5 +1,40 @@
 use super::*;
 
+fn is_stat_buff_skill_stats(stats: &openstory_assets::NxNode) -> bool {
+    if integer_property(stats, "time").is_none_or(|duration| duration <= 0) {
+        return false;
+    }
+    let has_positive_stat = [
+        "speed",
+        "jump",
+        "pad",
+        "mad",
+        "pdd",
+        "mdd",
+        "acc",
+        "eva",
+        "mhpR",
+        "mmpR",
+        "str",
+        "dex",
+        "int",
+        "luk",
+        "booster",
+        "weaponSpeed",
+        "stance",
+        "drop",
+        "exp",
+        "elemBoost",
+        "ignoreMobpdpR",
+        "criticaldamageMin",
+        "criticaldamageMax",
+    ]
+    .iter()
+    .any(|key| integer_property(stats, key).is_some_and(|value| value > 0));
+    let is_attack_speed_booster = integer_property(stats, "x").is_some_and(|value| value < 0);
+    has_positive_stat || is_attack_speed_booster
+}
+
 pub(super) fn skill_points_for_book(
     stats: &openstory_protocol::CharacterStats,
     tab: u8,
@@ -151,28 +186,59 @@ impl ClientApp {
         let mut changed = false;
         if let Some(shop) = self.cash_shop.as_mut() {
             match action {
-                200 | 201 if pressed => {
-                    shop.preview_on_ladder = false;
-                    shop.preview_y = cash_shop_ui::PREVIEW_FLOOR_Y;
-                    shop.preview_facing_right = action == 201;
-                    let direction = if action == 200 { -1.0 } else { 1.0 };
-                    shop.preview_x = (shop.preview_x + direction * cash_shop_ui::PREVIEW_STEP)
-                        .clamp(
-                            cash_shop_ui::PREVIEW_LEFT_BOUND,
-                            cash_shop_ui::PREVIEW_RIGHT_BOUND,
-                        );
-                    if shop.preview_motion == AvatarMotion::Walk {
-                        shop.preview_frame_index = shop.preview_frame_index.saturating_add(1);
+                200 | 201 => {
+                    let direction = if action == 200 { -1_i8 } else { 1_i8 };
+                    if pressed {
+                        if direction < 0 {
+                            shop.preview_left_held = true;
+                        } else {
+                            shop.preview_right_held = true;
+                        }
+                        shop.preview_move_direction = direction;
+                        let entering_walk = shop.preview_motion != AvatarMotion::Walk;
+                        shop.preview_on_ladder = false;
+                        shop.preview_y = cash_shop_ui::PREVIEW_FLOOR_Y;
+                        shop.preview_motion = AvatarMotion::Walk;
+                        shop.preview_facing_right = direction > 0;
+                        if entering_walk {
+                            shop.preview_frame_index = 0;
+                            shop.preview_frame_elapsed = Duration::ZERO;
+                            shop.preview_move_elapsed = Duration::ZERO;
+                        }
+                        if !repeat {
+                            shop.preview_x = (shop.preview_x
+                                + f32::from(direction) * cash_shop_ui::PREVIEW_STEP)
+                                .clamp(
+                                    cash_shop_ui::PREVIEW_LEFT_BOUND,
+                                    cash_shop_ui::PREVIEW_RIGHT_BOUND,
+                                );
+                            changed = true;
+                        }
                     } else {
-                        shop.preview_frame_index = 0;
+                        if direction < 0 {
+                            shop.preview_left_held = false;
+                        } else {
+                            shop.preview_right_held = false;
+                        }
+                        if shop.preview_move_direction == direction {
+                            shop.preview_move_direction = if shop.preview_right_held {
+                                1
+                            } else if shop.preview_left_held {
+                                -1
+                            } else {
+                                0
+                            };
+                        }
+                        if shop.preview_move_direction != 0 {
+                            shop.preview_facing_right = shop.preview_move_direction > 0;
+                        } else if shop.preview_motion == AvatarMotion::Walk {
+                            shop.preview_motion = AvatarMotion::Stand;
+                            shop.preview_frame_index = 0;
+                            shop.preview_frame_elapsed = Duration::ZERO;
+                            shop.preview_move_elapsed = Duration::ZERO;
+                        }
+                        changed = true;
                     }
-                    shop.preview_motion = AvatarMotion::Walk;
-                    changed = true;
-                }
-                200 | 201 if shop.preview_motion == AvatarMotion::Walk => {
-                    shop.preview_motion = AvatarMotion::Stand;
-                    shop.preview_frame_index = 0;
-                    changed = true;
                 }
                 202 if pressed => {
                     if shop.preview_on_ladder
@@ -182,10 +248,9 @@ impl ClientApp {
                         shop.preview_x = cash_shop_ui::PREVIEW_LADDER_X;
                         shop.preview_y = (shop.preview_y - cash_shop_ui::PREVIEW_STEP)
                             .max(cash_shop_ui::PREVIEW_LADDER_TOP_Y);
-                        if shop.preview_motion == AvatarMotion::Ladder {
-                            shop.preview_frame_index = shop.preview_frame_index.saturating_add(1);
-                        } else {
+                        if shop.preview_motion != AvatarMotion::Ladder {
                             shop.preview_frame_index = 0;
+                            shop.preview_frame_elapsed = Duration::ZERO;
                         }
                         shop.preview_motion = AvatarMotion::Ladder;
                         changed = true;
@@ -199,32 +264,38 @@ impl ClientApp {
                             shop.preview_on_ladder = false;
                             shop.preview_motion = AvatarMotion::Stand;
                             shop.preview_frame_index = 0;
+                            shop.preview_frame_elapsed = Duration::ZERO;
                         } else {
                             shop.preview_y = next_y;
-                            if shop.preview_motion == AvatarMotion::Ladder {
-                                shop.preview_frame_index =
-                                    shop.preview_frame_index.saturating_add(1);
-                            } else {
+                            if shop.preview_motion != AvatarMotion::Ladder {
                                 shop.preview_frame_index = 0;
+                                shop.preview_frame_elapsed = Duration::ZERO;
                             }
                             shop.preview_motion = AvatarMotion::Ladder;
                         }
                         changed = true;
                     } else {
+                        if shop.preview_motion != AvatarMotion::Crouch {
+                            shop.preview_frame_index = 0;
+                            shop.preview_frame_elapsed = Duration::ZERO;
+                        }
                         shop.preview_motion = AvatarMotion::Crouch;
-                        shop.preview_frame_index = 0;
                         changed = true;
                     }
                 }
                 202 | 203 if !pressed && shop.preview_motion == AvatarMotion::Crouch => {
                     shop.preview_motion = AvatarMotion::Stand;
                     shop.preview_frame_index = 0;
+                    shop.preview_frame_elapsed = Duration::ZERO;
                     changed = true;
                 }
                 53 if pressed && !repeat => {
                     shop.preview_on_ladder = false;
                     shop.preview_y = (cash_shop_ui::PREVIEW_FLOOR_Y - 22.0)
                         .max(cash_shop_ui::PREVIEW_LADDER_TOP_Y);
+                    if shop.preview_motion != AvatarMotion::Jump {
+                        shop.preview_frame_elapsed = Duration::ZERO;
+                    }
                     shop.preview_motion = AvatarMotion::Jump;
                     shop.preview_frame_index = 0;
                     changed = true;
@@ -233,6 +304,7 @@ impl ClientApp {
                     shop.preview_y = cash_shop_ui::PREVIEW_FLOOR_Y;
                     shop.preview_motion = AvatarMotion::Stand;
                     shop.preview_frame_index = 0;
+                    shop.preview_frame_elapsed = Duration::ZERO;
                     changed = true;
                 }
                 _ => {}
@@ -658,7 +730,7 @@ impl ClientApp {
                 | openstory_protocol::PlayerInteractionRoomReply::PersonalShop(room),
             ) => {
                 self.show_inventory = false;
-                self.show_skill_book = false;
+                self.close_skill_book();
                 self.show_quest_log = false;
                 self.npc_dialogue = None;
                 self.storage = None;
@@ -698,7 +770,7 @@ impl ClientApp {
                 self.trade_request_pending = false;
                 self.pending_trade_invite = None;
                 self.show_inventory = false;
-                self.show_skill_book = false;
+                self.close_skill_book();
                 self.show_quest_log = false;
                 self.npc_dialogue = None;
                 self.storage = None;
@@ -1016,6 +1088,7 @@ impl ClientApp {
                     .ok()
                     .flatten()
                     .or_else(|| level_nodes.first().cloned());
+                let stat_buff = stats.as_ref().is_some_and(is_stat_buff_skill_stats);
                 let (
                     attack,
                     magic_damage,
@@ -1124,6 +1197,7 @@ impl ClientApp {
                         required_weapon,
                         passive,
                         attack,
+                        stat_buff: !attack && stat_buff,
                         magic_damage,
                         attack_count,
                         bullet_count,
@@ -1158,6 +1232,7 @@ impl ClientApp {
                 required_weapon: None,
                 passive: (skill.id % 10_000) / 1_000 == 0,
                 attack: false,
+                stat_buff: false,
                 magic_damage: false,
                 attack_count: 1,
                 bullet_count: 1,
@@ -1216,9 +1291,11 @@ impl ClientApp {
             book_icon,
             skill_points,
             &self.skills,
+            &self.auto_buff_skills,
             self.skill_book_tab,
             visible_tabs,
             self.skill_book_scroll_row,
+            self.skill_macro_opened_at.is_some(),
         );
         let Some(renderer) = self.renderer.as_ref() else {
             return;

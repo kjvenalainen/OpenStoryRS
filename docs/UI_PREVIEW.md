@@ -31,8 +31,8 @@ connection are used.
 
 World Map previews use the Victoria region; the search case finds Orbis across regions, the
 marker case displays a map detail tooltip, and the result case shows the selected Orbis map.
-The map name tag preview shows NPC labels and default and cash ring based character labels
-over the same live map backdrop used by gameplay previews.
+The map name tag preview shows NPC labels, a cash ring based character label, and a
+pet label using the pet's NX name tag style over the live gameplay map backdrop.
 
 Each case writes 1024x768 and 1440x900 PNGs. The widescreen output uses the
 client's 1024x768 aspect-ratio-preserving viewport and letterboxing.

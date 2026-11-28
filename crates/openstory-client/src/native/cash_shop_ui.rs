@@ -29,6 +29,7 @@ pub(super) const PREVIEW_LADDER_TOP_Y: f32 = 52.0;
 pub(super) const PREVIEW_LEFT_BOUND: f32 = 22.0;
 pub(super) const PREVIEW_RIGHT_BOUND: f32 = 186.0;
 pub(super) const PREVIEW_STEP: f32 = 12.0;
+const PREVIEW_MOVE_INTERVAL: std::time::Duration = std::time::Duration::from_millis(140);
 
 /// A logical-coordinate region used by both the Cash Shop view and input code.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -200,18 +201,8 @@ pub(super) fn render(
         (Y + 41) as f32,
         1.0,
     )?;
-    let preview_character = character.map(|character| {
-        let mut preview = character.clone();
-        if state.preview_remove_all {
-            preview.look.equips.clear();
-            preview.look.masked_equips.clear();
-            preview.look.weapon_id = 0;
-            preview.look.weapon_sticker_id = 0;
-            preview.look.pet_ids = [0; 3];
-        }
-        for item_id in state.try_on_items.values() {
-            try_on_cash_shop_item(&mut preview.look, *item_id);
-        }
+    let preview_character = character.cloned().map(|mut preview| {
+        preview.look = preview_look(&preview.look, state);
         preview
     });
     if let Some(character) = preview_character.as_ref() {
@@ -227,7 +218,26 @@ pub(super) fn render(
             (X + 22) as i32,
             (Y + 41) as i32,
         );
-        draw_equipped_pets(&mut pixels, item_archive, &character.look, X + 22, Y + 41)?;
+        let worn_pet_equipment = inventory
+            .into_iter()
+            .flat_map(|inventory| inventory.equipped())
+            .find(|item| item.item_id / 10_000 == 180)
+            .map(|item| item.item_id);
+        let pet_equipment = if state.preview_remove_all {
+            None
+        } else {
+            state.try_on_pet_equipment.or(worn_pet_equipment)
+        };
+        draw_equipped_pets(
+            &mut pixels,
+            item_archive,
+            character_archive,
+            state,
+            &character.look,
+            pet_equipment,
+            X + 22,
+            Y + 41,
+        )?;
         let name = super::ui_foundation::ellipsize(font, &character.stats.name, 11.0, 130.0);
         add_text(
             font,
@@ -244,12 +254,13 @@ pub(super) fn render(
     for (index, label) in super::CASH_SHOP_CATEGORIES.iter().enumerate() {
         let left = X + 278 + index * 55;
         let selected = state.category == index;
+        let tab_y = Y + 52;
         super::composite_nx_ui_tab(
             &mut pixels,
             WIDTH,
             HEIGHT,
             ui_archive,
-            super::ui_foundation::UiRect::new(left as f32, (Y + 38) as f32, 53.0, 19.0),
+            super::ui_foundation::UiRect::new(left as f32, tab_y as f32, 53.0, 19.0),
             selected,
         )?;
         add_text(
@@ -257,7 +268,7 @@ pub(super) fn render(
             &mut text_pixels,
             label,
             left as i32 + 4,
-            (Y + 40) as i32,
+            (tab_y + 2) as i32,
             9.0,
             48,
             13,
@@ -265,7 +276,7 @@ pub(super) fn render(
         );
         hit_regions.push(logical_region(
             left as f32,
-            (Y + 38) as f32,
+            tab_y as f32,
             53.0,
             19.0,
             HitAction::Category(index),
@@ -577,12 +588,15 @@ pub(super) fn render(
             [255, 255, 255],
         );
     }
+    let page_label = format!("{} / {pages}", page + 1);
+    let page_label_width = super::dialogue_text_width(font, &page_label, 11.0).ceil() as i32;
+    let page_label_x = (X + 481) as i32 - page_label_width / 2;
     add_text(
         font,
         &mut text_pixels,
-        &format!("{} / {pages}", page + 1),
-        (X + 480) as i32,
-        (Y + 516) as i32,
+        &page_label,
+        page_label_x,
+        (Y + 508) as i32,
         11.0,
         80,
         15,
@@ -688,9 +702,11 @@ pub(super) fn render(
             &mut nameplate_pixels,
             font,
             ui_archive,
+            item_archive,
             character_archive,
             character,
             inventory,
+            state,
             string_archive,
             name_cache,
             state.preview_x,
@@ -716,20 +732,8 @@ fn draw_cash_shop_preview_avatar(
     const STAGE_WIDTH: usize = 212;
     const STAGE_HEIGHT: usize = 165;
     let mut sprites = Vec::new();
-    let two_handed = super::character_weapon_id(look).is_some_and(super::is_two_handed_weapon);
-    let stand = if two_handed { "stand2" } else { "stand1" };
-    let walk = if two_handed { "walk2" } else { "walk1" };
-    let motion = match state.preview_motion {
-        super::AvatarMotion::Walk => walk,
-        super::AvatarMotion::Jump => "jump",
-        super::AvatarMotion::Ladder => "ladder",
-        super::AvatarMotion::Crouch => "prone",
-        _ => stand,
-    };
-    let mut candidates = vec![motion];
-    if motion != stand {
-        candidates.push(stand);
-    }
+    let candidates = preview_stance_candidates(state, look);
+    let motion = candidates[0];
     for stance in candidates {
         let stance_path = format!("000020{:02}.img/{stance}", look.skin);
         let Some(stance_node) = character_archive
@@ -791,6 +795,120 @@ fn draw_cash_shop_preview_avatar(
         );
     }
     Ok(())
+}
+
+fn preview_stance_candidates(
+    state: &super::CashShopUi,
+    look: &openstory_protocol::CharacterLook,
+) -> Vec<&'static str> {
+    let two_handed = super::character_weapon_id(look).is_some_and(super::is_two_handed_weapon);
+    let stand = if two_handed { "stand2" } else { "stand1" };
+    let walk = if two_handed { "walk2" } else { "walk1" };
+    let motion = match state.preview_motion {
+        super::AvatarMotion::Walk => walk,
+        super::AvatarMotion::Jump => "jump",
+        super::AvatarMotion::Ladder => "ladder",
+        super::AvatarMotion::Crouch => "prone",
+        _ => stand,
+    };
+    if motion == stand {
+        vec![motion]
+    } else {
+        vec![motion, stand]
+    }
+}
+
+fn preview_look(
+    look: &openstory_protocol::CharacterLook,
+    state: &super::CashShopUi,
+) -> openstory_protocol::CharacterLook {
+    let mut preview = look.clone();
+    if state.preview_remove_all {
+        preview.equips.clear();
+        preview.masked_equips.clear();
+        preview.weapon_id = 0;
+        preview.weapon_sticker_id = 0;
+        preview.pet_ids = [0; 3];
+    }
+    for item_id in state.try_on_items.values() {
+        try_on_cash_shop_item(&mut preview, *item_id);
+    }
+    preview
+}
+
+pub(super) fn advance_preview_animation(
+    state: &mut super::CashShopUi,
+    look: Option<&openstory_protocol::CharacterLook>,
+    item_archive: &NxArchive,
+    character_archive: &NxArchive,
+    elapsed: std::time::Duration,
+) -> bool {
+    if elapsed.is_zero() {
+        return false;
+    }
+    let mut changed = false;
+
+    let direction = state.preview_move_direction;
+    if direction == 0 || state.preview_motion != super::AvatarMotion::Walk {
+        state.preview_move_elapsed = std::time::Duration::ZERO;
+    } else {
+        state.preview_move_elapsed = state
+            .preview_move_elapsed
+            .saturating_add(elapsed.min(std::time::Duration::from_secs(1)));
+        while state.preview_move_elapsed >= PREVIEW_MOVE_INTERVAL {
+            state.preview_move_elapsed -= PREVIEW_MOVE_INTERVAL;
+            let old_x = state.preview_x;
+            state.preview_x = (state.preview_x + f32::from(direction) * PREVIEW_STEP)
+                .clamp(PREVIEW_LEFT_BOUND, PREVIEW_RIGHT_BOUND);
+            changed |= (state.preview_x - old_x).abs() > f32::EPSILON;
+        }
+    }
+
+    let Some(look) = look.map(|look| preview_look(look, state)) else {
+        return changed;
+    };
+    changed |= advance_preview_pet_animation(state, &look, item_archive, elapsed);
+    let motion = preview_stance_candidates(state, &look)[0];
+    let stance_path = format!("000020{:02}.img/{motion}", look.skin);
+    let Some(stance_node) = character_archive
+        .root()
+        .resolve(&stance_path)
+        .ok()
+        .flatten()
+    else {
+        return changed;
+    };
+    let Ok(frames) = super::numeric_children(&stance_node) else {
+        return changed;
+    };
+    if frames.len() <= 1 {
+        state.preview_frame_index = 0;
+        state.preview_frame_elapsed = std::time::Duration::ZERO;
+        return changed;
+    }
+
+    state.preview_frame_index %= frames.len();
+    state.preview_frame_elapsed = state
+        .preview_frame_elapsed
+        .saturating_add(elapsed.min(std::time::Duration::from_secs(1)));
+    loop {
+        let Some(frame) = frames.get(state.preview_frame_index) else {
+            state.preview_frame_index = 0;
+            break;
+        };
+        let delay_ms = super::integer_property(frame, "delay")
+            .and_then(|delay| u64::try_from(delay).ok())
+            .filter(|delay| *delay > 0)
+            .unwrap_or(100);
+        let delay = std::time::Duration::from_millis(delay_ms);
+        if state.preview_frame_elapsed < delay {
+            break;
+        }
+        state.preview_frame_elapsed -= delay;
+        state.preview_frame_index = (state.preview_frame_index + 1) % frames.len();
+        changed = true;
+    }
+    changed
 }
 
 fn scale_cash_shop_to_canvas(pixels: &mut Vec<u8>, hit_regions: &mut [HitRegion]) {
@@ -856,7 +974,10 @@ fn logical_region(x: f32, y: f32, width: f32, height: f32, action: HitAction) ->
 fn draw_equipped_pets(
     pixels: &mut [u8],
     item_archive: &NxArchive,
+    character_archive: &NxArchive,
+    state: &super::CashShopUi,
     look: &openstory_protocol::CharacterLook,
+    pet_equipment: Option<i32>,
     stage_x: usize,
     stage_y: usize,
 ) -> Result<(), String> {
@@ -871,14 +992,121 @@ fn draw_equipped_pets(
     for (index, item_id) in pets.into_iter().enumerate() {
         let anchor_x = stage_x as f32 + 160.0 + first_offset + index as f32 * spacing;
         let anchor_y = stage_y as f32 + 156.0;
-        for stance in ["stand0", "stand1"] {
-            let path = format!("Pet/{item_id}.img/{stance}/0");
-            if draw_asset(pixels, item_archive, &path, anchor_x, anchor_y, 1.0)?.is_some() {
-                break;
+        let Some((stance, frames)) = preview_pet_frames(item_archive, item_id)? else {
+            continue;
+        };
+        let frame_index = state.preview_pet_frame_index % frames.len();
+        let frame_name = frames[frame_index]
+            .name()
+            .map_err(|error| error.to_string())?;
+        let pet_path = format!("Pet/{item_id}.img/{stance}/{frame_name}");
+        let drawn = draw_asset(pixels, item_archive, &pet_path, anchor_x, anchor_y, 1.0)?.is_some();
+        if drawn
+            && index == 0
+            && let Some(equipment_id) = pet_equipment
+        {
+            let frames =
+                preview_pet_equipment_frames(character_archive, item_id, equipment_id, &stance)?;
+            if let Some(frame) = frames.get(state.preview_pet_frame_index % frames.len().max(1)) {
+                let frame_name = frame.name().map_err(|error| error.to_string())?;
+                let equipment_path =
+                    format!("PetEquip/{equipment_id:08}.img/{item_id}/{stance}/{frame_name}");
+                draw_asset(
+                    pixels,
+                    character_archive,
+                    &equipment_path,
+                    anchor_x,
+                    anchor_y,
+                    1.0,
+                )?;
             }
         }
     }
     Ok(())
+}
+
+fn preview_pet_frames(
+    archive: &NxArchive,
+    pet_id: i32,
+) -> Result<Option<(String, Vec<openstory_assets::NxNode>)>, String> {
+    for stance in ["stand0", "stand1"] {
+        let path = format!("Pet/{pet_id}.img/{stance}");
+        let Some(node) = archive
+            .root()
+            .resolve(&path)
+            .map_err(|error| error.to_string())?
+        else {
+            continue;
+        };
+        let frames = super::numeric_children(&node)?;
+        if !frames.is_empty() {
+            return Ok(Some((stance.to_owned(), frames)));
+        }
+    }
+    Ok(None)
+}
+
+fn preview_pet_equipment_frames(
+    archive: &NxArchive,
+    pet_id: i32,
+    equipment_id: i32,
+    stance: &str,
+) -> Result<Vec<openstory_assets::NxNode>, String> {
+    let path = format!("PetEquip/{equipment_id:08}.img/{pet_id}/{stance}");
+    let Some(node) = archive
+        .root()
+        .resolve(&path)
+        .map_err(|error| error.to_string())?
+    else {
+        return Ok(Vec::new());
+    };
+    super::numeric_children(&node)
+}
+
+fn advance_preview_pet_animation(
+    state: &mut super::CashShopUi,
+    look: &openstory_protocol::CharacterLook,
+    item_archive: &NxArchive,
+    elapsed: std::time::Duration,
+) -> bool {
+    let Some(pet_id) = look.pet_ids.iter().copied().find(|item_id| *item_id > 0) else {
+        state.preview_pet_frame_index = 0;
+        state.preview_pet_frame_elapsed = std::time::Duration::ZERO;
+        return false;
+    };
+    let Ok(Some((_, frames))) = preview_pet_frames(item_archive, pet_id) else {
+        state.preview_pet_frame_index = 0;
+        state.preview_pet_frame_elapsed = std::time::Duration::ZERO;
+        return false;
+    };
+    if frames.len() <= 1 {
+        state.preview_pet_frame_index = 0;
+        state.preview_pet_frame_elapsed = std::time::Duration::ZERO;
+        return false;
+    }
+    state.preview_pet_frame_index %= frames.len();
+    state.preview_pet_frame_elapsed = state
+        .preview_pet_frame_elapsed
+        .saturating_add(elapsed.min(std::time::Duration::from_secs(1)));
+    let mut changed = false;
+    loop {
+        let Some(frame) = frames.get(state.preview_pet_frame_index) else {
+            state.preview_pet_frame_index = 0;
+            break;
+        };
+        let delay_ms = super::integer_property(frame, "delay")
+            .and_then(|delay| u64::try_from(delay).ok())
+            .filter(|delay| *delay > 0)
+            .unwrap_or(100);
+        let delay = std::time::Duration::from_millis(delay_ms);
+        if state.preview_pet_frame_elapsed < delay {
+            break;
+        }
+        state.preview_pet_frame_elapsed -= delay;
+        state.preview_pet_frame_index = (state.preview_pet_frame_index + 1) % frames.len();
+        changed = true;
+    }
+    changed
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -886,9 +1114,11 @@ fn draw_cash_shop_nameplates(
     pixels: &mut [u8],
     font: &fontdue::Font,
     ui_archive: &NxArchive,
+    item_archive: &NxArchive,
     character_archive: &NxArchive,
     character: &openstory_protocol::CharacterInfo,
     inventory: Option<&openstory_protocol::InventorySnapshot>,
+    state: &super::CashShopUi,
     string_archive: &NxArchive,
     name_cache: &mut HashMap<i32, Option<String>>,
     avatar_x: f32,
@@ -918,6 +1148,20 @@ fn draw_cash_shop_nameplates(
         .copied()
         .filter(|item_id| *item_id > 0)
         .collect::<Vec<_>>();
+    let label_ring_equipped = state.try_on_pet_label_ring
+        || (!state.preview_remove_all
+            && inventory.is_some_and(|inventory| {
+                inventory
+                    .equipped()
+                    .any(|item| item.item_id / 10_000 == 182)
+            }));
+    let quote_ring_equipped = state.try_on_pet_quote_ring
+        || (!state.preview_remove_all
+            && inventory.is_some_and(|inventory| {
+                inventory
+                    .equipped()
+                    .any(|item| item.item_id / 10_000 == 183)
+            }));
     let first_pet_offset = -((pet_ids.len().saturating_sub(1)) as f32) * 32.0 * scale / 2.0;
     for (index, item_id) in pet_ids.into_iter().enumerate() {
         let pet_name = inventory
@@ -933,18 +1177,62 @@ fn draw_cash_shop_nameplates(
             .filter(|name| !name.is_empty())
             .map(str::to_owned)
             .unwrap_or_else(|| super::item_name(item_id, string_archive, name_cache));
-        super::append_map_name_tag_sprite_scaled(
-            &mut sprites,
-            font,
-            ui_archive,
-            None,
-            None,
-            &pet_name,
-            stage_x + 160.0 * scale + first_pet_offset + index as f32 * 32.0 * scale,
-            stage_y + 156.0 * scale,
-            super::MapNameTagKind::Pet,
-            scale,
-        );
+        let center_x = stage_x + 160.0 * scale + first_pet_offset + index as f32 * 32.0 * scale;
+        if index == 0 && label_ring_equipped {
+            super::append_pet_name_tag_sprite_scaled(
+                &mut sprites,
+                font,
+                ui_archive,
+                item_archive,
+                item_id,
+                true,
+                &pet_name,
+                center_x,
+                stage_y + 156.0 * scale,
+                scale,
+            );
+        } else {
+            super::append_map_name_tag_sprite_scaled(
+                &mut sprites,
+                font,
+                ui_archive,
+                Some(character_archive),
+                Some(&character.look),
+                &pet_name,
+                center_x,
+                stage_y + 156.0 * scale,
+                super::MapNameTagKind::Pet,
+                scale,
+            );
+        }
+        if index == 0
+            && quote_ring_equipped
+            && let Some(style) = super::pet_chat_balloon_style_id(item_archive, item_id)
+            && let Ok(skin) = super::load_pet_chat_balloon_skin(ui_archive, style)
+        {
+            let bubble = super::render_speech_bubble(font, &skin, "Hello!");
+            let bubble_width = (super::SPEECH_BUBBLE_WIDTH as f32 * scale).round() as usize;
+            let bubble_height = (super::SPEECH_BUBBLE_HEIGHT as f32 * scale).round() as usize;
+            let bubble = resize_bgra_nearest(
+                &bubble,
+                super::SPEECH_BUBBLE_WIDTH as usize,
+                super::SPEECH_BUBBLE_HEIGHT as usize,
+                bubble_width,
+                bubble_height,
+            );
+            let anchor_y = stage_y + 156.0 * scale;
+            super::composite_bgra_pixels(
+                pixels,
+                WIDTH,
+                HEIGHT,
+                &bubble,
+                bubble_width,
+                bubble_height,
+                (center_x - super::SPEECH_BUBBLE_ANCHOR.0 as f32 * scale).round() as i32,
+                (anchor_y - 48.0 * scale - super::SPEECH_BUBBLE_ANCHOR.1 as f32 * scale).round()
+                    as i32,
+            );
+        }
     }
 
     for sprite in sprites {
@@ -961,7 +1249,46 @@ fn draw_cash_shop_nameplates(
     }
 }
 
+fn resize_bgra_nearest(
+    pixels: &[u8],
+    source_width: usize,
+    source_height: usize,
+    width: usize,
+    height: usize,
+) -> Vec<u8> {
+    let mut resized = vec![0; width.saturating_mul(height).saturating_mul(4)];
+    if source_width == 0 || source_height == 0 || width == 0 || height == 0 {
+        return resized;
+    }
+    for y in 0..height {
+        let source_y = y * source_height / height;
+        for x in 0..width {
+            let source_x = x * source_width / width;
+            let source_index = (source_y * source_width + source_x) * 4;
+            let destination_index = (y * width + x) * 4;
+            resized[destination_index..destination_index + 4]
+                .copy_from_slice(&pixels[source_index..source_index + 4]);
+        }
+    }
+    resized
+}
+
 pub(super) fn add_try_on_item(state: &mut super::CashShopUi, item_id: i32) {
+    match item_id / 10_000 {
+        180 => {
+            state.try_on_pet_equipment = Some(item_id);
+            return;
+        }
+        182 => {
+            state.try_on_pet_label_ring = true;
+            return;
+        }
+        183 => {
+            state.try_on_pet_quote_ring = true;
+            return;
+        }
+        _ => {}
+    }
     if let Some(slot) = cash_shop_preview_slot(item_id) {
         state.try_on_items.insert(slot, item_id);
     }
@@ -1047,6 +1374,9 @@ pub(super) fn render_preview(
     if let Some(product) = products.first() {
         add_try_on_item(&mut state, product.item_id);
     }
+    state.try_on_pet_equipment = Some(1_802_000);
+    state.try_on_pet_label_ring = true;
+    state.try_on_pet_quote_ring = true;
     state.notice = Some("Offline preview data; no server is connected.".to_owned());
     let preview_inventory = cash_shop_preview_inventory();
 
@@ -1089,7 +1419,7 @@ pub(super) fn render_preview(
     let mut icon_cache = HashMap::new();
     let mut name_cache = HashMap::new();
     let mut preview_character = super::ui_preview::preview_character();
-    preview_character.look.pet_ids[0] = 5_000_000;
+    preview_character.look.pet_ids[0] = 5_000_008;
     let mut scene = render(
         ui_archive,
         font,
@@ -1143,6 +1473,7 @@ fn cash_shop_preview_inventory() -> openstory_protocol::InventorySnapshot {
     if let Some(pet) = inventory.items.iter_mut().find(|item| {
         item.inventory_type == openstory_protocol::InventoryType::Cash && item.item_id == 5_000_000
     }) {
+        pet.item_id = 5_000_008;
         pet.pet = Some(openstory_protocol::PetInventoryData {
             name: "Bobby".to_owned(),
             ..Default::default()

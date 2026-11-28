@@ -1,6 +1,101 @@
 use super::*;
 
 impl ClientApp {
+    pub(super) fn prepare_inventory_sell_marks_for_update(
+        &mut self,
+        update: &openstory_protocol::InventoryUpdate,
+    ) {
+        if update.movement == openstory_protocol::InventoryMovement::Internal {
+            for modification in &update.modifications {
+                let openstory_protocol::InventoryModification::Swap {
+                    inventory_type,
+                    position,
+                    other_position,
+                } = modification
+                else {
+                    continue;
+                };
+                if *inventory_type == openstory_protocol::InventoryType::Equipped {
+                    continue;
+                }
+                let first_slot = position.unsigned_abs();
+                let second_slot = other_position.unsigned_abs();
+                if first_slot == 0 || second_slot == 0 || first_slot == second_slot {
+                    continue;
+                }
+                let first_mark =
+                    self.marked_inventory_items.iter().copied().find(|mark| {
+                        mark.inventory_type == *inventory_type && mark.slot == first_slot
+                    });
+                let second_mark = self.marked_inventory_items.iter().copied().find(|mark| {
+                    mark.inventory_type == *inventory_type && mark.slot == second_slot
+                });
+                if let Some(mark) = first_mark {
+                    self.marked_inventory_items.remove(&mark);
+                }
+                if let Some(mark) = second_mark {
+                    self.marked_inventory_items.remove(&mark);
+                }
+                if let Some(mark) = first_mark {
+                    self.marked_inventory_items.insert(InventorySellMark {
+                        slot: second_slot,
+                        ..mark
+                    });
+                }
+                if let Some(mark) = second_mark {
+                    self.marked_inventory_items.insert(InventorySellMark {
+                        slot: first_slot,
+                        ..mark
+                    });
+                }
+            }
+        }
+
+        for modification in &update.modifications {
+            match modification {
+                openstory_protocol::InventoryModification::Add(item) => {
+                    let current = inventory_sell_mark(item);
+                    self.marked_inventory_items.retain(|mark| {
+                        mark.inventory_type != current.inventory_type
+                            || mark.slot != current.slot
+                            || *mark == current
+                    });
+                }
+                openstory_protocol::InventoryModification::ChangeCount {
+                    inventory_type,
+                    position,
+                    count: 0,
+                }
+                | openstory_protocol::InventoryModification::Remove {
+                    inventory_type,
+                    position,
+                } => {
+                    let slot = position.unsigned_abs();
+                    self.marked_inventory_items
+                        .retain(|mark| mark.inventory_type != *inventory_type || mark.slot != slot);
+                }
+                openstory_protocol::InventoryModification::ChangeCount { .. }
+                | openstory_protocol::InventoryModification::Swap { .. } => {}
+            }
+        }
+    }
+
+    pub(super) fn reconcile_inventory_sell_marks(&mut self) {
+        let Some(inventory) = self.inventory.as_ref() else {
+            self.marked_inventory_items.clear();
+            return;
+        };
+        self.marked_inventory_items.retain(|mark| {
+            inventory.items.iter().any(|item| {
+                item.inventory_type == mark.inventory_type
+                    && item.slot == mark.slot
+                    && item.item_id == mark.item_id
+                    && item.cash_id == mark.cash_id
+                    && item.count > 0
+            })
+        });
+    }
+
     pub(super) fn flush_inventory_ui_refresh(&mut self) {
         if !std::mem::take(&mut self.inventory_ui_refresh_pending) {
             return;
@@ -110,6 +205,7 @@ impl ClientApp {
                 .map(|(inventory_type, slot, _)| (inventory_type, slot)),
             self.inventory_pending_move_for_display(),
             self.pending_scroll_slot,
+            &self.marked_inventory_items,
             &self.legacy_ui_archive,
             &self.item_archive,
             &self.character_archive,
@@ -161,6 +257,11 @@ impl ClientApp {
                 .map(|character| &character.look),
             self.equipment_tab,
             active_scroll_item_id,
+            self.inventory_drag_source
+                .filter(|(inventory_type, _, _)| {
+                    *inventory_type == openstory_protocol::InventoryType::Equipped
+                })
+                .map(|(_, slot, _)| slot),
             self.equipment_pet_slots(),
             &self.legacy_ui_archive,
             &self.item_archive,
@@ -188,7 +289,7 @@ impl ClientApp {
         }
     }
 
-    fn equipment_pet_slots(&self) -> ui_equipment::PetSlots {
+    pub(super) fn equipment_pet_slots(&self) -> ui_equipment::PetSlots {
         let summoned = self.active_character.as_ref().and_then(|character| {
             self.map_scene
                 .as_ref()?
@@ -360,7 +461,6 @@ impl ClientApp {
                     && self.show_quickslots
                     && self.inventory_drag_source.is_none()
                     && self.dialog_window_drag.is_none()
-                    && !self.skill_macro_editor.has_skill_drag()
                     && self.inventory_drop_prompt.is_none()
                     && !self.quit_confirmation
                     && !self.wedding_panel_open
@@ -1719,7 +1819,7 @@ impl ClientApp {
             openstory_protocol::StorageEvent::Open(state) => {
                 self.show_inventory = false;
                 self.inventory_hover_slot = None;
-                self.show_skill_book = false;
+                self.close_skill_book();
                 self.show_quest_log = false;
                 self.storage = Some(StorageUi {
                     state,

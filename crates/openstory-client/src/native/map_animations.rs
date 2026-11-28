@@ -442,6 +442,57 @@ fn append_pet_animations(
     Ok(animations)
 }
 
+fn append_pet_equipment_animations(
+    sprites: &mut Vec<DecodedSprite>,
+    archive: &NxArchive,
+    pet_id: i32,
+    equipment_id: i32,
+    cache: &mut MapArtCache,
+) -> Result<PetEquipmentAnimationAssets, String> {
+    let path = format!("PetEquip/{equipment_id:08}.img/{pet_id}");
+    let Some(equipment) = archive
+        .root()
+        .resolve(&path)
+        .map_err(|error| error.to_string())?
+    else {
+        return Ok(PetEquipmentAnimationAssets::default());
+    };
+    let mut animations = PetEquipmentAnimationAssets::default();
+    for source in equipment.children().map_err(|error| error.to_string())? {
+        let action = source.name().map_err(|error| error.to_string())?;
+        if action == "info" {
+            continue;
+        }
+        let frames = append_summon_frames_from_node(
+            sprites,
+            &source,
+            &format!("pet-equip:{path}/{action}"),
+            cache,
+        )?;
+        if frames.is_empty() {
+            continue;
+        }
+        let state = match action.as_str() {
+            "move" => Some(0),
+            "stand0" | "stand1" => Some(1),
+            "jump" => Some(2),
+            "alert" => Some(3),
+            "prone" => Some(4),
+            "fly" => Some(5),
+            "hang" => Some(6),
+            _ => None,
+        };
+        if let Some(state) = state {
+            animations
+                .stances
+                .entry(state)
+                .or_insert_with(|| frames.clone());
+        }
+        animations.actions.insert(action, frames);
+    }
+    Ok(animations)
+}
+
 fn append_pet_interaction_animation(
     sprites: &mut Vec<DecodedSprite>,
     archive: &NxArchive,
@@ -450,14 +501,14 @@ fn append_pet_interaction_animation(
     index: u8,
     success: bool,
     cache: &mut MapArtCache,
-) -> Result<Vec<ProjectileFrameAsset>, String> {
+) -> Result<Option<(String, Vec<ProjectileFrameAsset>)>, String> {
     let pet_path = format!("Pet/{item_id}.img");
     let Some(pet) = archive
         .root()
         .resolve(&pet_path)
         .map_err(|error| error.to_string())?
     else {
-        return Ok(Vec::new());
+        return Ok(None);
     };
     let group = if feed {
         pet.child("food")
@@ -475,7 +526,7 @@ fn append_pet_interaction_animation(
             .flatten()
     };
     let Some(group) = group else {
-        return Ok(Vec::new());
+        return Ok(None);
     };
     let result_name = if success { "success" } else { "fail" };
     let alternate_name = if success { "fail" } else { "success" };
@@ -489,18 +540,24 @@ fn append_pet_interaction_animation(
             .map_err(|error| error.to_string())?,
     };
     let Some(branch) = branch else {
-        return Ok(Vec::new());
+        return Ok(None);
     };
     let Some(first_frame) = branch.child("0").map_err(|error| error.to_string())? else {
-        return Ok(Vec::new());
+        return Ok(None);
     };
     let Some(action) = string_property(&first_frame, "act") else {
-        return Ok(Vec::new());
+        return Ok(None);
     };
     let Some(source) = pet.child(&action).map_err(|error| error.to_string())? else {
-        return Ok(Vec::new());
+        return Ok(None);
     };
-    append_summon_frames_from_node(sprites, &source, &format!("pet:{pet_path}/{action}"), cache)
+    let frames = append_summon_frames_from_node(
+        sprites,
+        &source,
+        &format!("pet:{pet_path}/{action}"),
+        cache,
+    )?;
+    Ok((!frames.is_empty()).then_some((action, frames)))
 }
 
 fn append_summon_frames_from_node(

@@ -6,8 +6,13 @@ use ui_foundation::{UiRect, UiTextRole, draw_text_role};
 const WIDTH: usize = PET_ITEM_FILTER_PANEL_WIDTH as usize;
 const HEIGHT: usize = PET_ITEM_FILTER_PANEL_HEIGHT as usize;
 const SEARCH_FIELD: UiRect = UiRect::new(9.0, 29.0, (WIDTH - 18) as f32, 22.0);
-const LIST: UiRect = UiRect::new(9.0, 51.0, (WIDTH - 18) as f32, (HEIGHT - 92) as f32);
+const CONTENT: UiRect = UiRect::new(9.0, 51.0, (WIDTH - 18) as f32, (HEIGHT - 92) as f32);
 const ROW_HEIGHT: f32 = 22.0;
+const SEARCH_RESULT_ROW_HEIGHT: f32 = 20.0;
+const SECTION_HEADER_HEIGHT: f32 = 16.0;
+const SECTION_GAP: f32 = 2.0;
+const MAX_SEARCH_RESULTS: usize = 5;
+const SEARCH_DEBOUNCE_DELAY: Duration = Duration::from_millis(500);
 const SCROLLBAR_WIDTH: f32 = 15.0;
 const SCROLLBAR_ARROW_HEIGHT: f32 = 13.0;
 const SCROLLBAR_THUMB_HEIGHT: f32 = 25.0;
@@ -32,6 +37,9 @@ pub(super) struct State {
     pub(super) search_focused: bool,
     pub(super) key_text_for_ime_dedup: Option<String>,
     pub(super) notice: Option<String>,
+    pub(super) search_due_at: Option<Instant>,
+    pub(super) search_results: Vec<i32>,
+    pub(super) search_result_count: usize,
     pub(super) item_labels: HashMap<i32, String>,
     pub(super) item_labels_lower: HashMap<i32, String>,
     pub(super) item_labels_loaded: bool,
@@ -54,6 +62,9 @@ impl State {
             search_focused: false,
             key_text_for_ime_dedup: None,
             notice: None,
+            search_due_at: None,
+            search_results: Vec::new(),
+            search_result_count: 0,
             item_labels: HashMap::new(),
             item_labels_lower: HashMap::new(),
             item_labels_loaded: false,
@@ -69,6 +80,23 @@ impl State {
             player_level,
         }
     }
+
+    pub(super) fn schedule_search(&mut self) {
+        self.search_results.clear();
+        self.search_result_count = 0;
+        self.search_due_at = if self.query.trim().is_empty() {
+            None
+        } else {
+            Some(Instant::now() + SEARCH_DEBOUNCE_DELAY)
+        };
+    }
+
+    pub(super) fn clear_query(&mut self) {
+        self.query.clear();
+        self.search_due_at = None;
+        self.search_results.clear();
+        self.search_result_count = 0;
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -83,17 +111,47 @@ pub(super) fn search_field() -> UiRect {
     SEARCH_FIELD
 }
 
-pub(super) fn list_bounds() -> UiRect {
-    LIST
+fn dropdown_open(state: &State) -> bool {
+    !state.query.trim().is_empty() && state.search_due_at.is_none()
+}
+
+fn dropdown_row_count(state: &State) -> usize {
+    state.search_results.len().max(1).min(MAX_SEARCH_RESULTS)
+}
+
+fn dropdown_bounds(state: &State) -> UiRect {
+    let height =
+        SECTION_HEADER_HEIGHT + dropdown_row_count(state) as f32 * SEARCH_RESULT_ROW_HEIGHT;
+    UiRect::new(CONTENT.x, CONTENT.y, CONTENT.width, height)
+}
+
+fn ignored_header_y(state: &State) -> f32 {
+    if dropdown_open(state) {
+        dropdown_bounds(state).y + dropdown_bounds(state).height + SECTION_GAP
+    } else {
+        CONTENT.y
+    }
+}
+
+pub(super) fn list_bounds(state: &State) -> UiRect {
+    let header_y = ignored_header_y(state);
+    let list_y = header_y + SECTION_HEADER_HEIGHT + SECTION_GAP;
+    UiRect::new(
+        CONTENT.x,
+        list_y,
+        CONTENT.width,
+        (CONTENT.y + CONTENT.height - list_y).max(ROW_HEIGHT),
+    )
 }
 
 pub(super) fn scrollbar_click_position(x: f32, y: f32, state: &State) -> Option<usize> {
-    if !scrollbar_bounds().contains(x, y) {
+    if !scrollbar_bounds(state).contains(x, y) {
         return None;
     }
     let maximum = max_scroll(state);
-    let top = LIST.y + SCROLLBAR_ARROW_HEIGHT;
-    let bottom = LIST.y + LIST.height - SCROLLBAR_ARROW_HEIGHT;
+    let list = list_bounds(state);
+    let top = list.y + SCROLLBAR_ARROW_HEIGHT;
+    let bottom = list.y + list.height - SCROLLBAR_ARROW_HEIGHT;
     if y < top {
         return Some(state.scroll.saturating_sub(1));
     }
@@ -104,12 +162,13 @@ pub(super) fn scrollbar_click_position(x: f32, y: f32, state: &State) -> Option<
     Some((fraction * maximum as f32).round() as usize)
 }
 
-fn scrollbar_bounds() -> UiRect {
+fn scrollbar_bounds(state: &State) -> UiRect {
+    let list = list_bounds(state);
     UiRect::new(
-        LIST.x + LIST.width - SCROLLBAR_WIDTH,
-        LIST.y,
+        list.x + list.width - SCROLLBAR_WIDTH,
+        list.y,
         SCROLLBAR_WIDTH,
-        LIST.height,
+        list.height,
     )
 }
 
@@ -117,7 +176,7 @@ pub(super) fn hitboxes() -> [UiRect; 7] {
     [
         CLOSE,
         SEARCH_FIELD,
-        LIST,
+        CONTENT,
         MESO_BUTTON,
         LOW_LEVEL_BUTTON,
         REGISTER_BUTTON,
@@ -126,31 +185,78 @@ pub(super) fn hitboxes() -> [UiRect; 7] {
 }
 
 pub(super) fn visible_item_ids(state: &State) -> Vec<i32> {
-    let query = state.query.trim().to_lowercase();
     let order = if state.display_order.len() == state.ignored_item_ids.len() {
         &state.display_order
     } else {
         &state.ignored_item_ids
     };
-    order
+    order.to_vec()
+}
+
+pub(super) fn search_item_ids(
+    query: &str,
+    index: &[(String, i32)],
+    ignored_item_ids: &HashSet<i32>,
+) -> (Vec<i32>, usize) {
+    let query = query.trim().to_lowercase();
+    if query.is_empty() {
+        return (Vec::new(), 0);
+    }
+    let numeric_query = query.chars().all(|character| character.is_ascii_digit());
+    let mut seen = HashSet::new();
+    let mut matches = index
         .iter()
-        .copied()
-        .filter(|item_id| {
-            query.is_empty()
-                || if query.contains('*') {
-                    state
-                        .item_labels_lower
-                        .get(item_id)
-                        .is_some_and(|name| wildcard_match(&query, name))
-                } else {
-                    item_id.to_string().starts_with(&query)
-                        || state
-                            .item_labels_lower
-                            .get(item_id)
-                            .is_some_and(|name| name.contains(&query))
-                }
+        .filter_map(|(name, item_id)| {
+            if ignored_item_ids.contains(item_id) {
+                return None;
+            }
+            let name_matches = name.contains(&query);
+            let id_matches = numeric_query && item_id.to_string().starts_with(&query);
+            if (!name_matches && !id_matches) || !seen.insert(*item_id) {
+                return None;
+            }
+            let rank = if name == &query {
+                0
+            } else if name.starts_with(&query) {
+                1
+            } else if id_matches {
+                2
+            } else {
+                3
+            };
+            Some((rank, name.chars().count(), name.clone(), *item_id))
         })
-        .collect()
+        .collect::<Vec<_>>();
+    matches.sort();
+    let total = matches.len();
+    let results = matches
+        .into_iter()
+        .take(MAX_SEARCH_RESULTS)
+        .map(|(_, _, _, item_id)| item_id)
+        .collect();
+    (results, total)
+}
+
+pub(super) fn search_result_at(x: f32, y: f32, state: &State) -> Option<i32> {
+    if !dropdown_open(state) {
+        return None;
+    }
+    let bounds = dropdown_bounds(state);
+    let rows = UiRect::new(
+        bounds.x + 1.0,
+        bounds.y + SECTION_HEADER_HEIGHT,
+        bounds.width - 2.0,
+        bounds.height - SECTION_HEADER_HEIGHT,
+    );
+    if !rows.contains(x, y) {
+        return None;
+    }
+    let row = ((y - rows.y) / SEARCH_RESULT_ROW_HEIGHT).floor() as usize;
+    state.search_results.get(row).copied()
+}
+
+pub(super) fn search_dropdown_contains(x: f32, y: f32, state: &State) -> bool {
+    dropdown_open(state) && dropdown_bounds(state).contains(x, y)
 }
 
 pub(super) fn wildcard_item_ids(pattern: &str, index: &[(String, i32)]) -> Vec<i32> {
@@ -164,12 +270,6 @@ pub(super) fn wildcard_item_ids(pattern: &str, index: &[(String, i32)]) -> Vec<i
             .then_some(*item_id)
         })
         .collect()
-}
-
-fn wildcard_match(pattern: &str, value: &str) -> bool {
-    let pattern = pattern.chars().collect::<Vec<_>>();
-    let value = value.chars().collect::<Vec<_>>();
-    wildcard_match_chars(&pattern, &value)
 }
 
 fn wildcard_match_chars(pattern: &[char], value: &[char]) -> bool {
@@ -215,8 +315,8 @@ pub(super) fn sort_item_order(state: &mut State) {
     state.display_order = order;
 }
 
-pub(super) fn visible_rows() -> usize {
-    (LIST.height / ROW_HEIGHT).floor() as usize
+pub(super) fn visible_rows(state: &State) -> usize {
+    (list_bounds(state).height / ROW_HEIGHT).floor() as usize
 }
 
 pub(super) fn action_at(x: f32, y: f32) -> Option<Action> {
@@ -231,18 +331,21 @@ pub(super) fn action_at(x: f32, y: f32) -> Option<Action> {
 }
 
 pub(super) fn row_at(x: f32, y: f32, state: &State) -> Option<i32> {
-    let content = UiRect::new(LIST.x, LIST.y, LIST.width - SCROLLBAR_WIDTH, LIST.height);
+    let list = list_bounds(state);
+    let content = UiRect::new(list.x, list.y, list.width - SCROLLBAR_WIDTH, list.height);
     if !content.contains(x, y) {
         return None;
     }
-    let row = ((y - LIST.y) / ROW_HEIGHT).floor() as usize;
+    let row = ((y - list.y) / ROW_HEIGHT).floor() as usize;
     visible_item_ids(state)
         .get(state.scroll.saturating_add(row))
         .copied()
 }
 
 pub(super) fn max_scroll(state: &State) -> usize {
-    visible_item_ids(state).len().saturating_sub(visible_rows())
+    visible_item_ids(state)
+        .len()
+        .saturating_sub(visible_rows(state))
 }
 
 pub(super) fn closest_item(query: &str, index: &[(String, i32)]) -> Option<(i32, String)> {
@@ -387,19 +490,76 @@ pub(super) fn render(
         &mut pixels,
         WIDTH,
         HEIGHT,
-        LIST.x as usize,
-        LIST.y as usize,
-        LIST.width as usize,
-        LIST.height as usize,
+        CONTENT.x as usize,
+        CONTENT.y as usize,
+        CONTENT.width as usize,
+        CONTENT.height as usize,
         [224, 231, 238, 255],
     );
-    rect_outline(&mut pixels, WIDTH, HEIGHT, LIST, [153, 164, 175, 255]);
+    rect_outline(&mut pixels, WIDTH, HEIGHT, CONTENT, [153, 164, 175, 255]);
+
+    if dropdown_open(state) {
+        draw_search_dropdown(
+            font,
+            items,
+            characters,
+            strings,
+            state,
+            &mut pixels,
+            name_cache,
+            icon_cache,
+        );
+    }
+
+    let header_y = ignored_header_y(state);
+    let header = UiRect::new(CONTENT.x, header_y, CONTENT.width, SECTION_HEADER_HEIGHT);
+    fill_dialogue_rect(
+        &mut pixels,
+        WIDTH,
+        HEIGHT,
+        header.x as usize,
+        header.y as usize,
+        header.width as usize,
+        header.height as usize,
+        [214, 222, 229, 255],
+    );
+    let header_label = if state.search_due_at.is_some() && !state.query.trim().is_empty() {
+        "Ignored items  ·  Searching…"
+    } else {
+        "Ignored items"
+    };
+    draw_text_role(
+        font,
+        &mut pixels,
+        WIDTH,
+        HEIGHT,
+        header_label,
+        header.x as i32 + 4,
+        header.y as i32 + 2,
+        UiTextRole::Small,
+        header.width as usize - 8,
+        12,
+        Some([65, 77, 89]),
+    );
+
+    let list = list_bounds(state);
+    fill_dialogue_rect(
+        &mut pixels,
+        WIDTH,
+        HEIGHT,
+        list.x as usize,
+        list.y as usize,
+        list.width as usize,
+        list.height as usize,
+        [224, 231, 238, 255],
+    );
+    rect_outline(&mut pixels, WIDTH, HEIGHT, list, [153, 164, 175, 255]);
     let visible = visible_item_ids(state);
-    for row in 0..visible_rows() {
+    for row in 0..visible_rows(state) {
         let row_bounds = UiRect::new(
-            LIST.x + 1.0,
-            LIST.y + 1.0 + row as f32 * ROW_HEIGHT,
-            LIST.width - SCROLLBAR_WIDTH - 2.0,
+            list.x + 1.0,
+            list.y + 1.0 + row as f32 * ROW_HEIGHT,
+            list.width - SCROLLBAR_WIDTH - 2.0,
             ROW_HEIGHT - 1.0,
         );
         fill_dialogue_rect(
@@ -483,15 +643,11 @@ pub(super) fn render(
             &mut pixels,
             WIDTH,
             HEIGHT,
-            if state.query.trim().is_empty() {
-                "No ignored items"
-            } else {
-                "No matching items"
-            },
-            LIST.x as i32 + 8,
-            LIST.y as i32 + 10,
+            "No ignored items",
+            list.x as i32 + 8,
+            list.y as i32 + 10,
             10.0,
-            LIST.width as usize - SCROLLBAR_WIDTH as usize - 16,
+            list.width as usize - SCROLLBAR_WIDTH as usize - 16,
             16,
             [105, 96, 82],
         );
@@ -503,15 +659,15 @@ pub(super) fn render(
             WIDTH,
             HEIGHT,
             notice,
-            LIST.x as i32 + 2,
-            (LIST.y + LIST.height + 1.0) as i32,
+            CONTENT.x as i32 + 2,
+            (CONTENT.y + CONTENT.height + 1.0) as i32,
             UiTextRole::Small,
-            LIST.width as usize - 4,
+            CONTENT.width as usize - 4,
             12,
             Some([114, 81, 53]),
         );
     }
-    draw_scrollbar(&mut pixels, ui, &visible, state.scroll);
+    draw_scrollbar(&mut pixels, ui, &visible, state.scroll, list);
 
     let mut dialog = NxDialog::new(&mut pixels, WIDTH, HEIGHT, ui);
     draw_button(&mut dialog, font, MESO_BUTTON, "MESO", "Basic.img/BtYes2");
@@ -564,6 +720,159 @@ pub(super) fn render(
     pixels
 }
 
+#[allow(clippy::too_many_arguments)]
+fn draw_search_dropdown(
+    font: &fontdue::Font,
+    items: &NxArchive,
+    characters: &NxArchive,
+    strings: &NxArchive,
+    state: &State,
+    pixels: &mut [u8],
+    name_cache: &mut HashMap<i32, Option<String>>,
+    icon_cache: &mut HashMap<i32, Option<(u32, u32, Arc<[u8]>)>>,
+) {
+    let bounds = dropdown_bounds(state);
+    fill_dialogue_rect(
+        pixels,
+        WIDTH,
+        HEIGHT,
+        bounds.x as usize,
+        bounds.y as usize,
+        bounds.width as usize,
+        bounds.height as usize,
+        [255, 249, 230, 255],
+    );
+    rect_outline(pixels, WIDTH, HEIGHT, bounds, [180, 145, 83, 255]);
+    let header = UiRect::new(
+        bounds.x + 1.0,
+        bounds.y + 1.0,
+        bounds.width - 2.0,
+        SECTION_HEADER_HEIGHT - 1.0,
+    );
+    fill_dialogue_rect(
+        pixels,
+        WIDTH,
+        HEIGHT,
+        header.x as usize,
+        header.y as usize,
+        header.width as usize,
+        header.height as usize,
+        [242, 225, 185, 255],
+    );
+    let header_label = format!(
+        "Search results · click to add ({})",
+        state.search_result_count
+    );
+    draw_text_role(
+        font,
+        pixels,
+        WIDTH,
+        HEIGHT,
+        &header_label,
+        header.x as i32 + 4,
+        header.y as i32 + 2,
+        UiTextRole::Small,
+        header.width as usize - 8,
+        12,
+        Some([100, 74, 33]),
+    );
+
+    if state.search_results.is_empty() {
+        super::draw_dialogue_text(
+            font,
+            pixels,
+            WIDTH,
+            HEIGHT,
+            "No new matches",
+            bounds.x as i32 + 8,
+            (bounds.y + SECTION_HEADER_HEIGHT + 3.0) as i32,
+            9.0,
+            bounds.width as usize - 16,
+            14,
+            [113, 98, 70],
+        );
+        return;
+    }
+
+    for (row, item_id) in state.search_results.iter().copied().enumerate() {
+        let row_bounds = UiRect::new(
+            bounds.x + 1.0,
+            bounds.y + SECTION_HEADER_HEIGHT + row as f32 * SEARCH_RESULT_ROW_HEIGHT,
+            bounds.width - 2.0,
+            SEARCH_RESULT_ROW_HEIGHT,
+        );
+        fill_dialogue_rect(
+            pixels,
+            WIDTH,
+            HEIGHT,
+            row_bounds.x as usize,
+            row_bounds.y as usize,
+            row_bounds.width as usize,
+            row_bounds.height as usize,
+            if row % 2 == 0 {
+                [255, 253, 246, 255]
+            } else {
+                [250, 244, 228, 255]
+            },
+        );
+        if let Some((icon_width, icon_height, icon)) =
+            super::inventory_item_icon(item_id, items, characters, icon_cache)
+        {
+            draw_scaled_item_icon(
+                pixels,
+                &icon,
+                icon_width as usize,
+                icon_height as usize,
+                row_bounds.x as usize + 2,
+                row_bounds.y as usize + 1,
+                18,
+            );
+        }
+        let label = state
+            .item_labels
+            .get(&item_id)
+            .cloned()
+            .unwrap_or_else(|| super::item_name(item_id, strings, name_cache));
+        let label = ui_foundation::ellipsize(font, &label, 9.5, row_bounds.width - 47.0);
+        super::draw_dialogue_text(
+            font,
+            pixels,
+            WIDTH,
+            HEIGHT,
+            &label,
+            row_bounds.x as i32 + 24,
+            row_bounds.y as i32 + 3,
+            9.5,
+            row_bounds.width as usize - 50,
+            15,
+            [54, 43, 25],
+        );
+        super::draw_dialogue_text(
+            font,
+            pixels,
+            WIDTH,
+            HEIGHT,
+            "+ Add",
+            (row_bounds.x + row_bounds.width - 34.0) as i32,
+            row_bounds.y as i32 + 3,
+            8.5,
+            31,
+            15,
+            [135, 93, 32],
+        );
+        fill_dialogue_rect(
+            pixels,
+            WIDTH,
+            HEIGHT,
+            row_bounds.x as usize,
+            row_bounds.y as usize + row_bounds.height as usize - 1,
+            row_bounds.width as usize,
+            1,
+            [235, 221, 190, 255],
+        );
+    }
+}
+
 fn draw_scaled_item_icon(
     canvas: &mut [u8],
     source: &[u8],
@@ -609,9 +918,11 @@ fn draw_scaled_item_icon(
     }
 }
 
-fn draw_scrollbar(pixels: &mut [u8], ui: &NxArchive, visible: &[i32], scroll: usize) {
-    let bounds = scrollbar_bounds();
-    let maximum = visible.len().saturating_sub(visible_rows());
+fn draw_scrollbar(pixels: &mut [u8], ui: &NxArchive, visible: &[i32], scroll: usize, list: UiRect) {
+    let bounds = scrollbar_bounds_for(list);
+    let maximum = visible
+        .len()
+        .saturating_sub((list.height / ROW_HEIGHT).floor() as usize);
     let mode = if maximum > 0 { "enabled" } else { "disabled" };
     let track_top = bounds.y + SCROLLBAR_ARROW_HEIGHT;
     let track_bottom = bounds.y + bounds.height - SCROLLBAR_ARROW_HEIGHT;
@@ -669,6 +980,15 @@ fn draw_scrollbar(pixels: &mut [u8], ui: &NxArchive, visible: &[i32], scroll: us
             thumb_y as i32,
         );
     }
+}
+
+fn scrollbar_bounds_for(list: UiRect) -> UiRect {
+    UiRect::new(
+        list.x + list.width - SCROLLBAR_WIDTH,
+        list.y,
+        SCROLLBAR_WIDTH,
+        list.height,
+    )
 }
 
 fn draw_button(

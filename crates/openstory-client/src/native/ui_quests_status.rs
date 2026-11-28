@@ -921,11 +921,8 @@ fn quest_helper_entries(
     inventory: Option<&openstory_protocol::InventorySnapshot>,
     item_name_cache: &mut HashMap<i32, Option<String>>,
 ) -> Vec<QuestHelperDisplayEntry> {
-    let mut started_by_id: HashMap<i16, &openstory_protocol::QuestEntry> = log
-        .started
-        .iter()
-        .map(|quest| (quest.id, quest))
-        .collect();
+    let mut started_by_id: HashMap<i16, &openstory_protocol::QuestEntry> =
+        log.started.iter().map(|quest| (quest.id, quest)).collect();
     order
         .iter()
         .filter_map(|quest_id| started_by_id.remove(quest_id))
@@ -1347,6 +1344,80 @@ fn fit_quest_portrait(
     Some((target_width, target_height, target))
 }
 
+const QUEST_FORFEIT_DIALOG_WIDTH: f32 = 316.0;
+const QUEST_FORFEIT_DIALOG_HEIGHT: f32 = 140.0;
+
+fn quest_forfeit_dialog_bounds() -> ui_foundation::UiRect {
+    ui_foundation::UiRect::new(
+        (QUEST_LOG_PANEL_WIDTH as f32 - QUEST_FORFEIT_DIALOG_WIDTH) * 0.5,
+        (QUEST_LOG_PANEL_HEIGHT as f32 - QUEST_FORFEIT_DIALOG_HEIGHT) * 0.5,
+        QUEST_FORFEIT_DIALOG_WIDTH,
+        QUEST_FORFEIT_DIALOG_HEIGHT,
+    )
+}
+
+fn quest_forfeit_close_button() -> ui_foundation::UiRect {
+    let dialog = quest_forfeit_dialog_bounds();
+    let close = ui_dialog::inventory_close(QUEST_FORFEIT_DIALOG_WIDTH);
+    ui_foundation::UiRect::new(
+        dialog.x + close.x,
+        dialog.y + close.y,
+        close.width,
+        close.height,
+    )
+}
+
+fn quest_forfeit_action_buttons() -> [ui_foundation::UiRect; 2] {
+    let dialog = quest_forfeit_dialog_bounds();
+    let button_y = dialog.y + QUEST_FORFEIT_DIALOG_HEIGHT - 24.0;
+    let first_x = dialog.x + (QUEST_FORFEIT_DIALOG_WIDTH - 47.0 * 2.0 - 6.0) * 0.5;
+    [
+        ui_foundation::UiRect::new(first_x, button_y, 47.0, 18.0),
+        ui_foundation::UiRect::new(first_x + 53.0, button_y, 47.0, 18.0),
+    ]
+}
+
+fn render_quest_forfeit_dialog(
+    pixels: &mut [u8],
+    font: &fontdue::Font,
+    ui_archive: &NxArchive,
+    quest_name: &str,
+) {
+    let bounds = quest_forfeit_dialog_bounds();
+    let close = quest_forfeit_close_button();
+    let mut dialog = NxDialog::new(
+        pixels,
+        QUEST_LOG_PANEL_WIDTH as usize,
+        QUEST_LOG_PANEL_HEIGHT as usize,
+        ui_archive,
+    );
+    let _ = dialog.inventory_window(bounds, font, "Forfeit Quest", close);
+    let [accept, cancel] = quest_forfeit_action_buttons();
+    let _ = dialog.button(
+        accept,
+        ui_dialog::NxButton::new("Basic.img/BtYes2", ui_dialog::ButtonState::Normal),
+    );
+    let _ = dialog.button(
+        cancel,
+        ui_dialog::NxButton::new("Basic.img/BtCancel2", ui_dialog::ButtonState::Normal),
+    );
+    drop(dialog);
+
+    draw_dialogue_text(
+        font,
+        pixels,
+        QUEST_LOG_PANEL_WIDTH as usize,
+        QUEST_LOG_PANEL_HEIGHT as usize,
+        &format!("Forfeit quest {quest_name}?"),
+        bounds.x as i32 + 20,
+        bounds.y as i32 + 48,
+        12.0,
+        bounds.width as usize - 40,
+        48,
+        [55, 50, 42],
+    );
+}
+
 fn render_quest_log_panel(
     font: &fontdue::Font,
     log: &openstory_protocol::QuestLog,
@@ -1394,12 +1465,12 @@ fn render_quest_log_panel(
     let _ = dialog.authored_window(
         &[("UIWindow.img/Quest/backgrnd", 0, 0)],
         ui_foundation::QUEST_LIST_CLOSE_BUTTON,
-        );
+    );
     dialog.replace_title(
-            font,
+        font,
         "Quest Log",
         ui_foundation::UiRect::new(7.0, 5.0, 183.0, 12.0),
-        );
+    );
     let active = tab == QuestLogTab::Active;
     let available = tab == QuestLogTab::Available;
     let completed = tab == QuestLogTab::Completed;
@@ -1634,7 +1705,7 @@ fn render_quest_log_panel(
                 let portrait_center_x = DETAIL_X as f32 + 200.0 + PORTRAIT_BOX as f32 / 2.0;
                 let label_x = (portrait_center_x
                     - ui_foundation::measure_text(font, &name, 9.0) / 2.0)
-                .round() as i32;
+                    .round() as i32;
                 draw_dialogue_text(
                     font,
                     &mut pixels,
@@ -1858,9 +1929,8 @@ fn render_quest_log_panel(
             }
         }
         if detail_scroll_max > 0 {
-            let max_thumb_offset = body_height.saturating_sub(
-                QUEST_SCROLLBAR_ARROW_HEIGHT * 2 + QUEST_SCROLLBAR_THUMB_HEIGHT,
-            );
+            let max_thumb_offset = body_height
+                .saturating_sub(QUEST_SCROLLBAR_ARROW_HEIGHT * 2 + QUEST_SCROLLBAR_THUMB_HEIGHT);
             let thumb_offset = (max_thumb_offset as f32 * detail_scroll as f32
                 / detail_scroll_max as f32)
                 .round() as usize;
@@ -1922,48 +1992,9 @@ fn render_quest_log_panel(
         let _ = NxDialog::new(&mut pixels, WIDTH, HEIGHT, ui_archive).buttons(&buttons);
     }
     if let Some(id) = confirmation {
-        let overlay_x = ((WIDTH - 266) / 2) as i32;
-        let overlay_y = 140;
-        let _ = composite_nx_ui_bitmap(
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            ui_archive,
-            "UIWindow.img/Quest/backgrnd5",
-            overlay_x,
-            overlay_y,
-        );
-        draw_dialogue_text(
-            font,
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            &format!("Forfeit quest #{id}?"),
-            overlay_x + 24,
-            overlay_y + 28,
-            12.0,
-            218,
-            30,
-            [55, 50, 42],
-        );
-        let _ = composite_nx_ui_bitmap(
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            ui_archive,
-            "UIWindow.img/Quest/BtOK/normal/0",
-            overlay_x + 44,
-            overlay_y + 79,
-        );
-        let _ = composite_nx_ui_bitmap(
-            &mut pixels,
-            WIDTH,
-            HEIGHT,
-            ui_archive,
-            "UIWindow.img/Quest/BtNo/normal/0",
-            overlay_x + 147,
-            overlay_y + 79,
-        );
+        let quest_name =
+            quest_info_text(archive, id, "name").unwrap_or_else(|| "this quest".to_owned());
+        render_quest_forfeit_dialog(&mut pixels, font, ui_archive, &quest_name);
     }
     (pixels, detail_scroll_max)
 }
@@ -2547,7 +2578,6 @@ fn build_key_config_actions(
     inventory: Option<&openstory_protocol::InventorySnapshot>,
     skills: &HashMap<i32, openstory_protocol::SkillEntry>,
     server_keymap: Option<&[openstory_protocol::KeyBinding]>,
-    macros: &[openstory_protocol::SkillMacro],
     string_archive: &NxArchive,
     item_name_cache: &mut HashMap<i32, Option<String>>,
 ) -> Vec<KeyConfigAction> {
@@ -2594,19 +2624,7 @@ fn build_key_config_actions(
                         });
                 }
                 (8, macro_index) => {
-                    let label = usize::try_from(macro_index)
-                        .ok()
-                        .and_then(|index| macros.get(index).map(|macro_entry| (index, macro_entry)))
-                        .map_or_else(
-                            || format!("Macro #{macro_index} (unavailable)"),
-                            |(index, macro_entry)| {
-                                if macro_entry.name.is_empty() {
-                                    format!("Macro {}", index + 1)
-                                } else {
-                                    format!("Macro: {}", macro_entry.name)
-                                }
-                            },
-                        );
+                    let label = format!("Macro #{macro_index} (unavailable)");
                     macro_actions.entry(macro_index).or_insert(KeyConfigAction {
                         label,
                         kind: 8,
@@ -2660,16 +2678,12 @@ fn build_key_config_actions(
 
     actions.extend(skill_actions.into_values());
     actions.extend(item_actions.into_values());
-    for (index, macro_entry) in macros.iter().enumerate() {
+    for (index, name) in skill_macros::NAMES.iter().enumerate() {
         let action = index as i32;
         macro_actions.insert(
             action,
             KeyConfigAction {
-                label: if macro_entry.name.is_empty() {
-                    format!("Macro {}", index + 1)
-                } else {
-                    format!("Macro: {}", macro_entry.name)
-                },
+                label: format!("Macro: {name}"),
                 kind: 8,
                 action,
                 assignable: true,

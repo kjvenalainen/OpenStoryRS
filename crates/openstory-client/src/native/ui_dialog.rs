@@ -135,8 +135,18 @@ impl<'a> NxDialog<'a> {
         title: &str,
         title_bounds: UiRect,
     ) -> Result<(), String> {
+        self.window_chrome_with_footer(bounds, font, title, title_bounds, 30)
+    }
+
+    pub(super) fn window_chrome_with_footer(
+        &mut self,
+        bounds: UiRect,
+        font: &fontdue::Font,
+        title: &str,
+        title_bounds: UiRect,
+        footer: usize,
+    ) -> Result<(), String> {
         const HEADER: usize = 30;
-        const FOOTER: usize = 30;
         let height = bounds.height as usize;
         if height < HEADER {
             return Err("window is too short for its header".to_owned());
@@ -149,7 +159,7 @@ impl<'a> NxDialog<'a> {
             124..126,
             |y| match y {
                 y if y < HEADER => y,
-                y if y >= height - FOOTER => 304 - (height - y),
+                y if y >= height.saturating_sub(footer) => 304 - (height - y),
                 y => 266 + y % 2,
             },
         )?;

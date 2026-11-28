@@ -86,6 +86,7 @@ fn render_key_config_panel(
     quickslot_capture: Option<usize>,
     first_row: usize,
     actions: &[KeyConfigAction],
+    active_skill_ids: &HashSet<i32>,
     icon_cache: &mut HashMap<i32, Option<(u32, u32, Arc<[u8]>)>>,
     counts: &HashMap<i32, u32>,
 ) -> Vec<u8> {
@@ -101,6 +102,7 @@ fn render_key_config_panel(
         quickslot_capture,
         first_row,
         actions,
+        active_skill_ids,
         icon_cache,
         counts,
     )
@@ -362,9 +364,11 @@ fn render_skill_book_panel(
     book_icon: Option<(u32, u32, Arc<[u8]>)>,
     skill_points: u16,
     skills: &HashMap<i32, openstory_protocol::SkillEntry>,
+    active_skill_ids: &HashSet<i32>,
     selected_tab: u8,
     visible_tabs: u8,
     scroll_row: usize,
+    macro_panel_open: bool,
 ) -> Vec<u8> {
     const WIDTH: usize = SKILL_BOOK_PANEL_WIDTH as usize;
     const HEIGHT: usize = SKILL_BOOK_PANEL_HEIGHT as usize;
@@ -491,6 +495,9 @@ fn render_skill_book_panel(
                 );
             }
         }
+        if active_skill_ids.contains(&skill.id) {
+            draw_auto_buff_sparkle(&mut pixels, WIDTH, HEIGHT, 41, y + 33);
+        }
         let name = ui_foundation::ellipsize(font, &skill.name, 11.0, 99.0);
         let text_color = if skill_disabled {
             [110, 110, 110]
@@ -581,7 +588,7 @@ fn render_skill_book_panel(
         [30, 30, 30],
     );
     let macro_button = ui_foundation::SKILL_MACRO_BUTTON;
-    let _ = composite_nx_ui_bitmap(
+    let macro_button_drawn = composite_nx_ui_bitmap(
         &mut pixels,
         WIDTH,
         HEIGHT,
@@ -590,6 +597,17 @@ fn render_skill_book_panel(
         macro_button.x as i32,
         macro_button.y as i32,
     );
+    if macro_panel_open && macro_button_drawn.is_ok() {
+        // Mirror only the arrow on the 48×18 NX button, keeping the label and bevel intact.
+        for y in 5..14 {
+            let row = ((macro_button.y as usize + y) * WIDTH + macro_button.x as usize) * 4;
+            for (left, right) in [(38, 44), (39, 43), (40, 42)] {
+                for channel in 0..4 {
+                    pixels.swap(row + left * 4 + channel, row + right * 4 + channel);
+                }
+            }
+        }
+    }
     pixels
 }
 

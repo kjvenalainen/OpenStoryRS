@@ -214,10 +214,12 @@ impl ClientApp {
             | openstory_protocol::OPCODE_CS_CASH_GACHAPON_RESULT => {
                 match openstory_protocol::parse_server_feedback(packet) {
                     Ok(openstory_protocol::ServerFeedback::WeekEventMessage(mut message)) => {
-                        if !message.starts_with("[MapleTip]") {
-                            message = format!("[Notice] {message}");
+                        if !self.update_visited_towns_from_message(&message) {
+                            if !message.starts_with("[MapleTip]") {
+                                message = format!("[Notice] {message}");
+                            }
+                            self.push_chat_line(message, [255, 255, 0]);
                         }
-                        self.push_chat_line(message, [255, 255, 0]);
                     }
                     Ok(openstory_protocol::ServerFeedback::BlockedMap(code)) => {
                         let message = match code {
@@ -698,6 +700,7 @@ impl ClientApp {
                             macros[index] = macro_entry;
                         }
                         self.skill_macros = macros;
+                        self.refresh_skill_macro_texture();
                         self.key_config_actions_dirty = true;
                         self.refresh_key_config_texture();
                         self.refresh_quickslots_texture();
@@ -743,6 +746,9 @@ impl ClientApp {
             openstory_protocol::OPCODE_CHAT_RECEIVED => {
                 match openstory_protocol::parse_chat_received(packet) {
                     Ok(chat) => {
+                        if self.update_visited_towns_from_message(&chat.message) {
+                            return;
+                        }
                         let message = self.unfurl_chat_mob_references(&chat.message);
                         let name = self
                             .active_character
@@ -1309,6 +1315,14 @@ impl ClientApp {
                                 character.stats.job,
                                 character.stats.map_id
                             );
+                            if std::env::var_os("OPENSTORY_DEBUG_CHARACTER_LOOK").is_some() {
+                                eprintln!(
+                                    "    look equips={:?}, masked_equips={:?}, weapon_sticker_id={}",
+                                    character.look.equips,
+                                    character.look.masked_equips,
+                                    character.look.weapon_sticker_id
+                                );
+                            }
                         }
                         self.show_character_selection(characters);
                     }
@@ -1509,6 +1523,10 @@ impl ClientApp {
                                         })
                                         .cloned()
                                 });
+                        let inventory_snapshot_present = self.inventory.is_some();
+                        if inventory_snapshot_present {
+                            self.prepare_inventory_sell_marks_for_update(&update);
+                        }
                         if self.inventory_pending_move.is_some_and(
                             |(inventory_type, source, destination, _)| {
                                 inventory_update_touches_move(
@@ -1560,6 +1578,9 @@ impl ClientApp {
                         }
                         if refresh_inventory_drag_icon {
                             self.inventory_drag_refresh_pending = true;
+                        }
+                        if inventory_snapshot_present {
+                            self.reconcile_inventory_sell_marks();
                         }
                     }
                     Err(error) => eprintln!("OpenStory: invalid inventory update: {error}"),
@@ -1641,6 +1662,7 @@ impl ClientApp {
                         monster_book,
                     }) => {
                         self.scriptable_npc_ids.clear();
+                        self.marked_inventory_items.clear();
                         self.npc_shop = None;
                         self.npc_shop_texture = None;
                         self.storage = None;
@@ -2383,15 +2405,34 @@ impl ClientApp {
                     Ok(shop) => {
                         self.pending_npc_talk = None;
                         self.npc_dialogue = None;
+                        let auto_sell_items = self
+                            .inventory
+                            .as_ref()
+                            .map(|inventory| {
+                                npc_shop_auto_sell_items(inventory, &self.marked_inventory_items)
+                            })
+                            .unwrap_or_default();
                         let recharge_slots = self
                             .inventory
                             .as_ref()
-                            .map(|inventory| npc_shop_auto_recharge_slots(&shop, inventory))
+                            .map(|inventory| {
+                                npc_shop_auto_recharge_slots(&shop, inventory)
+                                    .into_iter()
+                                    .filter(|slot| {
+                                        !self.marked_inventory_items.iter().any(|mark| {
+                                            mark.inventory_type
+                                                == openstory_protocol::InventoryType::Use
+                                                && mark.slot == *slot as u16
+                                        })
+                                    })
+                                    .collect::<Vec<_>>()
+                            })
                             .unwrap_or_default();
                         let mut shop_ui = NpcShopUi::new(shop);
                         shop_ui.auto_recharge_slots.extend(recharge_slots);
+                        shop_ui.auto_sell_items.extend(auto_sell_items);
                         self.npc_shop = Some(shop_ui);
-                        self.start_next_npc_shop_auto_recharge();
+                        self.start_next_npc_shop_auto_sell();
                         self.refresh_npc_shop_texture();
                         self.update_npc_shop_hover();
                     }
@@ -2403,8 +2444,10 @@ impl ClientApp {
                     Ok(result) => {
                         let mut auto_recharge_next = false;
                         let mut auto_recharge_notice = false;
+                        let mut auto_sold_item = None;
                         if let Some(shop) = self.npc_shop.as_mut() {
                             shop.pending = false;
+                            auto_sold_item = shop.auto_sell_in_flight.take();
                             if shop.auto_recharge_in_flight {
                                 shop.auto_recharge_in_flight = false;
                                 if result == 8 {
@@ -2418,6 +2461,12 @@ impl ClientApp {
                                 }
                             }
                         }
+                        if let Some(mark) = auto_sold_item
+                            && result == 0
+                        {
+                            self.marked_inventory_items.remove(&mark);
+                            self.refresh_inventory_texture();
+                        }
                         if auto_recharge_notice {
                             self.push_chat_line(
                                 "Throwing stars were automatically recharged.".to_owned(),
@@ -2428,6 +2477,7 @@ impl ClientApp {
                             0 | 8 => {}
                             2 => self.show_server_notice_popup("You don't have enough mesos."),
                             3 => self.show_server_notice_popup("Your inventory is full."),
+                            5 if auto_sold_item.is_some() => {}
                             5 => self.show_server_notice_popup("You can't sell that item."),
                             9 => self.show_server_notice_popup(
                                 "You don't have enough mesos to recharge.",
@@ -2436,7 +2486,9 @@ impl ClientApp {
                                 "Shop transaction failed ({result})."
                             )),
                         }
-                        if auto_recharge_next {
+                        if auto_sold_item.is_some() {
+                            self.start_next_npc_shop_auto_sell();
+                        } else if auto_recharge_next {
                             self.start_next_npc_shop_auto_recharge();
                         }
                         self.refresh_npc_shop_texture();
@@ -2941,6 +2993,18 @@ impl ClientApp {
     fn apply_server_message(&mut self, message: openstory_protocol::ServerMessage) {
         use openstory_protocol::{ServerMessage as Message, ServerMessageStyle as Style};
 
+        let is_visited_town_reply = match &message {
+            Message::Notice { message, .. }
+            | Message::ChatLine { message, .. }
+            | Message::ScrollNotice { message } => self.update_visited_towns_from_message(message),
+            Message::NpcBroadcast { .. }
+            | Message::ItemMegaphone { .. }
+            | Message::TripleMegaphone { .. } => false,
+        };
+        if is_visited_town_reply {
+            return;
+        }
+
         match message {
             Message::Notice { message, popup } => {
                 if popup {
@@ -3102,6 +3166,7 @@ impl ClientApp {
         self.mts_last_event = None;
         self.buddy_capacity = snapshot.buddy_capacity;
         self.inventory = Some(snapshot.inventory.clone());
+        self.reconcile_inventory_sell_marks();
         self.inventory_pending_move = None;
         self.teleport_rock_locations = snapshot.teleport_rock.clone();
         self.skills = snapshot
@@ -3187,9 +3252,13 @@ impl ClientApp {
                 self.server_ui_disabled = false;
                 self.pending_login_packet = None;
                 self.session = Some(session::connect(self.server_address.clone()));
+                self.auto_buff_skills.clear();
+                self.auto_buff_skill_entries.clear();
+                self.auto_buff_retry_at.clear();
                 self.active_character = None;
                 self.taming_mount_stats = None;
                 self.inventory = None;
+                self.marked_inventory_items.clear();
                 self.inventory_pending_move = None;
                 self.current_field = None;
                 self.session_energy = None;

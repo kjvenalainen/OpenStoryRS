@@ -131,10 +131,11 @@ provides a key map; cleared or rebound keys never fall back to hard-coded shortc
 The default Z key picks up nearby items. The default U and V keys open Alliance and Guild BBS. Pet equipment and Events are also
 assignable from the tray. The client extensions use menu action IDs 43–45 for Guild BBS,
 Alliance, and pet equipment; existing v83 action IDs are unchanged. Quick-slot edits are saved with OK and use
-the legacy `QuickSlotKeys` setting and override the server's login-time layout. Skill macro
-editor opens from the Skills window. It edits the three server-backed macros, their shout
-setting, and ordered learned-skill slots; a bound macro key shouts its name when enabled and
-queues its skills through the normal skill-use path. The Quick Slots action opens the
+the legacy `QuickSlotKeys` setting and override the server's login-time layout. The Macro
+button opens the Sword, Book, and Shield rows on the right of the Skills window. Drag learned
+skills from the book into the three slots in each row, or right-click a slot to clear it.
+Changes save to the server as you edit. Click a macro icon or use its binding to cast the
+assigned skills from left to right. The Quick Slots action opens the
 eight-slot bar above the HUD; it shows bound skill, item, cash, macro, and action icons with
 the configured key labels. Bound stackable items show their total quantity across matching
 inventory stacks. Click a filled slot to run its binding, or drag a Use, Setup, or
@@ -224,8 +225,9 @@ their respective lists. Double-click an equipment row or select it and use the m
 button to buy or sell one piece. Double-clicking a stackable offer or selling a stack
 opens a quantity prompt when multiple units are available. Recharge is available for
 supported projectile stacks below their charge limit. Item and currency changes remain
-server-authoritative, and transaction replies unlock the controls and show failures. The
-bottom HUD uses the stock v83 `StatusBar.img` background, gauge, and toolbar sprites, with
+server-authoritative, and transaction replies unlock the controls and show failures.
+Right-click a bag item to mark it with a red X; marked items are automatically sold the next
+time an NPC shop opens. The bottom HUD uses the stock v83 `StatusBar.img` background, gauge, and toolbar sprites, with
 live HP, MP, and EXP fills plus character level, name, job, and resource values. HP updates
 display a two-second bar, and positive HP deltas float the legacy blue healing digits from
 `Effect.nx` above the character. The native toolbar opens Status, Use/Equip inventory,
@@ -236,7 +238,8 @@ cancels those statuses. `DAMAGE_MONSTER` packets float the legacy digits
 from `Effect.nx` above the mob with a 1.5-second rise and fade. Controlled mobs use the
 shared foothold physics and v83 `MOVE_MONSTER` updates, while remote movement remains
 server-authoritative. Movable controlled mobs pursue the player who lands a positive hit,
-then stop nearby while preserving their normal hit reaction. In a field, press Enter to open
+while the server’s aggressive control mode keeps them pursuing the controlling player.
+They stop nearby while preserving their normal hit reaction. In a field, press Enter to open
 the public chat composer, type a message, and press Enter to send. After sending, gameplay
 keys control the character again while the chat panel may remain open; press Enter to type
 another message. Escape closes the panel. Server chat broadcasts appear in a scrolling HUD

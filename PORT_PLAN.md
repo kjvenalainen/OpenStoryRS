@@ -350,9 +350,13 @@ and sends the matching selection index.
   clears that preview. World-map links show their NX overlay on
   hover and open the linked region when clicked. The legacy `UIWorldMap.cpp` creates
   `BtAutoFly_1` and `BtNaviRegister` controls, but `button_pressed` has no actions for either
-  ID, and the matching Cosmic source has no world-map travel/register handler or packet.
-  Rust therefore implements destination selection and the NX route preview locally; actual
-  travel still uses the normal in-game transport interactions. Monster
+  ID, and the matching Cosmic source has no world-map travel/register packet. Rust adds a
+  `World View` button that follows `parentMap` to the overview. Opening the map sends a hidden
+  `@towns` request and uses the server's response as the authority for visited-town markers; the
+  request and its multi-line reply stay out of chat. A successful hidden `@town <map ID>` response
+  adds its destination to the current marker set. Double-clicking a visited town opens a
+  confirmation; accepting sends the travel request, while the server enforces town, visit-history,
+  death, and map restrictions. Monster
   Book packet data drives the NX-backed collection pages, category filters, card details,
   name search, and v83 set-effect page with collected-card score and progress. Monster
   details now read reward item IDs from `String.nx/MonsterBook.img`, resolve item icons from

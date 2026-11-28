@@ -1,5 +1,8 @@
 use super::*;
 
+const TOWN_QUERY_TIMEOUT: Duration = Duration::from_secs(2);
+const TOWN_QUERY_LATE_REPLY_WINDOW: Duration = Duration::from_secs(10);
+
 impl ClientApp {
     pub(super) fn open_world_map(&mut self) {
         let Some((map_id, _)) = self.current_field else {
@@ -14,13 +17,139 @@ impl ClientApp {
         self.world_map.open = true;
         self.world_map.search_open = true;
         self.world_map.search_query.clear();
-        self.world_map.search_scroll = 0;
+        self.world_map.schedule_search();
         self.world_map.search_focused = false;
         self.world_map.hovered_link = None;
         self.world_map.hovered_marker = None;
         self.world_map.map_id = Some(map_id);
         self.world_map.map_path = None;
+        self.world_map.visited_towns.clear();
+        self.world_map.town_query_pending = false;
+        self.world_map.town_query_sent_at = None;
+        self.world_map.town_query_received_reply = false;
+        self.world_map.town_query_timed_out = false;
+        self.world_map.last_marker_click = None;
         self.refresh_world_map_texture();
+        self.request_visited_towns();
+    }
+
+    fn request_visited_towns(&mut self) {
+        if !self.channel_connected {
+            return;
+        }
+        let Some(session) = self.session.as_ref() else {
+            return;
+        };
+        let packet = match openstory_protocol::general_chat_packet("@towns", false) {
+            Ok(packet) => packet,
+            Err(error) => {
+                eprintln!("OpenStoryRS: could not encode visited-town query: {error}");
+                return;
+            }
+        };
+        self.world_map.town_query_pending = true;
+        self.world_map.town_query_sent_at = Some(Instant::now());
+        self.world_map.town_query_received_reply = false;
+        self.world_map.town_query_timed_out = false;
+        if let Err(error) = session.send_packet(packet) {
+            eprintln!("OpenStoryRS: could not request visited towns: {error}");
+            self.world_map.town_query_pending = false;
+            self.world_map.town_query_sent_at = None;
+            self.channel_connected = false;
+        }
+    }
+
+    pub(super) fn update_visited_towns_from_message(&mut self, message: &str) -> bool {
+        let normalized = message.trim().to_lowercase();
+        if normalized == "@towns" {
+            return true;
+        }
+        if let Some((map_id, requested_at)) = self.world_map.pending_town_travel {
+            if normalized.starts_with("traveling to ")
+                && Instant::now().saturating_duration_since(requested_at) <= Duration::from_secs(10)
+            {
+                self.world_map.visited_towns.insert(map_id);
+                self.world_map.pending_town_travel = None;
+                if self.world_map.open {
+                    self.refresh_world_map_texture();
+                }
+                return true;
+            }
+            if Instant::now().saturating_duration_since(requested_at) > Duration::from_secs(10) {
+                self.world_map.pending_town_travel = None;
+            }
+        }
+        let late_query_reply_allowed = self.world_map.town_query_timed_out
+            && self.world_map.town_query_sent_at.is_some_and(|sent_at| {
+                Instant::now().saturating_duration_since(sent_at) <= TOWN_QUERY_LATE_REPLY_WINDOW
+            });
+        if !self.world_map.town_query_pending && !late_query_reply_allowed {
+            self.world_map.town_query_timed_out = false;
+            self.world_map.town_query_sent_at = None;
+            return false;
+        }
+        if normalized.contains("you have not visited any towns yet") {
+            self.world_map.visited_towns.clear();
+            self.world_map.town_query_pending = false;
+            self.world_map.town_query_sent_at = None;
+            self.world_map.town_query_received_reply = true;
+            self.world_map.town_query_timed_out = false;
+            self.refresh_world_map_texture();
+            return true;
+        }
+        let Some(catalog) = self.world_map.search_catalog.as_ref() else {
+            return false;
+        };
+        let Some(visited_towns) = world_map::visited_town_ids_from_reply(catalog, message) else {
+            return false;
+        };
+        if normalized.starts_with("visited towns") {
+            self.world_map.visited_towns.clear();
+        }
+        self.world_map.visited_towns.extend(visited_towns);
+        self.world_map.town_query_pending = true;
+        self.world_map.town_query_timed_out = false;
+        self.world_map.town_query_sent_at = Some(Instant::now());
+        self.world_map.town_query_received_reply = true;
+        self.refresh_world_map_texture();
+        true
+    }
+
+    pub(super) fn teleport_to_town(&mut self, map_id: i32) {
+        self.world_map.pending_town_travel = None;
+        if !self.channel_connected {
+            self.show_server_notice_popup("You are not connected to the game server.");
+            return;
+        }
+        let Some(session) = self.session.as_ref() else {
+            self.show_server_notice_popup("You are not connected to the game server.");
+            return;
+        };
+        let command = format!("@town {map_id}");
+        let packet = match openstory_protocol::general_chat_packet(&command, false) {
+            Ok(packet) => packet,
+            Err(error) => {
+                eprintln!("OpenStoryRS: could not encode town teleport: {error}");
+                self.show_server_notice_popup("Could not request town travel.");
+                return;
+            }
+        };
+        if let Err(error) = session.send_packet(packet) {
+            eprintln!("OpenStoryRS: could not request town travel: {error}");
+            self.channel_connected = false;
+            self.show_server_notice_popup("Could not request town travel.");
+        } else {
+            self.world_map.pending_town_travel = Some((map_id, Instant::now()));
+        }
+    }
+
+    fn confirm_town_teleport(&mut self, map_id: i32, title: &str) {
+        self.show_server_notice_popup(&format!(
+            "Travel to {title}? Click OK or press Enter to confirm. Press Esc to cancel."
+        ));
+        if self.server_notice_popup.is_some() {
+            self.pending_world_map_teleport = Some(map_id);
+        }
     }
 
     pub(super) fn channel_switch_channel_count(&self) -> usize {
@@ -939,6 +1068,7 @@ impl ClientApp {
             self.world_map.map_path = None;
             self.world_map.hovered_link = None;
             self.world_map.hovered_marker = None;
+            self.world_map.last_marker_click = None;
         }
         let panel = match world_map::render(
             &self.map_archive,
@@ -947,12 +1077,15 @@ impl ClientApp {
             self.world_map.map_path.as_deref(),
             self.world_map.search_open,
             &self.world_map.search_query,
+            &self.world_map.search_applied_query,
+            self.world_map.search_due_at.is_some(),
             self.world_map.search_focused,
             self.world_map.search_catalog.as_ref(),
             self.world_map.search_scroll,
             self.world_map.hovered_link,
             self.world_map.hovered_marker,
             self.world_map.selected_route_map_id,
+            &self.world_map.visited_towns,
             &self.string_archive,
             &self.font,
         ) {
@@ -982,6 +1115,14 @@ impl ClientApp {
             && cursor.y >= self.world_map.y
             && cursor.x < self.world_map.x + self.world_map.width as f32
             && cursor.y < self.world_map.y + self.world_map.height as f32;
+        let clicked_marker = self
+            .world_map
+            .markers
+            .iter()
+            .position(|marker| marker.bounds.contains(cursor.x, cursor.y));
+        if clicked_marker.is_none() {
+            self.world_map.last_marker_click = None;
+        }
         let mut refresh = false;
         if self
             .world_map
@@ -993,89 +1134,162 @@ impl ClientApp {
             self.world_map.hovered_link = None;
             self.world_map.hovered_marker = None;
             return true;
-        }
-        if self
+        } else if self
             .world_map
-            .search_close
+            .zoom_out
             .is_some_and(|bounds| bounds.contains(cursor.x, cursor.y))
+        {
+            if let Some(parent) = self
+                .world_map
+                .zoom_out_target
+                .clone()
+                .filter(|parent| !parent.is_empty())
+            {
+                self.world_map.map_path = Some(parent);
+                self.world_map.selected_route_map_id = None;
+                self.world_map.search_focused = false;
+                self.world_map.hovered_link = None;
+                self.world_map.hovered_marker = None;
+                refresh = true;
+            }
+        }
+        if !refresh
+            && self
+                .world_map
+                .search_close
+                .is_some_and(|bounds| bounds.contains(cursor.x, cursor.y))
         {
             self.world_map.search_open = false;
             self.world_map.search_focused = false;
             self.world_map.hovered_link = None;
             self.world_map.hovered_marker = None;
             refresh = true;
-        } else if self
-            .world_map
-            .search_toggle
-            .is_some_and(|bounds| bounds.contains(cursor.x, cursor.y))
+        } else if !refresh
+            && self
+                .world_map
+                .search_toggle
+                .is_some_and(|bounds| bounds.contains(cursor.x, cursor.y))
         {
             self.world_map.search_open = !self.world_map.search_open;
             self.world_map.search_focused = false;
             self.world_map.hovered_link = None;
             self.world_map.hovered_marker = None;
             refresh = true;
-        } else if self
-            .world_map
-            .search_input
-            .is_some_and(|bounds| bounds.contains(cursor.x, cursor.y))
+        } else if !refresh
+            && self
+                .world_map
+                .search_input
+                .is_some_and(|bounds| bounds.contains(cursor.x, cursor.y))
         {
             if !self.world_map.search_focused {
                 self.world_map.search_focused = true;
                 refresh = true;
             }
-        } else if let Some(hit) = self
-            .world_map
-            .search_hits
-            .iter()
-            .find(|hit| hit.bounds.contains(cursor.x, cursor.y))
-            .cloned()
+        } else if !refresh
+            && let Some(hit) = self
+                .world_map
+                .search_hits
+                .iter()
+                .find(|hit| hit.bounds.contains(cursor.x, cursor.y))
+                .cloned()
         {
             self.world_map.map_path = Some(hit.world_map);
             self.world_map.selected_route_map_id = Some(hit.map_id);
             self.world_map.search_focused = false;
             self.world_map.hovered_link = None;
             self.world_map.hovered_marker = None;
+            self.world_map.last_marker_click = None;
             refresh = true;
-        } else if self
-            .world_map
-            .search_submit
-            .is_some_and(|bounds| bounds.contains(cursor.x, cursor.y))
+        } else if !refresh
+            && self
+                .world_map
+                .search_submit
+                .is_some_and(|bounds| bounds.contains(cursor.x, cursor.y))
         {
             if self.world_map.search_focused {
                 self.world_map.search_focused = false;
                 refresh = true;
             }
-        } else if let Some(target) = self
-            .world_map
-            .links
-            .iter()
-            .find(|link| link.bounds.contains(cursor.x, cursor.y))
-            .map(|link| link.target.clone())
+        } else if !refresh
+            && let Some(target) = self
+                .world_map
+                .links
+                .iter()
+                .find(|link| link.bounds.contains(cursor.x, cursor.y))
+                .map(|link| link.target.clone())
         {
             self.world_map.map_path = Some(target);
             self.world_map.search_focused = false;
             self.world_map.hovered_link = None;
             self.world_map.hovered_marker = None;
+            self.world_map.last_marker_click = None;
             refresh = true;
-        } else if let Some((map_id, clears_selected_route)) = self
-            .world_map
-            .markers
-            .iter()
-            .find(|marker| marker.bounds.contains(cursor.x, cursor.y))
-            .map(|marker| {
-                (
-                    marker.map_id,
-                    self.world_map
-                        .selected_route_map_id
-                        .is_some_and(|selected| marker.map_ids.contains(&selected)),
-                )
-            })
-        {
-            self.world_map.selected_route_map_id = (!clears_selected_route).then_some(map_id);
-            self.world_map.search_focused = false;
-            self.world_map.hovered_marker = None;
-            refresh = true;
-        } else {
+        } else if !refresh && let Some(marker_index) = clicked_marker {
+            const DOUBLE_CLICK_INTERVAL: Duration = Duration::from_millis(500);
+            let now = Instant::now();
+            let is_double_click = self
+                .world_map
+                .last_marker_click
+                .is_some_and(|(previous, at)| {
+                    previous == marker_index
+                        && now.saturating_duration_since(at) <= DOUBLE_CLICK_INTERVAL
+                });
+            let marker = self.world_map.markers[marker_index].clone();
+            if is_double_click {
+                self.world_map.last_marker_click = None;
+                self.world_map.search_focused = false;
+                let query_idle = self.world_map.town_query_pending
+                    && self
+                        .world_map
+                        .town_query_sent_at
+                        .is_some_and(|at| now.saturating_duration_since(at) >= TOWN_QUERY_TIMEOUT);
+                if query_idle {
+                    self.world_map.town_query_pending = false;
+                    self.world_map.town_query_timed_out = !self.world_map.town_query_received_reply;
+                    if !self.world_map.town_query_timed_out {
+                        self.world_map.town_query_sent_at = None;
+                    }
+                }
+                let query_expired = self.world_map.town_query_timed_out;
+                if !self.channel_connected {
+                    self.show_server_notice_popup(
+                        "Connect to the game server to check visited towns.",
+                    );
+                } else if self.world_map.town_query_pending {
+                    self.show_server_notice_popup(
+                        "Visited towns are still loading. Please try again.",
+                    );
+                } else if !marker.is_town {
+                    self.show_server_notice_popup("This location is not a town destination.");
+                } else if let Some(map_id) = marker
+                    .map_ids
+                    .iter()
+                    .find(|map_id| self.world_map.visited_towns.contains(map_id))
+                {
+                    self.confirm_town_teleport(*map_id, &marker.title);
+                } else if query_expired && let Some(map_id) = marker.map_ids.first() {
+                    // The server validates both town status and visit history if its list
+                    // reply was lost, so the first click remains responsive after timeout.
+                    self.confirm_town_teleport(*map_id, &marker.title);
+                } else {
+                    self.show_server_notice_popup(&format!(
+                        "You have not visited {}.",
+                        marker.title
+                    ));
+                }
+            } else {
+                self.world_map.last_marker_click = Some((marker_index, now));
+                let clears_selected_route = self
+                    .world_map
+                    .selected_route_map_id
+                    .is_some_and(|selected| marker.map_ids.contains(&selected));
+                self.world_map.selected_route_map_id =
+                    (!clears_selected_route).then_some(marker.map_id);
+                self.world_map.search_focused = false;
+                self.world_map.hovered_marker = None;
+                refresh = true;
+            }
+        } else if !refresh {
             if self.world_map.search_focused {
                 self.world_map.search_focused = false;
                 refresh = true;
@@ -1105,6 +1319,7 @@ impl ClientApp {
             self.world_map.map_path = Some(parent);
             self.world_map.hovered_link = None;
             self.world_map.hovered_marker = None;
+            self.world_map.last_marker_click = None;
             self.refresh_world_map_texture();
         } else {
             self.world_map.open = false;
@@ -1115,13 +1330,17 @@ impl ClientApp {
         if !self.world_map.open || !self.world_map.search_focused {
             return;
         }
+        let previous_query = self.world_map.search_query.clone();
         for character in text.chars() {
-            if !character.is_control() && self.world_map.search_query.chars().count() < 8 {
+            if !character.is_control() && self.world_map.search_query.chars().count() < 48 {
                 self.world_map.search_query.push(character);
             }
         }
-        self.world_map.search_scroll = 0;
-        self.world_map.hovered_marker = None;
+        if self.world_map.search_query != previous_query {
+            self.world_map.schedule_search();
+            self.world_map.hovered_marker = None;
+            self.world_map.last_marker_click = None;
+        }
         self.refresh_world_map_texture();
     }
 
@@ -1129,9 +1348,59 @@ impl ClientApp {
         if !self.world_map.open || !self.world_map.search_focused {
             return;
         }
+        let previous_query = self.world_map.search_query.clone();
         self.world_map.search_query.pop();
+        if self.world_map.search_query != previous_query {
+            self.world_map.schedule_search();
+            self.world_map.hovered_marker = None;
+            self.world_map.last_marker_click = None;
+        }
+        self.refresh_world_map_texture();
+    }
+
+    pub(super) fn advance_world_map_search(&mut self, now: Instant) {
+        if !self.world_map.open {
+            return;
+        }
+        let query_idle = self.world_map.town_query_pending
+            && self
+                .world_map
+                .town_query_sent_at
+                .is_some_and(|at| now.saturating_duration_since(at) >= TOWN_QUERY_TIMEOUT);
+        if query_idle {
+            self.world_map.town_query_pending = false;
+            self.world_map.town_query_timed_out = !self.world_map.town_query_received_reply;
+            if !self.world_map.town_query_timed_out {
+                self.world_map.town_query_sent_at = None;
+            }
+        }
+        if self.world_map.town_query_timed_out
+            && self.world_map.town_query_sent_at.is_some_and(|sent_at| {
+                now.saturating_duration_since(sent_at) > TOWN_QUERY_LATE_REPLY_WINDOW
+            })
+        {
+            self.world_map.town_query_timed_out = false;
+            self.world_map.town_query_sent_at = None;
+        }
+        if self
+            .world_map
+            .pending_town_travel
+            .is_some_and(|(_, sent_at)| {
+                now.saturating_duration_since(sent_at) > Duration::from_secs(10)
+            })
+        {
+            self.world_map.pending_town_travel = None;
+        }
+        let due = self
+            .world_map
+            .search_due_at
+            .is_some_and(|deadline| now >= deadline);
+        if !due {
+            return;
+        }
+        self.world_map.search_due_at = None;
+        self.world_map.search_applied_query = self.world_map.search_query.clone();
         self.world_map.search_scroll = 0;
-        self.world_map.hovered_marker = None;
         self.refresh_world_map_texture();
     }
 
@@ -1139,6 +1408,7 @@ impl ClientApp {
         if !self.world_map.open
             || !self.world_map.search_open
             || self.world_map.search_query.trim().is_empty()
+            || self.world_map.search_due_at.is_some()
             || !self.world_map.search_input.is_some_and(|input| {
                 cursor.x >= input.x - 6.0
                     && cursor.x < self.world_map.x + self.world_map.width as f32
@@ -1174,16 +1444,22 @@ impl ClientApp {
         if !self.world_map.open {
             return false;
         }
-        let hovered_link = self
-            .world_map
-            .links
-            .iter()
-            .position(|link| link.bounds.contains(cursor.x, cursor.y));
-        let hovered_marker = self
-            .world_map
-            .markers
-            .iter()
-            .position(|marker| marker.bounds.contains(cursor.x, cursor.y));
+        let (hovered_link, hovered_marker) =
+            if self.dialog_window_hit_test(DialogWindow::WorldMap, cursor) {
+                let cursor = self.dialog_window_input_cursor(cursor);
+                (
+                    self.world_map
+                        .links
+                        .iter()
+                        .position(|link| link.bounds.contains(cursor.x, cursor.y)),
+                    self.world_map
+                        .markers
+                        .iter()
+                        .position(|marker| marker.bounds.contains(cursor.x, cursor.y)),
+                )
+            } else {
+                (None, None)
+            };
         if self.world_map.hovered_link == hovered_link
             && self.world_map.hovered_marker == hovered_marker
         {

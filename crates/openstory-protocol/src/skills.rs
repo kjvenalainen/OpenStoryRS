@@ -5,6 +5,7 @@ use crate::{PacketError, PacketReader, PacketWriter};
 pub const OPCODE_UPDATE_SKILL: u16 = 36;
 pub const OPCODE_SPEND_SKILL_POINT: u16 = 90;
 pub const OPCODE_USE_SKILL: u16 = 91;
+pub const OPCODE_CANCEL_BUFF_REQUEST: u16 = 92;
 const MAX_SKILL_ENTRIES: usize = 512;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -93,6 +94,13 @@ pub fn use_skill_packet(skill_id: i32, level: u8, client_tick: i32) -> Vec<u8> {
     if skill_id % 10_000_000 == 1_004 {
         packet.write_u16(0);
     }
+    packet.into_bytes()
+}
+
+/// Builds a v83 request to cancel an active skill buff.
+pub fn cancel_buff_packet(skill_id: i32) -> Vec<u8> {
+    let mut packet = PacketWriter::new(OPCODE_CANCEL_BUFF_REQUEST);
+    packet.write_i32(skill_id);
     packet.into_bytes()
 }
 

@@ -33,6 +33,7 @@ impl ClientApp {
         self.pet_item_filter.search_focused = true;
         self.pet_item_filter.key_text_for_ime_dedup = None;
         self.pet_item_filter.notice = None;
+        self.pet_item_filter.schedule_search();
         self.ensure_pet_item_filter_labels();
         self.raise_dialog_window(DialogWindow::PetItemFilter);
         self.refresh_pet_item_filter_texture();
@@ -45,7 +46,32 @@ impl ClientApp {
         self.pet_item_filter.open = false;
         self.pet_item_filter.search_focused = false;
         self.pet_item_filter.key_text_for_ime_dedup = None;
+        self.pet_item_filter.search_due_at = None;
         self.pet_item_filter_texture = None;
+    }
+
+    pub(super) fn advance_pet_item_filter_search(&mut self, now: Instant) {
+        let due = self
+            .pet_item_filter
+            .search_due_at
+            .is_some_and(|deadline| now >= deadline);
+        if !self.pet_item_filter.open || !due {
+            return;
+        }
+        self.pet_item_filter.search_due_at = None;
+        self.ensure_pet_item_filter_labels();
+        if self.owl_name_index.is_none() {
+            self.owl_name_index = Some(build_owl_item_name_index(&self.string_archive));
+        }
+        let (results, result_count) = ui_pet_item_filter::search_item_ids(
+            &self.pet_item_filter.query,
+            self.owl_name_index.as_deref().unwrap_or_default(),
+            &self.pet_item_filter.ignored_item_lookup,
+        );
+        self.pet_item_filter.search_results = results;
+        self.pet_item_filter.search_result_count = result_count;
+        self.pet_item_filter.scroll = 0;
+        self.refresh_pet_item_filter_texture();
     }
 
     pub(super) fn refresh_pet_item_filter_texture(&mut self) {
@@ -102,6 +128,14 @@ impl ClientApp {
             self.refresh_pet_item_filter_texture();
             return true;
         }
+        if ui_pet_item_filter::search_dropdown_contains(local_x, local_y, &self.pet_item_filter) {
+            if let Some(item_id) =
+                ui_pet_item_filter::search_result_at(local_x, local_y, &self.pet_item_filter)
+            {
+                self.add_pet_item_filter_id(item_id);
+            }
+            return true;
+        }
         self.pet_item_filter.search_focused = false;
         if let Some(action) = ui_pet_item_filter::action_at(local_x, local_y) {
             match action {
@@ -140,7 +174,9 @@ impl ClientApp {
             return false;
         }
         let (origin_x, origin_y) = self.pet_item_filter_origin();
-        if !ui_pet_item_filter::list_bounds().contains(cursor.x - origin_x, cursor.y - origin_y) {
+        if !ui_pet_item_filter::list_bounds(&self.pet_item_filter)
+            .contains(cursor.x - origin_x, cursor.y - origin_y)
+        {
             return false;
         }
         let maximum = ui_pet_item_filter::max_scroll(&self.pet_item_filter);
@@ -181,6 +217,7 @@ impl ClientApp {
                 self.pet_item_filter.query.pop();
                 self.pet_item_filter.scroll = 0;
                 self.pet_item_filter.notice = None;
+                self.pet_item_filter.schedule_search();
                 self.refresh_pet_item_filter_texture();
             }
             _ if self.pet_item_filter.search_focused => {
@@ -222,6 +259,7 @@ impl ClientApp {
         }
         self.pet_item_filter.scroll = 0;
         self.pet_item_filter.notice = None;
+        self.pet_item_filter.schedule_search();
         self.refresh_pet_item_filter_texture();
     }
 
@@ -281,7 +319,7 @@ impl ClientApp {
             added_ids.push(item_id);
         }
 
-        self.pet_item_filter.query.clear();
+        self.pet_item_filter.clear_query();
         self.pet_item_filter.scroll = 0;
         self.pet_item_filter.selected_item_id = added_ids
             .first()
@@ -319,7 +357,7 @@ impl ClientApp {
         }
         self.ensure_pet_item_filter_labels();
         let name = item_name(item_id, &self.string_archive, &mut self.item_name_cache);
-        self.pet_item_filter.query.clear();
+        self.pet_item_filter.clear_query();
         self.pet_item_filter.scroll = 0;
         self.pet_item_filter.selected_item_id = Some(item_id);
         if self.pet_item_filter.ignored_item_ids.contains(&item_id) {

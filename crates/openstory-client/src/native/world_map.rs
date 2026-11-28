@@ -1,7 +1,8 @@
 use fontdue::Font;
 use openstory_assets::{NodeValue, NxArchive, NxNode};
 use openstory_render::GpuTexture;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::time::{Duration, Instant};
 
 const VIEW_WIDTH: f32 = 1024.0;
 const PANEL_TOP: f32 = 20.0;
@@ -10,11 +11,13 @@ const MAX_SEARCH_INDEX_ENTRIES: usize = 10_000;
 pub(super) const MAX_VISIBLE_SEARCH_RESULTS: usize = 4;
 const SEARCH_RESULT_TOP: f32 = 54.0;
 const SEARCH_RESULT_HEIGHT: f32 = 20.0;
+const SEARCH_DEBOUNCE_DELAY: Duration = Duration::from_millis(500);
 
 pub(super) struct SearchEntry {
     pub map_id: i32,
     pub title: String,
     pub world_map: String,
+    is_town: bool,
     title_key: String,
     description_key: String,
     map_id_key: String,
@@ -77,6 +80,7 @@ pub(super) struct MarkerHit {
     pub map_ids: Vec<i32>,
     pub title: String,
     pub description: String,
+    pub is_town: bool,
     path: Option<NxNode>,
 }
 
@@ -87,6 +91,7 @@ pub(super) struct Panel {
     pub y: f32,
     pub pixels: Vec<u8>,
     pub close: HitRect,
+    pub zoom_out: Option<HitRect>,
     pub search_toggle: Option<HitRect>,
     pub search_close: Option<HitRect>,
     pub search_input: Option<HitRect>,
@@ -97,6 +102,7 @@ pub(super) struct Panel {
     pub markers: Vec<MarkerHit>,
     pub map_path: String,
     pub parent_map: Option<String>,
+    pub zoom_out_target: Option<String>,
 }
 
 pub(super) struct State {
@@ -106,7 +112,9 @@ pub(super) struct State {
     pub map_id: Option<i32>,
     pub map_path: Option<String>,
     pub parent_map: Option<String>,
+    pub zoom_out_target: Option<String>,
     pub close: Option<HitRect>,
+    pub zoom_out: Option<HitRect>,
     pub search_toggle: Option<HitRect>,
     pub search_close: Option<HitRect>,
     pub search_input: Option<HitRect>,
@@ -115,6 +123,8 @@ pub(super) struct State {
     pub search_result_count: usize,
     pub search_catalog: Option<SearchCatalog>,
     pub search_query: String,
+    pub search_applied_query: String,
+    pub search_due_at: Option<Instant>,
     pub search_scroll: usize,
     pub search_focused: bool,
     pub selected_route_map_id: Option<i32>,
@@ -122,6 +132,13 @@ pub(super) struct State {
     pub markers: Vec<MarkerHit>,
     pub hovered_link: Option<usize>,
     pub hovered_marker: Option<usize>,
+    pub visited_towns: HashSet<i32>,
+    pub town_query_pending: bool,
+    pub town_query_sent_at: Option<Instant>,
+    pub town_query_received_reply: bool,
+    pub town_query_timed_out: bool,
+    pub pending_town_travel: Option<(i32, Instant)>,
+    pub last_marker_click: Option<(usize, Instant)>,
     pub x: f32,
     pub y: f32,
     pub width: u32,
@@ -137,7 +154,9 @@ impl Default for State {
             map_id: None,
             map_path: None,
             parent_map: None,
+            zoom_out_target: None,
             close: None,
+            zoom_out: None,
             search_toggle: None,
             search_close: None,
             search_input: None,
@@ -146,6 +165,8 @@ impl Default for State {
             search_result_count: 0,
             search_catalog: None,
             search_query: String::new(),
+            search_applied_query: String::new(),
+            search_due_at: None,
             search_scroll: 0,
             search_focused: false,
             selected_route_map_id: None,
@@ -153,11 +174,30 @@ impl Default for State {
             markers: Vec::new(),
             hovered_link: None,
             hovered_marker: None,
+            visited_towns: HashSet::new(),
+            town_query_pending: false,
+            town_query_sent_at: None,
+            town_query_received_reply: false,
+            town_query_timed_out: false,
+            pending_town_travel: None,
+            last_marker_click: None,
             x: 0.0,
             y: 0.0,
             width: 0,
             height: 0,
         }
+    }
+}
+
+impl State {
+    pub fn schedule_search(&mut self) {
+        self.search_scroll = 0;
+        self.search_applied_query.clear();
+        self.search_due_at = if self.search_query.trim().is_empty() {
+            None
+        } else {
+            Some(Instant::now() + SEARCH_DEBOUNCE_DELAY)
+        };
     }
 }
 
@@ -168,6 +208,7 @@ impl State {
         self.width = panel.width;
         self.height = panel.height;
         self.close = Some(panel.close);
+        self.zoom_out = panel.zoom_out;
         self.search_toggle = panel.search_toggle;
         self.search_close = panel.search_close;
         self.search_input = panel.search_input;
@@ -190,6 +231,7 @@ impl State {
         }
         self.map_path = Some(panel.map_path);
         self.parent_map = panel.parent_map;
+        self.zoom_out_target = panel.zoom_out_target;
     }
 }
 
@@ -243,6 +285,7 @@ pub(super) fn load_search_catalog(
                     map_id,
                     title,
                     world_map: world_map.to_owned(),
+                    is_town: is_town_map(map_archive, map_id),
                     title_key,
                     description_key,
                     map_id_key: map_id.to_string(),
@@ -258,6 +301,46 @@ pub(super) fn load_search_catalog(
             .then_with(|| left.map_id.cmp(&right.map_id))
     });
     Ok(SearchCatalog { entries })
+}
+
+pub(super) fn visited_town_ids_from_reply(
+    catalog: &SearchCatalog,
+    message: &str,
+) -> Option<HashSet<i32>> {
+    let normalized = message.to_lowercase();
+    if normalized.trim() == "@towns" {
+        return None;
+    }
+    let is_town_list_header = normalized.starts_with("visited towns");
+
+    let numbers = message
+        .split(|character: char| !character.is_ascii_digit())
+        .filter_map(|part| part.parse::<i32>().ok())
+        .collect::<HashSet<_>>();
+    let mut visited = HashSet::new();
+    for entry in &catalog.entries {
+        let title_matches = !entry.title_key.is_empty()
+            && normalized
+                .match_indices(&entry.title_key)
+                .any(|(start, _)| {
+                    let end = start + entry.title_key.len();
+                    let before_is_boundary = start == 0
+                        || !normalized[..start]
+                            .chars()
+                            .next_back()
+                            .is_some_and(char::is_alphanumeric);
+                    let after_is_boundary = end == normalized.len()
+                        || !normalized[end..]
+                            .chars()
+                            .next()
+                            .is_some_and(char::is_alphanumeric);
+                    before_is_boundary && after_is_boundary
+                });
+        if entry.is_town && (numbers.contains(&entry.map_id) || title_matches) {
+            visited.insert(entry.map_id);
+        }
+    }
+    (is_town_list_header || !visited.is_empty()).then_some(visited)
 }
 
 #[derive(Clone)]
@@ -276,12 +359,15 @@ pub(super) fn render(
     requested_map: Option<&str>,
     search_open: bool,
     search_query: &str,
+    search_applied_query: &str,
+    search_pending: bool,
     search_focused: bool,
     search_catalog: Option<&SearchCatalog>,
     search_scroll: usize,
     hovered_link: Option<usize>,
     hovered_marker: Option<usize>,
     selected_route_map_id: Option<i32>,
+    visited_towns: &HashSet<i32>,
     strings: &NxArchive,
     font: &Font,
 ) -> Result<Panel, String> {
@@ -290,8 +376,6 @@ pub(super) fn render(
     // The installed archive is v83: these authored window pieces live in
     // UIWindow.img, while the newer UIWindow2 path is only an alias.
     let world_map_ui = resolve(&ui_root, "UIWindow.img/WorldMap")?;
-    let border_root = resolve(&world_map_ui, "Border")?;
-
     let search_background = optional_resolve(&world_map_ui, "WorldMapSearch/backgrnd")?
         .and_then(|node| sprite(&node).ok());
     let search_notice = optional_resolve(&world_map_ui, "WorldMapSearch/notice")?
@@ -303,15 +387,13 @@ pub(super) fn render(
         .unwrap_or_else(|| format!("WorldMap0{}", map_id / 10_000_000));
     let (map_path, map_data) = resolve_world_map(&map_folder, &selected_path)?;
     let parent_map = string_child(&map_data, "info/parentMap");
+    let zoom_out_target = world_map_root_path(&map_folder, &map_path, &map_data);
     let base_node = optional_resolve(&map_data, "BaseImg/0")?
         .or(optional_resolve(&map_data, "BaseImg")?)
         .ok_or_else(|| format!("world map {map_path:?} has no BaseImg"))?;
     let base_sprite = sprite(&base_node)?;
-    // In the v83 archive Border/0 is only a 7x33 frame slice, not the full
-    // modern WorldMap background. Size the map panel from its actual NX map
-    // bitmap and tile the authored border pieces around it.
     let border_width = base_sprite.width.saturating_add(14);
-    let border_height = base_sprite.height.saturating_add(48);
+    let border_height = base_sprite.height.saturating_add(66);
     let search_width = if search_panel_in_side {
         search_background.as_ref().map_or(220, |image| image.width)
     } else {
@@ -339,15 +421,12 @@ pub(super) fn render(
     let x = ((VIEW_WIDTH - width as f32) / 2.0).max(0.0);
     let y = PANEL_TOP;
     let mut pixels = vec![0; width * height * 4];
-    compose_world_map_frame(
-        &mut pixels,
-        width,
-        height,
-        &border_root,
-        0,
-        0,
-        border_width,
-        border_height,
+    let close_bounds = super::ui_dialog::inventory_close(border_width as f32);
+    super::ui_dialog::NxDialog::new(&mut pixels, width, height, ui_archive).inventory_window(
+        super::ui_foundation::UiRect::new(0.0, 0.0, border_width as f32, border_height as f32),
+        font,
+        "World Map",
+        close_bounds,
     )?;
     if search_open {
         if let Some(image) = search_background.as_ref() {
@@ -432,7 +511,7 @@ pub(super) fn render(
         }
     }
 
-    let normalized_query = search_query.trim().to_lowercase();
+    let normalized_query = search_applied_query.trim().to_lowercase();
     let mut search_result_buckets = [0; 5];
     if !normalized_query.is_empty()
         && let Some(catalog) = search_catalog
@@ -507,6 +586,9 @@ pub(super) fn render(
                         .and_then(|id| super::map_string_name(strings, *id))
                 })
                 .unwrap_or_else(|| "Unknown map".to_owned());
+            let is_town = map_ids
+                .iter()
+                .any(|town_id| is_town_map(map_archive, *town_id));
             let path_node = optional_child(&entry, "path")?;
             markers.push(MarkerHit {
                 bounds: HitRect {
@@ -519,6 +601,7 @@ pub(super) fn render(
                 map_ids: map_ids.clone(),
                 title: map_title,
                 description,
+                is_town,
                 path: path_node,
             });
             marker_visuals.push((
@@ -528,6 +611,10 @@ pub(super) fn render(
                 spot_type,
                 map_ids.contains(&map_id),
                 selected_route_map_id.is_some_and(|target| map_ids.contains(&target)),
+                map_ids
+                    .iter()
+                    .any(|town_id| visited_towns.contains(town_id)),
+                is_town,
             ));
         }
     }
@@ -553,11 +640,21 @@ pub(super) fn render(
             map_scale,
         );
     }
-    for (marker, spot_x, spot_y, spot_type, is_current_map, is_route_target) in marker_visuals {
+    for (
+        marker,
+        spot_x,
+        spot_y,
+        spot_type,
+        is_current_map,
+        is_route_target,
+        is_visited_town,
+        is_town,
+    ) in marker_visuals
+    {
         let anchor_x = content_anchor_x + spot_x as f32 * map_scale;
         let anchor_y = content_anchor_y + spot_y as f32 * map_scale;
         if let Some(marker) = marker {
-            blit(
+            blit_tinted(
                 &mut pixels,
                 width,
                 height,
@@ -565,6 +662,23 @@ pub(super) fn render(
                 anchor_x,
                 anchor_y,
                 map_scale,
+                if !is_town {
+                    [255, 255, 255]
+                } else if is_visited_town {
+                    [62, 142, 230]
+                } else {
+                    [170, 170, 170]
+                },
+            );
+        }
+        if is_town {
+            draw_town_status_marker(
+                &mut pixels,
+                width,
+                height,
+                anchor_x,
+                anchor_y,
+                is_visited_town,
             );
         }
         if is_current_map || is_route_target {
@@ -667,34 +781,31 @@ pub(super) fn render(
         );
     }
 
-    let title = sprite(&resolve(&world_map_ui, "title")?)?;
-    blit(
-        &mut pixels,
-        width,
-        height,
-        &title,
-        (border_width as f32 - title.width as f32) / 2.0,
-        12.0,
-        1.0,
-    );
-
-    let close_sprite = sprite(&resolve(&ui_root, "UIWindow.img/BtUIClose/normal/0")?)?;
-    let close_anchor_x = border_width.saturating_sub(close_sprite.width + 4) as f32;
-    let close_anchor_y = 4.0;
-    blit(
-        &mut pixels,
-        width,
-        height,
-        &close_sprite,
-        close_anchor_x,
-        close_anchor_y,
-        1.0,
-    );
+    let close_sprite = sprite(&resolve(&ui_root, super::ui_dialog::CLOSE_BUTTON_ART)?)?;
     let close = HitRect {
-        x: x + close_anchor_x - close_sprite.origin_x,
-        y: y + close_anchor_y - close_sprite.origin_y,
-        width: close_sprite.width as f32,
-        height: close_sprite.height as f32,
+        x: x + close_bounds.x,
+        y: y + close_bounds.y,
+        width: close_bounds.width,
+        height: close_bounds.height,
+    };
+
+    let zoom_out = if zoom_out_target
+        .as_ref()
+        .is_some_and(|parent| !parent.is_empty() && parent != &map_path)
+    {
+        Some(draw_world_view_button(
+            &mut pixels,
+            width,
+            height,
+            ui_archive,
+            font,
+            border_width,
+            border_height,
+            x,
+            y,
+        )?)
+    } else {
+        None
     };
 
     let search_toggle = draw_button(
@@ -822,6 +933,53 @@ pub(super) fn render(
             );
         }
     }
+    if search_open && search_pending && !search_query.trim().is_empty() {
+        let list_x = if search_panel_in_side {
+            border_width as usize + 8
+        } else {
+            search_content_x as usize + 14
+        };
+        if !search_panel_in_side {
+            fill_rect(
+                &mut pixels,
+                width,
+                height,
+                list_x,
+                search_input_top as usize + 24,
+                190,
+                106,
+                [90, 80, 71, 255],
+            );
+            fill_rect(
+                &mut pixels,
+                width,
+                height,
+                list_x + 1,
+                search_input_top as usize + 25,
+                188,
+                104,
+                [241, 242, 239, 255],
+            );
+        }
+        draw_text_color(
+            &mut pixels,
+            width,
+            height,
+            font,
+            "Searching…",
+            list_x as f32 + 4.0,
+            if search_panel_in_side {
+                40.0
+            } else {
+                search_input_top + 27.0
+            },
+            if search_panel_in_side {
+                [255, 255, 255]
+            } else {
+                [65, 55, 45]
+            },
+        );
+    }
     if search_open && !normalized_query.is_empty() {
         let list_x = if search_panel_in_side {
             border_width as usize + 8
@@ -937,21 +1095,22 @@ pub(super) fn render(
     }
     let search_close = if search_panel_in_side {
         Some({
-            let anchor_x = search_width as f32 + close_anchor_x;
+            let anchor_x = search_width as f32 + close_bounds.x;
+            let anchor_y = close_bounds.y;
             blit(
                 &mut pixels,
                 width,
                 height,
                 &close_sprite,
                 anchor_x,
-                close_anchor_y,
+                anchor_y,
                 1.0,
             );
             HitRect {
-                x: x + anchor_x - close_sprite.origin_x,
-                y: y + close_anchor_y - close_sprite.origin_y,
-                width: close_sprite.width as f32,
-                height: close_sprite.height as f32,
+                x: x + anchor_x,
+                y: y + anchor_y,
+                width: close_bounds.width,
+                height: close_bounds.height,
             }
         })
     } else {
@@ -960,31 +1119,7 @@ pub(super) fn render(
     let search_toggle = if search_background.is_some() {
         search_toggle
     } else {
-        // No WorldMap search button ships in v83. Reuse its native Basic
-        // minimize/maximize controls to reveal or dismiss over-map results.
-        let control_path = if search_open {
-            "Basic.img/BtMin/normal/0"
-        } else {
-            "Basic.img/BtMax/normal/0"
-        };
-        let control = sprite(&resolve(&ui_root, control_path)?)?;
-        let anchor_x = (border_width as f32 - 54.0).max(8.0);
-        let anchor_y = 5.0;
-        blit(
-            &mut pixels,
-            width,
-            height,
-            &control,
-            anchor_x,
-            anchor_y,
-            1.0,
-        );
-        Some(HitRect {
-            x: x + anchor_x - control.origin_x,
-            y: y + anchor_y - control.origin_y,
-            width: control.width as f32,
-            height: control.height as f32,
-        })
+        None
     };
 
     Ok(Panel {
@@ -994,6 +1129,7 @@ pub(super) fn render(
         y,
         pixels,
         close,
+        zoom_out,
         search_toggle,
         search_close,
         search_input,
@@ -1004,132 +1140,8 @@ pub(super) fn render(
         markers,
         map_path,
         parent_map,
+        zoom_out_target,
     })
-}
-
-fn compose_world_map_frame(
-    pixels: &mut [u8],
-    canvas_width: usize,
-    canvas_height: usize,
-    border_root: &NxNode,
-    left: usize,
-    top: usize,
-    width: usize,
-    height: usize,
-) -> Result<(), String> {
-    if width < 14 || height < 51 {
-        return Err(format!("world map frame is too small: {width}x{height}"));
-    }
-    let image = |index: usize| -> Result<Sprite, String> {
-        sprite(&resolve(border_root, &index.to_string())?)
-    };
-    let top_left = image(0)?;
-    let top_middle = image(1)?;
-    let top_right = image(2)?;
-    let divider_left = image(3)?;
-    let divider_right = image(4)?;
-    let lower_left = image(5)?;
-    let lower_middle = image(6)?;
-    let lower_right = image(7)?;
-
-    tile_image(
-        pixels,
-        canvas_width,
-        canvas_height,
-        &top_middle,
-        left,
-        top,
-        width,
-        top_left.height,
-    );
-    blit(
-        pixels,
-        canvas_width,
-        canvas_height,
-        &top_left,
-        left as f32,
-        top as f32,
-        1.0,
-    );
-    blit(
-        pixels,
-        canvas_width,
-        canvas_height,
-        &top_right,
-        (left + width - top_right.width) as f32,
-        top as f32,
-        1.0,
-    );
-
-    let body_top = top + top_left.height;
-    let body_height = height.saturating_sub(top_left.height + lower_left.height);
-    tile_image(
-        pixels,
-        canvas_width,
-        canvas_height,
-        &divider_left,
-        left,
-        body_top,
-        divider_left.width,
-        body_height,
-    );
-    tile_image(
-        pixels,
-        canvas_width,
-        canvas_height,
-        &divider_right,
-        left + width - divider_right.width,
-        body_top,
-        divider_right.width,
-        body_height,
-    );
-    let bottom_top = top + height - lower_left.height;
-    tile_image(
-        pixels,
-        canvas_width,
-        canvas_height,
-        &lower_middle,
-        left + lower_left.width,
-        bottom_top,
-        width.saturating_sub(lower_left.width + lower_right.width),
-        lower_middle.height,
-    );
-    blit(
-        pixels,
-        canvas_width,
-        canvas_height,
-        &lower_left,
-        left as f32,
-        bottom_top as f32,
-        1.0,
-    );
-    blit(
-        pixels,
-        canvas_width,
-        canvas_height,
-        &lower_right,
-        (left + width - lower_right.width) as f32,
-        bottom_top as f32,
-        1.0,
-    );
-    Ok(())
-}
-
-fn tile_image(
-    pixels: &mut [u8],
-    canvas_width: usize,
-    canvas_height: usize,
-    image: &Sprite,
-    left: usize,
-    top: usize,
-    width: usize,
-    height: usize,
-) {
-    let area =
-        super::ui_foundation::UiRect::new(left as f32, top as f32, width as f32, height as f32);
-    super::ui_dialog::tile_frame_area(area, image.width as f32, image.height as f32, |x, y| {
-        blit(pixels, canvas_width, canvas_height, image, x, y, 1.0);
-    });
 }
 
 fn draw_button(
@@ -1161,6 +1173,38 @@ fn draw_button(
     }))
 }
 
+fn draw_world_view_button(
+    pixels: &mut [u8],
+    width: usize,
+    height: usize,
+    ui_archive: &NxArchive,
+    font: &Font,
+    panel_width: usize,
+    panel_height: usize,
+    screen_x: f32,
+    screen_y: f32,
+) -> Result<HitRect, String> {
+    let bounds = super::ui_dialog::right_aligned_footer(
+        panel_width as f32 - 8.0,
+        panel_height as f32,
+        [78.0],
+    )[0];
+    let mut dialog = super::ui_dialog::NxDialog::new(pixels, width, height, ui_archive);
+    dialog.labeled_button(
+        bounds,
+        super::ui_dialog::NxButton::new("Basic.img/BtYes2", super::ui_dialog::ButtonState::Normal),
+        font,
+        "World View",
+    )?;
+    drop(dialog);
+    Ok(HitRect {
+        x: screen_x + bounds.x,
+        y: screen_y + bounds.y,
+        width: bounds.width,
+        height: bounds.height,
+    })
+}
+
 fn resolve_world_map(folder: &NxNode, desired: &str) -> Result<(String, NxNode), String> {
     let path = format!("{desired}.img");
     if let Some(map) = optional_child(folder, &path)? {
@@ -1169,6 +1213,26 @@ fn resolve_world_map(folder: &NxNode, desired: &str) -> Result<(String, NxNode),
     let fallback = optional_child(folder, "WorldMap.img")?
         .ok_or_else(|| format!("WorldMap/{path} and WorldMap/WorldMap.img are missing"))?;
     Ok(("WorldMap".to_owned(), fallback))
+}
+
+fn world_map_root_path(folder: &NxNode, start_path: &str, start_map: &NxNode) -> Option<String> {
+    let mut current_path = start_path.to_owned();
+    let mut current_map = start_map.clone();
+    let mut seen = HashSet::from([current_path.clone()]);
+    for _ in 0..16 {
+        let Some(parent) =
+            string_child(&current_map, "info/parentMap").filter(|parent| !parent.is_empty())
+        else {
+            break;
+        };
+        let (parent_path, parent_map) = resolve_world_map(folder, &parent).ok()?;
+        if !seen.insert(parent_path.clone()) {
+            break;
+        }
+        current_path = parent_path;
+        current_map = parent_map;
+    }
+    (current_path != start_path).then_some(current_path)
 }
 
 fn resolve(node: &NxNode, path: &str) -> Result<NxNode, String> {
@@ -1201,6 +1265,14 @@ fn integer_child(node: &NxNode, path: &str) -> Option<i32> {
         NodeValue::Integer(value) => i32::try_from(value).ok(),
         _ => None,
     }
+}
+
+fn is_town_map(map_archive: &NxArchive, map_id: i32) -> bool {
+    if map_id < 0 {
+        return false;
+    }
+    let map_path = format!("Map/Map{}/{map_id:09}.img/info/town", map_id / 100_000_000);
+    integer_child(&map_archive.root(), &map_path).unwrap_or_default() != 0
 }
 
 fn integer_children(node: &NxNode, path: &str) -> Vec<i32> {
@@ -1278,6 +1350,28 @@ fn blit(
     anchor_y: f32,
     scale: f32,
 ) {
+    blit_tinted(
+        canvas,
+        canvas_width,
+        canvas_height,
+        image,
+        anchor_x,
+        anchor_y,
+        scale,
+        [255, 255, 255],
+    );
+}
+
+fn blit_tinted(
+    canvas: &mut [u8],
+    canvas_width: usize,
+    canvas_height: usize,
+    image: &Sprite,
+    anchor_x: f32,
+    anchor_y: f32,
+    scale: f32,
+    tint_bgr: [u8; 3],
+) {
     if image.width == 0 || image.height == 0 || scale <= 0.0 {
         return;
     }
@@ -1305,8 +1399,10 @@ fn blit(
             }
             let inverse = 255 - alpha;
             for channel in 0..3 {
-                canvas[target_index + channel] = ((u16::from(image.pixels[source_index + channel])
-                    * alpha
+                let source = u16::from(image.pixels[source_index + channel])
+                    * u16::from(tint_bgr[channel])
+                    / 255;
+                canvas[target_index + channel] = ((source * alpha
                     + u16::from(canvas[target_index + channel]) * inverse)
                     / 255) as u8;
             }
@@ -1329,6 +1425,43 @@ fn fill_rect(
     for target_y in y..y.saturating_add(height).min(canvas_height) {
         for target_x in x..x.saturating_add(width).min(canvas_width) {
             let index = (target_y * canvas_width + target_x) * 4;
+            canvas[index..index + 4].copy_from_slice(&color);
+        }
+    }
+}
+
+fn draw_town_status_marker(
+    canvas: &mut [u8],
+    width: usize,
+    height: usize,
+    center_x: f32,
+    center_y: f32,
+    visited: bool,
+) {
+    let center_x = center_x.round() as i32;
+    let center_y = center_y.round() as i32;
+    let fill = if visited {
+        [62, 142, 230, 255]
+    } else {
+        [160, 160, 160, 255]
+    };
+    for offset_y in -6..=6 {
+        for offset_x in -6..=6 {
+            let distance_squared = offset_x * offset_x + offset_y * offset_y;
+            if distance_squared > 36 {
+                continue;
+            }
+            let x = center_x + offset_x;
+            let y = center_y + offset_y;
+            if !(0..width as i32).contains(&x) || !(0..height as i32).contains(&y) {
+                continue;
+            }
+            let color = if distance_squared >= 25 {
+                [245, 245, 245, 255]
+            } else {
+                fill
+            };
+            let index = (y as usize * width + x as usize) * 4;
             canvas[index..index + 4].copy_from_slice(&color);
         }
     }

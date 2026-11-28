@@ -266,6 +266,63 @@ impl ClientApp {
         self.refresh_status_texture();
     }
 
+    pub(super) fn cancel_active_buff_at(&mut self, cursor: Point) -> bool {
+        let skill_id = self
+            .buff_list_skill_ids
+            .iter()
+            .enumerate()
+            .find_map(|(index, skill_id)| {
+                let left = 1024.0 - 35.0 - 32.0 * index as f32;
+                (cursor.x >= left && cursor.x < left + 32.0 && (24.0..56.0).contains(&cursor.y))
+                    .then_some(*skill_id)
+            });
+        let Some(skill_id) = skill_id else {
+            return false;
+        };
+        if !self.channel_connected {
+            return false;
+        }
+        let Some(session) = self.session.as_ref() else {
+            return false;
+        };
+        if let Err(error) = session.send_packet(openstory_protocol::cancel_buff_packet(skill_id)) {
+            eprintln!("OpenStoryRS: could not cancel active buff {skill_id}: {error}");
+            self.channel_connected = false;
+            return false;
+        }
+
+        let was_riding = self
+            .active_buffs
+            .get(&character_buff_key(
+                openstory_protocol::BuffMaskGroup::First,
+                STATUS_MONSTER_RIDING,
+            ))
+            .is_some_and(|buff| buff.value > 0);
+        self.active_buffs.cancel_skill(skill_id);
+        let auto_buff_changed = self.auto_buff_skills.remove(&skill_id);
+        if auto_buff_changed {
+            self.auto_buff_skill_entries.remove(&skill_id);
+            self.auto_buff_retry_at.remove(&skill_id);
+            self.refresh_auto_buff_indicators();
+        }
+        self.refresh_buff_list_texture(Instant::now());
+        self.refresh_map_hud();
+        self.refresh_status_texture();
+        if was_riding
+            && !self.active_buffs.contains_key(&character_buff_key(
+                openstory_protocol::BuffMaskGroup::First,
+                STATUS_MONSTER_RIDING,
+            ))
+            && let Some(look) = self
+                .active_character
+                .as_ref()
+                .map(|character| character.look.clone())
+        {
+            self.refresh_local_mount(&look);
+        }
+        true
+    }
+
     pub(super) fn active_buff_value(
         &self,
         group: openstory_protocol::BuffMaskGroup,
@@ -319,6 +376,106 @@ impl ClientApp {
                 .map(|character| character.look.clone())
         {
             self.refresh_local_mount(&look);
+        }
+        self.maintain_auto_buff_skills(now);
+    }
+
+    pub(super) fn maintain_auto_buff_skills(&mut self, now: Instant) {
+        if self.auto_buff_skills.is_empty()
+            || self.current_field.is_none()
+            || self.map_loading_started_at.is_some()
+            || !self.channel_connected
+            || self.session.is_none()
+        {
+            return;
+        }
+
+        let skill_ids = self.auto_buff_skills.iter().copied().collect::<Vec<_>>();
+        let mut indicators_changed = false;
+        for skill_id in skill_ids {
+            let Some(learned) = self.skills.get(&skill_id).copied() else {
+                self.auto_buff_skills.remove(&skill_id);
+                self.auto_buff_skill_entries.remove(&skill_id);
+                self.auto_buff_retry_at.remove(&skill_id);
+                indicators_changed = true;
+                continue;
+            };
+            if learned.level <= 0 {
+                self.auto_buff_skills.remove(&skill_id);
+                self.auto_buff_skill_entries.remove(&skill_id);
+                self.auto_buff_retry_at.remove(&skill_id);
+                indicators_changed = true;
+                continue;
+            }
+
+            let cached_entry = self.auto_buff_skill_entries.get(&skill_id).cloned();
+            let skill = match cached_entry {
+                Some(skill)
+                    if skill.level == learned.level
+                        && skill.master_level == learned.master_level =>
+                {
+                    skill
+                }
+                _ => {
+                    let Some(skill) = self.skill_ui_entry_by_id(skill_id) else {
+                        continue;
+                    };
+                    if !skill.stat_buff || skill.level <= 0 {
+                        self.auto_buff_skills.remove(&skill_id);
+                        self.auto_buff_skill_entries.remove(&skill_id);
+                        self.auto_buff_retry_at.remove(&skill_id);
+                        indicators_changed = true;
+                        continue;
+                    }
+                    self.auto_buff_skill_entries.insert(skill_id, skill.clone());
+                    skill
+                }
+            };
+
+            if self
+                .active_buffs
+                .values()
+                .any(|buff| buff.skill_id == skill_id && buff.is_active_at(now))
+            {
+                self.auto_buff_retry_at.remove(&skill_id);
+                continue;
+            }
+            if self
+                .auto_buff_retry_at
+                .get(&skill_id)
+                .is_some_and(|retry_at| *retry_at > now)
+                || self
+                    .skill_cooldowns
+                    .get(&skill_id)
+                    .is_some_and(|cooldown| cooldown.expires_at > now)
+                || character_has_buff(
+                    &self.active_buffs,
+                    openstory_protocol::BuffMaskGroup::Second,
+                    STATUS_STUN,
+                )
+                || character_has_buff(
+                    &self.active_buffs,
+                    openstory_protocol::BuffMaskGroup::Second,
+                    STATUS_SEAL,
+                )
+            {
+                continue;
+            }
+            let Some(character) = self.active_character.as_ref() else {
+                continue;
+            };
+            if skill_use_block_reason(&skill, character, self.inventory.as_ref()).is_some() {
+                // Keep the skill armed while its MP or another use requirement
+                // is unavailable; the next frame checks again.
+                continue;
+            }
+
+            self.auto_buff_retry_at
+                .insert(skill_id, now + Duration::from_secs(2));
+            self.use_skill(&skill);
+        }
+        if indicators_changed {
+            self.refresh_auto_buff_indicators();
         }
     }
 

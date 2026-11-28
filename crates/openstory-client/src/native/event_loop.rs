@@ -159,8 +159,12 @@ impl ApplicationHandler for ClientApp {
 
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::ModifiersChanged(modifiers) => {
+                self.chat_modifiers = modifiers.state();
+            }
             WindowEvent::Focused(false) => {
                 self.window_focused = false;
+                self.chat_modifiers = Default::default();
                 self.audio.set_music_volume(self.effective_music_volume());
                 self.npc_dialogue_scroll_dragging = None;
                 if let Some(shop) = self.npc_shop.as_mut() {
@@ -171,15 +175,26 @@ impl ApplicationHandler for ClientApp {
                 {
                     window.request_redraw();
                 }
-                if self.skill_macro_editor.has_skill_drag() {
-                    self.skill_macro_editor.finish_skill_drag(None, &[]);
-                    self.skill_macro_drag_texture = None;
-                    self.refresh_skill_macro_texture();
-                }
                 self.skill_book_drag = None;
                 self.skill_book_last_click = None;
                 self.skill_macro_drag_texture = None;
                 self.gameplay_input = GameplayInput::default();
+                let cash_shop_preview_was_moving = self.cash_shop.as_mut().is_some_and(|shop| {
+                    let was_moving = shop.preview_move_direction != 0;
+                    shop.preview_left_held = false;
+                    shop.preview_right_held = false;
+                    shop.preview_move_direction = 0;
+                    shop.preview_move_elapsed = Duration::ZERO;
+                    if was_moving {
+                        shop.preview_motion = AvatarMotion::Stand;
+                        shop.preview_frame_index = 0;
+                        shop.preview_frame_elapsed = Duration::ZERO;
+                    }
+                    was_moving
+                });
+                if cash_shop_preview_was_moving {
+                    self.refresh_cash_shop_texture();
+                }
                 self.key_config_pointer_start = None;
                 self.quickslot_pointer_binding = None;
                 if self.inventory_drag_source.take().is_some() {
@@ -243,20 +258,6 @@ impl ApplicationHandler for ClientApp {
                         window.request_redraw();
                     }
                     return;
-                }
-                if self.skill_macro_editor.has_skill_drag()
-                    && let Some(cursor) = self.cursor
-                {
-                    let cursor = self.dialog_window_input_cursor(cursor);
-                    if self.skill_macro_editor.update_skill_drag(
-                        cursor.x - skill_macros::PANEL_X,
-                        cursor.y - skill_macros::PANEL_Y,
-                    ) {
-                        self.refresh_skill_macro_texture();
-                        if let Some(window) = self.window.as_ref() {
-                            window.request_redraw();
-                        }
-                    }
                 }
                 if let Some(cursor) = self.cursor
                     && self.update_skill_book_drag(cursor)
@@ -370,25 +371,6 @@ impl ApplicationHandler for ClientApp {
                     }
                     return;
                 }
-                if self.skill_macro_editor.has_skill_drag() {
-                    let cursor = self
-                        .cursor
-                        .map(|cursor| self.dialog_window_input_cursor(cursor))
-                        .map(|cursor| {
-                            (
-                                cursor.x - skill_macros::PANEL_X,
-                                cursor.y - skill_macros::PANEL_Y,
-                            )
-                        });
-                    let skills = self.skill_macro_choices();
-                    self.skill_macro_editor.finish_skill_drag(cursor, &skills);
-                    self.skill_macro_drag_texture = None;
-                    self.refresh_skill_macro_texture();
-                    if let Some(window) = self.window.as_ref() {
-                        window.request_redraw();
-                    }
-                    return;
-                }
                 if self.skill_book_drag.is_some() {
                     self.finish_skill_book_drag(self.cursor);
                     if let Some(window) = self.window.as_ref() {
@@ -443,13 +425,25 @@ impl ApplicationHandler for ClientApp {
                     && !self.quit_confirmation
                     && self.server_notice_popup.is_none()
                     && let Some(cursor) = self.cursor
-                    && self.topmost_dialog_window_at(cursor)
-                        == Some(DialogWindow::EquipmentInventory)
                 {
-                    let cursor = self.dialog_window_input_cursor(cursor);
-                    if self.right_click_equipment_slot(cursor)
-                        && let Some(window) = self.window.as_ref()
+                    let changed = if self.cancel_active_buff_at(cursor) {
+                        true
+                    } else if let Some(point) = self.skill_macro_point(cursor) {
+                        if let Some((row, slot)) = skill_macros::slot_at(point.x, point.y) {
+                            self.set_macro_skill(row, slot, 0);
+                        }
+                        true
+                    } else if self.topmost_dialog_window_at(cursor) == Some(DialogWindow::Inventory)
                     {
+                        self.toggle_inventory_sell_mark(self.dialog_window_input_cursor(cursor))
+                    } else if self.topmost_dialog_window_at(cursor)
+                        == Some(DialogWindow::EquipmentInventory)
+                    {
+                        self.right_click_equipment_slot(self.dialog_window_input_cursor(cursor))
+                    } else {
+                        false
+                    };
+                    if changed && let Some(window) = self.window.as_ref() {
                         window.request_redraw();
                     }
                 }
@@ -572,14 +566,10 @@ impl ApplicationHandler for ClientApp {
                     && rect_contains(skill_book_close, cursor)
                     && self.dialog_window_is_topmost_at(DialogWindow::SkillBook, cursor)
                 {
-                    if self.skill_macro_editor.open {
-                        self.click_skill_macro_editor(self.dialog_window_input_cursor(cursor));
-                    } else {
-                        self.begin_skill_book_pointer(Point {
-                            x: cursor.x - skill_book_offset_x,
-                            y: cursor.y - skill_book_offset_y,
-                        });
-                    }
+                    self.begin_skill_book_pointer(Point {
+                        x: cursor.x - skill_book_offset_x,
+                        y: cursor.y - skill_book_offset_y,
+                    });
                     if let Some(window) = self.window.as_ref() {
                         window.request_redraw();
                     }
@@ -702,12 +692,9 @@ impl ApplicationHandler for ClientApp {
                     }
                     return;
                 }
-                if self.skill_macro_editor.open
-                    && self.dialog_window_hit_test(DialogWindow::SkillMacros, screen_cursor)
-                {
-                    self.click_skill_macro_editor(cursor);
-                    if let Some(window) = self.window.as_ref() {
-                        window.request_redraw();
+                if let Some(point) = self.skill_macro_point(screen_cursor) {
+                    if let Some(row) = skill_macros::emblem_at(point.x, point.y) {
+                        self.trigger_skill_macro(row as i32);
                     }
                     return;
                 }
@@ -1294,49 +1281,6 @@ impl ApplicationHandler for ClientApp {
                     }
                     return;
                 }
-                if self.skill_macro_editor.open
-                    && self.cursor.is_some_and(|cursor| {
-                        self.dialog_window_hit_test(DialogWindow::SkillMacros, cursor)
-                    })
-                {
-                    if let Some(cursor) = cursor {
-                        let local_x = cursor.x - skill_macros::PANEL_X;
-                        let local_y = cursor.y - skill_macros::PANEL_Y;
-                        if amount != 0.0 && skill_macros::skill_list_contains(local_x, local_y) {
-                            self.skill_macro_editor.scroll_skills(
-                                if amount > 0.0 { -1 } else { 1 },
-                                self.skill_macro_choices().len(),
-                            );
-                            self.refresh_skill_macro_texture();
-                            if let Some(window) = self.window.as_ref() {
-                                window.request_redraw();
-                            }
-                        } else if self.show_skill_book
-                            && (SKILL_BOOK_PANEL_X
-                                ..SKILL_BOOK_PANEL_X + SKILL_BOOK_PANEL_WIDTH as f32)
-                                .contains(&cursor.x)
-                            && (SKILL_BOOK_PANEL_Y
-                                ..SKILL_BOOK_PANEL_Y + SKILL_BOOK_PANEL_HEIGHT as f32)
-                                .contains(&cursor.y)
-                            && amount != 0.0
-                        {
-                            let direction = if amount > 0.0 { -1_isize } else { 1 };
-                            let maximum = self
-                                .skill_book_entries
-                                .len()
-                                .saturating_sub(SKILL_BOOK_VISIBLE_ROWS);
-                            self.skill_book_scroll_row = self
-                                .skill_book_scroll_row
-                                .saturating_add_signed(direction)
-                                .min(maximum);
-                            self.refresh_skill_book_texture();
-                            if let Some(window) = self.window.as_ref() {
-                                window.request_redraw();
-                            }
-                        }
-                    }
-                    return;
-                }
                 if self.cursor.is_some_and(|cursor| {
                     self.dialog_window_hit_test(DialogWindow::WorldMap, cursor)
                         && self.scroll_world_map_results(cursor, amount)
@@ -1484,6 +1428,19 @@ impl ApplicationHandler for ClientApp {
                 let npc_dialogue_is_topmost = self.cursor.is_some_and(|cursor| {
                     self.topmost_dialog_window_at(cursor) == Some(DialogWindow::NpcDialogue)
                 });
+                let scroll_npc_selection_scrollbar = npc_dialogue_is_topmost
+                    && cursor.is_some_and(|cursor| {
+                        self.scroll_npc_dialogue_selection_at(
+                            cursor,
+                            if amount > 0.0 { -1 } else { 1 },
+                        )
+                    });
+                if scroll_npc_selection_scrollbar {
+                    if let Some(window) = self.window.as_ref() {
+                        window.request_redraw();
+                    }
+                    return;
+                }
                 let scroll_npc_choices = npc_dialogue_is_topmost
                     && self.npc_dialogue.as_ref().is_some_and(|dialogue| {
                         let visible_choices = dialogue
@@ -1493,7 +1450,7 @@ impl ApplicationHandler for ClientApp {
                             .collect::<Vec<_>>();
                         dialogue.state.message_type == 4
                             && dialogue.selections.len() > visible_choices.len()
-                            && self.cursor.is_some_and(|cursor| {
+                            && cursor.is_some_and(|cursor| {
                                 rect_contains(dialogue.panel, cursor)
                                     && visible_choices
                                         .iter()
@@ -1508,9 +1465,7 @@ impl ApplicationHandler for ClientApp {
                 } else if npc_dialogue_is_topmost
                     && self.npc_dialogue.as_ref().is_some_and(|dialogue| {
                         dialogue.text_max_scroll > 0
-                            && self
-                                .cursor
-                                .is_some_and(|cursor| rect_contains(dialogue.panel, cursor))
+                            && cursor.is_some_and(|cursor| rect_contains(dialogue.panel, cursor))
                     })
                 {
                     self.scroll_npc_dialogue_text(if amount > 0.0 { -1 } else { 1 });
@@ -1966,7 +1921,6 @@ impl ApplicationHandler for ClientApp {
                 self.login_key_text_for_ime_dedup = None;
                 self.character_creation_key_text_for_ime_dedup = None;
                 self.chat_key_text_for_ime_dedup = None;
-                self.skill_macro_editor.key_text_for_ime_dedup = None;
                 if let Some(input) = self.family_ui.input.as_mut() {
                     input.key_text_for_ime_dedup = None;
                 }
@@ -2006,18 +1960,6 @@ impl ApplicationHandler for ClientApp {
                         }
                     }
                     self.refresh_family_texture();
-                    if let Some(window) = self.window.as_ref() {
-                        window.request_redraw();
-                    }
-                    return;
-                }
-                if self.skill_macro_editor.open {
-                    self.handle_skill_macro_editor_key(
-                        event.physical_key,
-                        event.state,
-                        event.repeat,
-                        event.text.as_deref(),
-                    );
                     if let Some(window) = self.window.as_ref() {
                         window.request_redraw();
                     }
@@ -2095,27 +2037,32 @@ impl ApplicationHandler for ClientApp {
                     return;
                 }
                 // Keep NPC dialogue keys ahead of gameplay input while allowing
-                // the item inventory to be opened and focused above the dialogue.
+                // window bindings to open and focus other windows above it.
                 if let Some(message_type) = self
                     .npc_dialogue
                     .as_ref()
                     .map(|dialogue| dialogue.state.message_type)
-                    .filter(|_| {
-                        matches!(
-                            self.focused_dialog_window(),
-                            Some(DialogWindow::NpcDialogue | DialogWindow::Inventory)
-                        )
-                    })
                 {
                     if event.state == ElementState::Pressed {
+                        let focused_window = self.focused_dialog_window();
                         let inventory_has_focus = self.show_inventory
                             && self.raised_dialog_windows.first() == Some(&DialogWindow::Inventory);
-                        if event.physical_key == PhysicalKey::Code(KeyCode::KeyI)
+                        let dialogue_has_focus = matches!(
+                            focused_window,
+                            Some(DialogWindow::NpcDialogue | DialogWindow::Inventory)
+                        );
+                        let menu_binding =
+                            gameplay_key_binding(self.server_keymap.as_deref(), event.physical_key)
+                                .filter(|binding| binding.kind == 4);
+                        if let Some(binding) = menu_binding {
+                            self.apply_keymap_binding(event.state, event.repeat, binding);
+                        } else if event.physical_key == PhysicalKey::Code(KeyCode::KeyI)
                             && !event.repeat
-                            && !matches!(message_type, 2 | 3)
+                            && (!matches!(message_type, 2 | 3) || !dialogue_has_focus)
                         {
                             self.open_inventory_tab(self.inventory_tab);
-                        } else if event.physical_key == PhysicalKey::Code(KeyCode::Escape)
+                        } else if dialogue_has_focus
+                            && event.physical_key == PhysicalKey::Code(KeyCode::Escape)
                             && !event.repeat
                         {
                             if inventory_has_focus {
@@ -2123,7 +2070,7 @@ impl ApplicationHandler for ClientApp {
                             } else {
                                 self.cancel_npc_dialogue();
                             }
-                        } else if !inventory_has_focus {
+                        } else if dialogue_has_focus && !inventory_has_focus {
                             let is_space =
                                 matches!(event.physical_key, PhysicalKey::Code(KeyCode::Space))
                                     || matches!(&event.logical_key, Key::Named(NamedKey::Space))
@@ -2706,6 +2653,29 @@ impl ApplicationHandler for ClientApp {
                     && self.cash_shop.is_none()
                 {
                     if event.state == ElementState::Pressed {
+                        if event.physical_key == PhysicalKey::Code(KeyCode::KeyV)
+                            && (self.chat_modifiers.control_key()
+                                || self.chat_modifiers.super_key())
+                        {
+                            if let Ok(text) = arboard::Clipboard::new()
+                                .and_then(|mut clipboard| clipboard.get_text())
+                            {
+                                let max_chars = self.cash_item_compose.as_ref().map_or(
+                                    MAX_CHAT_MESSAGE_CHARS,
+                                    CashItemCompose::input_max_chars,
+                                );
+                                chat_history::append_chat_text(
+                                    &mut self.chat_input,
+                                    &text,
+                                    max_chars,
+                                );
+                                self.refresh_chat_texture();
+                            }
+                            if let Some(window) = self.window.as_ref() {
+                                window.request_redraw();
+                            }
+                            return;
+                        }
                         if let Some(text) = event
                             .text
                             .as_deref()
@@ -2779,6 +2749,18 @@ impl ApplicationHandler for ClientApp {
                                 }
                                 PhysicalKey::Code(KeyCode::Enter | KeyCode::NumpadEnter) => {
                                     self.submit_chat_message();
+                                }
+                                PhysicalKey::Code(KeyCode::ArrowUp)
+                                    if self.cash_item_compose.is_none() =>
+                                {
+                                    self.chat_history.older(&mut self.chat_input);
+                                    self.refresh_chat_texture();
+                                }
+                                PhysicalKey::Code(KeyCode::ArrowDown)
+                                    if self.cash_item_compose.is_none() =>
+                                {
+                                    self.chat_history.newer(&mut self.chat_input);
+                                    self.refresh_chat_texture();
                                 }
                                 PhysicalKey::Code(KeyCode::Backspace) => {
                                     self.chat_input.pop();
@@ -3085,7 +3067,7 @@ impl ApplicationHandler for ClientApp {
                     }
                     PhysicalKey::Code(KeyCode::Escape) => {
                         if self.show_skill_book {
-                            self.show_skill_book = false;
+                            self.close_skill_book();
                         } else if self.show_inventory {
                             if self.pending_scroll_slot.take().is_some() {
                                 self.refresh_inventory_texture();
@@ -3186,24 +3168,6 @@ impl ApplicationHandler for ClientApp {
                         return;
                     }
                     self.edit_family_input(&text);
-                    if let Some(window) = self.window.as_ref() {
-                        window.request_redraw();
-                    }
-                    return;
-                }
-                if self.skill_macro_editor.open {
-                    if self
-                        .skill_macro_editor
-                        .key_text_for_ime_dedup
-                        .take()
-                        .as_deref()
-                        == Some(text.as_str())
-                    {
-                        return;
-                    }
-                    self.skill_macro_editor.key_text_for_ime_dedup = None;
-                    self.skill_macro_editor.insert_text(&text);
-                    self.refresh_skill_macro_texture();
                     if let Some(window) = self.window.as_ref() {
                         window.request_redraw();
                     }
@@ -4202,6 +4166,29 @@ impl ApplicationHandler for ClientApp {
                         opacity: 1.0,
                     });
                 }
+                // Draw the dock first so the skill book bevel covers the join.
+                let macro_width = self.skill_macro_width();
+                if macro_width > 0.0
+                    && let Some(texture) = self.skill_macro_texture.as_ref()
+                {
+                    draws.push(SpriteDraw {
+                        texture,
+                        x: skill_macros::PANEL_X,
+                        y: skill_macros::PANEL_Y,
+                        width: macro_width,
+                        height: skill_macros::PANEL_HEIGHT as f32,
+                        uv: [
+                            1.0 - macro_width / skill_macros::PANEL_WIDTH as f32,
+                            0.0,
+                            1.0,
+                            1.0,
+                        ],
+                        tint: [1.0; 3],
+                        blend_mode: BlendMode::Alpha,
+                        flip_x: false,
+                        opacity: 1.0,
+                    });
+                }
                 if self.show_skill_book {
                     if let Some(texture) = self.skill_book_texture.as_ref() {
                         draws.push(SpriteDraw {
@@ -4770,48 +4757,6 @@ impl ApplicationHandler for ClientApp {
                         opacity: 1.0,
                     });
                 }
-                if self.skill_macro_editor.open {
-                    if let Some(texture) = self.skill_macro_texture.as_ref() {
-                        draws.push(SpriteDraw {
-                            texture,
-                            x: skill_macros::PANEL_X,
-                            y: skill_macros::PANEL_Y,
-                            width: skill_macros::PANEL_WIDTH as f32,
-                            height: skill_macros::PANEL_HEIGHT as f32,
-                            uv: [0.0, 0.0, 1.0, 1.0],
-                            tint: [1.0, 1.0, 1.0],
-                            blend_mode: BlendMode::Alpha,
-                            flip_x: false,
-                            opacity: 1.0,
-                        });
-                    }
-                    if self.skill_macro_editor.skill_drag_moved()
-                        && let (Some(texture), Some(cursor)) =
-                            (self.skill_macro_drag_texture.as_ref(), self.cursor)
-                    {
-                        let local = self.dialog_window_input_cursor(cursor);
-                        let inside = (skill_macros::PANEL_X
-                            ..skill_macros::PANEL_X + skill_macros::PANEL_WIDTH as f32)
-                            .contains(&local.x)
-                            && (skill_macros::PANEL_Y
-                                ..skill_macros::PANEL_Y + skill_macros::PANEL_HEIGHT as f32)
-                                .contains(&local.y);
-                        if !inside {
-                            draws.push(SpriteDraw {
-                                texture,
-                                x: cursor.x - 16.0,
-                                y: cursor.y - 16.0,
-                                width: 32.0,
-                                height: 32.0,
-                                uv: [0.0, 0.0, 1.0, 1.0],
-                                tint: [1.0, 1.0, 1.0],
-                                blend_mode: BlendMode::Alpha,
-                                flip_x: false,
-                                opacity: 0.85,
-                            });
-                        }
-                    }
-                }
                 if self.quit_confirmation {
                     if let Some(black) = self.solid_textures.first() {
                         draws.push(SpriteDraw {
@@ -5303,6 +5248,8 @@ impl ApplicationHandler for ClientApp {
             }
         }
         let now = Instant::now();
+        self.advance_pet_item_filter_search(now);
+        self.advance_world_map_search(now);
         self.tick_event_list(now);
         self.status_messages.retain(|message| {
             now.saturating_duration_since(message.created_at) < STATUS_MESSAGE_DURATION
@@ -5341,6 +5288,24 @@ impl ApplicationHandler for ClientApp {
         }
         let elapsed = now.saturating_duration_since(self.last_simulation_update);
         self.last_simulation_update = now;
+        let cash_shop_preview_changed = if let Some(shop) = self.cash_shop.as_mut() {
+            let look = self
+                .active_character
+                .as_ref()
+                .map(|character| &character.look);
+            cash_shop_ui::advance_preview_animation(
+                shop,
+                look,
+                &self.item_archive,
+                &self.character_archive,
+                elapsed,
+            )
+        } else {
+            false
+        };
+        if cash_shop_preview_changed {
+            self.refresh_cash_shop_texture();
+        }
         self.advance_avatar_megaphone(elapsed, now);
         self.advance_maple_tv_animations(elapsed);
         if self.map_loading_started_at.is_none() {

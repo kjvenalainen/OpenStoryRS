@@ -897,16 +897,61 @@ impl ClientApp {
 
     pub(super) fn show_pet_speech(&mut self, update: openstory_protocol::PetChatUpdate) {
         let key = (update.character_id, update.slot);
-        let Some(pet) = self
+        let Some(pet_id) = self
             .map_scene
-            .as_mut()
-            .and_then(|scene| scene.pets.get_mut(&key))
+            .as_ref()
+            .and_then(|scene| scene.pets.get(&key))
+            .map(|pet| pet.item_id)
         else {
             return;
         };
-        pet.speech_bubble_remaining = Some(SPEECH_BUBBLE_DURATION);
+        if let Some(pet) = self
+            .map_scene
+            .as_mut()
+            .and_then(|scene| scene.pets.get_mut(&key))
+        {
+            pet.speech_bubble_remaining = Some(SPEECH_BUBBLE_DURATION);
+        }
 
-        let Some(skin) = self.chat_balloon_skin.as_ref() else {
+        let is_local_owner = self
+            .active_character
+            .as_ref()
+            .is_some_and(|character| character.id == update.character_id);
+        let first_pet_slot = self.map_scene.as_ref().and_then(|scene| {
+            scene
+                .pets
+                .keys()
+                .filter(|(owner_id, _)| *owner_id == update.character_id)
+                .map(|(_, slot)| *slot)
+                .min()
+        });
+        let quote_ring_equipped = is_local_owner
+            && Some(update.slot) == first_pet_slot
+            && self.inventory.as_ref().is_some_and(|inventory| {
+                inventory
+                    .equipped()
+                    .any(|item| item.item_id / 10_000 == 183)
+            });
+        let pet_balloon_style = quote_ring_equipped
+            .then(|| pet_chat_balloon_style_id(&self.item_archive, pet_id))
+            .flatten();
+        if let Some(style) = pet_balloon_style
+            && !self.pet_chat_balloon_skins.contains_key(&style)
+        {
+            match load_pet_chat_balloon_skin(&self.ui_archive, style) {
+                Ok(skin) => {
+                    self.pet_chat_balloon_skins.insert(style, skin);
+                }
+                Err(error) => {
+                    eprintln!("OpenStoryRS: could not load pet quote style {style}: {error}");
+                }
+            }
+        }
+
+        let skin = pet_balloon_style
+            .and_then(|style| self.pet_chat_balloon_skins.get(&style))
+            .or(self.chat_balloon_skin.as_ref());
+        let Some(skin) = skin else {
             return;
         };
         let pixels = render_speech_bubble(&self.font, skin, &update.text);
@@ -961,6 +1006,7 @@ impl ClientApp {
                 return;
             }
         };
+        self.chat_history.record(&message);
         if let Some(ChatCommand::Trade(command)) = command {
             self.execute_trade_command(command);
             self.chat_input.clear();

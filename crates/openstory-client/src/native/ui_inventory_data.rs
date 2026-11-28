@@ -1,3 +1,20 @@
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct InventorySellMark {
+    inventory_type: openstory_protocol::InventoryType,
+    slot: u16,
+    item_id: i32,
+    cash_id: Option<i64>,
+}
+
+fn inventory_sell_mark(item: &openstory_protocol::InventoryItem) -> InventorySellMark {
+    InventorySellMark {
+        inventory_type: item.inventory_type,
+        slot: item.slot,
+        item_id: item.item_id,
+        cash_id: item.cash_id,
+    }
+}
+
 fn inventory_tabs() -> [openstory_protocol::InventoryType; 5] {
     [
         openstory_protocol::InventoryType::Equip,

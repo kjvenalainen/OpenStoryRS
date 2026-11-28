@@ -32,21 +32,30 @@ impl ClientApp {
     ) -> bool {
         const DOUBLE_CLICK_INTERVAL: Duration = Duration::from_millis(500);
 
-        let Some((openstory_protocol::InventoryType::Equip, slot)) = target else {
+        let Some((inventory_type, slot)) = target else {
             self.last_inventory_equip_click = None;
             return false;
         };
+        if !matches!(
+            inventory_type,
+            openstory_protocol::InventoryType::Equip | openstory_protocol::InventoryType::Equipped
+        ) {
+            self.last_inventory_equip_click = None;
+            return false;
+        }
         let now = Instant::now();
         if self
             .last_inventory_equip_click
-            .is_some_and(|(previous_slot, at)| {
-                previous_slot == slot && now.saturating_duration_since(at) <= DOUBLE_CLICK_INTERVAL
+            .is_some_and(|(previous_type, previous_slot, at)| {
+                previous_type == inventory_type
+                    && previous_slot == slot
+                    && now.saturating_duration_since(at) <= DOUBLE_CLICK_INTERVAL
             })
         {
             self.last_inventory_equip_click = None;
             true
         } else {
-            self.last_inventory_equip_click = Some((slot, now));
+            self.last_inventory_equip_click = Some((inventory_type, slot, now));
             false
         }
     }
@@ -357,12 +366,10 @@ impl ClientApp {
         let x = cursor.x - QUEST_LOG_PANEL_X;
         let y = cursor.y - QUEST_LOG_PANEL_Y;
         if let Some(quest_id) = self.quest_forfeit_confirmation {
-            let overlay_x = (QUEST_LOG_PANEL_WIDTH as f32 - 266.0) * 0.5;
-            if (218.0..240.0).contains(&y) && (overlay_x + 35.0..overlay_x + 105.0).contains(&x) {
+            let [accept, cancel] = quest_forfeit_action_buttons();
+            if accept.contains(x, y) {
                 self.resolve_quest_forfeit(true);
-            } else if (218.0..240.0).contains(&y)
-                && (overlay_x + 140.0..overlay_x + 215.0).contains(&x)
-            {
+            } else if cancel.contains(x, y) || quest_forfeit_close_button().contains(x, y) {
                 self.resolve_quest_forfeit(false);
             } else {
                 self.quest_forfeit_confirmation = Some(quest_id);
@@ -494,7 +501,7 @@ impl ClientApp {
         let local_x = cursor.x - PANEL_X;
         let local_y = cursor.y - PANEL_Y;
         if ui_foundation::SKILL_CLOSE_BUTTON.contains(local_x, local_y) {
-            self.show_skill_book = false;
+            self.close_skill_book();
             return true;
         }
         if let Some(tab) =
@@ -514,7 +521,7 @@ impl ClientApp {
             return true;
         }
         if ui_foundation::SKILL_MACRO_BUTTON.contains(local_x, local_y) {
-            self.open_skill_macro_editor();
+            self.toggle_skill_macro_panel();
             return true;
         }
         if let Some(row) = (0..SKILL_BOOK_VISIBLE_ROWS)
@@ -1197,14 +1204,19 @@ impl ClientApp {
         ) {
             return false;
         }
+        if self.inventory_pending_move.take().is_some() {
+            self.refresh_inventory_texture();
+        }
         let local_x = cursor.x - EQUIPMENT_INVENTORY_PANEL_X;
         let local_y = cursor.y - EQUIPMENT_INVENTORY_PANEL_Y;
         if ui_equipment::CLOSE.contains(local_x, local_y) {
+            self.register_inventory_equip_click(None);
             self.toggle_equipment_inventory();
         } else if let Some(tab) = EquipmentTab::ALL
             .into_iter()
             .find(|tab| tab.bounds().contains(local_x, local_y))
         {
+            self.register_inventory_equip_click(None);
             if self.equipment_tab != tab {
                 self.equipment_tab = tab;
                 self.refresh_equipment_inventory_texture();
@@ -1214,6 +1226,7 @@ impl ClientApp {
         } else if self.equipment_tab == EquipmentTab::Pet
             && ui_equipment::item_ignore_bounds().contains(local_x, local_y)
         {
+            self.register_inventory_equip_click(None);
             if self.inventory.as_ref().is_some_and(|inventory| {
                 inventory
                     .equipped()
@@ -1226,6 +1239,19 @@ impl ClientApp {
                     [255, 215, 128],
                 );
             }
+        } else if let Some(ui_equipment::EquipmentHover::Worn(slot)) =
+            self.inventory.as_ref().and_then(|inventory| {
+                self.equipment_tab
+                    .hover(inventory, self.equipment_pet_slots(), local_x, local_y)
+            })
+        {
+            self.inventory_drag_source =
+                Some((openstory_protocol::InventoryType::Equipped, slot, cursor));
+            self.refresh_inventory_drag_texture();
+            self.update_inventory_hover();
+            self.refresh_inventory_texture();
+        } else {
+            self.register_inventory_equip_click(None);
         }
         true
     }
@@ -1304,6 +1330,35 @@ impl ClientApp {
         } else {
             self.register_inventory_equip_click(None);
         }
+        true
+    }
+
+    pub(super) fn toggle_inventory_sell_mark(&mut self, cursor: Point) -> bool {
+        if !self.show_inventory || self.inventory_pending_move.is_some() {
+            return false;
+        }
+        let Some(slot) = inventory_slot_at(cursor, self.inventory_scroll_row) else {
+            return false;
+        };
+        let mark = self.inventory.as_ref().and_then(|inventory| {
+            inventory
+                .items
+                .iter()
+                .find(|item| {
+                    item.inventory_type == self.inventory_tab
+                        && item.slot == slot
+                        && item.slot > 0
+                        && item.count > 0
+                })
+                .map(inventory_sell_mark)
+        });
+        let Some(mark) = mark else {
+            return false;
+        };
+        if !self.marked_inventory_items.remove(&mark) {
+            self.marked_inventory_items.insert(mark);
+        }
+        self.refresh_inventory_texture();
         true
     }
 
@@ -1392,6 +1447,58 @@ impl ClientApp {
             .is_none_or(|cursor| (cursor.x - origin.x).abs() + (cursor.y - origin.y).abs() >= 4.0);
         if moved {
             self.register_inventory_equip_click(None);
+        }
+        if moved && source_type == openstory_protocol::InventoryType::Equipped {
+            let screen_cursor = cursor.map(|cursor| self.cursor.unwrap_or(cursor));
+            if screen_cursor.is_some_and(|cursor| {
+                self.topmost_dialog_window_at(cursor) == Some(DialogWindow::Inventory)
+            }) {
+                let drop_on_grid = cursor
+                    .and_then(|cursor| inventory_slot_at(cursor, self.inventory_scroll_row))
+                    .is_some();
+                let drop_on_equip_tab = cursor.and_then(inventory_tab_at)
+                    == Some(openstory_protocol::InventoryType::Equip);
+                if self.inventory_tab != openstory_protocol::InventoryType::Equip
+                    && (drop_on_grid || drop_on_equip_tab)
+                {
+                    self.inventory_tab = openstory_protocol::InventoryType::Equip;
+                    self.inventory_scroll_row = 0;
+                    self.update_inventory_hover();
+                } else if self.inventory_tab == openstory_protocol::InventoryType::Equip
+                    && let Some(destination) = cursor
+                        .and_then(|cursor| inventory_slot_at(cursor, self.inventory_scroll_row))
+                    && self.inventory.as_ref().is_some_and(|inventory| {
+                        destination
+                            <= inventory_slot_max(
+                                inventory,
+                                openstory_protocol::InventoryType::Equip,
+                            )
+                    })
+                    && self.channel_connected
+                    && let Some(packet) = i16::try_from(source_slot)
+                        .ok()
+                        .and_then(i16::checked_neg)
+                        .zip(i16::try_from(destination).ok())
+                        .map(|(source, destination)| {
+                            openstory_protocol::move_item_packet(
+                                openstory_protocol::InventoryType::Equipped,
+                                source,
+                                destination,
+                                1,
+                                self.client_started_at.elapsed().as_millis() as i32,
+                            )
+                        })
+                {
+                    if let Some(session) = self.session.as_ref()
+                        && let Err(error) = session.send_packet(packet)
+                    {
+                        eprintln!("OpenStory: could not unequip item: {error}");
+                        self.channel_connected = false;
+                    }
+                }
+            }
+            self.refresh_inventory_texture();
+            return;
         }
         if moved && let Some(drop_cursor) = cursor {
             let screen_cursor = self.cursor.unwrap_or(drop_cursor);
@@ -1505,7 +1612,12 @@ impl ClientApp {
         if !moved || destination == Some(source_slot) {
             let double_click =
                 self.register_inventory_equip_click(Some((source_type, source_slot)));
-            if source_type != openstory_protocol::InventoryType::Equip || double_click {
+            let activate = match source_type {
+                openstory_protocol::InventoryType::Equip => double_click,
+                openstory_protocol::InventoryType::Equipped => double_click,
+                _ => true,
+            };
+            if activate {
                 self.activate_inventory_item(source_type, source_slot);
             }
             self.refresh_inventory_texture();
@@ -1951,6 +2063,10 @@ impl ClientApp {
 
     pub(super) fn sync_equipped_look(&mut self) {
         let look_changed = self.update_equipped_look_data();
+        self.refresh_local_pet_equipment_art();
+        if let Some(character_id) = self.active_character.as_ref().map(|character| character.id) {
+            self.refresh_pet_name_labels(character_id);
+        }
         let Some(look) = self
             .active_character
             .as_ref()
@@ -1996,6 +2112,7 @@ impl ClientApp {
         };
         let mut equips = Vec::new();
         let mut weapon_id = 0;
+        let mut weapon_sticker_id = 0;
         for item in inventory.equipped() {
             if (180..=183).contains(&(item.item_id / 10_000)) {
                 continue;
@@ -2010,15 +2127,21 @@ impl ClientApp {
             if item.slot == 11 {
                 weapon_id = item.item_id;
             }
+            // v83 stores cash-worn equipment 100 slots above its base slot.
+            if item.slot == 111 && (130..=170).contains(&(item.item_id / 10_000)) {
+                weapon_sticker_id = item.item_id;
+            }
         }
         equips.sort_unstable_by_key(|(slot, _)| slot.unsigned_abs());
         let look_changed = character.look.equips != equips
             || !character.look.masked_equips.is_empty()
-            || character.look.weapon_id != weapon_id;
+            || character.look.weapon_id != weapon_id
+            || character.look.weapon_sticker_id != weapon_sticker_id;
         if look_changed && let Some(character) = self.active_character.as_mut() {
             character.look.equips = equips;
             character.look.masked_equips.clear();
             character.look.weapon_id = weapon_id;
+            character.look.weapon_sticker_id = weapon_sticker_id;
         }
         look_changed
     }

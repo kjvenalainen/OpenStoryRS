@@ -348,8 +348,8 @@ impl ClientApp {
                     && self.cash_shop.is_none()
                     && self.npc_shop.is_none()
                     && self.dialog_window_drag.is_none()
+                    && self.skill_book_drag.is_none()
                     && self.inventory_drag_source.is_none()
-                    && !self.skill_macro_editor.has_skill_drag()
                     && self.inventory_drop_prompt.is_none()
                     && !self.quit_confirmation
                     && !self.wedding_panel_open
@@ -375,8 +375,8 @@ impl ClientApp {
                     && self.cash_shop.is_none()
                     && self.npc_shop.is_none()
                     && self.dialog_window_drag.is_none()
+                    && self.skill_book_drag.is_none()
                     && self.inventory_drag_source.is_none()
-                    && !self.skill_macro_editor.has_skill_drag()
                     && self.inventory_drop_prompt.is_none()
                     && !self.quit_confirmation
                     && !self.wedding_panel_open
@@ -410,8 +410,8 @@ impl ClientApp {
                         && self.show_skill_book
                         && self.cash_shop.is_none()
                         && self.dialog_window_drag.is_none()
+                        && self.skill_book_drag.is_none()
                         && self.inventory_drag_source.is_none()
-                        && !self.skill_macro_editor.has_skill_drag()
                         && self.inventory_drop_prompt.is_none()
                         && !self.quit_confirmation
                         && !self.wedding_panel_open

@@ -2,6 +2,7 @@ mod audio;
 mod avatar_megaphone;
 mod cash_shop_ui;
 mod channel_switch;
+mod chat_history;
 mod hardware_info;
 mod item_megaphone;
 mod item_tooltip;
@@ -44,6 +45,7 @@ use std::time::{Duration, Instant};
 
 const INVENTORY_MOVE_PREVIEW_TIMEOUT: Duration = Duration::from_secs(2);
 const INITIAL_NPC_LOADING_QUIET_WINDOW: Duration = Duration::from_millis(500);
+const BUFFSTAT_SPEED: u64 = 0x0000_0080_0000_0000;
 
 use settings::{
     AudioSettings, DisplaySettings, GameplaySettings, InputSettings, LoginPreferences,

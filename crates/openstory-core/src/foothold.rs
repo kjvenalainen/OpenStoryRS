@@ -134,6 +134,7 @@ pub struct FootholdTree {
     footholds: Vec<Foothold>,
     id_to_index: HashMap<u16, usize>,
     floor_buckets: Vec<Vec<usize>>,
+    wall_buckets: Vec<Vec<usize>>,
     bucket_origin: i32,
     bounds: MapBounds,
 }
@@ -167,10 +168,12 @@ impl FootholdTree {
             ((max_x - bucket_origin).div_euclid(BUCKET_WIDTH) + 1) as usize
         };
         let mut floor_buckets = vec![Vec::new(); bucket_count];
+        let mut wall_buckets = vec![Vec::new(); bucket_count];
 
         for (index, foothold) in footholds.iter().copied().enumerate() {
-            // Vertical and degenerate segments are collision walls, never floors.
             if foothold.is_wall() {
+                let bucket = bucket_index(i32::from(foothold.x1), bucket_origin);
+                wall_buckets[bucket].push(index);
                 continue;
             }
             let first = bucket_index(i32::from(foothold.left()), bucket_origin);
@@ -184,6 +187,7 @@ impl FootholdTree {
             footholds,
             id_to_index,
             floor_buckets,
+            wall_buckets,
             bucket_origin,
             bounds,
         })
@@ -263,7 +267,7 @@ impl FootholdTree {
 
     /// Follows a linked stair seam or an unlinked, continuous endpoint,
     /// preferring a flat continuation when a ramp branches from the same seam.
-    pub(crate) fn floor_across_edge(
+    pub fn floor_across_edge(
         &self,
         floor: Foothold,
         left: bool,
@@ -377,6 +381,61 @@ impl FootholdTree {
         }
 
         first_contact.map(|(_, contact)| contact)
+    }
+
+    /// Finds the first wall crossed by a moving character, checking its
+    /// vertical body span at the point where its horizontal path meets the wall.
+    pub(crate) fn first_wall_crossing(&self, start: (f64, f64), end: (f64, f64)) -> Option<f64> {
+        let (start_x, start_y) = start;
+        let (end_x, end_y) = end;
+        let delta_x = end_x - start_x;
+        if delta_x == 0.0
+            || !start_x.is_finite()
+            || !start_y.is_finite()
+            || !end_x.is_finite()
+            || !end_y.is_finite()
+        {
+            return None;
+        }
+
+        let min_x = start_x.min(end_x).max(f64::from(i16::MIN)).floor() as i32;
+        let max_x = start_x.max(end_x).min(f64::from(i16::MAX)).ceil() as i32;
+        if min_x > max_x || max_x < self.bucket_origin {
+            return None;
+        }
+        let first_bucket = if min_x <= self.bucket_origin {
+            0
+        } else {
+            bucket_index(min_x, self.bucket_origin)
+        };
+        let last_bucket = bucket_index(max_x, self.bucket_origin).min(self.wall_buckets.len() - 1);
+        let moving_left = delta_x < 0.0;
+        let mut first_crossing: Option<(f64, f64)> = None;
+
+        for bucket in first_bucket..=last_bucket {
+            for &index in &self.wall_buckets[bucket] {
+                let wall = self.footholds[index];
+                let wall_x = f64::from(wall.x1);
+                let crosses_wall = if moving_left {
+                    start_x > wall_x && end_x <= wall_x
+                } else {
+                    start_x < wall_x && end_x >= wall_x
+                };
+                if !crosses_wall {
+                    continue;
+                }
+
+                let time = (wall_x - start_x) / delta_x;
+                let y = start_y + (end_y - start_y) * time;
+                if wall.blocks_vertical_range(vertical_top(y), vertical_bottom(y))
+                    && first_crossing.is_none_or(|(first_time, _)| time < first_time)
+                {
+                    first_crossing = Some((time, wall_x));
+                }
+            }
+        }
+
+        first_crossing.map(|(_, wall_x)| wall_x)
     }
 
     /// Returns the legacy spawn height: one pixel above the nearest floor,

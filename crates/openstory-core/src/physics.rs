@@ -251,9 +251,15 @@ impl PhysicsEngine {
     fn move_through_air(self, tree: &FootholdTree, body: &mut PhysicsBody) {
         let start = (body.x, body.y);
         let end_x = body.x + body.horizontal_speed;
-        let limit = self.horizontal_limit(tree, body, end_x, true);
-        let target_x = limit.unwrap_or(end_x);
         let target_y = body.y + body.vertical_speed;
+        let mut limit = self.horizontal_limit(tree, body, end_x, true);
+        if let Some(wall) = tree.first_wall_crossing(start, (end_x, target_y))
+            && limit
+                .is_none_or(|linked_limit| (wall - body.x).abs() < (linked_limit - body.x).abs())
+        {
+            limit = Some(wall);
+        }
+        let target_x = limit.unwrap_or(end_x);
 
         // Keep the original diagonal up to a wall, then finish vertically.
         let wall_y = limit.map_or(target_y, |wall| {

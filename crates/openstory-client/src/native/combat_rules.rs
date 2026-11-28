@@ -130,11 +130,10 @@ fn player_movement_forces(
         speed = speed.saturating_add(integer_property(&info, "incSpeed").unwrap_or(0));
         jump = jump.saturating_add(integer_property(&info, "incJump").unwrap_or(0));
     }
-    speed = speed.saturating_add(i64::from(character_buff_value(
-        active_buffs,
-        openstory_protocol::BuffMaskGroup::Second,
-        0x0000_0080_0000_0000,
-    )));
+    speed = speed.saturating_add(active_buffs.total_value(
+        &character_buff_key(openstory_protocol::BuffMaskGroup::Second, BUFFSTAT_SPEED),
+        Instant::now(),
+    ));
     jump = jump.saturating_add(i64::from(character_buff_value(
         active_buffs,
         openstory_protocol::BuffMaskGroup::Second,
@@ -441,9 +440,7 @@ fn basic_attack_stats(
 
     let now = Instant::now();
     let buff_value = |group, flag| {
-        active_buffs
-            .get_active(&character_buff_key(group, flag), now)
-            .map_or(0_i64, |buff| i64::from(buff.value))
+        active_buffs.total_value(&character_buff_key(group, flag), now)
     };
     // CharStats adds accuracy derived from the unmodified DEX/LUK totals before
     // applying percentage buffs such as Maple Warrior.

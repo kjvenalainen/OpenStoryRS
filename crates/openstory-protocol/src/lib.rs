@@ -304,8 +304,9 @@ pub use skill_macros::{
     save_skill_macros_packet,
 };
 pub use skills::{
-    OPCODE_SPEND_SKILL_POINT, OPCODE_UPDATE_SKILL, OPCODE_USE_SKILL, SkillEntry, SkillUpdate,
-    parse_skill_update, spend_skill_point_packet, use_skill_packet,
+    OPCODE_CANCEL_BUFF_REQUEST, OPCODE_SPEND_SKILL_POINT, OPCODE_UPDATE_SKILL, OPCODE_USE_SKILL,
+    SkillEntry, SkillUpdate, cancel_buff_packet, parse_skill_update, spend_skill_point_packet,
+    use_skill_packet,
 };
 pub use social::{
     OPCODE_MARRIAGE_REQUEST, OPCODE_MARRIAGE_RESULT, OPCODE_NOTIFY_JOB_CHANGE,

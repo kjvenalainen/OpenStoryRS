@@ -512,6 +512,29 @@ fn append_map_entity_draws<'a>(
                         opacity: 1.0,
                     });
                 }
+                if let Some(frame) = pet.equipment_frame() {
+                    for (texture_index, rect) in &frame.sprites {
+                        let Some(texture) = textures.get(*texture_index) else {
+                            continue;
+                        };
+                        draws.push(SpriteDraw {
+                            texture,
+                            x: if flipped {
+                                1024.0 - (rect.x + rect.width) + offset_x
+                            } else {
+                                rect.x + offset_x
+                            },
+                            y: rect.y + offset_y,
+                            width: rect.width,
+                            height: rect.height,
+                            uv: [0.0, 0.0, 1.0, 1.0],
+                            tint: [1.0, 1.0, 1.0],
+                            blend_mode: rect.blend_mode,
+                            flip_x: flipped,
+                            opacity: 1.0,
+                        });
+                    }
+                }
                 if pet.speech_bubble_remaining.is_some()
                     && let Some(texture) = pet_speech_textures.get(&(pet.owner_id, pet.slot))
                 {

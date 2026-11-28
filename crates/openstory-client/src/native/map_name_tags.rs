@@ -55,6 +55,64 @@ fn append_map_name_tag_sprite_scaled(
     kind: MapNameTagKind,
     scale: f32,
 ) -> Option<usize> {
+    append_map_name_tag_sprite_scaled_with_style(
+        sprites,
+        font,
+        ui_archive,
+        character_archive,
+        look,
+        name,
+        center_x,
+        anchor_y,
+        kind,
+        scale,
+        None,
+    )
+}
+
+fn append_pet_name_tag_sprite_scaled(
+    sprites: &mut Vec<DecodedSprite>,
+    font: &fontdue::Font,
+    ui_archive: &NxArchive,
+    item_archive: &NxArchive,
+    pet_id: i32,
+    use_pet_style: bool,
+    name: &str,
+    center_x: f32,
+    anchor_y: f32,
+    scale: f32,
+) -> Option<usize> {
+    let style = use_pet_style
+        .then(|| pet_name_tag_style_id(item_archive, pet_id))
+        .flatten();
+    append_map_name_tag_sprite_scaled_with_style(
+        sprites,
+        font,
+        ui_archive,
+        None,
+        None,
+        name,
+        center_x,
+        anchor_y,
+        MapNameTagKind::Pet,
+        scale,
+        style,
+    )
+}
+
+fn append_map_name_tag_sprite_scaled_with_style(
+    sprites: &mut Vec<DecodedSprite>,
+    font: &fontdue::Font,
+    ui_archive: &NxArchive,
+    character_archive: Option<&NxArchive>,
+    look: Option<&openstory_protocol::CharacterLook>,
+    name: &str,
+    center_x: f32,
+    anchor_y: f32,
+    kind: MapNameTagKind,
+    scale: f32,
+    style_override: Option<i32>,
+) -> Option<usize> {
     let name = name.trim();
     if name.is_empty() || !scale.is_finite() || scale <= 0.0 {
         return None;
@@ -65,12 +123,15 @@ fn append_map_name_tag_sprite_scaled(
         .clamp(1.0, (MAP_NAME_TAG_MAX_WIDTH as f32 * scale - 16.0 * scale).max(1.0))
         as usize;
 
-    let style = look
-        .zip(character_archive)
-        .map(|(look, archive)| equipped_name_tag_styles(look, archive))
-        .unwrap_or_default()
-        .into_iter()
-        .find_map(|style| load_name_tag_style(ui_archive, style));
+    let style = style_override
+        .and_then(|style| load_name_tag_style(ui_archive, style, kind))
+        .or_else(|| {
+            look.zip(character_archive)
+                .map(|(look, archive)| equipped_name_tag_styles(look, archive))
+                .unwrap_or_default()
+                .into_iter()
+                .find_map(|style| load_name_tag_style(ui_archive, style, kind))
+        });
     let (width, height, min_x, min_y, mut pixels, text_color, style_key, text_baseline) =
         if let Some(style) = style {
             let half_text_width = measured_width as f32 / 2.0;
@@ -212,6 +273,22 @@ struct LoadedMapNameTagStyle {
     key: String,
 }
 
+pub(super) fn pet_name_tag_style_id(item_archive: &NxArchive, pet_id: i32) -> Option<i32> {
+    pet_info_style_id(item_archive, pet_id, "nameTag")
+}
+
+pub(super) fn pet_chat_balloon_style_id(item_archive: &NxArchive, pet_id: i32) -> Option<i32> {
+    pet_info_style_id(item_archive, pet_id, "chatBalloon")
+}
+
+fn pet_info_style_id(item_archive: &NxArchive, pet_id: i32, field: &str) -> Option<i32> {
+    let info = item_archive
+        .root()
+        .resolve(&format!("Pet/{pet_id}.img/info"))
+        .ok()??;
+    integer_property(&info, field).and_then(|style| i32::try_from(style).ok())
+}
+
 fn equipped_name_tag_styles(
     look: &openstory_protocol::CharacterLook,
     character_archive: &NxArchive,
@@ -229,14 +306,23 @@ fn equipped_name_tag_styles(
         .collect()
 }
 
-fn load_name_tag_style(ui_archive: &NxArchive, style_id: i32) -> Option<LoadedMapNameTagStyle> {
+fn load_name_tag_style(
+    ui_archive: &NxArchive,
+    style_id: i32,
+    kind: MapNameTagKind,
+) -> Option<LoadedMapNameTagStyle> {
+    let style_path = match kind {
+        MapNameTagKind::Character => format!("NameTag.img/{style_id}"),
+        MapNameTagKind::Pet => format!("NameTag.img/pet/{style_id}"),
+        MapNameTagKind::Npc => return None,
+    };
     let root = ui_archive
         .root()
-        .resolve(&format!("NameTag.img/{style_id}"))
+        .resolve(&style_path)
         .ok()??;
-    let w = load_map_name_tag_bitmap(ui_archive, &format!("NameTag.img/{style_id}/w"))?;
-    let c = load_map_name_tag_bitmap(ui_archive, &format!("NameTag.img/{style_id}/c"))?;
-    let e = load_map_name_tag_bitmap(ui_archive, &format!("NameTag.img/{style_id}/e"))?;
+    let w = load_map_name_tag_bitmap(ui_archive, &format!("{style_path}/w"))?;
+    let c = load_map_name_tag_bitmap(ui_archive, &format!("{style_path}/c"))?;
+    let e = load_map_name_tag_bitmap(ui_archive, &format!("{style_path}/e"))?;
     let packed = integer_property(&root, "clr").unwrap_or(-1) as u32;
     let mut alpha = (packed >> 24) as u8;
     if alpha == 0 {
@@ -252,7 +338,7 @@ fn load_name_tag_style(ui_archive: &NxArchive, style_id: i32) -> Option<LoadedMa
             packed as u8,
             alpha,
         ),
-        key: format!("styled:{style_id}"),
+        key: format!("{}:{style_id}", if matches!(kind, MapNameTagKind::Pet) { "pet-styled" } else { "styled" }),
     })
 }
 

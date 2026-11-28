@@ -232,14 +232,15 @@ fn weapon_projectile_count(
     let Some(prefix) = weapon_projectile_prefix(weapon_type) else {
         return 0;
     };
-    inventory
-        .into_iter()
-        .flat_map(|inventory| inventory.items.iter())
-        .filter(|item| {
-            item.inventory_type == openstory_protocol::InventoryType::Use
-                && item.count > 0
-                && item.item_id / 1_000 == prefix
-        })
-        .min_by_key(|item| item.slot)
-        .map_or(0, |item| item.count)
+    inventory.map_or(0, |inventory| {
+        inventory
+            .items
+            .iter()
+            .filter(|item| {
+                item.inventory_type == openstory_protocol::InventoryType::Use
+                    && item.count > 0
+                    && item.item_id / 1_000 == prefix
+            })
+            .fold(0_u16, |total, item| total.saturating_add(item.count))
+    })
 }

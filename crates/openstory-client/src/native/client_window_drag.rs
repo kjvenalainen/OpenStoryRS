@@ -72,12 +72,6 @@ impl ClientApp {
                 KEY_CONFIG_PANEL_WIDTH as f32,
                 KEY_CONFIG_PANEL_HEIGHT as f32,
             ),
-            DialogWindow::SkillMacros if self.skill_macro_editor.open => (
-                skill_macros::PANEL_X,
-                skill_macros::PANEL_Y,
-                skill_macros::PANEL_WIDTH as f32,
-                skill_macros::PANEL_HEIGHT as f32,
-            ),
             DialogWindow::OwlSearch if self.owl_search.is_some() => (
                 OWL_PANEL_X,
                 OWL_PANEL_Y,
@@ -259,7 +253,6 @@ impl ClientApp {
             DialogWindow::QuestHelper,
             DialogWindow::QuestLog,
             DialogWindow::SkillBook,
-            DialogWindow::SkillMacros,
             DialogWindow::PetItemFilter,
             DialogWindow::EquipmentInventory,
             DialogWindow::Inventory,
@@ -358,7 +351,7 @@ impl ClientApp {
             DialogWindow::EquipmentInventory => self.toggle_equipment_inventory(),
             DialogWindow::PetItemFilter => self.close_pet_item_filter(),
             DialogWindow::SkillBook => {
-                self.show_skill_book = false;
+                self.close_skill_book();
                 self.skill_book_texture = None;
             }
             DialogWindow::QuestLog => {
@@ -384,14 +377,6 @@ impl ClientApp {
                 } else {
                     self.close_key_config(false);
                 }
-            }
-            DialogWindow::SkillMacros => {
-                self.handle_skill_macro_editor_key(
-                    PhysicalKey::Code(KeyCode::Escape),
-                    ElementState::Pressed,
-                    false,
-                    None,
-                );
             }
             DialogWindow::QuestHelper => return false,
             DialogWindow::OwlSearch => {
@@ -528,6 +513,8 @@ impl ClientApp {
     fn dialog_window_clamp_width(&self, window: DialogWindow, width: f32) -> f32 {
         if window == DialogWindow::Status && self.show_status_detail {
             STATUS_DETAIL_OFFSET_X + STATUS_DETAIL_WIDTH as f32
+        } else if window == DialogWindow::SkillBook && self.skill_macro_opened_at.is_some() {
+            width + skill_macros::PANEL_WIDTH as f32 - skill_macros::DOCK_OVERLAP
         } else {
             width
         }
@@ -538,41 +525,44 @@ impl ClientApp {
         let Some(target_index) = order.iter().position(|window| *window == target) else {
             return false;
         };
-        !order.iter().take(target_index).any(|window| {
-            let Some(base) = self.dialog_window_rect(*window) else {
-                return false;
-            };
-            let (offset_x, offset_y) = self.dialog_window_offset(*window);
-            rect_contains(
-                SpriteRect {
-                    x: base.x + offset_x,
-                    y: base.y + offset_y,
-                    ..base
-                },
-                cursor,
-            )
-        })
+        !order
+            .iter()
+            .take(target_index)
+            .any(|window| self.dialog_window_contains(*window, cursor))
+    }
+
+    fn dialog_window_contains(&self, window: DialogWindow, cursor: Point) -> bool {
+        let Some(base) = self.dialog_window_rect(window) else {
+            return false;
+        };
+        let (offset_x, offset_y) = self.dialog_window_offset(window);
+        let local = Point {
+            x: cursor.x - offset_x,
+            y: cursor.y - offset_y,
+        };
+        rect_contains(base, local)
+            || (window == DialogWindow::SkillBook
+                && rect_contains(
+                    SpriteRect {
+                        x: skill_macros::PANEL_X,
+                        y: skill_macros::PANEL_Y,
+                        width: self.skill_macro_width(),
+                        height: skill_macros::PANEL_HEIGHT as f32,
+                        blend_mode: BlendMode::Alpha,
+                    },
+                    local,
+                ))
     }
 
     pub(super) fn dialog_window_hit_test(&self, target: DialogWindow, cursor: Point) -> bool {
-        let Some(base) = self.dialog_window_rect(target) else {
-            return false;
-        };
-        let (offset_x, offset_y) = self.dialog_window_offset(target);
-        rect_contains(
-            SpriteRect {
-                x: base.x + offset_x,
-                y: base.y + offset_y,
-                ..base
-            },
-            cursor,
-        ) && self.dialog_window_is_topmost_at(target, cursor)
+        self.dialog_window_contains(target, cursor)
+            && self.dialog_window_is_topmost_at(target, cursor)
     }
 
     pub(super) fn topmost_dialog_window_at(&self, cursor: Point) -> Option<DialogWindow> {
         self.dialog_window_order()
             .into_iter()
-            .find(|window| self.dialog_window_hit_test(*window, cursor))
+            .find(|window| self.dialog_window_contains(*window, cursor))
     }
 
     pub(super) fn focused_dialog_window(&self) -> Option<DialogWindow> {
@@ -635,7 +625,6 @@ impl ClientApp {
             | DialogWindow::EquipmentInventory
             | DialogWindow::PetItemFilter
             | DialogWindow::SkillBook
-            | DialogWindow::SkillMacros
             | DialogWindow::QuestLog
             | DialogWindow::Status
             | DialogWindow::KeyConfig
@@ -695,24 +684,15 @@ impl ClientApp {
     }
 
     pub(super) fn dialog_window_input_cursor(&self, cursor: Point) -> Point {
-        for window in self.dialog_window_order() {
-            let Some(base) = self.dialog_window_rect(window) else {
-                continue;
-            };
+        if let Some(window) = self.topmost_dialog_window_at(cursor) {
             let (offset_x, offset_y) = self.dialog_window_offset(window);
-            let actual = SpriteRect {
-                x: base.x + offset_x,
-                y: base.y + offset_y,
-                ..base
-            };
-            if rect_contains(actual, cursor) {
-                return Point {
-                    x: cursor.x - offset_x,
-                    y: cursor.y - offset_y,
-                };
+            Point {
+                x: cursor.x - offset_x,
+                y: cursor.y - offset_y,
             }
+        } else {
+            cursor
         }
-        cursor
     }
 
     pub(super) fn apply_dialog_window_draw_offsets(&self, draws: &mut [SpriteDraw<'_>]) {
@@ -738,7 +718,7 @@ impl ClientApp {
             (DialogWindow::Status, self.status_detail_texture.as_ref()),
             (DialogWindow::Settings, self.settings_texture.as_ref()),
             (DialogWindow::KeyConfig, self.key_config_texture.as_ref()),
-            (DialogWindow::SkillMacros, self.skill_macro_texture.as_ref()),
+            (DialogWindow::SkillBook, self.skill_macro_texture.as_ref()),
             (DialogWindow::OwlSearch, self.owl_texture.as_ref()),
             (
                 DialogWindow::NpcDialogue,

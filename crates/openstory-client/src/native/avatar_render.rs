@@ -378,7 +378,7 @@ fn append_character_equipment(
         };
         let image_path = format!("{category}/0{item_id}.img");
         let Some((frame_path, frame_node)) =
-            resolve_equipment_frame(archive, &image_path, item_id, stance, frame)?
+            resolve_equipment_frame(archive, &image_path, stance, frame, item_id / 10_000)?
         else {
             continue;
         };
@@ -507,10 +507,13 @@ fn character_equip_category(item_id: i32) -> Option<&'static str> {
 fn resolve_equipment_frame(
     archive: &NxArchive,
     image_path: &str,
-    item_id: i32,
     stance: &str,
     frame: u8,
+    prefix: i32,
 ) -> Result<Option<(String, openstory_assets::NxNode)>, String> {
+    // A standing weapon is not aligned to a climbing pose. Keep authored
+    // climbing frames, but do not substitute unrelated weapon artwork.
+    let climbing_weapon = (130..=170).contains(&prefix) && matches!(stance, "rope" | "ladder");
     let candidates = [
         format!("{image_path}/{stance}/{frame}"),
         format!("{image_path}/{stance}/0"),
@@ -518,7 +521,10 @@ fn resolve_equipment_frame(
         format!("{image_path}/stand1/0"),
         format!("{image_path}/default/0"),
     ];
-    for path in candidates {
+    for (index, path) in candidates.into_iter().enumerate() {
+        if climbing_weapon && index >= 2 {
+            break;
+        }
         if let Some(node) = archive
             .root()
             .resolve(&path)
@@ -528,26 +534,32 @@ fn resolve_equipment_frame(
         }
     }
 
-    // Cash weapon images group their stance data beneath numeric action nodes
-    // (for example `Weapon/01702000.img/33/stand1/0/weapon`) instead of placing
-    // it at the image root like regular weapons.
-    if item_id / 10_000 == 170
-        && let Some(item) = archive
-            .root()
-            .resolve(image_path)
-            .map_err(|error| error.to_string())?
+    // Some cash equipment groups stance data beneath numeric action nodes
+    // (for example `Weapon/01702000.img/33/stand1/0/weapon`) instead of
+    // placing it at the image root. Try those groups for every category after
+    // the regular paths have failed.
+    if let Some(item) = archive
+        .root()
+        .resolve(image_path)
+        .map_err(|error| error.to_string())?
     {
         for action in item.children().map_err(|error| error.to_string())? {
             let action_name = action.name().map_err(|error| error.to_string())?;
             if action_name.parse::<u16>().is_err() {
                 continue;
             }
-            for path in [
+            for (index, path) in [
                 format!("{image_path}/{action_name}/{stance}/{frame}"),
                 format!("{image_path}/{action_name}/{stance}/0"),
                 format!("{image_path}/{action_name}/stand1/{frame}"),
                 format!("{image_path}/{action_name}/stand1/0"),
-            ] {
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                if climbing_weapon && index >= 2 {
+                    break;
+                }
                 if let Some(node) = archive
                     .root()
                     .resolve(&path)
@@ -589,7 +601,10 @@ fn equipment_depth(
     }
     match z.unwrap_or("") {
         "cape" => 1,
-        "backShield" | "backWeaponOverShield" | "shieldBelowBody" => 4,
+        "backWeapon" => 0,
+        "backShield" | "shieldBelowBody" => 4,
+        "backWeaponOverGlove" => 7,
+        "backWeaponOverHead" | "backWeaponOverShield" => 17,
         "weaponBelowBody" | "capBelowBody" => 5,
         "gloveWristOverBody" => 7,
         "gloveOverBody" => 8,
@@ -620,7 +635,7 @@ fn equipment_depth(
         "gloveWrist" => 29,
         "glove" => 30,
         "weaponOverGlove" => 31,
-        "weaponOverHand" => 35,
+        "weaponOverHand" | "weaponOverArm" => 35,
         "weaponOverBody" => 36,
         "gloveOverHair" => 40,
         "gloveWristOverHair" => 39,
@@ -700,3 +715,4 @@ fn append_avatar_node(
         cache,
     )
 }
+

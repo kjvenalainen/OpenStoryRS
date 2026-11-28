@@ -1,9 +1,20 @@
 fn load_chat_balloon_skin(archive: &NxArchive) -> Result<ChatBalloonSkin, String> {
+    load_chat_balloon_skin_at(archive, "ChatBalloon.img/0")
+}
+
+fn load_pet_chat_balloon_skin(
+    archive: &NxArchive,
+    style_id: i32,
+) -> Result<ChatBalloonSkin, String> {
+    load_chat_balloon_skin_at(archive, &format!("ChatBalloon.img/pet/{style_id}"))
+}
+
+fn load_chat_balloon_skin_at(archive: &NxArchive, path: &str) -> Result<ChatBalloonSkin, String> {
     let source = archive
         .root()
-        .resolve("ChatBalloon.img/0")
+        .resolve(path)
         .map_err(|error| error.to_string())?
-        .ok_or_else(|| "UI.nx is missing ChatBalloon.img/0".to_owned())?;
+        .ok_or_else(|| format!("UI.nx is missing {path}"))?;
     let mut parts = HashMap::new();
     for name in ["arrow", "c", "e", "ne", "n", "nw", "s", "se", "sw", "w"] {
         let node = source
@@ -423,6 +434,7 @@ fn render_inventory_panel(
     drag_source: Option<(openstory_protocol::InventoryType, u16)>,
     pending_move: Option<(openstory_protocol::InventoryType, u16, u16)>,
     pending_scroll_slot: Option<u16>,
+    marked_items: &HashSet<InventorySellMark>,
     ui_archive: &NxArchive,
     item_archive: &NxArchive,
     character_archive: &NxArchive,
@@ -506,6 +518,9 @@ fn render_inventory_panel(
                     x as i32,
                     y as i32,
                 );
+                if marked_items.contains(&inventory_sell_mark(item)) {
+                    draw_inventory_sell_mark(&mut pixels, WIDTH, HEIGHT, x as i32, y as i32);
+                }
             }
         }
     }
@@ -550,6 +565,31 @@ fn render_inventory_panel(
         );
     }
     pixels
+}
+
+fn draw_inventory_sell_mark(pixels: &mut [u8], width: usize, height: usize, left: i32, top: i32) {
+    let lines = [((3, 3), (29, 28)), ((29, 3), (3, 28))];
+    for ((start_x, start_y), (end_x, end_y)) in lines {
+        for step in 0..=26 {
+            let progress = step as f32 / 26.0;
+            let x = start_x + ((end_x - start_x) as f32 * progress).round() as i32;
+            let y = start_y + ((end_y - start_y) as f32 * progress).round() as i32;
+            for (radius, color) in [(2, [0, 0, 0, 255]), (1, [0, 0, 255, 255])] {
+                for offset in -radius..=radius {
+                    let (px, py) = if start_x < end_x {
+                        (left + x + offset, top + y)
+                    } else {
+                        (left + x - offset, top + y)
+                    };
+                    if px < 0 || py < 0 || px >= width as i32 || py >= height as i32 {
+                        continue;
+                    }
+                    let index = (py as usize * width + px as usize) * 4;
+                    pixels[index..index + 4].copy_from_slice(&color);
+                }
+            }
+        }
+    }
 }
 
 fn render_inventory_drop_prompt(

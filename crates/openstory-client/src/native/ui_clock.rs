@@ -12,7 +12,7 @@ pub(super) enum ClockState {
     },
     Countdown {
         remaining_seconds: i32,
-        elapsed_ms: u64,
+        elapsed: Duration,
     },
 }
 
@@ -36,16 +36,16 @@ impl ClockState {
             }),
             openstory_protocol::ClockUpdate::Countdown { seconds } => Some(Self::Countdown {
                 remaining_seconds: seconds,
-                elapsed_ms: 0,
+                elapsed: Duration::ZERO,
             }),
             openstory_protocol::ClockUpdate::Clear => None,
         }
     }
 
-    fn advance(&mut self, updates: u8) -> ClockTick {
+    fn advance(&mut self, elapsed: Duration) -> ClockTick {
         let Self::Countdown {
             remaining_seconds,
-            elapsed_ms,
+            elapsed: accumulated,
         } = self
         else {
             return ClockTick {
@@ -54,22 +54,19 @@ impl ClockState {
             };
         };
 
-        *elapsed_ms = elapsed_ms.saturating_add(u64::from(updates).saturating_mul(8));
-        let mut changed = false;
-        while *elapsed_ms >= 1_000 {
-            *elapsed_ms -= 1_000;
-            if *remaining_seconds > 0 {
-                *remaining_seconds -= 1;
-                changed = true;
-            } else {
-                return ClockTick {
-                    changed: false,
-                    cleared: true,
-                };
-            }
+        *accumulated = accumulated.saturating_add(elapsed);
+        let seconds = accumulated.as_secs();
+        *accumulated = Duration::from_nanos(u64::from(accumulated.subsec_nanos()));
+        let previous = *remaining_seconds;
+        if seconds > previous.max(0) as u64 {
+            return ClockTick {
+                changed: false,
+                cleared: true,
+            };
         }
+        *remaining_seconds = previous.saturating_sub(seconds as i32);
         ClockTick {
-            changed,
+            changed: *remaining_seconds != previous,
             cleared: false,
         }
     }
@@ -231,11 +228,11 @@ impl ClientApp {
         }
     }
 
-    pub(super) fn advance_clock(&mut self, updates: u8) {
+    pub(super) fn advance_clock(&mut self, elapsed: Duration) {
         let Some(state) = self.clock_state.as_mut() else {
             return;
         };
-        let tick = state.advance(updates);
+        let tick = state.advance(elapsed);
         if tick.cleared {
             self.clock_state = None;
             self.clock_texture = None;
@@ -277,5 +274,35 @@ impl ClientApp {
                 self.clock_texture = None;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn countdown_tracks_elapsed_time_across_delayed_frames() {
+        let mut clock =
+            ClockState::from_update(openstory_protocol::ClockUpdate::Countdown { seconds: 10 })
+                .unwrap();
+        assert!(!clock.advance(Duration::from_millis(999)).changed);
+        assert!(clock.advance(Duration::from_millis(2_501)).changed);
+        assert!(matches!(
+            clock,
+            ClockState::Countdown {
+                remaining_seconds: 7,
+                ..
+            }
+        ));
+        assert!(clock.advance(Duration::from_millis(6_500)).changed);
+        assert!(matches!(
+            clock,
+            ClockState::Countdown {
+                remaining_seconds: 0,
+                ..
+            }
+        ));
+        assert!(clock.advance(Duration::from_secs(1)).cleared);
     }
 }

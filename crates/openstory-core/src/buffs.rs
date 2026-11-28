@@ -1,8 +1,8 @@
 //! Platform-independent state for the local character's active buffs.
 //!
 //! Protocol bit masks are converted to [`BuffKey`] values by the client. This
-//! module owns replacement, cancellation, lookup, and expiry semantics without
-//! depending on packet or rendering types.
+//! module owns source refresh, stacking, cancellation, lookup, and expiry
+//! semantics without depending on packet or rendering types.
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -37,12 +37,13 @@ impl ActiveBuff {
 
 #[derive(Clone, Debug, Default)]
 pub struct CharacterBuffs {
-    entries: HashMap<BuffKey, ActiveBuff>,
+    entries: HashMap<BuffKey, Vec<ActiveBuff>>,
 }
 
 impl CharacterBuffs {
-    /// Applies a buff, replacing an existing value for the same mask key.
-    /// Nonpositive durations represent buffs with no client-side timeout.
+    /// Applies a buff, refreshing the same source while preserving other sources
+    /// attached to the same mask key. Nonpositive durations have no client-side
+    /// timeout.
     pub fn apply(
         &mut self,
         key: BuffKey,
@@ -52,16 +53,20 @@ impl CharacterBuffs {
         now: Instant,
     ) -> Option<ActiveBuff> {
         let expires_at = (duration_ms > 0).then(|| now + Duration::from_millis(duration_ms as u64));
-        self.entries.insert(
-            key,
-            ActiveBuff {
-                value,
-                skill_id,
-                duration_ms,
-                applied_at: now,
-                expires_at,
-            },
-        )
+        let replacement = ActiveBuff {
+            value,
+            skill_id,
+            duration_ms,
+            applied_at: now,
+            expires_at,
+        };
+        let entries = self.entries.entry(key).or_default();
+        let replaced = entries
+            .iter()
+            .position(|buff| buff.skill_id == skill_id)
+            .map(|index| entries.remove(index));
+        entries.push(replacement);
+        replaced
     }
 
     /// Removes keys whose bits overlap the corresponding server cancel masks.
@@ -77,28 +82,58 @@ impl CharacterBuffs {
         before - self.entries.len()
     }
 
+    /// Removes every active source supplied by the given skill.
+    pub fn cancel_skill(&mut self, skill_id: i32) -> usize {
+        let mut canceled = 0;
+        self.entries.retain(|_, entries| {
+            let before = entries.len();
+            entries.retain(|buff| buff.skill_id != skill_id);
+            canceled += before - entries.len();
+            !entries.is_empty()
+        });
+        canceled
+    }
+
     /// Removes expired entries and returns the number removed.
     pub fn expire(&mut self, now: Instant) -> usize {
-        let before = self.entries.len();
-        self.entries.retain(|_, buff| buff.is_active_at(now));
-        before - self.entries.len()
+        let mut expired = 0;
+        self.entries.retain(|_, entries| {
+            let before = entries.len();
+            entries.retain(|buff| buff.is_active_at(now));
+            expired += before - entries.len();
+            !entries.is_empty()
+        });
+        expired
     }
 
     /// Returns the stored entry, including one whose expiry has elapsed.
     /// This is useful when the client needs to detect a mount transition while
     /// expiring the state.
     pub fn get(&self, key: &BuffKey) -> Option<&ActiveBuff> {
-        self.entries.get(key)
+        self.entries.get(key).and_then(|entries| entries.last())
     }
 
     /// Returns the entry only while its server-provided duration remains active.
     pub fn get_active(&self, key: &BuffKey, now: Instant) -> Option<&ActiveBuff> {
-        self.entries.get(key).filter(|buff| buff.is_active_at(now))
+        self.entries
+            .get(key)
+            .and_then(|entries| entries.iter().rev().find(|buff| buff.is_active_at(now)))
     }
 
-    /// Returns the value of an active buff, or zero if absent or expired.
+    /// Returns the summed value of active sources, or zero if none are active.
     pub fn value(&self, key: &BuffKey, now: Instant) -> i16 {
-        self.get_active(key, now).map_or(0, |buff| buff.value)
+        self.total_value(key, now)
+            .clamp(i64::from(i16::MIN), i64::from(i16::MAX)) as i16
+    }
+
+    /// Returns the sum of every active source attached to a stat key.
+    pub fn total_value(&self, key: &BuffKey, now: Instant) -> i64 {
+        self.entries.get(key).map_or(0, |entries| {
+            entries
+                .iter()
+                .filter(|buff| buff.is_active_at(now))
+                .fold(0_i64, |sum, buff| sum.saturating_add(i64::from(buff.value)))
+        })
     }
 
     pub fn contains_key(&self, key: &BuffKey) -> bool {
@@ -106,7 +141,7 @@ impl CharacterBuffs {
     }
 
     pub fn len(&self) -> usize {
-        self.entries.len()
+        self.entries.values().map(Vec::len).sum()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -114,7 +149,7 @@ impl CharacterBuffs {
     }
 
     pub fn values(&self) -> impl Iterator<Item = &ActiveBuff> {
-        self.entries.values()
+        self.entries.values().flat_map(|entries| entries.iter())
     }
 }
 

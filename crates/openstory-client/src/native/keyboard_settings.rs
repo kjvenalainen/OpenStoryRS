@@ -482,6 +482,7 @@ pub(super) fn render(
     quickslot_capture: Option<usize>,
     first_row: usize,
     actions: &[KeyConfigAction],
+    active_skill_ids: &HashSet<i32>,
     icon_cache: &mut HashMap<i32, Option<(u32, u32, Arc<[u8]>)>>,
     item_counts: &HashMap<i32, u32>,
 ) -> Vec<u8> {
@@ -600,6 +601,15 @@ pub(super) fn render(
             x,
             content_rect.y as i32,
         );
+        if binding.kind == 1 && active_skill_ids.contains(&binding.action) {
+            draw_auto_buff_sparkle(
+                &mut pixels,
+                width,
+                height,
+                x as usize + 32,
+                content_rect.y as usize + 32,
+            );
+        }
         legend(
             font,
             &mut pixels,

@@ -1223,7 +1223,7 @@ impl ClientApp {
         }
         self.show_inventory = false;
         self.inventory_hover_slot = None;
-        self.show_skill_book = false;
+        self.close_skill_book();
         self.pending_scroll_slot = None;
         self.gameplay_input = GameplayInput::default();
         self.cash_shop = Some(CashShopUi::new());
@@ -1660,6 +1660,9 @@ impl ClientApp {
                     state.preview_remove_all = false;
                     state.selected_sn = None;
                     state.try_on_items.clear();
+                    state.try_on_pet_equipment = None;
+                    state.try_on_pet_label_ring = false;
+                    state.try_on_pet_quote_ring = false;
                     state.search_focused = false;
                 }
             }
@@ -1668,6 +1671,9 @@ impl ClientApp {
                     state.preview_remove_all = true;
                     state.selected_sn = None;
                     state.try_on_items.clear();
+                    state.try_on_pet_equipment = None;
+                    state.try_on_pet_label_ring = false;
+                    state.try_on_pet_quote_ring = false;
                     state.search_focused = false;
                 }
             }
@@ -2331,6 +2337,36 @@ impl ClientApp {
         }
     }
 
+    pub(super) fn scroll_npc_dialogue_selection_at(
+        &mut self,
+        cursor: Point,
+        direction: isize,
+    ) -> bool {
+        let Some(dialogue) = self.npc_dialogue.as_ref() else {
+            return false;
+        };
+        let Some(geometry) =
+            npc_dialogue_scrollbar_geometry(dialogue, NpcDialogueScrollTarget::Selection)
+        else {
+            return false;
+        };
+        let scrollbar_x = dialogue.panel.x + NpcDialogueLayout::SCROLL_X as f32;
+        if !(scrollbar_x..scrollbar_x + 15.0).contains(&cursor.x)
+            || !(geometry.track_y..geometry.track_y + geometry.track_height as f32)
+                .contains(&cursor.y)
+        {
+            return false;
+        }
+
+        let offset = if direction < 0 {
+            geometry.offset.saturating_sub(1)
+        } else {
+            geometry.offset.saturating_add(1)
+        };
+        self.set_npc_dialogue_scroll_offset(NpcDialogueScrollTarget::Selection, offset);
+        true
+    }
+
     pub(super) fn fast_forward_npc_dialogue_text(&mut self) -> bool {
         let Some(dialogue) = self.npc_dialogue.as_mut() else {
             return false;
@@ -2669,7 +2705,107 @@ impl ClientApp {
         }
     }
 
+    fn pet_owner_look(&self, character_id: i32) -> Option<openstory_protocol::CharacterLook> {
+        self.active_character
+            .as_ref()
+            .filter(|character| character.id == character_id)
+            .map(|character| character.look.clone())
+            .or_else(|| {
+                self.map_scene
+                    .as_ref()?
+                    .remote_players
+                    .get(&character_id)
+                    .map(|player| player.look.clone())
+            })
+    }
+
+    pub(super) fn refresh_pet_name_labels(&mut self, character_id: i32) {
+        let Some(owner_look) = self.pet_owner_look(character_id) else {
+            return;
+        };
+        let pets = self
+            .map_scene
+            .as_ref()
+            .map(|scene| {
+                scene
+                    .pets
+                    .iter()
+                    .filter(|((owner_id, _), _)| *owner_id == character_id)
+                    .map(|(key, pet)| (*key, pet.item_id, pet.name.clone()))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        if pets.is_empty() {
+            return;
+        }
+        let first_pet_slot = pets.iter().map(|((_, slot), _, _)| *slot).min();
+        let label_ring_equipped = self
+            .active_character
+            .as_ref()
+            .is_some_and(|character| character.id == character_id)
+            && self.inventory.as_ref().is_some_and(|inventory| {
+                inventory
+                    .equipped()
+                    .any(|item| item.slot == 114 && item.item_id / 10_000 == 182)
+            });
+
+        let mut sprites = Vec::new();
+        let mut labels = Vec::with_capacity(pets.len());
+        for (key, pet_id, name) in pets {
+            let label_index =
+                if name.trim().is_empty() || self.pet_name_matches_owner(character_id, &name) {
+                    None
+                } else if label_ring_equipped && Some(key.1) == first_pet_slot {
+                    append_pet_name_tag_sprite_scaled(
+                        &mut sprites,
+                        &self.font,
+                        &self.ui_archive,
+                        &self.item_archive,
+                        pet_id,
+                        true,
+                        &name,
+                        512.0,
+                        GAMEPLAY_CAMERA_CENTER_Y,
+                        1.0,
+                    )
+                } else {
+                    append_map_name_tag_sprite(
+                        &mut sprites,
+                        &self.font,
+                        &self.ui_archive,
+                        Some(&self.character_archive),
+                        Some(&owner_look),
+                        &name,
+                        512.0,
+                        GAMEPLAY_CAMERA_CENTER_Y,
+                        MapNameTagKind::Pet,
+                    )
+                };
+            labels.push((key, label_index));
+        }
+
+        let draws = if sprites.is_empty() {
+            Vec::new()
+        } else {
+            match self.upload_dynamic_sprites(sprites) {
+                Ok(draws) => draws,
+                Err(error) => {
+                    eprintln!("OpenStoryRS: could not refresh pet name labels: {error}");
+                    return;
+                }
+            }
+        };
+        if let Some(scene) = self.map_scene.as_mut() {
+            for (key, label_index) in labels {
+                if let Some(pet) = scene.pets.get_mut(&key) {
+                    pet.name_label = label_index.and_then(|index| draws.get(index).copied());
+                }
+            }
+        }
+    }
+
     pub(super) fn spawn_pet(&mut self, spawn: openstory_protocol::MapPetSpawn) {
+        let owner_id = spawn.character_id;
         let animations = match self.load_pet_animations(spawn.item_id) {
             Ok(animations) => animations,
             Err(error) => {
@@ -2687,6 +2823,7 @@ impl ClientApp {
             );
             return;
         }
+        let owner_look = self.pet_owner_look(spawn.character_id);
         let name_label = if spawn.name.is_empty()
             || self.pet_name_matches_owner(spawn.character_id, &spawn.name)
         {
@@ -2697,8 +2834,8 @@ impl ClientApp {
                 &mut sprites,
                 &self.font,
                 &self.ui_archive,
-                None,
-                None,
+                Some(&self.character_archive),
+                owner_look.as_ref(),
                 &spawn.name,
                 512.0,
                 GAMEPLAY_CAMERA_CENTER_Y,
@@ -2725,6 +2862,7 @@ impl ClientApp {
                 slot: spawn.slot,
                 item_id: spawn.item_id,
                 unique_id: spawn.unique_id,
+                name: spawn.name,
                 name_label,
                 x: f64::from(spawn.x),
                 y: f64::from(spawn.y),
@@ -2734,10 +2872,14 @@ impl ClientApp {
                 owner_was_climbing: false,
                 follow_stuck_ticks: 0,
                 best_follow_distance: f64::INFINITY,
+                loot_progress_target: None,
+                best_loot_distance: f64::INFINITY,
+                loot_stuck_ticks: 0,
                 movement_ticks: 0,
                 last_sent_movement: None,
                 stance: spawn.stance,
                 animations,
+                equipment_animations: PetEquipmentAnimations::default(),
                 frame_index: 0,
                 elapsed: Duration::ZERO,
                 command_remaining: Duration::ZERO,
@@ -2745,46 +2887,76 @@ impl ClientApp {
                 speech_bubble_remaining: None,
             },
         );
+        self.refresh_pet_name_labels(owner_id);
+        if self
+            .active_character
+            .as_ref()
+            .is_some_and(|character| character.id == owner_id)
+        {
+            self.refresh_local_pet_equipment_art();
+        }
+    }
+
+    pub(super) fn refresh_local_pet_equipment_art(&mut self) {
+        let Some(owner_id) = self.active_character.as_ref().map(|character| character.id) else {
+            return;
+        };
+        let equipment_id = self.inventory.as_ref().and_then(|inventory| {
+            inventory
+                .equipped()
+                .find(|item| item.item_id / 10_000 == 180)
+                .map(|item| item.item_id)
+        });
+        let Some(scene) = self.map_scene.as_ref() else {
+            return;
+        };
+        let pets = scene
+            .pets
+            .iter()
+            .filter(|((pet_owner_id, _), _)| *pet_owner_id == owner_id)
+            .map(|(&(pet_owner_id, slot), pet)| (pet_owner_id, slot, pet.item_id))
+            .collect::<Vec<_>>();
+        if pets.is_empty() {
+            return;
+        }
+        // The v83 equipped inventory has one Pet Outfit slot; render it on
+        // the first summoned pet, matching the Cash Shop preview.
+        let outfit_slot = pets.iter().map(|(_, slot, _)| *slot).min();
+
+        let mut updates = Vec::with_capacity(pets.len());
+        for (pet_owner_id, slot, pet_id) in pets {
+            let animations = match equipment_id.filter(|_| Some(slot) == outfit_slot) {
+                Some(equipment_id) => self
+                    .load_pet_equipment_animations(pet_id, equipment_id)
+                    .unwrap_or_else(|error| {
+                        eprintln!(
+                            "OpenStoryRS: could not load pet equipment {equipment_id} for pet {pet_id}: {error}"
+                        );
+                        PetEquipmentAnimations::default()
+                    }),
+                None => PetEquipmentAnimations::default(),
+            };
+            updates.push(((pet_owner_id, slot), animations));
+        }
+        if let Some(scene) = self.map_scene.as_mut() {
+            for (key, animations) in updates {
+                if let Some(pet) = scene.pets.get_mut(&key) {
+                    pet.equipment_animations = animations;
+                }
+            }
+        }
     }
 
     pub(super) fn update_pet_name(&mut self, character_id: i32, name: &str) {
-        if !self
-            .map_scene
-            .as_ref()
-            .is_some_and(|scene| scene.pets.contains_key(&(character_id, 0)))
-        {
-            return;
-        }
-        let name_label = if name.is_empty() || self.pet_name_matches_owner(character_id, name) {
-            None
-        } else {
-            let mut sprites = Vec::with_capacity(1);
-            append_map_name_tag_sprite(
-                &mut sprites,
-                &self.font,
-                &self.ui_archive,
-                None,
-                None,
-                name,
-                512.0,
-                GAMEPLAY_CAMERA_CENTER_Y,
-                MapNameTagKind::Pet,
-            );
-            match self.upload_dynamic_sprites(sprites) {
-                Ok(draws) => draws.first().copied(),
-                Err(error) => {
-                    eprintln!("OpenStoryRS: could not update pet name label: {error}");
-                    return;
-                }
-            }
-        };
-        if let Some(pet) = self
+        let Some(pet) = self
             .map_scene
             .as_mut()
             .and_then(|scene| scene.pets.get_mut(&(character_id, 0)))
-        {
-            pet.name_label = name_label;
-        }
+        else {
+            return;
+        };
+        pet.name = name.to_owned();
+        self.refresh_pet_name_labels(character_id);
     }
 
     pub(super) fn move_pet(&mut self, movement: openstory_protocol::MapPetMovement) {
@@ -2858,7 +3030,9 @@ impl ClientApp {
             .as_mut()
             .and_then(|scene| scene.pets.get_mut(&key))
         {
-            if !interaction_frames.is_some_and(|frames| pet.play_interaction(frames)) {
+            if !interaction_frames
+                .is_some_and(|(action, frames)| pet.play_interaction(action, frames))
+            {
                 pet.play_command(update.animation);
             }
         }
@@ -2884,6 +3058,14 @@ impl ClientApp {
             scene.pets.remove(&(character_id, slot));
         }
         self.pet_speech_textures.remove(&(character_id, slot));
+        if self
+            .active_character
+            .as_ref()
+            .is_some_and(|character| character.id == character_id)
+        {
+            self.refresh_local_pet_equipment_art();
+            self.refresh_pet_name_labels(character_id);
+        }
     }
 
     pub(super) fn move_summon(&mut self, movement: openstory_protocol::MapSummonMovement) {
@@ -3090,6 +3272,7 @@ impl ClientApp {
             player.avatar_elapsed = Duration::ZERO;
             player.name_label = name_label;
         }
+        self.refresh_pet_name_labels(update.id);
     }
 
     pub(super) fn update_remote_guild_name(
@@ -3313,6 +3496,7 @@ impl ClientApp {
     }
 
     pub(super) fn show_server_notice_popup(&mut self, message: &str) {
+        self.pending_world_map_teleport = None;
         self.audio
             .play_ui_sound(&self.sound_archive, "UI.img/DlgNotice");
         let (width, height, pixels, panel, button, page_count) =

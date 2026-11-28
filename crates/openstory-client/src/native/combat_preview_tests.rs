@@ -95,6 +95,41 @@ fn scene_with_mob() -> MapSceneRuntime {
 }
 
 #[test]
+fn controller_refresh_preserves_pending_first_hit() {
+    let mut scene = scene_with_mob();
+    scene.schedule_mob_attack_impact(
+        1,
+        Arc::new(Vec::new()),
+        false,
+        Some((
+            openstory_protocol::MobDamage {
+                object_id: 1,
+                damage: 123,
+            },
+            false,
+            0.0,
+        )),
+        false,
+        Duration::from_millis(80),
+    );
+    let spawn = openstory_protocol::MapMobSpawn {
+        object_id: 1,
+        mob_id: 100_100,
+        control_mode: 1,
+        x: 100,
+        y: 0,
+        stance: 0,
+        foothold: 0,
+        team: 0,
+        is_new_spawn: false,
+    };
+    assert!(scene.refresh_existing_mob(&spawn));
+    scene.advance_mobs(10);
+    assert_eq!(scene.damage_numbers.len(), 1);
+    assert_eq!(scene.damage_numbers[0].digits, [1, 2, 3]);
+}
+
+#[test]
 fn ranged_skill_bonuses_extend_the_far_edge_of_the_attack_box() {
     let range = [-400, -5, -50, 50];
     assert_eq!(
@@ -489,4 +524,45 @@ fn render_combat_damage_preview() {
             .unwrap();
         }
     }
+}
+
+#[test]
+fn aggressive_controller_chases_without_a_recent_hit() {
+    let mut scene = scene_with_mob();
+    let mob = scene.mobs.get_mut(&1).unwrap();
+    mob.traits.can_move = true;
+    mob.animations.insert(
+        MobMotion::Move,
+        vec![MobFrameRuntime {
+            delay: Duration::from_millis(100),
+            sprites: Vec::new(),
+        }],
+    );
+    scene.set_mob_control(1, 2);
+    scene.advance_mobs(1);
+    assert_eq!(scene.mobs[&1].motion, MobMotion::Move);
+    assert!(!scene.mobs[&1].server_flip);
+    scene.advance_mobs(255);
+    scene.advance_mobs(255);
+    assert_eq!(scene.mobs[&1].motion, MobMotion::Move);
+    scene.set_mob_control(1, 0);
+    assert_eq!(scene.mobs[&1].control_mode, 0);
+}
+
+#[test]
+fn flying_mob_can_chase_a_target_directly_above() {
+    let mut scene = scene_with_mob();
+    let mob = scene.mobs.get_mut(&1).unwrap();
+    mob.traits.can_move = true;
+    mob.traits.can_fly = true;
+    mob.animations.insert(
+        MobMotion::Move,
+        vec![MobFrameRuntime {
+            delay: Duration::from_millis(100),
+            sprites: Vec::new(),
+        }],
+    );
+    mob.move_toward_aggro_target(100.0, -100.0);
+    assert_eq!(mob.motion, MobMotion::Move);
+    assert_eq!(mob.fly_direction, -1);
 }

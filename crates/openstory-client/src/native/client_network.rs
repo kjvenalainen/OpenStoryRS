@@ -996,13 +996,53 @@ impl ClientApp {
         Ok(animations)
     }
 
+    pub(super) fn load_pet_equipment_animations(
+        &mut self,
+        pet_id: i32,
+        equipment_id: i32,
+    ) -> Result<PetEquipmentAnimations, String> {
+        let key = (pet_id, equipment_id);
+        if let Some(animations) = self.pet_equipment_frames_cache.get(&key) {
+            return Ok(animations.clone());
+        }
+        let mut sprites = Vec::new();
+        let assets = append_pet_equipment_animations(
+            &mut sprites,
+            &self.character_archive,
+            pet_id,
+            equipment_id,
+            &mut self.remote_art_cache,
+        )?;
+        let draws = self.upload_dynamic_sprites(sprites)?;
+        let animations = PetEquipmentAnimations {
+            stances: assets
+                .stances
+                .into_iter()
+                .map(|(state, frames)| (state, projectile_frames_runtime(frames, &draws)))
+                .filter(|(_, frames)| !frames.is_empty())
+                .collect(),
+            actions: assets
+                .actions
+                .into_iter()
+                .map(|(action, frames)| (action, projectile_frames_runtime(frames, &draws)))
+                .filter(|(_, frames)| !frames.is_empty())
+                .collect(),
+        };
+        if self.pet_equipment_frames_cache.len() >= 64 {
+            self.pet_equipment_frames_cache.clear();
+        }
+        self.pet_equipment_frames_cache
+            .insert(key, animations.clone());
+        Ok(animations)
+    }
+
     pub(super) fn load_pet_interaction_frames(
         &mut self,
         item_id: i32,
         feed: bool,
         index: u8,
         success: bool,
-    ) -> Result<Option<Vec<ProjectileFrameRuntime>>, String> {
+    ) -> Result<Option<(String, Vec<ProjectileFrameRuntime>)>, String> {
         let key = (item_id, feed, index, success);
         if let Some(frames) = self.pet_interaction_frames_cache.get(&key) {
             return Ok(frames.clone());
@@ -1017,12 +1057,12 @@ impl ClientApp {
             success,
             &mut self.remote_art_cache,
         )?;
-        let frames = if assets.is_empty() {
-            None
-        } else {
+        let frames = if let Some((action, assets)) = assets {
             let draws = self.upload_dynamic_sprites(sprites)?;
             let frames = projectile_frames_runtime(assets, &draws);
-            (!frames.is_empty()).then_some(frames)
+            (!frames.is_empty()).then_some((action, frames))
+        } else {
+            None
         };
         if self.pet_interaction_frames_cache.len() >= 128 {
             self.pet_interaction_frames_cache.clear();

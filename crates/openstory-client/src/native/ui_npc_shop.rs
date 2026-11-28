@@ -59,6 +59,8 @@ struct NpcShopUi {
     auto_recharge_slots: VecDeque<i16>,
     auto_recharge_in_flight: bool,
     auto_recharge_notice_sent: bool,
+    auto_sell_items: VecDeque<InventorySellMark>,
+    auto_sell_in_flight: Option<InventorySellMark>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -124,12 +126,15 @@ fn composite_npc_shop_tab(
 
 impl NpcShopUi {
     fn new(shop: openstory_protocol::NpcShop) -> Self {
-        let all_buy_item_indices: Vec<usize> = shop
+        let mut all_buy_item_indices: Vec<usize> = shop
             .items
             .iter()
             .enumerate()
             .filter_map(|(index, item)| (item.price > 0 || item.pitch > 0).then_some(index))
             .collect();
+        all_buy_item_indices.sort_by_key(|index| {
+            npc_shop_item_is_throwing_star(shop.items[*index].item_id)
+        });
         Self {
             shop,
             buy_item_indices: all_buy_item_indices.clone(),
@@ -151,6 +156,8 @@ impl NpcShopUi {
             auto_recharge_slots: VecDeque::new(),
             auto_recharge_in_flight: false,
             auto_recharge_notice_sent: false,
+            auto_sell_items: VecDeque::new(),
+            auto_sell_in_flight: None,
         }
     }
 
@@ -215,8 +222,7 @@ fn npc_shop_recommended_buy_indices(
     let current_level = i64::from(character.stats.level);
     let current_level_band =
         current_level.div_euclid(NPC_SHOP_RECOMMENDED_LEVEL_STEP) * NPC_SHOP_RECOMMENDED_LEVEL_STEP;
-    let recommended_level_range =
-        current_level_band..=current_level_band + NPC_SHOP_RECOMMENDED_LEVEL_STEP;
+    let recommended_level_range = current_level_band..=current_level.saturating_add(10);
     buy_item_indices
         .iter()
         .copied()
@@ -259,6 +265,10 @@ fn npc_shop_item_is_equipment(item_id: i32) -> bool {
     item_id / 1_000_000 == 1
 }
 
+fn npc_shop_item_is_throwing_star(item_id: i32) -> bool {
+    item_id / 10_000 == 207
+}
+
 fn npc_shop_sell_quantity(item: &openstory_protocol::InventoryItem) -> Option<NpcShopQuantity> {
     if item.count == 0 {
         return None;
@@ -285,6 +295,21 @@ fn npc_shop_sell_items(
         .collect();
     items.sort_unstable_by_key(|item| item.slot);
     items
+}
+
+fn npc_shop_auto_sell_items(
+    inventory: &openstory_protocol::InventorySnapshot,
+    marked_items: &HashSet<InventorySellMark>,
+) -> VecDeque<InventorySellMark> {
+    let mut items: Vec<_> = inventory
+        .items
+        .iter()
+        .filter(|item| item.slot > 0 && item.count > 0)
+        .map(inventory_sell_mark)
+        .filter(|mark| marked_items.contains(mark))
+        .collect();
+    items.sort_unstable_by_key(|mark| (mark.inventory_type as u8, mark.slot));
+    items.into()
 }
 
 fn npc_shop_sell_maximum(item: &openstory_protocol::InventoryItem) -> i16 {
@@ -844,6 +869,68 @@ fn render_npc_shop_quantity(
 }
 
 impl ClientApp {
+    fn start_next_npc_shop_auto_sell(&mut self) {
+        let (inventory, marked_items) = (&self.inventory, &self.marked_inventory_items);
+        let mut next = None;
+        if let (Some(inventory), Some(state)) = (inventory.as_ref(), self.npc_shop.as_mut())
+            && !state.pending
+            && state.auto_sell_in_flight.is_none()
+        {
+            while let Some(mark) = state.auto_sell_items.pop_front() {
+                if !marked_items.contains(&mark) {
+                    continue;
+                }
+                let Some(item) = inventory.items.iter().find(|item| {
+                    item.inventory_type == mark.inventory_type
+                        && item.slot == mark.slot
+                        && item.item_id == mark.item_id
+                        && item.cash_id == mark.cash_id
+                        && item.count > 0
+                }) else {
+                    continue;
+                };
+                let Some(quantity) = npc_shop_sell_quantity(item) else {
+                    continue;
+                };
+                state.pending = true;
+                state.auto_sell_in_flight = Some(mark);
+                next = Some((mark, quantity.maximum));
+                break;
+            }
+        }
+        let Some((mark, quantity)) = next else {
+            self.start_next_npc_shop_auto_recharge();
+            return;
+        };
+        let packet = i16::try_from(mark.slot).ok().and_then(|slot| {
+            openstory_protocol::npc_shop_item_action(slot, mark.item_id, quantity, false).ok()
+        });
+        let Some(packet) = packet else {
+            if let Some(state) = self.npc_shop.as_mut() {
+                state.pending = false;
+                state.auto_sell_in_flight = None;
+            }
+            self.start_next_npc_shop_auto_sell();
+            return;
+        };
+        let Some(session) = self.session.as_ref() else {
+            self.clear_npc_shop_auto_sell();
+            return;
+        };
+        if let Err(error) = session.send_packet(packet) {
+            self.clear_npc_shop_auto_sell();
+            eprintln!("OpenStoryRS: automatic shop sale failed: {error}");
+        }
+    }
+
+    fn clear_npc_shop_auto_sell(&mut self) {
+        if let Some(state) = self.npc_shop.as_mut() {
+            state.pending = false;
+            state.auto_sell_in_flight = None;
+            state.auto_sell_items.clear();
+        }
+    }
+
     fn start_next_npc_shop_auto_recharge(&mut self) {
         let inventory = self.inventory.as_ref();
         let slot = self.npc_shop.as_mut().and_then(|state| {

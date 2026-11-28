@@ -10,7 +10,7 @@ pub(super) const CLOSE: UiRect = ui_dialog::inventory_close(WIDTH as f32);
 pub(super) const ITEM_IGNORE_PENDANT_ID: i32 = 1_812_007;
 #[derive(Clone, Copy)]
 struct PetControlSlots {
-    pet: UiRect,
+    pet: Option<UiRect>,
     hp: UiRect,
     mp: UiRect,
 }
@@ -163,12 +163,12 @@ impl EquipmentTab {
     fn pet_controls(self) -> Option<PetControlSlots> {
         match self {
             Self::Equip => Some(PetControlSlots {
-                pet: character_cell_bounds(3, 6),
+                pet: Some(character_cell_bounds(3, 6)),
                 hp: character_cell_bounds(4, 6),
                 mp: character_cell_bounds(4, 5),
             }),
             Self::Pet => Some(PetControlSlots {
-                pet: pet_cell_bounds(2, 3),
+                pet: None,
                 hp: pet_cell_bounds(3, 3),
                 mp: pet_cell_bounds(3, 2),
             }),
@@ -193,7 +193,7 @@ impl EquipmentTab {
         if pet.summoned.is_some()
             && self
                 .pet_controls()
-                .is_some_and(|slots| slots.pet.contains(x, y))
+                .is_some_and(|slots| slots.pet.is_some_and(|bounds| bounds.contains(x, y)))
         {
             return Some(EquipmentHover::Pet);
         }
@@ -223,7 +223,8 @@ impl EquipmentTab {
                 .map(|cell| cell.bounds),
         );
         if let Some(slots) = self.pet_controls() {
-            bounds.extend([slots.pet, slots.hp, slots.mp]);
+            bounds.extend(slots.pet);
+            bounds.extend([slots.hp, slots.mp]);
         }
         bounds
     }
@@ -336,6 +337,7 @@ pub(super) fn render(
     look: Option<&CharacterLook>,
     tab: EquipmentTab,
     active_scroll_item_id: Option<i32>,
+    dragged_equipped_slot: Option<u16>,
     pet: PetSlots,
     ui: &NxArchive,
     items: &NxArchive,
@@ -390,7 +392,9 @@ pub(super) fn render(
         }
     }
     for cell in tab.cells() {
-        let item = tab.item_in_cell(inventory, cell);
+        let item = tab
+            .item_in_cell(inventory, cell)
+            .filter(|item| Some(item.slot) != dragged_equipped_slot);
         let tone = match item {
             Some(item)
                 if active_scroll_item_id
@@ -414,15 +418,17 @@ pub(super) fn render(
         );
     }
     if let Some(slots) = tab.pet_controls() {
-        panel.gear(
-            "Pet",
-            slots.pet,
-            pet.summoned.map(|(id, _)| id),
-            SlotTone::Normal,
-            items,
-            characters,
-            icon_cache,
-        );
+        if let Some(bounds) = slots.pet {
+            panel.gear(
+                "Pet",
+                bounds,
+                pet.summoned.map(|(id, _)| id),
+                SlotTone::Normal,
+                items,
+                characters,
+                icon_cache,
+            );
+        }
         for (slot, bounds) in slots.potions() {
             let label = match slot {
                 AutoPotionSlot::Hp => "Auto HP",
@@ -487,7 +493,7 @@ fn invalid_scroll_target(scroll_id: i32, equipment: &InventoryItem) -> Option<bo
         },
     };
 
-    if equipment.cash {
+    if equipment.cash && !matches!(target, ScrollTarget::PetEquipment) {
         return Some(true);
     }
     let Some(equip) = equipment.equip.as_ref() else {
@@ -1077,8 +1083,6 @@ mod tests {
         for tab in [EquipmentTab::Equip, EquipmentTab::Pet] {
             let slots = tab.pet_controls().unwrap();
             assert!(slots.mp.y < slots.hp.y);
-            assert!(slots.pet.x < slots.hp.x);
-            assert_eq!(slots.pet.y, slots.hp.y);
             assert_eq!(
                 tab.potion_at(slots.hp.x, slots.hp.y),
                 Some(AutoPotionSlot::Hp)
@@ -1087,10 +1091,17 @@ mod tests {
                 tab.potion_at(slots.mp.x, slots.mp.y),
                 Some(AutoPotionSlot::Mp)
             );
-            assert_eq!(tab.potion_at(slots.pet.x, slots.pet.y), None);
+            assert_eq!(slots.pet.is_some(), tab == EquipmentTab::Equip);
+            if let Some(pet_bounds) = slots.pet {
+                assert!(pet_bounds.x < slots.hp.x);
+                assert_eq!(pet_bounds.y, slots.hp.y);
+                assert_eq!(tab.potion_at(pet_bounds.x, pet_bounds.y), None);
+            }
             assert!(tab.cells().all(|cell| {
-                [slots.pet, slots.hp, slots.mp]
+                slots
+                    .pet
                     .into_iter()
+                    .chain([slots.hp, slots.mp])
                     .all(|target| !cell.bounds.contains(target.x, target.y))
             }));
         }
